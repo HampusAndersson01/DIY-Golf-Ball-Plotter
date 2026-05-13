@@ -5,9 +5,10 @@ import serial
 import time
 import threading
 import math
+import os
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Optional, Any
 
 # Optional dependency for real SVG path support:
@@ -16,6 +17,23 @@ try:
     from svgpathtools import parse_path
 except Exception:
     parse_path = None
+
+try:
+    from shapely import affinity
+    from shapely.geometry import GeometryCollection, LineString, MultiLineString, MultiPolygon, Point as ShapelyPoint, Polygon
+    from shapely.ops import polygonize, unary_union
+    from shapely.validation import make_valid
+except Exception:
+    affinity = None
+    GeometryCollection = None
+    LineString = None
+    MultiLineString = None
+    MultiPolygon = None
+    ShapelyPoint = None
+    Polygon = None
+    polygonize = None
+    unary_union = None
+    make_valid = None
 
 # ============================================================
 # Machine / serial setup
@@ -51,21 +69,40 @@ DEFAULT_X_ACCELERATION = 100    # degrees/sec^2
 DEFAULT_Y_ACCELERATION = 100    # degrees/sec^2
 DEFAULT_DRAW_FEED = 1200        # degrees/min for drawing
 DEFAULT_TRAVEL_FEED = 3000      # degrees/min for pen-up travel
-DEFAULT_LINE_THICKNESS_MM = 0.0  # pen stroke width on the ball in mm
+DEFAULT_LINE_THICKNESS_MM = 0.75
 
 # Servo via GRBL spindle PWM M3 S...
-DEFAULT_PEN_UP_S = 400
-DEFAULT_PEN_DOWN_S = 900
-DEFAULT_SERVO_DWELL = 0.25
-DEFAULT_PEN_LIFT_STEPS = 8
-DEFAULT_PEN_LIFT_STEP_DWELL = 0.03
-MIN_SERVO_S = 0
+DEFAULT_PEN_UP_S = 575
+DEFAULT_PEN_DOWN_S = 700
+DEFAULT_SERVO_DWELL = 0.06
+DEFAULT_SERVO_RAMP_ENABLED = True
+DEFAULT_SERVO_RAMP_STEP = 20
+DEFAULT_SERVO_RAMP_DELAY_MS = 10
+DEFAULT_PEN_UP_DWELL_MS = 30
+DEFAULT_PEN_DOWN_DWELL_MS = 60
+MIN_SERVO_S = 500
 MAX_SERVO_S = 1000
 
 # SVG flattening defaults
 DEFAULT_SAMPLE_STEP_DEG = 1.0       # max angular spacing between sampled points
 DEFAULT_CURVE_SAMPLES = 80          # fallback per curve/path segment
 DEFAULT_MARGIN_PERCENT = 4.0        # keep SVG away from extreme edges
+DEFAULT_ROTATION_DEG = 0.0
+DEFAULT_ENABLE_FILL = True
+DEFAULT_FILL_MODE = "slicer"
+DEFAULT_PARSER_MODE = "visible_geometry"
+DEFAULT_COLOR_MAPPING_MODE = False
+DEFAULT_WALL_COUNT = 1
+DEFAULT_INFILL_PATTERN = "zigzag"
+DEFAULT_INFILL_SPACING_MM = DEFAULT_LINE_THICKNESS_MM
+DEFAULT_INFILL_ANGLE_DEG = 0.0
+DEFAULT_OUTLINE_AFTER_FILL = False
+DEFAULT_MIN_FILL_AREA_MM2 = 1.0
+DEFAULT_MIN_FILL_WIDTH_MM = DEFAULT_LINE_THICKNESS_MM
+DEFAULT_SIMPLIFY_TOLERANCE_MM = 0.05
+DEFAULT_REMOVE_DUPLICATE_PATHS = True
+DEFAULT_SMALL_SHAPE_MODE = "single-wall"
+DEFAULT_MIN_SEGMENT_LENGTH_MM = 0.5
 
 app = Flask(__name__)
 
@@ -89,6 +126,8 @@ state: dict[str, Any] = {
     "last_error": None,
     "progress_total": 0,
     "progress_done": 0,
+    "current_servo_s": DEFAULT_PEN_UP_S,
+    "server_pid": os.getpid(),
 }
 
 
@@ -105,6 +144,78 @@ class Point:
 @dataclass
 class Segment:
     points: list[Point]
+    closed: bool = False
+
+
+@dataclass
+class SvgFillShape:
+    geometry: Any
+    fill_rule: str = "nonzero"
+    source_tag: str = "path"
+
+
+@dataclass
+class GeometryBundle:
+    outline_segments: list[Segment] = field(default_factory=list)
+    fill_boundary_segments: list[Segment] = field(default_factory=list)
+    fill_shapes: list[SvgFillShape] = field(default_factory=list)
+
+
+@dataclass
+class NormalizedFillRegion:
+    type: str
+    paths: list[str]
+    fillColor: str
+    fillRule: str
+    holes: list[str] = field(default_factory=list)
+    source: str = "path"
+
+
+@dataclass
+class NormalizedStrokePath:
+    type: str
+    path: str
+    strokeColor: str
+    strokeWidth: float
+    source: str = "path"
+
+
+@dataclass
+class NormalizedDetailPath:
+    type: str
+    path: str
+    source: str
+
+
+@dataclass
+class IgnoredSvgElement:
+    reason: str
+    element: str
+
+
+@dataclass
+class SvgPrintModel:
+    fills: list[NormalizedFillRegion] = field(default_factory=list)
+    strokes: list[NormalizedStrokePath] = field(default_factory=list)
+    details: list[NormalizedDetailPath] = field(default_factory=list)
+    ignored: list[IgnoredSvgElement] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    diagnostics: list[str] = field(default_factory=list)
+    computed_bounds: Optional[dict[str, float]] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class SvgAnalysisResult:
+    bundle: GeometryBundle
+    print_model: SvgPrintModel
+    viewbox_bounds: Optional["SvgBounds"]
+
+
+@dataclass
+class Toolpath:
+    points: list[Point]
+    kind: str
     closed: bool = False
 
 
@@ -413,20 +524,44 @@ HTML = r"""
             Jog the machine until the pen is physically at the center of the ball. Then set zero and mark calibrated.
             The runner will not start until this is done.
           </p>
+          <p class="small" id="servoDefaultsInfo">
+            Server defaults: pen up S{{ default_pen_up_s }}, pen down S{{ default_pen_down_s }}
+          </p>
 
           <div class="row">
             <button onclick="penUp()" class="success">Pen Up</button>
             <button onclick="penDown()" class="warning-btn">Pen Down</button>
             <button onclick="penTest()" class="secondary">Pen Test</button>
+            <button onclick="goHome()" class="secondary">Home X/Y</button>
             <button onclick="servoOff()" class="danger">Servo Off</button>
+            <button onclick="resetServoUiDefaults()" class="secondary">Reset UI Defaults</button>
           </div>
 
           <div class="two-col">
             <div><label>Pen up S</label><input id="penUpS" type="number" value="{{ default_pen_up_s }}" min="0" max="1000" step="10" /></div>
             <div><label>Pen down S</label><input id="penDownS" type="number" value="{{ default_pen_down_s }}" min="0" max="1000" step="10" /></div>
           </div>
-          <label>Servo dwell seconds</label>
-          <input id="servoDwell" type="number" value="{{ default_servo_dwell }}" min="0" max="5" step="0.05" />
+          <div class="two-col">
+            <div>
+              <label>Pen up dwell ms</label>
+              <input id="penUpDwellMs" type="number" value="{{ default_pen_up_dwell_ms }}" min="0" max="1000" step="5" />
+            </div>
+            <div>
+              <label>Pen down dwell ms</label>
+              <input id="penDownDwellMs" type="number" value="{{ default_pen_down_dwell_ms }}" min="0" max="1000" step="5" />
+            </div>
+          </div>
+          <label><input id="servoRampEnabled" type="checkbox" {% if default_servo_ramp_enabled %}checked{% endif %} /> Servo ramping enabled</label>
+          <div class="two-col">
+            <div>
+              <label>Servo ramp step S</label>
+              <input id="servoRampStep" type="number" value="{{ default_servo_ramp_step }}" min="1" max="200" step="1" />
+            </div>
+            <div>
+              <label>Servo ramp delay ms</label>
+              <input id="servoRampDelayMs" type="number" value="{{ default_servo_ramp_delay_ms }}" min="0" max="1000" step="1" />
+            </div>
+          </div>
 
           <h3>Jog</h3>
           <div class="two-col">
@@ -470,6 +605,24 @@ HTML = r"""
               <input id="placementOffsetY" type="number" value="0" step="1" min="-45" max="45" />
             </div>
           </div>
+          <div>
+            <label>Rotation degrees</label>
+            <input id="rotationDeg" type="number" value="{{ default_rotation_deg }}" step="1" min="-360" max="360" />
+          </div>
+
+          <div class="two-col">
+            <div>
+              <label>SVG parser mode</label>
+              <select id="parserMode">
+                <option value="visible_geometry" {% if default_parser_mode == "visible_geometry" %}selected{% endif %}>Visible geometry</option>
+                <option value="detect_visible_print_areas" {% if default_parser_mode == "detect_visible_print_areas" %}selected{% endif %}>Detect visible print areas</option>
+              </select>
+            </div>
+            <div>
+              <label><input id="colorMappingMode" type="checkbox" {% if default_color_mapping_mode %}checked{% endif %} /> Enable optional color mapping</label>
+              <p class="small">Black/dark = printable, white/light = cutout/ignored, blue = outline, orange = fill, teal = detail.</p>
+            </div>
+          </div>
 
           <div class="two-col">
             <div>
@@ -493,11 +646,75 @@ HTML = r"""
             </div>
           </div>
 
-          <label>Line spacing / nozzle diameter (mm on ball)</label>
+          <label>Line width / nozzle diameter (mm on ball)</label>
           <input id="lineThicknessMm" type="number" value="{{ default_line_thickness_mm }}" step="0.01" min="0" max="10" />
           <p class="small">
-            Example: 0.75 mm sets the spacing between contour passes. Open lines stay single-pass; closed shapes can be filled with nested contours.
+            Example: 0.75 mm makes the fill wall offset inward by 0.375 mm and defaults infill spacing to 0.75 mm.
           </p>
+
+          <h3>Fill</h3>
+          <label><input id="enableFill" type="checkbox" {% if default_enable_fill %}checked{% endif %} /> Enable slicer-style fill for filled SVG regions</label>
+          <div class="two-col">
+            <div>
+              <label>Fill mode</label>
+              <select id="fillMode">
+                <option value="slicer" selected>Slicer</option>
+              </select>
+            </div>
+            <div>
+              <label>Wall count</label>
+              <input id="wallCount" type="number" value="{{ default_wall_count }}" min="1" max="8" step="1" />
+            </div>
+          </div>
+          <div class="two-col">
+            <div>
+              <label>Infill pattern</label>
+              <select id="infillPattern">
+                <option value="zigzag" selected>Zigzag</option>
+                <option value="hatch">Hatch</option>
+              </select>
+            </div>
+            <div>
+              <label>Infill spacing mm</label>
+              <input id="infillSpacingMm" type="number" value="{{ default_infill_spacing_mm }}" min="0.1" max="10" step="0.01" />
+            </div>
+          </div>
+          <div class="two-col">
+            <div>
+              <label>Infill angle degrees</label>
+              <input id="infillAngleDeg" type="number" value="{{ default_infill_angle_deg }}" min="-180" max="180" step="1" />
+            </div>
+            <div>
+              <label>Small shape mode</label>
+              <select id="smallShapeMode">
+                <option value="single-wall" selected>Single wall</option>
+                <option value="skip">Skip</option>
+                <option value="centerline-todo">Centerline TODO</option>
+              </select>
+            </div>
+          </div>
+          <div class="two-col">
+            <div>
+              <label>Min fill area mm²</label>
+              <input id="minFillAreaMm2" type="number" value="{{ default_min_fill_area_mm2 }}" min="0" max="1000" step="0.1" />
+            </div>
+            <div>
+              <label>Min fill width mm</label>
+              <input id="minFillWidthMm" type="number" value="{{ default_min_fill_width_mm }}" min="0" max="10" step="0.01" />
+            </div>
+          </div>
+          <div class="two-col">
+            <div>
+              <label>Simplify tolerance mm</label>
+              <input id="simplifyToleranceMm" type="number" value="{{ default_simplify_tolerance_mm }}" min="0" max="2" step="0.01" />
+            </div>
+            <div>
+              <label>Min segment length mm</label>
+              <input id="minSegmentLengthMm" type="number" value="{{ default_min_segment_length_mm }}" min="0" max="10" step="0.01" />
+            </div>
+          </div>
+          <label><input id="outlineAfterFill" type="checkbox" {% if default_outline_after_fill %}checked{% endif %} /> Draw original outline after fill</label>
+          <label><input id="removeDuplicatePaths" type="checkbox" {% if default_remove_duplicate_paths %}checked{% endif %} /> Remove duplicate / tiny paths</label>
 
           <label>Fit mode</label>
           <select id="fitMode">
@@ -507,6 +724,7 @@ HTML = r"""
 
           <label><input id="invertY" type="checkbox" checked /> Invert SVG Y so top of SVG becomes +Y</label>
           <label><input id="includeComments" type="checkbox" checked /> Include comments in G-code</label>
+          <label><input id="debugPipeline" type="checkbox" /> Include debug geometry snapshots in `/generate-gcode` response</label>
 
           <button onclick="uploadAndGenerate()" class="purple">Upload SVG + Generate G-code</button>
           <button onclick="downloadGcode()" class="secondary">Download G-code</button>
@@ -547,10 +765,12 @@ HTML = r"""
             </div>
             <div class="preview-panel">
               <div class="preview-title">Flat coordinate map</div>
+              <div class="small">Outline = blue, fill wall = amber, infill = teal, travel = slate</div>
               <canvas id="flatPreview"></canvas>
             </div>
             <div class="preview-panel">
               <div class="preview-title">Ball preview</div>
+              <div class="small">Preview is generated from the same final toolpaths as the G-code.</div>
               <canvas id="ballPreview"></canvas>
             </div>
           </div>
@@ -588,6 +808,41 @@ HTML = r"""
     return parseInt(document.getElementById(id).value || "0");
   }
 
+  function getBool(id) {
+    return document.getElementById(id).checked;
+  }
+
+  const SERVER_DEFAULTS = {
+    penUpS: {{ default_pen_up_s }},
+    penDownS: {{ default_pen_down_s }},
+    penUpDwellMs: {{ default_pen_up_dwell_ms }},
+    penDownDwellMs: {{ default_pen_down_dwell_ms }},
+    servoRampEnabled: {{ 'true' if default_servo_ramp_enabled else 'false' }},
+    servoRampStep: {{ default_servo_ramp_step }},
+    servoRampDelayMs: {{ default_servo_ramp_delay_ms }}
+  };
+
+  function resetServoUiDefaults() {
+    document.getElementById('penUpS').value = SERVER_DEFAULTS.penUpS;
+    document.getElementById('penDownS').value = SERVER_DEFAULTS.penDownS;
+    document.getElementById('penUpDwellMs').value = SERVER_DEFAULTS.penUpDwellMs;
+    document.getElementById('penDownDwellMs').value = SERVER_DEFAULTS.penDownDwellMs;
+    document.getElementById('servoRampEnabled').checked = SERVER_DEFAULTS.servoRampEnabled;
+    document.getElementById('servoRampStep').value = SERVER_DEFAULTS.servoRampStep;
+    document.getElementById('servoRampDelayMs').value = SERVER_DEFAULTS.servoRampDelayMs;
+    document.getElementById('rawCommand').value = `M3 S${SERVER_DEFAULTS.penUpS}`;
+    appendLog(`Reset servo UI fields to server defaults S${SERVER_DEFAULTS.penUpS}/S${SERVER_DEFAULTS.penDownS}.`);
+  }
+
+  function appendServoSettings(target) {
+    target.servo_ramp_enabled = getBool('servoRampEnabled');
+    target.servo_ramp_step = getInt('servoRampStep');
+    target.servo_ramp_delay_ms = getNum('servoRampDelayMs');
+    target.pen_up_dwell_ms = getNum('penUpDwellMs');
+    target.pen_down_dwell_ms = getNum('penDownDwellMs');
+    return target;
+  }
+
   async function api(url, data = {}) {
     try {
       const res = await fetch(url, {
@@ -620,6 +875,10 @@ HTML = r"""
       document.getElementById('calStatus').className = s.calibrated ? 'value ok-text' : 'value warning';
       document.getElementById('runStatus').textContent = s.status || '-';
       document.getElementById('progressStatus').textContent = `${s.progress_done || 0} / ${s.progress_total || 0}`;
+      if (s.defaults) {
+        document.getElementById('servoDefaultsInfo').textContent =
+          `Server defaults: pen up S${s.defaults.pen_up_s}, pen down S${s.defaults.pen_down_s}, PID ${s.server_pid}`;
+      }
 
       const pct = s.progress_total ? Math.round((s.progress_done / s.progress_total) * 100) : 0;
       document.getElementById('progressFill').style.width = `${pct}%`;
@@ -640,31 +899,34 @@ HTML = r"""
   }
 
   function penUp() {
-    return api('/pen-up', {
+    return api('/pen-up', appendServoSettings({
       s: getInt('penUpS'),
-      dwell: getNum('servoDwell')
-    });
+    }));
   }
 
   function penDown() {
-    return api('/pen-down', {
+    return api('/pen-down', appendServoSettings({
       s: getInt('penDownS'),
-      dwell: getNum('servoDwell')
-    });
+    }));
   }
 
   function penTest() {
-    return api('/pen-test', {
+    return api('/pen-test', appendServoSettings({
       up_s: getInt('penUpS'),
       down_s: getInt('penDownS'),
-      dwell: getNum('servoDwell')
-    });
+    }));
   }
 
   function servoOff() { return api('/servo-off'); }
   function jogX(degrees) { return api('/jog', { axis: 'X', degrees, feed: getNum('travelFeed') }); }
   function jogY(degrees) { return api('/jog', { axis: 'Y', degrees, feed: getNum('travelFeed') }); }
   function zeroPosition() { return api('/zero-position'); }
+  function goHome() {
+    return api('/go-home', appendServoSettings({
+      pen_up_s: getInt('penUpS'),
+      travel_feed: getNum('travelFeed')
+    }));
+  }
   function markCalibrated() { return api('/mark-calibrated'); }
   function clearCalibrated() { return api('/clear-calibrated'); }
   function runGcode() { return api('/run-gcode'); }
@@ -689,15 +951,36 @@ HTML = r"""
     form.append('sample_step_deg', getNum('sampleStepDeg'));
     form.append('margin_percent', getNum('marginPercent'));
     form.append('fit_mode', document.getElementById('fitMode').value);
+    form.append('parser_mode', document.getElementById('parserMode').value);
+    form.append('color_mapping_mode', getBool('colorMappingMode') ? '1' : '0');
     form.append('invert_y', document.getElementById('invertY').checked ? '1' : '0');
     form.append('include_comments', document.getElementById('includeComments').checked ? '1' : '0');
+    form.append('debug_pipeline', getBool('debugPipeline') ? '1' : '0');
     form.append('placement_scale', getNum('placementScale'));
     form.append('placement_offset_x', getNum('placementOffsetX'));
     form.append('placement_offset_y', getNum('placementOffsetY'));
+    form.append('rotation_deg', getNum('rotationDeg'));
     form.append('line_thickness_mm', getNum('lineThicknessMm'));
+    form.append('enable_fill', getBool('enableFill') ? '1' : '0');
+    form.append('fill_mode', document.getElementById('fillMode').value);
+    form.append('wall_count', getInt('wallCount'));
+    form.append('infill_pattern', document.getElementById('infillPattern').value);
+    form.append('infill_spacing_mm', getNum('infillSpacingMm'));
+    form.append('infill_angle_deg', getNum('infillAngleDeg'));
+    form.append('outline_after_fill', getBool('outlineAfterFill') ? '1' : '0');
+    form.append('min_fill_area_mm2', getNum('minFillAreaMm2'));
+    form.append('min_fill_width_mm', getNum('minFillWidthMm'));
+    form.append('simplify_tolerance_mm', getNum('simplifyToleranceMm'));
+    form.append('remove_duplicate_paths', getBool('removeDuplicatePaths') ? '1' : '0');
+    form.append('small_shape_mode', document.getElementById('smallShapeMode').value);
+    form.append('min_segment_length_mm', getNum('minSegmentLengthMm'));
     form.append('pen_up_s', getInt('penUpS'));
     form.append('pen_down_s', getInt('penDownS'));
-    form.append('servo_dwell', getNum('servoDwell'));
+    form.append('servo_ramp_enabled', getBool('servoRampEnabled') ? '1' : '0');
+    form.append('servo_ramp_step', getInt('servoRampStep'));
+    form.append('servo_ramp_delay_ms', getNum('servoRampDelayMs'));
+    form.append('pen_up_dwell_ms', getNum('penUpDwellMs'));
+    form.append('pen_down_dwell_ms', getNum('penDownDwellMs'));
 
     try {
       const res = await fetch('/generate-gcode', { method: 'POST', body: form });
@@ -708,11 +991,17 @@ HTML = r"""
       }
 
       latestGcode = json.gcode;
-      latestPreview = json.preview;
+      latestPreview = json.preview || [];
       document.getElementById('gcodeBox').value = latestGcode.join('\n');
       drawFlatPreview(latestPreview);
       drawBallPreview(latestPreview);
-      appendLog(`Generated ${latestGcode.length} G-code lines from ${json.segment_count} SVG segments / ${json.point_count} points.`);
+      appendLog(`Generated ${latestGcode.length} G-code lines from ${json.toolpath_count} toolpaths / ${json.point_count} plotted points.`);
+      for (const warning of (json.print_model?.warnings || [])) {
+        appendLog(`WARNING: ${warning}`);
+      }
+      for (const diagnostic of (json.print_model?.diagnostics || [])) {
+        appendLog(`DIAGNOSTIC: ${diagnostic}`);
+      }
       await refreshState();
     } catch (err) {
       appendLog(`GENERATE ERROR: ${err}`);
@@ -725,6 +1014,14 @@ HTML = r"""
     canvas.width = Math.max(300, Math.floor(rect.width * window.devicePixelRatio));
     canvas.height = Math.max(300, Math.floor(rect.height * window.devicePixelRatio));
     return canvas.getContext('2d');
+  }
+
+  function previewStyle(kind, depth = 1) {
+    const alpha = Math.max(0.18, Math.min(1, depth));
+    if (kind === 'outline') return { stroke: `rgba(59, 130, 246, ${alpha})`, width: 2.1, dash: [] };
+    if (kind === 'fill-wall') return { stroke: `rgba(245, 158, 11, ${alpha})`, width: 2.4, dash: [] };
+    if (kind === 'fill-infill') return { stroke: `rgba(45, 212, 191, ${alpha})`, width: 1.6, dash: [] };
+    return { stroke: `rgba(148, 163, 184, ${alpha * 0.9})`, width: 1.1, dash: [6, 6] };
   }
 
   function drawFlatPreview(paths) {
@@ -763,17 +1060,21 @@ HTML = r"""
     ctx.fillText('Y 0°', 8 * window.devicePixelRatio, cyLabel(h, scale, top));
     ctx.fillText('Y -45°', 8 * window.devicePixelRatio, h - top);
 
-    ctx.lineWidth = 1.7 * window.devicePixelRatio;
-    ctx.strokeStyle = '#a78bfa';
-    for (const path of paths) {
+    for (const entry of paths) {
+      const path = entry.points || [];
       if (!path.length) continue;
+      const style = previewStyle(entry.kind || 'outline');
       ctx.beginPath();
       ctx.moveTo(sx(path[0].x), sy(path[0].y));
       for (let i = 1; i < path.length; i++) {
         ctx.lineTo(sx(path[i].x), sy(path[i].y));
       }
+      ctx.setLineDash((style.dash || []).map((value) => value * window.devicePixelRatio));
+      ctx.lineWidth = style.width * window.devicePixelRatio;
+      ctx.strokeStyle = style.stroke;
       ctx.stroke();
     }
+    ctx.setLineDash([]);
   }
 
   function cxLabel(width, scale, left) {
@@ -792,8 +1093,8 @@ HTML = r"""
     const z = Math.cos(lat) * Math.cos(lon);
     const perspective = 0.72 + (z * 0.28);
     return {
-      x: cx + x * radius * perspective,
-      y: cy - y * radius * perspective,
+      x: cx + y * radius * perspective,
+      y: cy + x * radius * perspective,
       z
     };
   }
@@ -856,24 +1157,31 @@ HTML = r"""
     ctx.stroke();
 
     const projectedPaths = [];
-    for (const path of paths) {
+    for (const entry of paths) {
+      const path = entry.points || [];
       if (!path.length) continue;
-      projectedPaths.push(path.map((point) => projectBallPoint(point, cx, cy, radius)));
+      projectedPaths.push({
+        kind: entry.kind || 'outline',
+        points: path.map((point) => projectBallPoint(point, cx, cy, radius))
+      });
     }
-    projectedPaths.sort((a, b) => (a[0]?.z || 0) - (b[0]?.z || 0));
+    projectedPaths.sort((a, b) => ((a.points[0]?.z || 0) - (b.points[0]?.z || 0)));
 
-    for (const projected of projectedPaths) {
+    for (const entry of projectedPaths) {
+      const projected = entry.points;
       ctx.beginPath();
       for (let i = 0; i < projected.length; i++) {
         const p = projected[i];
         if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
       }
       const depth = projected.reduce((sum, p) => sum + p.z, 0) / projected.length;
-      const alpha = Math.max(0.2, Math.min(1, 0.35 + (depth + 1) * 0.325));
-      ctx.lineWidth = 2.2 * window.devicePixelRatio;
-      ctx.strokeStyle = `rgba(167, 139, 250, ${alpha})`;
+      const style = previewStyle(entry.kind, 0.35 + ((depth + 1) * 0.325));
+      ctx.setLineDash((style.dash || []).map((value) => value * window.devicePixelRatio));
+      ctx.lineWidth = style.width * window.devicePixelRatio;
+      ctx.strokeStyle = style.stroke;
       ctx.stroke();
     }
+    ctx.setLineDash([]);
 
     ctx.fillStyle = 'rgba(255, 255, 255, 0.38)';
     ctx.beginPath();
@@ -882,8 +1190,9 @@ HTML = r"""
 
     ctx.fillStyle = '#cbd5e1';
     ctx.font = `${11 * window.devicePixelRatio}px Arial`;
-    ctx.fillText('Front', cx - 16 * window.devicePixelRatio, cy + radius + 16 * window.devicePixelRatio);
-    ctx.fillText('0° / 0°', cx - 20 * window.devicePixelRatio, cy + 4 * window.devicePixelRatio);
+    ctx.fillText('Printer view rotation', cx - 38 * window.devicePixelRatio, cy + radius + 16 * window.devicePixelRatio);
+    ctx.fillText('Right side = bottom', cx - 42 * window.devicePixelRatio, cy + radius + 30 * window.devicePixelRatio);
+    ctx.fillText('X0° / Y0°', cx - 24 * window.devicePixelRatio, cy + 4 * window.devicePixelRatio);
   }
 
   function downloadGcode() {
@@ -1061,22 +1370,62 @@ def validate_dwell(dwell: Any) -> float:
     return value
 
 
-def build_servo_transition_commands(start_s: int, end_s: int, steps: int = DEFAULT_PEN_LIFT_STEPS) -> list[str]:
-  if steps <= 1 or start_s == end_s:
-    return [f"M3 S{end_s}"]
+def validate_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
-  commands: list[str] = []
-  last_s: Optional[int] = None
-  for step in range(1, steps + 1):
-    s_value = round(start_s + ((end_s - start_s) * step / steps))
-    if s_value == last_s:
-      continue
-    commands.append(f"M3 S{s_value}")
-    if step != steps:
-      commands.append(f"G4 P{DEFAULT_PEN_LIFT_STEP_DWELL:.3f}")
-    last_s = s_value
 
-  return commands
+def validate_non_negative_float(value: Any, label: str, maximum: Optional[float] = None) -> float:
+    out = float(value)
+    if out < 0:
+        raise ValueError(f"{label} must not be negative")
+    if maximum is not None and out > maximum:
+        raise ValueError(f"{label} must be <= {maximum}")
+    return out
+
+
+def validate_non_negative_int(value: Any, label: str, minimum: int = 0, maximum: Optional[int] = None) -> int:
+    out = int(value)
+    if out < minimum:
+        raise ValueError(f"{label} must be >= {minimum}")
+    if maximum is not None and out > maximum:
+        raise ValueError(f"{label} must be <= {maximum}")
+    return out
+
+
+def ms_to_seconds(ms: float) -> float:
+    return max(0.0, ms) / 1000.0
+
+
+def get_tracked_servo_s(fallback: int) -> int:
+    tracked = state.get("current_servo_s", fallback)
+    try:
+        return validate_servo_s(tracked)
+    except Exception:
+        return fallback
+
+
+def set_tracked_servo_s(s_value: int) -> None:
+    state["current_servo_s"] = validate_servo_s(s_value)
+
+
+def build_pen_position_commands(
+    start_s: int,
+    end_s: int,
+    *,
+    ramp_enabled: bool,
+    ramp_step: int,
+    ramp_delay_ms: float,
+    dwell_ms: float,
+) -> list[str]:
+    commands: list[str] = [f"M3 S{end_s}"]
+
+    dwell_seconds = ms_to_seconds(dwell_ms)
+    if dwell_seconds > 0:
+        commands.append(f"G4 P{dwell_seconds:.3f}")
+
+    return commands
 
 
 def mm_to_ball_degrees(mm: float) -> float:
@@ -1088,6 +1437,16 @@ def mm_to_ball_degrees(mm: float) -> float:
 # ============================================================
 # SVG parsing and flattening
 # ============================================================
+
+SVG_MATRIX_IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+
+
+def require_geometry_support() -> None:
+    if parse_path is None:
+        raise RuntimeError("Install svgpathtools for SVG path support: pip install svgpathtools")
+    if Polygon is None or affinity is None:
+        raise RuntimeError("Install shapely for slicer fill support: pip install shapely")
+
 
 def strip_namespace(tag: str) -> str:
     return tag.split("}", 1)[-1] if "}" in tag else tag
@@ -1102,52 +1461,192 @@ def parse_float(value: Optional[str], default: float = 0.0) -> float:
 
 def parse_points_attr(points: str) -> list[Point]:
     nums = [float(n) for n in re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", points or "")]
-    pts: list[Point] = []
+    out: list[Point] = []
     for i in range(0, len(nums) - 1, 2):
-        pts.append(Point(nums[i], nums[i + 1]))
-    return pts
+        out.append(Point(nums[i], nums[i + 1]))
+    return out
+
+
+def parse_style_map(style: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for part in (style or "").split(";"):
+        if ":" not in part:
+            continue
+        key, value = part.split(":", 1)
+        out[key.strip()] = value.strip()
+    return out
+
+
+def parse_svg_length(value: Optional[str], default: float = 0.0) -> float:
+    return parse_float(value, default)
+
+
+def format_svg_path(points: list[Point], closed: bool) -> str:
+    if not points:
+        return ""
+    commands = [f"M {points[0].x:.6f} {points[0].y:.6f}"]
+    for point in points[1:]:
+        commands.append(f"L {point.x:.6f} {point.y:.6f}")
+    if closed:
+        commands.append("Z")
+    return " ".join(commands)
+
+
+def debug_append_parser_entry(debug: Optional[dict[str, Any]], entry: dict[str, Any]) -> None:
+    if debug is None:
+        return
+    debug.setdefault("parser_elements", []).append(entry)
+
+
+def debug_append_warning(debug: Optional[dict[str, Any]], message: str) -> None:
+    if debug is None:
+        return
+    debug.setdefault("parser_warnings", []).append(message)
+
+
+def parse_svg_stylesheet(root: ET.Element, debug: Optional[dict[str, Any]] = None) -> dict[str, dict[str, str]]:
+    rules: dict[str, dict[str, str]] = {}
+    for elem in root.iter():
+        if strip_namespace(elem.tag) != "style":
+            continue
+        css_text = "".join(elem.itertext())
+        for selectors_text, body in re.findall(r"([^{}]+)\{([^{}]+)\}", css_text, flags=re.S):
+            declarations = parse_style_map(body)
+            if not declarations:
+                continue
+            for raw_selector in selectors_text.split(","):
+                selector = raw_selector.strip()
+                if not selector:
+                    continue
+                if re.fullmatch(r"[.#]?[A-Za-z_][\w:-]*", selector):
+                    rules.setdefault(selector, {}).update(declarations)
+                else:
+                    debug_append_warning(debug, f"Unsupported CSS selector ignored: {selector}")
+    return rules
+
+
+def stylesheet_props_for_elem(elem: ET.Element, stylesheet_rules: dict[str, dict[str, str]]) -> dict[str, str]:
+    props: dict[str, str] = {}
+    tag = strip_namespace(elem.tag)
+    for selector in [tag]:
+        props.update(stylesheet_rules.get(selector, {}))
+
+    elem_id = elem.attrib.get("id", "").strip()
+    if elem_id:
+        props.update(stylesheet_rules.get(f"#{elem_id}", {}))
+
+    classes = [class_name for class_name in elem.attrib.get("class", "").split() if class_name]
+    for class_name in classes:
+        props.update(stylesheet_rules.get(f".{class_name}", {}))
+    return props
+
+
+def parse_svg_transform(transform_text: Optional[str]) -> tuple[float, float, float, float, float, float]:
+    matrix = SVG_MATRIX_IDENTITY
+    for name, raw_args in re.findall(r"([a-zA-Z]+)\s*\(([^)]*)\)", transform_text or ""):
+        args = [float(n) for n in re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", raw_args)]
+        name = name.lower()
+        if name == "matrix" and len(args) == 6:
+            op = tuple(args)
+        elif name == "translate":
+            tx = args[0] if args else 0.0
+            ty = args[1] if len(args) > 1 else 0.0
+            op = (1.0, 0.0, 0.0, 1.0, tx, ty)
+        elif name == "scale":
+            sx = args[0] if args else 1.0
+            sy = args[1] if len(args) > 1 else sx
+            op = (sx, 0.0, 0.0, sy, 0.0, 0.0)
+        elif name == "rotate":
+            angle = math.radians(args[0] if args else 0.0)
+            cos_a = math.cos(angle)
+            sin_a = math.sin(angle)
+            if len(args) >= 3:
+                cx, cy = args[1], args[2]
+                op = (
+                    cos_a,
+                    sin_a,
+                    -sin_a,
+                    cos_a,
+                    cx - (cos_a * cx) + (sin_a * cy),
+                    cy - (sin_a * cx) - (cos_a * cy),
+                )
+            else:
+                op = (cos_a, sin_a, -sin_a, cos_a, 0.0, 0.0)
+        elif name == "skewx" and args:
+            op = (1.0, 0.0, math.tan(math.radians(args[0])), 1.0, 0.0, 0.0)
+        elif name == "skewy" and args:
+            op = (1.0, math.tan(math.radians(args[0])), 0.0, 1.0, 0.0, 0.0)
+        else:
+            continue
+        # SVG transform lists are applied in the order they are written.
+        # With column-vector points that means each new operation must pre-multiply
+        # the accumulated matrix, otherwise `translate(...) scale(...)` becomes
+        # `scale` then `translate`, which misplaces outlines and fill clipping.
+        matrix = multiply_svg_matrices(op, matrix)
+    return matrix
+
+
+def multiply_svg_matrices(
+    left: tuple[float, float, float, float, float, float],
+    right: tuple[float, float, float, float, float, float],
+) -> tuple[float, float, float, float, float, float]:
+    a1, b1, c1, d1, e1, f1 = left
+    a2, b2, c2, d2, e2, f2 = right
+    return (
+        (a1 * a2) + (c1 * b2),
+        (b1 * a2) + (d1 * b2),
+        (a1 * c2) + (c1 * d2),
+        (b1 * c2) + (d1 * d2),
+        (a1 * e2) + (c1 * f2) + e1,
+        (b1 * e2) + (d1 * f2) + f1,
+    )
+
+
+def apply_svg_matrix(point: Point, matrix: tuple[float, float, float, float, float, float]) -> Point:
+    a, b, c, d, e, f = matrix
+    return Point(
+        (a * point.x) + (c * point.y) + e,
+        (b * point.x) + (d * point.y) + f,
+    )
+
+
+def shapely_affine_from_svg_matrix(matrix: tuple[float, float, float, float, float, float]) -> list[float]:
+    a, b, c, d, e, f = matrix
+    return [a, c, b, d, e, f]
 
 
 def path_d_to_segments(d: str, curve_samples: int) -> list[Segment]:
-    if parse_path is None:
-        raise RuntimeError("Install svgpathtools for <path> support: pip install svgpathtools")
-
+    require_geometry_support()
     path = parse_path(d)
     if len(path) == 0:
         return []
 
     segments: list[Segment] = []
-    current: list[Point] = []
-    last_end: Optional[complex] = None
+    for subpath in path.continuous_subpaths():
+        current: list[Point] = []
+        for part in subpath:
+            try:
+                length = max(1.0, float(part.length(error=1e-4)))
+                samples = max(2, min(300, int(length / 2.0) + 2))
+            except Exception:
+                samples = curve_samples
 
-    for part in path:
-        start = part.start
-        end = part.end
+            for i in range(samples):
+                t = i / (samples - 1)
+                p = part.point(t)
+                pt = Point(float(p.real), float(p.imag))
+                if current and nearly_same_point(current[-1], pt):
+                    continue
+                current.append(pt)
 
-        if last_end is not None and abs(start - last_end) > 1e-6:
-            if len(current) >= 2:
-                segments.append(Segment(current, closed=False))
-            current = []
-
-        # Use length-aware sampling when possible.
-        try:
-            length = max(1.0, float(part.length(error=1e-4)))
-            samples = max(2, min(300, int(length / 2.0) + 2))
-        except Exception:
-            samples = curve_samples
-
-        for i in range(samples):
-            t = i / (samples - 1)
-            p = part.point(t)
-            pt = Point(float(p.real), float(p.imag))
-            if current and abs(current[-1].x - pt.x) < 1e-9 and abs(current[-1].y - pt.y) < 1e-9:
-                continue
-            current.append(pt)
-
-        last_end = end
-
-    if len(current) >= 2:
-        closed = abs(complex(current[0].x, current[0].y) - complex(current[-1].x, current[-1].y)) < 1e-6
+        if len(current) < 2:
+            continue
+        closed = nearly_same_point(current[0], current[-1])
+        if closed and not nearly_same_point(current[0], current[-1]):
+            current.append(Point(current[0].x, current[0].y))
+        elif not closed and len(subpath) > 0 and abs(subpath[0].start - subpath[-1].end) <= 1e-6:
+            current.append(Point(current[0].x, current[0].y))
+            closed = True
         segments.append(Segment(current, closed=closed))
 
     return segments
@@ -1176,9 +1675,474 @@ def rect_to_segment(x: float, y: float, w: float, h: float) -> Segment:
     ], closed=True)
 
 
-def extract_svg_segments(svg_text: str) -> tuple[list[Segment], Optional[SvgBounds]]:
-    root = ET.fromstring(svg_text)
+def nearly_same_point(a: Point, b: Point, tolerance: float = 1e-6) -> bool:
+    return abs(a.x - b.x) <= tolerance and abs(a.y - b.y) <= tolerance
+
+
+def ensure_segment_closed(segment: Segment) -> Segment:
+    if not segment.points:
+        return segment
+    points = list(segment.points)
+    if not nearly_same_point(points[0], points[-1]):
+        points.append(Point(points[0].x, points[0].y))
+    return Segment(points, closed=True)
+
+
+def transform_segment(segment: Segment, matrix: tuple[float, float, float, float, float, float]) -> Segment:
+    return Segment([apply_svg_matrix(point, matrix) for point in segment.points], closed=segment.closed)
+
+
+def debug_append_segments(debug: Optional[dict[str, Any]], key: str, segments: list[Segment], kind: str) -> None:
+    if debug is None or not segments:
+        return
+    entries = debug.setdefault(key, [])
+    for segment in segments:
+        if len(segment.points) < 2:
+            continue
+        entries.append({
+            "kind": kind,
+            "closed": segment.closed,
+            "points": [asdict(point) for point in segment.points],
+        })
+
+
+def debug_append_toolpaths(debug: Optional[dict[str, Any]], key: str, toolpaths: list["Toolpath"]) -> None:
+    if debug is None or not toolpaths:
+        return
+    entries = debug.setdefault(key, [])
+    for toolpath in toolpaths:
+        if len(toolpath.points) < 2:
+            continue
+        entries.append({
+            "kind": toolpath.kind,
+            "closed": toolpath.closed,
+            "points": [asdict(point) for point in toolpath.points],
+        })
+
+
+def element_segments(tag: str, elem: ET.Element) -> list[Segment]:
+    if tag == "path":
+        d = elem.attrib.get("d", "").strip()
+        return path_d_to_segments(d, DEFAULT_CURVE_SAMPLES) if d else []
+    if tag == "polyline":
+        pts = parse_points_attr(elem.attrib.get("points", ""))
+        if len(pts) >= 2:
+            closed = nearly_same_point(pts[0], pts[-1])
+            return [Segment(pts, closed=closed)]
+        return []
+    if tag == "polygon":
+        pts = parse_points_attr(elem.attrib.get("points", ""))
+        if len(pts) >= 2:
+            return [ensure_segment_closed(Segment(pts, closed=True))]
+        return []
+    if tag == "line":
+        x1 = parse_float(elem.attrib.get("x1"))
+        y1 = parse_float(elem.attrib.get("y1"))
+        x2 = parse_float(elem.attrib.get("x2"))
+        y2 = parse_float(elem.attrib.get("y2"))
+        return [Segment([Point(x1, y1), Point(x2, y2)], closed=False)]
+    if tag == "rect":
+        x = parse_float(elem.attrib.get("x"))
+        y = parse_float(elem.attrib.get("y"))
+        w = parse_float(elem.attrib.get("width"))
+        h = parse_float(elem.attrib.get("height"))
+        return [rect_to_segment(x, y, w, h)] if w > 0 and h > 0 else []
+    if tag == "circle":
+        cx = parse_float(elem.attrib.get("cx"))
+        cy = parse_float(elem.attrib.get("cy"))
+        r = parse_float(elem.attrib.get("r"))
+        return [circle_to_segment(cx, cy, r)] if r > 0 else []
+    if tag == "ellipse":
+        cx = parse_float(elem.attrib.get("cx"))
+        cy = parse_float(elem.attrib.get("cy"))
+        rx = parse_float(elem.attrib.get("rx"))
+        ry = parse_float(elem.attrib.get("ry"))
+        return [ellipse_to_segment(cx, cy, rx, ry)] if rx > 0 and ry > 0 else []
+    return []
+
+
+def signed_ring_area(points: list[Point]) -> float:
+    area = 0.0
+    ring = points[:-1] if len(points) >= 2 and nearly_same_point(points[0], points[-1]) else points
+    if len(ring) < 3:
+        return 0.0
+    for current, nxt in zip(ring, ring[1:] + [ring[0]]):
+        area += (current.x * nxt.y) - (nxt.x * current.y)
+    return area / 2.0
+
+
+def closed_segment_to_ring(segment: Segment) -> Optional[list[Point]]:
+    closed = ensure_segment_closed(segment)
+    deduped: list[Point] = []
+    for point in closed.points:
+        if deduped and nearly_same_point(deduped[-1], point):
+            continue
+        deduped.append(point)
+    if len(deduped) < 4:
+        return None
+    if not nearly_same_point(deduped[0], deduped[-1]):
+        deduped.append(Point(deduped[0].x, deduped[0].y))
+    return deduped
+
+
+def make_polygon_from_ring(ring: list[Point]) -> Optional[Any]:
+    if len(ring) < 4:
+        return None
+    polygon = Polygon([(point.x, point.y) for point in ring])
+    if polygon.is_empty:
+        return None
+    if not polygon.is_valid:
+        polygon = make_valid(polygon) if make_valid is not None else polygon.buffer(0)
+    if polygon.is_empty:
+        return None
+    return polygon
+
+
+def parse_svg_color(value: str) -> Optional[tuple[float, float, float]]:
+    color = (value or "").strip().lower()
+    if not color or color in {"none", "transparent"}:
+        return None
+    named = {
+        "black": (0.0, 0.0, 0.0),
+        "white": (1.0, 1.0, 1.0),
+        "blue": (0.0, 0.0, 1.0),
+        "orange": (1.0, 0.647, 0.0),
+        "amber": (1.0, 0.749, 0.0),
+        "teal": (0.0, 0.502, 0.502),
+        "gray": (0.502, 0.502, 0.502),
+        "grey": (0.502, 0.502, 0.502),
+        "slategray": (0.439, 0.502, 0.565),
+        "slategrey": (0.439, 0.502, 0.565),
+    }
+    if color in named:
+        return named[color]
+    if color.startswith("#"):
+        hex_value = color[1:]
+        if len(hex_value) == 3:
+            try:
+                return tuple(int(ch * 2, 16) / 255.0 for ch in hex_value)
+            except ValueError:
+                return None
+        if len(hex_value) == 6:
+            try:
+                return (
+                    int(hex_value[0:2], 16) / 255.0,
+                    int(hex_value[2:4], 16) / 255.0,
+                    int(hex_value[4:6], 16) / 255.0,
+                )
+            except ValueError:
+                return None
+    if color.startswith("rgb"):
+        raw_parts = re.findall(r"[-+]?\d*\.?\d+%?", color)
+        if len(raw_parts) >= 3:
+            channels = []
+            for part in raw_parts[:3]:
+                if part.endswith("%"):
+                    channels.append(max(0.0, min(1.0, float(part[:-1]) / 100.0)))
+                else:
+                    channels.append(max(0.0, min(1.0, float(part) / 255.0)))
+            if len(channels) == 3:
+                return tuple(channels)  # type: ignore[return-value]
+    return None
+
+
+def color_luminance(value: str) -> Optional[float]:
+    rgb = parse_svg_color(value)
+    if rgb is None:
+        return None
+    return (0.2126 * rgb[0]) + (0.7152 * rgb[1]) + (0.0722 * rgb[2])
+
+
+def color_distance(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
+
+
+def classify_color_role(value: str) -> Optional[str]:
+    rgb = parse_svg_color(value)
+    if rgb is None:
+        return None
+    palette = {
+        "print": (0.0, 0.0, 0.0),
+        "cutout": (1.0, 1.0, 1.0),
+        "outline": (0.0, 0.0, 1.0),
+        "fill": (1.0, 0.647, 0.0),
+        "detail": (0.0, 0.502, 0.502),
+        "ignored": (0.5, 0.5, 0.5),
+    }
+    best_name = None
+    best_distance = float("inf")
+    for name, target in palette.items():
+        distance = color_distance(rgb, target)
+        if distance < best_distance:
+            best_distance = distance
+            best_name = name
+    return best_name
+
+
+def detect_fill_operation_kind(props: dict[str, str], parser_mode: str, color_mapping_mode: bool) -> str:
+    fill = props.get("fill", "")
+    if color_mapping_mode:
+        role = classify_color_role(fill)
+        if role in {"cutout", "ignored"}:
+            return "subtract"
+        return "add"
+    if parser_mode == "detect_visible_print_areas":
+        luminance = color_luminance(fill)
+        if luminance is None:
+            return "add"
+        return "subtract" if luminance >= 0.97 else "add"
+    return "add"
+
+
+def build_fill_geometry(segments: list[Segment], fill_rule: str) -> Optional[Any]:
+    require_geometry_support()
+    rings: list[dict[str, Any]] = []
+    lines = []
+    for segment in segments:
+        ring = closed_segment_to_ring(segment)
+        if ring is None:
+            continue
+        polygon = make_polygon_from_ring(ring)
+        if polygon is None:
+            continue
+        coords = [(point.x, point.y) for point in ring]
+        rings.append({
+            "polygon": polygon,
+            "winding": 1 if signed_ring_area(ring) >= 0 else -1,
+        })
+        lines.append(LineString(coords))
+
+    if not lines:
+        return None
+
+    faces = list(polygonize(MultiLineString(lines)))
+    kept = []
+    for face in faces:
+        sample = face.representative_point()
+        winding = 0
+        crossings = 0
+        for ring_info in rings:
+            ring_polygon = ring_info["polygon"]
+            if ring_polygon.covers(sample):
+                crossings += 1
+                winding += ring_info["winding"]
+        if fill_rule == "evenodd":
+            include = (crossings % 2) == 1
+        else:
+            include = winding != 0
+        if include:
+            kept.append(face)
+
+    if not kept:
+        fallback_polygons = [ring_info["polygon"] for ring_info in rings]
+        if not fallback_polygons:
+            return None
+        geometry = unary_union(fallback_polygons)
+        if not geometry.is_valid:
+            geometry = make_valid(geometry) if make_valid is not None else geometry.buffer(0)
+        return geometry if not geometry.is_empty else None
+
+    geometry = unary_union(kept)
+    if not geometry.is_valid:
+        geometry = make_valid(geometry) if make_valid is not None else geometry.buffer(0)
+    return geometry if not geometry.is_empty else None
+
+
+def extract_local_href(elem: ET.Element) -> Optional[str]:
+    href = (
+        elem.attrib.get("href")
+        or elem.attrib.get("{http://www.w3.org/1999/xlink}href")
+        or elem.attrib.get("xlink:href")
+        or ""
+    ).strip()
+    if not href:
+        return None
+    if href.startswith("#"):
+        return href[1:]
+    return "__external__"
+
+
+def parse_url_reference(value: str) -> Optional[str]:
+    match = re.fullmatch(r"url\(\s*#([^)]+)\s*\)", (value or "").strip())
+    return match.group(1) if match else None
+
+
+def merge_presentation_attrs(
+    inherited: dict[str, str],
+    elem: ET.Element,
+    stylesheet_rules: Optional[dict[str, dict[str, str]]] = None,
+) -> dict[str, str]:
+    props = dict(inherited)
+    stylesheet_map = stylesheet_props_for_elem(elem, stylesheet_rules or {})
+    props.update(stylesheet_map)
+    style_map = parse_style_map(elem.attrib.get("style", ""))
+    props.update(style_map)
+    for key in [
+        "fill", "stroke", "stroke-width", "opacity", "fill-opacity", "stroke-opacity",
+        "display", "visibility", "fill-rule", "clip-rule", "clip-path", "mask",
+    ]:
+        if key in elem.attrib:
+            props[key] = elem.attrib[key]
+    return props
+
+
+def combined_opacity(props: dict[str, str], opacity_key: str) -> float:
+    value = 1.0
+    for key in ["opacity", opacity_key]:
+        if key in props:
+            try:
+                value *= float(props[key])
+            except Exception:
+                continue
+    return value
+
+
+def parse_stroke_width(props: dict[str, str]) -> float:
+    return max(0.0, parse_svg_length(props.get("stroke-width"), 1.0))
+
+
+def has_visible_fill(props: dict[str, str]) -> bool:
+    fill = props.get("fill", "").strip().lower()
+    if fill in {"", "none", "transparent"}:
+        return False
+    return combined_opacity(props, "fill-opacity") > 0
+
+
+def has_visible_stroke(props: dict[str, str]) -> bool:
+    stroke = props.get("stroke", "").strip().lower()
+    if stroke in {"", "none", "transparent"}:
+        return False
+    return combined_opacity(props, "stroke-opacity") > 0 and parse_stroke_width(props) > 0
+
+
+def is_hidden(props: dict[str, str]) -> bool:
+    display = props.get("display", "").strip().lower()
+    visibility = props.get("visibility", "").strip().lower()
+    try:
+        opacity = float(props.get("opacity", "1") or "1")
+    except Exception:
+        opacity = 1.0
+    return display == "none" or visibility == "hidden" or opacity <= 0.0
+
+
+def is_dark_visible_color(value: str) -> bool:
+    luminance = color_luminance(value)
+    return luminance is not None and luminance <= 0.45
+
+
+def should_promote_stroke_to_detail(
+    props: dict[str, str],
+    source_tag: str,
+    parser_mode: str,
+    color_mapping_mode: bool,
+) -> bool:
+    if source_tag == "text":
+        return True
+    width = parse_stroke_width(props)
+    if color_mapping_mode:
+        return classify_color_role(props.get("stroke", "")) == "detail"
+    if parser_mode == "detect_visible_print_areas":
+        return width <= 2.0 and is_dark_visible_color(props.get("stroke", ""))
+    return width <= 1.5
+
+
+def geometry_to_line_segments(geometry: Any, closed: bool = False) -> list[Segment]:
     segments: list[Segment] = []
+    for line in extract_lines(geometry):
+        points = [Point(x, y) for x, y in line.coords]
+        if len(points) >= 2:
+            segments.append(Segment(points, closed=closed))
+    return segments
+
+
+def clip_segments_to_geometry(segments: list[Segment], clip_geometry: Any) -> list[Segment]:
+    if clip_geometry is None or clip_geometry.is_empty:
+        return []
+    clipped: list[Segment] = []
+    for segment in segments:
+        if len(segment.points) < 2:
+            continue
+        line = LineString([(point.x, point.y) for point in segment.points])
+        clipped_geometry = line.intersection(clip_geometry)
+        clipped.extend(geometry_to_line_segments(clipped_geometry, closed=segment.closed))
+    return clipped
+
+
+def path_strings_from_geometry(geometry: Any) -> tuple[list[str], list[str]]:
+    outers: list[str] = []
+    holes: list[str] = []
+    for polygon in normalize_geometry(geometry):
+        outers.append(format_svg_path([Point(x, y) for x, y in polygon.exterior.coords], True))
+        for interior in polygon.interiors:
+            holes.append(format_svg_path([Point(x, y) for x, y in interior.coords], True))
+    return outers, holes
+
+
+def build_diagnostic_message(model: SvgPrintModel) -> str:
+    if model.fills or model.strokes or model.details:
+        return ""
+    reasons = {entry.reason for entry in model.ignored}
+    if any("text" in reason.lower() for reason in reasons):
+        return "Only text found; convert text to paths or enable text outlining."
+    if any("stroke" in reason.lower() for reason in reasons):
+        return "Only strokes found; enable stroke plotting or stroke-to-path conversion."
+    if any("hidden" in reason.lower() for reason in reasons):
+        return "Elements hidden by display:none or opacity:0."
+    if any("mask" in reason.lower() or "clip" in reason.lower() for reason in reasons):
+        return "Unsupported masks/clips detected."
+    if any("css" in reason.lower() for reason in reasons):
+        return "CSS styles could not be resolved."
+    if any("use" in reason.lower() or "symbol" in reason.lower() for reason in reasons):
+        return "All geometry is inside unsupported <use>/<symbol> references."
+    return "Visible SVG content could not be normalized into drawable geometry."
+
+
+def geometry_to_boundary_segments(geometry: Any) -> list[Segment]:
+    segments: list[Segment] = []
+    for polygon in normalize_geometry(geometry):
+        segments.append(Segment([Point(x, y) for x, y in polygon.exterior.coords], closed=True))
+        for interior in polygon.interiors:
+            segments.append(Segment([Point(x, y) for x, y in interior.coords], closed=True))
+    return segments
+
+
+def analyze_svg(
+    svg_text: str,
+    parser_mode: str = "visible_geometry",
+    color_mapping_mode: bool = False,
+    debug: Optional[dict[str, Any]] = None,
+) -> SvgAnalysisResult:
+    require_geometry_support()
+    try:
+        root = ET.fromstring(svg_text)
+    except ET.ParseError as exc:
+        raise ValueError(f"Invalid SVG XML: {exc}") from exc
+
+    if strip_namespace(root.tag) != "svg":
+        raise ValueError("Uploaded file is not an SVG document")
+
+    bundle = GeometryBundle()
+    model = SvgPrintModel()
+    fill_ops: list[tuple[str, Any, str, str]] = []
+    stylesheet_rules = parse_svg_stylesheet(root, debug=debug)
+    id_map: dict[str, ET.Element] = {}
+    for elem in root.iter():
+        elem_id = elem.attrib.get("id", "").strip()
+        if elem_id:
+            id_map[elem_id] = elem
+
+    default_props = {
+        "fill": "#000000",
+        "stroke": "none",
+        "stroke-width": "1",
+        "opacity": "1",
+        "fill-opacity": "1",
+        "stroke-opacity": "1",
+        "visibility": "visible",
+        "display": "inline",
+        "fill-rule": "nonzero",
+        "clip-rule": "nonzero",
+    }
 
     viewbox_bounds: Optional[SvgBounds] = None
     viewbox = root.attrib.get("viewBox")
@@ -1187,62 +2151,287 @@ def extract_svg_segments(svg_text: str) -> tuple[list[Segment], Optional[SvgBoun
         if len(nums) == 4:
             viewbox_bounds = SvgBounds(nums[0], nums[1], nums[0] + nums[2], nums[1] + nums[3])
 
+    model.metadata = {
+        "viewBox": viewbox or "",
+        "width": parse_svg_length(root.attrib.get("width")),
+        "height": parse_svg_length(root.attrib.get("height")),
+        "units": {
+            "width": root.attrib.get("width", ""),
+            "height": root.attrib.get("height", ""),
+        },
+        "parserMode": parser_mode,
+        "colorMappingMode": color_mapping_mode,
+    }
+
     for elem in root.iter():
         tag = strip_namespace(elem.tag)
+        if tag in {"script", "foreignObject"}:
+            raise ValueError(f"Unsafe SVG element rejected: <{tag}>")
+        href = extract_local_href(elem)
+        if href == "__external__":
+            raise ValueError(f"External SVG references are not allowed on <{tag}>")
 
-        # Ignore hidden elements where possible.
-        style = elem.attrib.get("style", "")
-        if elem.attrib.get("display") == "none" or "display:none" in style.replace(" ", ""):
+    clip_cache: dict[str, Any] = {}
+    warning_seen: set[str] = set()
+
+    def push_warning(key: str, message: str) -> None:
+        if key in warning_seen:
+            return
+        warning_seen.add(key)
+        model.warnings.append(message)
+        debug_append_warning(debug, message)
+
+    def element_label(elem: ET.Element, tag_override: Optional[str] = None) -> str:
+        tag_name = tag_override or strip_namespace(elem.tag)
+        elem_id = elem.attrib.get("id", "").strip()
+        return f"<{tag_name}#{elem_id}>" if elem_id else f"<{tag_name}>"
+
+    def add_ignored(reason: str, elem: ET.Element, tag_override: Optional[str] = None) -> None:
+        model.ignored.append(IgnoredSvgElement(reason=reason, element=element_label(elem, tag_override)))
+
+    def clip_geometry_for_reference(ref_id: str, stack: set[str]) -> Optional[Any]:
+        if ref_id in clip_cache:
+            return clip_cache[ref_id]
+        clip_elem = id_map.get(ref_id)
+        if clip_elem is None or strip_namespace(clip_elem.tag) != "clipPath":
+            return None
+        if ref_id in stack:
+            push_warning("recursive-clip", f"Recursive clipPath ignored: #{ref_id}")
+            return None
+
+        collected: list[Any] = []
+
+        def walk_clip(elem: ET.Element, parent_matrix: tuple[float, float, float, float, float, float]) -> None:
+            tag = strip_namespace(elem.tag)
+            matrix = multiply_svg_matrices(parent_matrix, parse_svg_transform(elem.attrib.get("transform")))
+            if tag == "use":
+                href_id = extract_local_href(elem)
+                if href_id and href_id not in {"__external__", ref_id}:
+                    target = id_map.get(href_id)
+                    if target is not None:
+                        translated = multiply_svg_matrices(
+                            matrix,
+                            parse_svg_transform(f"translate({parse_svg_length(elem.attrib.get('x'))},{parse_svg_length(elem.attrib.get('y'))})"),
+                        )
+                        walk_clip(target, translated)
+                return
+            if tag in {"path", "polyline", "polygon", "line", "rect", "circle", "ellipse"}:
+                segments = [transform_segment(segment, matrix) for segment in element_segments(tag, elem)]
+                fill_segments = [ensure_segment_closed(segment) for segment in segments if len(segment.points) >= 3]
+                geometry = build_fill_geometry(fill_segments, elem.attrib.get("clip-rule", "nonzero").strip().lower() or "nonzero") if fill_segments else None
+                if geometry is not None and not geometry.is_empty:
+                    collected.append(geometry)
+            for child in list(elem):
+                walk_clip(child, matrix)
+
+        walk_clip(clip_elem, SVG_MATRIX_IDENTITY)
+        geometry = unary_union(collected) if collected else None
+        if geometry is not None and not geometry.is_empty and not geometry.is_valid:
+            geometry = make_valid(geometry) if make_valid is not None else geometry.buffer(0)
+        clip_cache[ref_id] = geometry
+        return geometry
+
+    def walk(
+        elem: ET.Element,
+        parent_matrix: tuple[float, float, float, float, float, float],
+        inherited_props: dict[str, str],
+        active_clip: Any = None,
+        ref_stack: Optional[set[str]] = None,
+    ) -> None:
+        tag = strip_namespace(elem.tag)
+        if tag in {"defs", "symbol", "clipPath"}:
+            return
+
+        props = merge_presentation_attrs(inherited_props, elem, stylesheet_rules)
+        if is_hidden(props):
+            add_ignored("Element hidden by display:none, visibility:hidden, or opacity:0", elem)
+            return
+
+        matrix = multiply_svg_matrices(parent_matrix, parse_svg_transform(elem.attrib.get("transform")))
+
+        if tag == "use":
+            href_id = extract_local_href(elem)
+            if not href_id:
+                add_ignored("Unresolved <use> without href", elem)
+                return
+            if href_id == "__external__":
+                add_ignored("External <use> reference ignored", elem)
+                return
+            target = id_map.get(href_id)
+            if target is None:
+                add_ignored(f"Unresolved <use> reference #{href_id}", elem)
+                return
+            current_stack = ref_stack or set()
+            if href_id in current_stack:
+                add_ignored(f"Recursive <use> reference #{href_id} ignored", elem)
+                return
+            translated = multiply_svg_matrices(
+                matrix,
+                parse_svg_transform(f"translate({parse_svg_length(elem.attrib.get('x'))},{parse_svg_length(elem.attrib.get('y'))})"),
+            )
+            walk(target, translated, props, active_clip=active_clip, ref_stack=current_stack | {href_id})
+            return
+
+        if tag == "mask":
+            push_warning("mask", "Masks are present but not fully supported; convert masked content to paths if output looks wrong.")
+            add_ignored("Unsupported mask definition", elem)
+            return
+
+        if tag == "text":
+            push_warning("text", "Text must be converted to paths before plotting.")
+            add_ignored("Visible text requires conversion to paths before plotting", elem)
+            debug_append_parser_entry(debug, {
+                "element": element_label(elem),
+                "tag": tag,
+                "source": "text",
+                "computedStyle": dict(props),
+                "styleSource": "computed",
+                "ignored": True,
+                "reason": "Text requires outline conversion",
+            })
+            return
+
+        if "filter" in elem.attrib:
+            push_warning("filter", "SVG filters are not supported by the vector parser; visible output may differ.")
+
+        element_clip = active_clip
+        clip_ref = parse_url_reference(props.get("clip-path", ""))
+        if clip_ref:
+            clip_geometry = clip_geometry_for_reference(clip_ref, ref_stack or set())
+            if clip_geometry is None:
+                push_warning("clip", "Unsupported clip path detected; some geometry may be unclipped.")
+                add_ignored(f"Unsupported or unresolved clip-path #{clip_ref}", elem)
+            elif element_clip is None:
+                element_clip = clip_geometry
+            else:
+                element_clip = element_clip.intersection(clip_geometry)
+
+        if props.get("mask"):
+            push_warning("mask", "Masks are present but not fully supported; convert masked content to paths if output looks wrong.")
+            add_ignored("Unsupported mask on visible element", elem)
+
+        if tag in {"path", "polyline", "polygon", "line", "rect", "circle", "ellipse"}:
+            raw_segments = element_segments(tag, elem)
+            debug_append_segments(debug, "parsed_paths", raw_segments, f"{tag}-parsed")
+            debug_append_segments(debug, "flattened_paths", raw_segments, f"{tag}-flattened")
+            transformed_segments = [transform_segment(segment, matrix) for segment in raw_segments]
+
+            fill_segments = [ensure_segment_closed(segment) for segment in transformed_segments if len(segment.points) >= 3]
+            fill_rule = props.get("fill-rule", "nonzero").strip().lower() or "nonzero"
+            fill_geometry = build_fill_geometry(fill_segments, fill_rule) if fill_segments else None
+            if fill_geometry is not None and element_clip is not None and not element_clip.is_empty:
+                fill_geometry = fill_geometry.intersection(element_clip)
+
+            stroke_segments = transformed_segments
+            if element_clip is not None and stroke_segments:
+                stroke_segments = clip_segments_to_geometry(stroke_segments, element_clip)
+
+            debug_append_segments(debug, "transformed_paths", stroke_segments or transformed_segments, f"{tag}-transformed")
+
+            has_fill = has_visible_fill(props) and fill_geometry is not None and not fill_geometry.is_empty
+            has_stroke = has_visible_stroke(props) and bool(stroke_segments)
+
+            if parser_mode == "detect_visible_print_areas":
+                has_fill = has_fill and is_dark_visible_color(props.get("fill", "")) and detect_fill_operation_kind(props, parser_mode, color_mapping_mode) == "add"
+                has_stroke = has_stroke and is_dark_visible_color(props.get("stroke", ""))
+            elif color_mapping_mode:
+                fill_role = classify_color_role(props.get("fill", ""))
+                stroke_role = classify_color_role(props.get("stroke", ""))
+                has_fill = has_fill and fill_role not in {"cutout", "ignored"}
+                has_stroke = has_stroke and stroke_role not in {"cutout", "ignored"}
+
+            parser_entry = {
+                "element": element_label(elem),
+                "tag": tag,
+                "computedStyle": dict(props),
+                "styleSource": "computed",
+                "fillVisible": has_fill,
+                "strokeVisible": has_stroke,
+                "strokeWidth": parse_stroke_width(props),
+                "clipApplied": bool(element_clip is not None),
+            }
+
+            if has_stroke:
+                bundle.outline_segments.extend(stroke_segments)
+                for segment in stroke_segments:
+                    path_text = format_svg_path(segment.points, segment.closed)
+                    if not path_text:
+                        continue
+                    model.strokes.append(NormalizedStrokePath(
+                        type="stroke_path",
+                        path=path_text,
+                        strokeColor=props.get("stroke", ""),
+                        strokeWidth=parse_stroke_width(props),
+                        source="stroke",
+                    ))
+                    if should_promote_stroke_to_detail(props, tag, parser_mode, color_mapping_mode):
+                        model.details.append(NormalizedDetailPath(type="detail_path", path=path_text, source="stroke"))
+
+            if has_fill:
+                op_kind = detect_fill_operation_kind(props, parser_mode, color_mapping_mode)
+                fill_ops.append((op_kind, fill_geometry, tag, fill_rule))
+                if op_kind == "add":
+                    outer_paths, holes = path_strings_from_geometry(fill_geometry)
+                    model.fills.append(NormalizedFillRegion(
+                        type="filled_region",
+                        paths=outer_paths,
+                        fillColor=props.get("fill", ""),
+                        fillRule=fill_rule,
+                        holes=holes,
+                        source="path" if tag == "path" else "shape",
+                    ))
+
+            if not has_fill and not has_stroke:
+                add_ignored("Visible geometry resolved to no printable fill or stroke", elem)
+
+            debug_append_parser_entry(debug, parser_entry)
+        elif tag in {"image", "pattern"}:
+            add_ignored(f"Unsupported drawable element <{tag}>", elem)
+
+        for child in list(elem):
+            walk(child, matrix, props, active_clip=element_clip, ref_stack=ref_stack)
+
+    walk(root, SVG_MATRIX_IDENTITY, default_props)
+
+    composed_fill = None
+    composed_fill_rule = "evenodd"
+    for op_kind, geometry, source_tag, source_fill_rule in fill_ops:
+        if geometry is None or geometry.is_empty:
             continue
+        if composed_fill is None or composed_fill.is_empty:
+            composed_fill = geometry if op_kind == "add" else None
+        elif op_kind == "subtract":
+            composed_fill = composed_fill.difference(geometry)
+        else:
+            composed_fill = unary_union([composed_fill, geometry])
+        composed_fill_rule = source_fill_rule
+        if composed_fill is not None and not composed_fill.is_valid:
+            composed_fill = make_valid(composed_fill) if make_valid is not None else composed_fill.buffer(0)
 
-        if tag == "path":
-            d = elem.attrib.get("d", "").strip()
-            if d:
-                segments.extend(path_d_to_segments(d, DEFAULT_CURVE_SAMPLES))
+    if composed_fill is not None and not composed_fill.is_empty:
+        bundle.fill_shapes.append(SvgFillShape(geometry=composed_fill, fill_rule=composed_fill_rule, source_tag="composited-visible-fill"))
+        bundle.fill_boundary_segments.extend(geometry_to_boundary_segments(composed_fill))
 
-        elif tag == "polyline":
-            pts = parse_points_attr(elem.attrib.get("points", ""))
-            if len(pts) >= 2:
-                segments.append(Segment(pts, closed=False))
+    try:
+        model.computed_bounds = asdict(bounds_from_bundle(bundle))
+    except Exception:
+        model.computed_bounds = None
 
-        elif tag == "polygon":
-            pts = parse_points_attr(elem.attrib.get("points", ""))
-            if len(pts) >= 2:
-                if pts[0] != pts[-1]:
-                    pts.append(Point(pts[0].x, pts[0].y))
-                segments.append(Segment(pts, closed=True))
+    diagnostic = build_diagnostic_message(model)
+    if diagnostic:
+        model.diagnostics.append(diagnostic)
 
-        elif tag == "line":
-            x1 = parse_float(elem.attrib.get("x1"))
-            y1 = parse_float(elem.attrib.get("y1"))
-            x2 = parse_float(elem.attrib.get("x2"))
-            y2 = parse_float(elem.attrib.get("y2"))
-            segments.append(Segment([Point(x1, y1), Point(x2, y2)], closed=False))
+    return SvgAnalysisResult(bundle=bundle, print_model=model, viewbox_bounds=viewbox_bounds)
 
-        elif tag == "rect":
-            x = parse_float(elem.attrib.get("x"))
-            y = parse_float(elem.attrib.get("y"))
-            w = parse_float(elem.attrib.get("width"))
-            h = parse_float(elem.attrib.get("height"))
-            if w > 0 and h > 0:
-                segments.append(rect_to_segment(x, y, w, h))
 
-        elif tag == "circle":
-            cx = parse_float(elem.attrib.get("cx"))
-            cy = parse_float(elem.attrib.get("cy"))
-            r = parse_float(elem.attrib.get("r"))
-            if r > 0:
-                segments.append(circle_to_segment(cx, cy, r))
-
-        elif tag == "ellipse":
-            cx = parse_float(elem.attrib.get("cx"))
-            cy = parse_float(elem.attrib.get("cy"))
-            rx = parse_float(elem.attrib.get("rx"))
-            ry = parse_float(elem.attrib.get("ry"))
-            if rx > 0 and ry > 0:
-                segments.append(ellipse_to_segment(cx, cy, rx, ry))
-
-    return segments, viewbox_bounds
+def extract_svg_bundle(
+    svg_text: str,
+    debug: Optional[dict[str, Any]] = None,
+    parser_mode: str = "visible_geometry",
+    color_mapping_mode: bool = False,
+) -> tuple[GeometryBundle, Optional[SvgBounds], SvgPrintModel]:
+    result = analyze_svg(svg_text, parser_mode=parser_mode, color_mapping_mode=color_mapping_mode, debug=debug)
+    return result.bundle, result.viewbox_bounds, result.print_model
 
 
 def bounds_from_segments(segments: list[Segment]) -> SvgBounds:
@@ -1255,6 +2444,32 @@ def bounds_from_segments(segments: list[Segment]) -> SvgBounds:
         max_x=max(p.x for p in pts),
         max_y=max(p.y for p in pts),
     )
+
+
+def bounds_from_bundle(bundle: GeometryBundle) -> SvgBounds:
+    min_x = min_y = float("inf")
+    max_x = max_y = float("-inf")
+
+    all_segments = bundle.outline_segments + bundle.fill_boundary_segments
+    if all_segments:
+        seg_bounds = bounds_from_segments(all_segments)
+        min_x = min(min_x, seg_bounds.min_x)
+        min_y = min(min_y, seg_bounds.min_y)
+        max_x = max(max_x, seg_bounds.max_x)
+        max_y = max(max_y, seg_bounds.max_y)
+
+    for fill_shape in bundle.fill_shapes:
+        if fill_shape.geometry.is_empty:
+            continue
+        gx1, gy1, gx2, gy2 = fill_shape.geometry.bounds
+        min_x = min(min_x, gx1)
+        min_y = min(min_y, gy1)
+        max_x = max(max_x, gx2)
+        max_y = max(max_y, gy2)
+
+    if not math.isfinite(min_x):
+        raise ValueError("SVG contains no drawable paths/shapes")
+    return SvgBounds(min_x=min_x, min_y=min_y, max_x=max_x, max_y=max_y)
 
 
 def resample_segment(points: list[Point], max_step: float) -> list[Point]:
@@ -1273,162 +2488,392 @@ def resample_segment(points: list[Point], max_step: float) -> list[Point]:
     return out
 
 
-def map_svg_to_angles(
-    segments: list[Segment],
+def map_bundle_to_angles(
+    bundle: GeometryBundle,
     bounds: SvgBounds,
     fit_mode: str,
     invert_y: bool,
     margin_percent: float,
-) -> list[Segment]:
+) -> GeometryBundle:
     margin_x = (X_DRAW_MAX - X_DRAW_MIN) * (margin_percent / 100.0)
     margin_y = (Y_DRAW_MAX - Y_DRAW_MIN) * (margin_percent / 100.0)
 
     target_w = (X_DRAW_MAX - X_DRAW_MIN) - margin_x * 2
     target_h = (Y_DRAW_MAX - Y_DRAW_MIN) - margin_y * 2
-
     if target_w <= 0 or target_h <= 0:
         raise ValueError("Margin is too large")
 
     if fit_mode == "stretch":
         scale_x = target_w / bounds.width
         scale_y = target_h / bounds.height
-        offset_x = X_DRAW_MIN + margin_x
-        offset_y = Y_DRAW_MIN + margin_y
+        base_x = X_DRAW_MIN + margin_x - (bounds.min_x * scale_x)
+        if invert_y:
+            base_y = Y_DRAW_MIN + margin_y + (bounds.max_y * scale_y)
+            matrix = [scale_x, 0.0, 0.0, -scale_y, base_x, base_y]
+        else:
+            base_y = Y_DRAW_MIN + margin_y - (bounds.min_y * scale_y)
+            matrix = [scale_x, 0.0, 0.0, scale_y, base_x, base_y]
     else:
         scale = min(target_w / bounds.width, target_h / bounds.height)
-        scale_x = scale_y = scale
         used_w = bounds.width * scale
         used_h = bounds.height * scale
         offset_x = X_DRAW_MIN + margin_x + (target_w - used_w) / 2.0
         offset_y = Y_DRAW_MIN + margin_y + (target_h - used_h) / 2.0
+        base_x = offset_x - (bounds.min_x * scale)
+        if invert_y:
+            base_y = offset_y + (bounds.max_y * scale)
+            matrix = [scale, 0.0, 0.0, -scale, base_x, base_y]
+        else:
+            base_y = offset_y - (bounds.min_y * scale)
+            matrix = [scale, 0.0, 0.0, scale, base_x, base_y]
 
-    mapped_segments: list[Segment] = []
-    for seg in segments:
-        mapped: list[Point] = []
-        for p in seg.points:
-            nx = p.x - bounds.min_x
-            ny = p.y - bounds.min_y
-            x_deg = offset_x + nx * scale_x
-
-            if invert_y:
-                y_deg = offset_y + (bounds.height - ny) * scale_y
-            else:
-                y_deg = offset_y + ny * scale_y
-
-            # Clamp tiny float overshoots.
-            x_deg = min(X_DRAW_MAX, max(X_DRAW_MIN, x_deg))
-            y_deg = min(Y_DRAW_MAX, max(Y_DRAW_MIN, y_deg))
-            mapped.append(Point(x_deg, y_deg))
-
-        if len(mapped) >= 2:
-            mapped_segments.append(Segment(mapped, closed=seg.closed))
-
-    return mapped_segments
+    outline_segments = [
+        Segment([Point((matrix[0] * p.x) + matrix[4], (matrix[3] * p.y) + matrix[5]) for p in seg.points], closed=seg.closed)
+        for seg in bundle.outline_segments
+    ]
+    fill_boundary_segments = [
+        Segment([Point((matrix[0] * p.x) + matrix[4], (matrix[3] * p.y) + matrix[5]) for p in seg.points], closed=seg.closed)
+        for seg in bundle.fill_boundary_segments
+    ]
+    fill_shapes = [
+        SvgFillShape(
+            geometry=affinity.affine_transform(fill_shape.geometry, matrix),
+            fill_rule=fill_shape.fill_rule,
+            source_tag=fill_shape.source_tag,
+        )
+        for fill_shape in bundle.fill_shapes
+    ]
+    return GeometryBundle(outline_segments=outline_segments, fill_boundary_segments=fill_boundary_segments, fill_shapes=fill_shapes)
 
 
 def apply_placement_transform(
-    segments: list[Segment],
+    bundle: GeometryBundle,
     scale_percent: float,
+    rotation_deg: float,
     offset_x: float,
     offset_y: float,
-) -> list[Segment]:
+) -> GeometryBundle:
     if scale_percent <= 0:
         raise ValueError("Placement scale must be greater than 0")
 
-    if not segments:
-        return []
+    if not bundle.outline_segments and not bundle.fill_boundary_segments and not bundle.fill_shapes:
+        return GeometryBundle()
 
     scale = scale_percent / 100.0
-    bounds = bounds_from_segments(segments)
+    bounds = bounds_from_bundle(bundle)
     center_x = (bounds.min_x + bounds.max_x) / 2.0
     center_y = (bounds.min_y + bounds.max_y) / 2.0
+    angle = math.radians(rotation_deg)
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
 
-    placed_segments: list[Segment] = []
-    for seg in segments:
-        placed_points: list[Point] = []
-        for p in seg.points:
-            x = center_x + (p.x - center_x) * scale + offset_x
-            y = center_y + (p.y - center_y) * scale + offset_y
-            y = min(Y_DRAW_MAX, max(Y_DRAW_MIN, y))
-            placed_points.append(Point(x, y))
+    def place_point(point: Point) -> Point:
+        scaled_x = center_x + ((point.x - center_x) * scale)
+        scaled_y = center_y + ((point.y - center_y) * scale)
+        rel_x = scaled_x - center_x
+        rel_y = scaled_y - center_y
+        rotated_x = center_x + (rel_x * cos_a) - (rel_y * sin_a)
+        rotated_y = center_y + (rel_x * sin_a) + (rel_y * cos_a)
+        return Point(rotated_x + offset_x, rotated_y + offset_y)
 
-        if len(placed_points) >= 2:
-            placed_segments.append(Segment(placed_points, closed=seg.closed))
-
-    return placed_segments
-
-
-def expand_segment_for_thickness(segment: Segment, line_thickness_deg: float) -> list[Segment]:
-  if line_thickness_deg <= 0:
-    return [segment]
-
-  points = list(segment.points)
-  if len(points) < 2:
-    return [segment]
-
-  if segment.closed and len(points) >= 3:
-    first = points[0]
-    last = points[-1]
-    if abs(first.x - last.x) < 1e-9 and abs(first.y - last.y) < 1e-9:
-      points = points[:-1]
-
-  if len(points) < 2:
-    return [segment]
-
-  if not segment.closed:
-    return [Segment(points, closed=False)]
-
-  bounds = bounds_from_segments([Segment(points, closed=True)])
-  center_x = (bounds.min_x + bounds.max_x) / 2.0
-  center_y = (bounds.min_y + bounds.max_y) / 2.0
-  average_radius = sum(math.hypot(p.x - center_x, p.y - center_y) for p in points) / len(points)
-
-  if average_radius <= 1e-9:
-    return [Segment(points + [Point(points[0].x, points[0].y)], closed=True)]
-
-  scale_step = min(0.35, max(0.02, line_thickness_deg / average_radius))
-  expanded: list[Segment] = []
-  scale = 1.0
-
-  while scale > 0.02:
-    scaled_points = [
-      Point(
-        center_x + (p.x - center_x) * scale,
-        center_y + (p.y - center_y) * scale,
-      )
-      for p in points
+    outline_segments = [
+        Segment([place_point(point) for point in seg.points], closed=seg.closed)
+        for seg in bundle.outline_segments
     ]
-    scaled_points.append(Point(scaled_points[0].x, scaled_points[0].y))
-    expanded.append(Segment(scaled_points, closed=True))
+    fill_boundary_segments = [
+        Segment([place_point(point) for point in seg.points], closed=seg.closed)
+        for seg in bundle.fill_boundary_segments
+    ]
 
-    scale -= scale_step
+    fill_shapes = []
+    for fill_shape in bundle.fill_shapes:
+        geometry = affinity.scale(fill_shape.geometry, xfact=scale, yfact=scale, origin=(center_x, center_y))
+        geometry = affinity.rotate(geometry, rotation_deg, origin=(center_x, center_y))
+        geometry = affinity.translate(geometry, xoff=offset_x, yoff=offset_y)
+        fill_shapes.append(SvgFillShape(geometry=geometry, fill_rule=fill_shape.fill_rule, source_tag=fill_shape.source_tag))
 
-  return expanded
-
-
-def expand_segments_for_thickness(segments: list[Segment], line_thickness_deg: float) -> list[Segment]:
-  if line_thickness_deg <= 0:
-    return segments
-
-  expanded: list[Segment] = []
-  for segment in segments:
-    expanded.extend(expand_segment_for_thickness(segment, line_thickness_deg))
-  return expanded
+    return GeometryBundle(outline_segments=outline_segments, fill_boundary_segments=fill_boundary_segments, fill_shapes=fill_shapes)
 
 
-def generate_gcode_from_segments(
-    segments: list[Segment],
+def segment_length(points: list[Point]) -> float:
+    return sum(math.hypot(b.x - a.x, b.y - a.y) for a, b in zip(points, points[1:]))
+
+
+def mm_area_to_ball_degree_area(area_mm2: float) -> float:
+    scale = 360.0 / BALL_DIAMETER_MM
+    return area_mm2 * scale * scale
+
+
+def simplify_segment_points(points: list[Point], tolerance: float, closed: bool) -> list[Point]:
+    if len(points) < 2 or tolerance <= 0:
+        return points
+    coords = [(point.x, point.y) for point in points]
+    geometry = Polygon(coords) if closed and len(coords) >= 4 else LineString(coords)
+    simplified = geometry.simplify(tolerance, preserve_topology=True)
+    if closed:
+        if isinstance(simplified, Polygon):
+            out = [Point(x, y) for x, y in simplified.exterior.coords]
+        else:
+            out = [Point(x, y) for x, y in geometry.exterior.coords]
+    else:
+        if isinstance(simplified, LineString):
+            out = [Point(x, y) for x, y in simplified.coords]
+        else:
+            out = [Point(x, y) for x, y in geometry.coords]
+    return out if len(out) >= 2 else points
+
+
+def normalize_geometry(geometry: Any) -> list[Polygon]:
+    if geometry is None or geometry.is_empty:
+        return []
+    if isinstance(geometry, Polygon):
+        return [geometry]
+    if isinstance(geometry, MultiPolygon):
+        return [geom for geom in geometry.geoms if not geom.is_empty]
+    if hasattr(geometry, "geoms"):
+        polygons: list[Polygon] = []
+        for geom in geometry.geoms:
+            polygons.extend(normalize_geometry(geom))
+        return polygons
+    return []
+
+
+def debug_append_bundle(debug: Optional[dict[str, Any]], key: str, bundle: GeometryBundle) -> None:
+    if debug is None:
+        return
+    debug_append_segments(debug, key, bundle.outline_segments, f"{key}-outline")
+    debug_append_segments(debug, key, bundle.fill_boundary_segments, f"{key}-fill-boundary")
+
+
+def geometry_to_closed_toolpaths(geometry: Any, kind: str, tolerance: float) -> list[Toolpath]:
+    paths: list[Toolpath] = []
+    for polygon in normalize_geometry(geometry):
+        paths.append(Toolpath(
+            points=simplify_segment_points([Point(x, y) for x, y in polygon.exterior.coords], tolerance, True),
+            kind=kind,
+            closed=True,
+        ))
+        for interior in polygon.interiors:
+            paths.append(Toolpath(
+                points=simplify_segment_points([Point(x, y) for x, y in interior.coords], tolerance, True),
+                kind=kind,
+                closed=True,
+            ))
+    return paths
+
+
+def extract_lines(geometry: Any) -> list[LineString]:
+    if geometry is None or geometry.is_empty:
+        return []
+    if isinstance(geometry, LineString):
+        return [geometry]
+    if isinstance(geometry, MultiLineString):
+        return [line for line in geometry.geoms if not line.is_empty]
+    if isinstance(geometry, GeometryCollection):
+        out: list[LineString] = []
+        for geom in geometry.geoms:
+            out.extend(extract_lines(geom))
+        return out
+    return []
+
+
+def generate_zigzag_infill(
+    region: Any,
+    spacing: float,
+    angle_deg: float,
+    min_segment_length: float,
+    tolerance: float,
+    debug: Optional[dict[str, Any]] = None,
+) -> list[Toolpath]:
+    if region is None or region.is_empty or spacing <= 0:
+        return []
+
+    origin = region.centroid.coords[0]
+    rotated = affinity.rotate(region, -angle_deg, origin=origin)
+    min_x, min_y, max_x, max_y = rotated.bounds
+    if not all(math.isfinite(value) for value in [min_x, min_y, max_x, max_y]):
+        return []
+
+    paths: list[Toolpath] = []
+    row = 0
+    y = min_y
+    while y <= max_y + 1e-6:
+        scan = LineString([(min_x - spacing, y), (max_x + spacing, y)])
+        if debug is not None:
+            scan_unrotated = affinity.rotate(scan, angle_deg, origin=origin)
+            debug_append_toolpaths(debug, "hatch_before_clipping", [
+                Toolpath(
+                    points=[Point(x, y2) for x, y2 in scan_unrotated.coords],
+                    kind="debug-hatch-before",
+                    closed=False,
+                )
+            ])
+        clipped = rotated.intersection(scan)
+        row_lines = []
+        for line in extract_lines(clipped):
+            if line.length < min_segment_length:
+                continue
+            coords = list(line.coords)
+            if row % 2 == 1:
+                coords = list(reversed(coords))
+            unrotated = affinity.rotate(LineString(coords), angle_deg, origin=origin)
+            row_lines.append(Toolpath(
+                points=simplify_segment_points([Point(x, y2) for x, y2 in unrotated.coords], tolerance, False),
+                kind="fill-infill",
+                closed=False,
+            ))
+        row_lines.sort(key=lambda path: (path.points[0].y if path.points else 0.0, path.points[0].x if path.points else 0.0))
+        debug_append_toolpaths(debug, "hatch_after_clipping", row_lines)
+        paths.extend(row_lines)
+        y += spacing
+        row += 1
+    return paths
+
+
+def path_signature(path: Toolpath, decimals: int = 4) -> tuple[Any, ...]:
+    return (
+        path.kind,
+        path.closed,
+        tuple((round(point.x, decimals), round(point.y, decimals)) for point in path.points),
+    )
+
+
+def dedupe_toolpaths(paths: list[Toolpath], minimum_length: float) -> list[Toolpath]:
+    seen: set[tuple[Any, ...]] = set()
+    deduped: list[Toolpath] = []
+    for path in paths:
+        if len(path.points) < 2:
+            continue
+        if segment_length(path.points) < minimum_length:
+            continue
+        signature = path_signature(path)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduped.append(path)
+    return deduped
+
+
+def generate_toolpaths(
+    bundle: GeometryBundle,
+    *,
+    enable_fill: bool,
+    line_width_mm: float,
+    wall_count: int,
+    infill_spacing_mm: float,
+    infill_angle_deg: float,
+    outline_after_fill: bool,
+    min_fill_area_mm2: float,
+    min_fill_width_mm: float,
+    simplify_tolerance_mm: float,
+    remove_duplicate_paths: bool,
+    small_shape_mode: str,
+    min_segment_length_mm: float,
+    debug: Optional[dict[str, Any]] = None,
+) -> list[Toolpath]:
+    toolpaths: list[Toolpath] = []
+    line_width_deg = mm_to_ball_degrees(line_width_mm)
+    infill_spacing_deg = mm_to_ball_degrees(infill_spacing_mm)
+    simplify_tolerance_deg = mm_to_ball_degrees(simplify_tolerance_mm)
+    min_segment_length_deg = mm_to_ball_degrees(min_segment_length_mm)
+    min_fill_area_deg2 = mm_area_to_ball_degree_area(min_fill_area_mm2)
+    min_fill_width_deg = mm_to_ball_degrees(min_fill_width_mm)
+
+    outline_segments = list(bundle.outline_segments)
+    if not enable_fill or outline_after_fill:
+        outline_segments.extend(bundle.fill_boundary_segments)
+
+    for segment in outline_segments:
+        simplified = simplify_segment_points(segment.points, simplify_tolerance_deg, segment.closed)
+        toolpaths.append(Toolpath(points=simplified, kind="outline", closed=segment.closed))
+
+    if enable_fill and line_width_deg > 0:
+        sorted_shapes = sorted(
+            bundle.fill_shapes,
+            key=lambda item: (
+                round(item.geometry.centroid.y, 5),
+                round(item.geometry.centroid.x, 5),
+                round(item.geometry.area, 5),
+            ),
+        )
+        for fill_shape in sorted_shapes:
+            geometry = fill_shape.geometry
+            if geometry.is_empty:
+                continue
+            if not geometry.is_valid:
+                geometry = make_valid(geometry) if make_valid is not None else geometry.buffer(0)
+            if geometry.is_empty:
+                continue
+            if simplify_tolerance_deg > 0:
+                geometry = geometry.simplify(simplify_tolerance_deg, preserve_topology=True)
+            polygons = normalize_geometry(geometry)
+            for polygon in polygons:
+                area = polygon.area
+                bounds = polygon.bounds
+                min_width = min(bounds[2] - bounds[0], bounds[3] - bounds[1])
+                too_small = area < min_fill_area_deg2 or min_width < min_fill_width_deg
+                if too_small and small_shape_mode == "skip":
+                    continue
+
+                wall_geometries = []
+                for wall_index in range(max(1, wall_count)):
+                    wall_offset = line_width_deg * (0.5 + wall_index)
+                    wall_geometry = polygon.buffer(-wall_offset, join_style=1)
+                    if not wall_geometry.is_empty:
+                        wall_geometries.append(wall_geometry)
+
+                if not wall_geometries:
+                    if small_shape_mode == "single-wall":
+                        wall_paths = geometry_to_closed_toolpaths(polygon, "fill-wall", simplify_tolerance_deg)
+                    else:
+                        continue
+                else:
+                    wall_paths = []
+                    for wall_geometry in wall_geometries:
+                        wall_paths.extend(geometry_to_closed_toolpaths(wall_geometry, "fill-wall", simplify_tolerance_deg))
+
+                infill_paths: list[Toolpath] = []
+                infill_region = polygon.buffer(-(line_width_deg * max(1, wall_count)), join_style=1)
+                if not infill_region.is_empty:
+                    infill_paths = generate_zigzag_infill(
+                        region=infill_region,
+                        spacing=max(infill_spacing_deg, line_width_deg),
+                        angle_deg=infill_angle_deg,
+                        min_segment_length=min_segment_length_deg,
+                        tolerance=simplify_tolerance_deg,
+                        debug=debug,
+                    )
+
+                toolpaths.extend(infill_paths)
+                toolpaths.extend(wall_paths)
+
+    if remove_duplicate_paths:
+        toolpaths = dedupe_toolpaths(toolpaths, min_segment_length_deg)
+    else:
+        toolpaths = [path for path in toolpaths if segment_length(path.points) >= min_segment_length_deg]
+    debug_append_toolpaths(debug, "final_toolpaths", toolpaths)
+    return toolpaths
+
+
+def generate_gcode_from_toolpaths(
+    toolpaths: list[Toolpath],
     draw_feed: float,
     travel_feed: float,
     sample_step_deg: float,
     pen_up_s: int,
     pen_down_s: int,
-    servo_dwell: float,
-    line_thickness_deg: float,
+    servo_ramp_enabled: bool,
+    servo_ramp_step: int,
+    servo_ramp_delay_ms: float,
+    pen_up_dwell_ms: float,
+    pen_down_dwell_ms: float,
     include_comments: bool,
-) -> tuple[list[str], list[list[dict[str, float]]]]:
+) -> tuple[list[str], list[dict[str, Any]]]:
     g: list[str] = []
-    preview: list[list[dict[str, float]]] = []
+    preview: list[dict[str, Any]] = []
+    current_servo = pen_up_s
+    current_position = Point(0.0, 0.0)
+    current_pen_down = False
 
     def comment(text: str) -> None:
         if include_comments:
@@ -1436,39 +2881,80 @@ def generate_gcode_from_segments(
 
     comment("Generated for golf ball plotter")
     comment("Units are angular degrees. X=-180..180 ball rotation, Y=-45..45 arm tilt")
-    g.extend([
-        "$X",
-        "G21",
-        "G90",
-        f"M3 S{pen_up_s}",
-        f"G4 P{servo_dwell:.3f}",
-    ])
+    g.extend(["$X", "G21", "G90"])
+    g.extend(build_pen_position_commands(
+        pen_up_s,
+        pen_up_s,
+        ramp_enabled=False,
+        ramp_step=servo_ramp_step,
+        ramp_delay_ms=servo_ramp_delay_ms,
+        dwell_ms=pen_up_dwell_ms,
+    ))
 
-    drawable_segments = expand_segments_for_thickness(segments, line_thickness_deg)
-
-    for index, seg in enumerate(drawable_segments, start=1):
-        pts = resample_segment(seg.points, max_step=max(0.05, sample_step_deg))
+    for index, toolpath in enumerate(toolpaths, start=1):
+        pts = resample_segment(toolpath.points, max_step=max(0.05, sample_step_deg))
         if len(pts) < 2:
             continue
 
-        preview.append([asdict(p) for p in pts])
         start = pts[0]
+        if not nearly_same_point(current_position, start):
+            preview.append({"kind": "travel", "closed": False, "points": [asdict(current_position), asdict(start)]})
+            if current_pen_down:
+                g.extend(build_pen_position_commands(
+                    current_servo,
+                    pen_up_s,
+                    ramp_enabled=servo_ramp_enabled,
+                    ramp_step=servo_ramp_step,
+                    ramp_delay_ms=servo_ramp_delay_ms,
+                    dwell_ms=pen_up_dwell_ms,
+                ))
+                current_servo = pen_up_s
+                current_pen_down = False
+            comment(f"Travel to {toolpath.kind} path {index}")
+            g.append(f"G1 X{start.x:.4f} Y{start.y:.4f} F{travel_feed:.3f}")
+            current_position = start
 
-        comment(f"Segment {index}, {len(pts)} points")
-        g.append(f"G1 X{start.x:.4f} Y{start.y:.4f} F{travel_feed:.3f}")
-        g.append(f"M3 S{pen_down_s}")
-        g.append(f"G4 P{servo_dwell:.3f}")
+        if not current_pen_down:
+            g.extend(build_pen_position_commands(
+                current_servo,
+                pen_down_s,
+                ramp_enabled=servo_ramp_enabled,
+                ramp_step=servo_ramp_step,
+                ramp_delay_ms=servo_ramp_delay_ms,
+                dwell_ms=pen_down_dwell_ms,
+            ))
+            current_servo = pen_down_s
+            current_pen_down = True
 
-        for p in pts[1:]:
-            g.append(f"G1 X{p.x:.4f} Y{p.y:.4f} F{draw_feed:.3f}")
+        preview.append({"kind": toolpath.kind, "closed": toolpath.closed, "points": [asdict(point) for point in pts]})
+        comment(f"{toolpath.kind} path {index}, {len(pts)} points")
+        for point in pts[1:]:
+            g.append(f"G1 X{point.x:.4f} Y{point.y:.4f} F{draw_feed:.3f}")
+            current_position = point
 
-        g.extend(build_servo_transition_commands(pen_down_s, pen_up_s))
-        g.append(f"G4 P{servo_dwell:.3f}")
+        g.extend(build_pen_position_commands(
+            current_servo,
+            pen_up_s,
+            ramp_enabled=servo_ramp_enabled,
+            ramp_step=servo_ramp_step,
+            ramp_delay_ms=servo_ramp_delay_ms,
+            dwell_ms=pen_up_dwell_ms,
+        ))
+        current_servo = pen_up_s
+        current_pen_down = False
 
     comment("Return to zero with pen up")
-    g.append(f"G1 X0.0000 Y0.0000 F{travel_feed:.3f}")
-    g.append(f"M3 S{pen_up_s}")
-    g.append(f"G4 P{servo_dwell:.3f}")
+    if not nearly_same_point(current_position, Point(0.0, 0.0)):
+        preview.append({"kind": "travel", "closed": False, "points": [asdict(current_position), asdict(Point(0.0, 0.0))]})
+        g.append(f"G1 X0.0000 Y0.0000 F{travel_feed:.3f}")
+    g.extend(build_pen_position_commands(
+        current_servo,
+        pen_up_s,
+        ramp_enabled=False,
+        ramp_step=servo_ramp_step,
+        ramp_delay_ms=servo_ramp_delay_ms,
+        dwell_ms=pen_up_dwell_ms,
+    ))
 
     return g, preview
 
@@ -1562,14 +3048,43 @@ def index():
         default_pen_up_s=DEFAULT_PEN_UP_S,
         default_pen_down_s=DEFAULT_PEN_DOWN_S,
         default_servo_dwell=DEFAULT_SERVO_DWELL,
+        default_servo_ramp_enabled=DEFAULT_SERVO_RAMP_ENABLED,
+        default_servo_ramp_step=DEFAULT_SERVO_RAMP_STEP,
+        default_servo_ramp_delay_ms=DEFAULT_SERVO_RAMP_DELAY_MS,
+        default_pen_up_dwell_ms=DEFAULT_PEN_UP_DWELL_MS,
+        default_pen_down_dwell_ms=DEFAULT_PEN_DOWN_DWELL_MS,
         default_sample_step_deg=DEFAULT_SAMPLE_STEP_DEG,
         default_margin_percent=DEFAULT_MARGIN_PERCENT,
+        default_rotation_deg=DEFAULT_ROTATION_DEG,
+        default_parser_mode=DEFAULT_PARSER_MODE,
+        default_color_mapping_mode=DEFAULT_COLOR_MAPPING_MODE,
+        default_enable_fill=DEFAULT_ENABLE_FILL,
+        default_wall_count=DEFAULT_WALL_COUNT,
+        default_infill_spacing_mm=DEFAULT_INFILL_SPACING_MM,
+        default_infill_angle_deg=DEFAULT_INFILL_ANGLE_DEG,
+        default_min_fill_area_mm2=DEFAULT_MIN_FILL_AREA_MM2,
+        default_min_fill_width_mm=DEFAULT_MIN_FILL_WIDTH_MM,
+        default_simplify_tolerance_mm=DEFAULT_SIMPLIFY_TOLERANCE_MM,
+        default_outline_after_fill=DEFAULT_OUTLINE_AFTER_FILL,
+        default_remove_duplicate_paths=DEFAULT_REMOVE_DUPLICATE_PATHS,
+        default_min_segment_length_mm=DEFAULT_MIN_SEGMENT_LENGTH_MM,
     )
 
 
 @app.route("/state")
 def get_state():
-    return jsonify(state)
+    return jsonify({
+        **state,
+        "defaults": {
+            "pen_up_s": DEFAULT_PEN_UP_S,
+            "pen_down_s": DEFAULT_PEN_DOWN_S,
+            "pen_up_dwell_ms": DEFAULT_PEN_UP_DWELL_MS,
+            "pen_down_dwell_ms": DEFAULT_PEN_DOWN_DWELL_MS,
+            "servo_ramp_enabled": DEFAULT_SERVO_RAMP_ENABLED,
+            "servo_ramp_step": DEFAULT_SERVO_RAMP_STEP,
+            "servo_ramp_delay_ms": DEFAULT_SERVO_RAMP_DELAY_MS,
+        },
+    })
 
 
 # ============================================================
@@ -1667,8 +3182,14 @@ def pen_up():
     data = request.get_json(force=True)
     try:
         s_value = validate_servo_s(data.get("s", DEFAULT_PEN_UP_S))
-        dwell = validate_dwell(data.get("dwell", DEFAULT_SERVO_DWELL))
-        response = send_many(["$X", f"M3 S{s_value}", f"G4 P{dwell:.3f}"], wait_idle_between=True)
+        start_s = validate_servo_s(data.get("start_s", get_tracked_servo_s(DEFAULT_PEN_DOWN_S)))
+        ramp_enabled = validate_bool(data.get("servo_ramp_enabled", DEFAULT_SERVO_RAMP_ENABLED))
+        ramp_step = validate_non_negative_int(data.get("servo_ramp_step", DEFAULT_SERVO_RAMP_STEP), "Servo ramp step", minimum=1, maximum=200)
+        ramp_delay_ms = validate_non_negative_float(data.get("servo_ramp_delay_ms", DEFAULT_SERVO_RAMP_DELAY_MS), "Servo ramp delay", maximum=1000)
+        dwell_ms = validate_non_negative_float(data.get("pen_up_dwell_ms", DEFAULT_PEN_UP_DWELL_MS), "Pen up dwell", maximum=5000)
+        commands = ["$X", *build_pen_position_commands(start_s, s_value, ramp_enabled=ramp_enabled, ramp_step=ramp_step, ramp_delay_ms=ramp_delay_ms, dwell_ms=dwell_ms)]
+        response = send_many(commands, wait_idle_between=True)
+        set_tracked_servo_s(s_value)
         return jsonify({"ok": True, "command": f"PEN UP M3 S{s_value}", "response": response})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -1679,8 +3200,14 @@ def pen_down():
     data = request.get_json(force=True)
     try:
         s_value = validate_servo_s(data.get("s", DEFAULT_PEN_DOWN_S))
-        dwell = validate_dwell(data.get("dwell", DEFAULT_SERVO_DWELL))
-        response = send_many(["$X", f"M3 S{s_value}", f"G4 P{dwell:.3f}"], wait_idle_between=True)
+        start_s = validate_servo_s(data.get("start_s", get_tracked_servo_s(DEFAULT_PEN_UP_S)))
+        ramp_enabled = validate_bool(data.get("servo_ramp_enabled", DEFAULT_SERVO_RAMP_ENABLED))
+        ramp_step = validate_non_negative_int(data.get("servo_ramp_step", DEFAULT_SERVO_RAMP_STEP), "Servo ramp step", minimum=1, maximum=200)
+        ramp_delay_ms = validate_non_negative_float(data.get("servo_ramp_delay_ms", DEFAULT_SERVO_RAMP_DELAY_MS), "Servo ramp delay", maximum=1000)
+        dwell_ms = validate_non_negative_float(data.get("pen_down_dwell_ms", DEFAULT_PEN_DOWN_DWELL_MS), "Pen down dwell", maximum=5000)
+        commands = ["$X", *build_pen_position_commands(start_s, s_value, ramp_enabled=ramp_enabled, ramp_step=ramp_step, ramp_delay_ms=ramp_delay_ms, dwell_ms=dwell_ms)]
+        response = send_many(commands, wait_idle_between=True)
+        set_tracked_servo_s(s_value)
         return jsonify({"ok": True, "command": f"PEN DOWN M3 S{s_value}", "response": response})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -1692,14 +3219,17 @@ def pen_test():
     try:
         up_s = validate_servo_s(data.get("up_s", DEFAULT_PEN_UP_S))
         down_s = validate_servo_s(data.get("down_s", DEFAULT_PEN_DOWN_S))
-        dwell = validate_dwell(data.get("dwell", DEFAULT_SERVO_DWELL))
-        commands = [
-            "$X",
-            f"M3 S{up_s}", f"G4 P{dwell:.3f}",
-            f"M3 S{down_s}", f"G4 P{dwell:.3f}",
-            f"M3 S{up_s}", f"G4 P{dwell:.3f}",
-        ]
+        start_s = validate_servo_s(data.get("start_s", get_tracked_servo_s(up_s)))
+        ramp_enabled = validate_bool(data.get("servo_ramp_enabled", DEFAULT_SERVO_RAMP_ENABLED))
+        ramp_step = validate_non_negative_int(data.get("servo_ramp_step", DEFAULT_SERVO_RAMP_STEP), "Servo ramp step", minimum=1, maximum=200)
+        ramp_delay_ms = validate_non_negative_float(data.get("servo_ramp_delay_ms", DEFAULT_SERVO_RAMP_DELAY_MS), "Servo ramp delay", maximum=1000)
+        up_dwell_ms = validate_non_negative_float(data.get("pen_up_dwell_ms", DEFAULT_PEN_UP_DWELL_MS), "Pen up dwell", maximum=5000)
+        down_dwell_ms = validate_non_negative_float(data.get("pen_down_dwell_ms", DEFAULT_PEN_DOWN_DWELL_MS), "Pen down dwell", maximum=5000)
+        commands = ["$X"]
+        commands.extend(build_pen_position_commands(start_s, down_s, ramp_enabled=ramp_enabled, ramp_step=ramp_step, ramp_delay_ms=ramp_delay_ms, dwell_ms=down_dwell_ms))
+        commands.extend(build_pen_position_commands(down_s, up_s, ramp_enabled=ramp_enabled, ramp_step=ramp_step, ramp_delay_ms=ramp_delay_ms, dwell_ms=up_dwell_ms))
         response = send_many(commands, wait_idle_between=True)
+        set_tracked_servo_s(up_s)
         return jsonify({"ok": True, "command": f"PEN TEST S{up_s}/S{down_s}", "response": response})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -1709,6 +3239,7 @@ def pen_test():
 def servo_off():
     try:
         response = send_many(["$X", "M5"], wait_idle_between=True)
+        set_tracked_servo_s(DEFAULT_PEN_UP_S)
         return jsonify({"ok": True, "command": "SERVO OFF M5", "response": response})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -1739,6 +3270,41 @@ def zero_position():
         state["calibrated"] = False
         state["status"] = "Zero set - click calibrated when physically ready"
         return jsonify({"ok": True, "command": "G92 X0 Y0", "response": response})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/go-home", methods=["POST"])
+def go_home():
+    data = request.get_json(force=True)
+    try:
+        pen_up_s = validate_servo_s(data.get("pen_up_s", DEFAULT_PEN_UP_S))
+        travel_feed = validate_feed(data.get("travel_feed", DEFAULT_TRAVEL_FEED))
+        start_s = validate_servo_s(data.get("start_s", get_tracked_servo_s(DEFAULT_PEN_DOWN_S)))
+        ramp_enabled = validate_bool(data.get("servo_ramp_enabled", DEFAULT_SERVO_RAMP_ENABLED))
+        ramp_step = validate_non_negative_int(data.get("servo_ramp_step", DEFAULT_SERVO_RAMP_STEP), "Servo ramp step", minimum=1, maximum=200)
+        ramp_delay_ms = validate_non_negative_float(data.get("servo_ramp_delay_ms", DEFAULT_SERVO_RAMP_DELAY_MS), "Servo ramp delay", maximum=1000)
+        pen_up_dwell_ms = validate_non_negative_float(data.get("pen_up_dwell_ms", DEFAULT_PEN_UP_DWELL_MS), "Pen up dwell", maximum=5000)
+
+        commands = ["$X"]
+        commands.extend(build_pen_position_commands(
+            start_s,
+            pen_up_s,
+            ramp_enabled=ramp_enabled,
+            ramp_step=ramp_step,
+            ramp_delay_ms=ramp_delay_ms,
+            dwell_ms=pen_up_dwell_ms,
+        ))
+        commands.extend([
+            "G21",
+            "G90",
+            f"G1 X0.0000 Y0.0000 F{travel_feed:.3f}",
+        ])
+
+        response = send_many(commands, wait_idle_between=True)
+        set_tracked_servo_s(pen_up_s)
+        state["status"] = "Returned to X0 Y0 with pen up"
+        return jsonify({"ok": True, "command": "GO HOME X0 Y0 WITH PEN UP", "response": response})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -1777,46 +3343,104 @@ def generate_gcode_route():
         placement_scale = float(request.form.get("placement_scale", 100.0))
         placement_offset_x = float(request.form.get("placement_offset_x", 0.0))
         placement_offset_y = float(request.form.get("placement_offset_y", 0.0))
+        rotation_deg = float(request.form.get("rotation_deg", DEFAULT_ROTATION_DEG))
+        parser_mode = request.form.get("parser_mode", DEFAULT_PARSER_MODE)
+        color_mapping_mode = validate_bool(request.form.get("color_mapping_mode", DEFAULT_COLOR_MAPPING_MODE))
         line_thickness_mm = float(request.form.get("line_thickness_mm", DEFAULT_LINE_THICKNESS_MM))
+        enable_fill = validate_bool(request.form.get("enable_fill", DEFAULT_ENABLE_FILL))
+        fill_mode = request.form.get("fill_mode", DEFAULT_FILL_MODE)
+        wall_count = validate_non_negative_int(request.form.get("wall_count", DEFAULT_WALL_COUNT), "Wall count", minimum=1, maximum=8)
+        infill_pattern = request.form.get("infill_pattern", DEFAULT_INFILL_PATTERN)
+        infill_spacing_mm = validate_non_negative_float(request.form.get("infill_spacing_mm", DEFAULT_INFILL_SPACING_MM), "Infill spacing", maximum=10)
+        infill_angle_deg = float(request.form.get("infill_angle_deg", DEFAULT_INFILL_ANGLE_DEG))
+        outline_after_fill = validate_bool(request.form.get("outline_after_fill", DEFAULT_OUTLINE_AFTER_FILL))
+        min_fill_area_mm2 = validate_non_negative_float(request.form.get("min_fill_area_mm2", DEFAULT_MIN_FILL_AREA_MM2), "Minimum fill area", maximum=10000)
+        min_fill_width_mm = validate_non_negative_float(request.form.get("min_fill_width_mm", DEFAULT_MIN_FILL_WIDTH_MM), "Minimum fill width", maximum=10)
+        simplify_tolerance_mm = validate_non_negative_float(request.form.get("simplify_tolerance_mm", DEFAULT_SIMPLIFY_TOLERANCE_MM), "Simplify tolerance", maximum=5)
+        remove_duplicate_paths = validate_bool(request.form.get("remove_duplicate_paths", DEFAULT_REMOVE_DUPLICATE_PATHS))
+        small_shape_mode = request.form.get("small_shape_mode", DEFAULT_SMALL_SHAPE_MODE)
+        min_segment_length_mm = validate_non_negative_float(request.form.get("min_segment_length_mm", DEFAULT_MIN_SEGMENT_LENGTH_MM), "Minimum segment length", maximum=20)
         fit_mode = request.form.get("fit_mode", "contain")
         invert_y = request.form.get("invert_y", "1") == "1"
         include_comments = request.form.get("include_comments", "1") == "1"
         pen_up_s = validate_servo_s(request.form.get("pen_up_s", DEFAULT_PEN_UP_S))
         pen_down_s = validate_servo_s(request.form.get("pen_down_s", DEFAULT_PEN_DOWN_S))
-        servo_dwell = validate_dwell(request.form.get("servo_dwell", DEFAULT_SERVO_DWELL))
+        servo_ramp_enabled = validate_bool(request.form.get("servo_ramp_enabled", DEFAULT_SERVO_RAMP_ENABLED))
+        servo_ramp_step = validate_non_negative_int(request.form.get("servo_ramp_step", DEFAULT_SERVO_RAMP_STEP), "Servo ramp step", minimum=1, maximum=200)
+        servo_ramp_delay_ms = validate_non_negative_float(request.form.get("servo_ramp_delay_ms", DEFAULT_SERVO_RAMP_DELAY_MS), "Servo ramp delay", maximum=1000)
+        pen_up_dwell_ms = validate_non_negative_float(request.form.get("pen_up_dwell_ms", DEFAULT_PEN_UP_DWELL_MS), "Pen up dwell", maximum=5000)
+        pen_down_dwell_ms = validate_non_negative_float(request.form.get("pen_down_dwell_ms", DEFAULT_PEN_DOWN_DWELL_MS), "Pen down dwell", maximum=5000)
+        debug_pipeline = validate_bool(request.form.get("debug_pipeline", "0"))
 
         if sample_step_deg <= 0:
             raise ValueError("Sample step must be greater than 0")
         if margin_percent < 0 or margin_percent > 25:
             raise ValueError("Margin percent must be between 0 and 25")
         if line_thickness_mm < 0 or line_thickness_mm > 10:
-          raise ValueError("Line thickness must be between 0 and 10 mm")
+            raise ValueError("Line thickness must be between 0 and 10 mm")
         if fit_mode not in ["contain", "stretch"]:
             raise ValueError("Invalid fit mode")
+        if parser_mode not in {"visible_geometry", "detect_visible_print_areas"}:
+            raise ValueError("Invalid parser mode")
+        if fill_mode != "slicer":
+            raise ValueError("Only slicer fill mode is currently supported")
+        if infill_pattern not in {"zigzag", "hatch"}:
+            raise ValueError("Infill pattern must be zigzag or hatch")
+        if small_shape_mode not in {"single-wall", "skip", "centerline-todo"}:
+            raise ValueError("Invalid small shape mode")
 
-        line_thickness_deg = mm_to_ball_degrees(line_thickness_mm)
+        debug_data: Optional[dict[str, Any]] = {} if debug_pipeline else None
+        bundle, viewbox_bounds, print_model = extract_svg_bundle(
+            svg_text,
+            debug=debug_data,
+            parser_mode=parser_mode,
+            color_mapping_mode=color_mapping_mode,
+        )
+        if not bundle.outline_segments and not bundle.fill_boundary_segments and not bundle.fill_shapes:
+            raise ValueError("; ".join(print_model.diagnostics or ["Visible SVG content could not be normalized into drawable geometry."]))
 
-        segments, viewbox_bounds = extract_svg_segments(svg_text)
-        if not segments:
-            raise ValueError("No drawable SVG elements found. Try converting text/strokes to paths first.")
+        bounds = viewbox_bounds or bounds_from_bundle(bundle)
+        mapped = map_bundle_to_angles(bundle, bounds, fit_mode, invert_y, margin_percent)
+        debug_append_bundle(debug_data, "mapped_paths", mapped)
+        placed = apply_placement_transform(mapped, placement_scale, rotation_deg, placement_offset_x, placement_offset_y)
+        debug_append_bundle(debug_data, "placed_paths", placed)
+        toolpaths = generate_toolpaths(
+            placed,
+            enable_fill=enable_fill,
+            line_width_mm=line_thickness_mm,
+            wall_count=wall_count,
+            infill_spacing_mm=infill_spacing_mm if infill_spacing_mm > 0 else line_thickness_mm,
+            infill_angle_deg=infill_angle_deg,
+            outline_after_fill=outline_after_fill,
+            min_fill_area_mm2=min_fill_area_mm2,
+            min_fill_width_mm=min_fill_width_mm,
+            simplify_tolerance_mm=simplify_tolerance_mm,
+            remove_duplicate_paths=remove_duplicate_paths,
+            small_shape_mode=small_shape_mode,
+            min_segment_length_mm=min_segment_length_mm,
+            debug=debug_data,
+        )
+        if not toolpaths:
+            raise ValueError("No toolpaths were generated from the current SVG/settings")
 
-        bounds = viewbox_bounds or bounds_from_segments(segments)
-        mapped = map_svg_to_angles(segments, bounds, fit_mode, invert_y, margin_percent)
-        placed = apply_placement_transform(mapped, placement_scale, placement_offset_x, placement_offset_y)
-
-        gcode, preview = generate_gcode_from_segments(
-          placed,
+        gcode, preview = generate_gcode_from_toolpaths(
+            toolpaths,
             draw_feed=draw_feed,
             travel_feed=travel_feed,
             sample_step_deg=sample_step_deg,
             pen_up_s=pen_up_s,
             pen_down_s=pen_down_s,
-            servo_dwell=servo_dwell,
-            line_thickness_deg=line_thickness_deg,
+            servo_ramp_enabled=servo_ramp_enabled,
+            servo_ramp_step=servo_ramp_step,
+            servo_ramp_delay_ms=servo_ramp_delay_ms,
+            pen_up_dwell_ms=pen_up_dwell_ms,
+            pen_down_dwell_ms=pen_down_dwell_ms,
             include_comments=include_comments,
         )
+        if debug_data is not None:
+            debug_data["gcode_preview"] = preview
 
-        point_count = sum(len(seg.points) for seg in placed)
+        point_count = sum(len(path["points"]) for path in preview if path["kind"] != "travel")
         state["last_svg_name"] = file.filename
         state["last_gcode"] = gcode
         state["last_preview"] = preview
@@ -1828,13 +3452,48 @@ def generate_gcode_route():
             "ok": True,
             "gcode": gcode,
             "preview": preview,
-            "segment_count": len(placed),
+            "toolpath_count": len(toolpaths),
             "point_count": point_count,
             "bounds": asdict(bounds),
+            "print_model": asdict(print_model),
+            "debug": debug_data,
         })
     except Exception as e:
         state["last_error"] = str(e)
         state["status"] = f"Generate error: {e}"
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/analyze-svg", methods=["POST"])
+def analyze_svg_route():
+    try:
+        if "svg" not in request.files:
+            raise ValueError("No SVG file uploaded")
+
+        file = request.files["svg"]
+        svg_text = file.read().decode("utf-8", errors="ignore")
+        parser_mode = request.form.get("parser_mode", DEFAULT_PARSER_MODE)
+        color_mapping_mode = validate_bool(request.form.get("color_mapping_mode", DEFAULT_COLOR_MAPPING_MODE))
+        debug_pipeline = validate_bool(request.form.get("debug_pipeline", "0"))
+
+        if parser_mode not in {"visible_geometry", "detect_visible_print_areas"}:
+            raise ValueError("Invalid parser mode")
+
+        debug_data: Optional[dict[str, Any]] = {} if debug_pipeline else None
+        result = analyze_svg(
+            svg_text,
+            parser_mode=parser_mode,
+            color_mapping_mode=color_mapping_mode,
+            debug=debug_data,
+        )
+
+        return jsonify({
+            "ok": True,
+            "print_model": asdict(result.print_model),
+            "viewbox_bounds": asdict(result.viewbox_bounds) if result.viewbox_bounds else None,
+            "debug": debug_data,
+        })
+    except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
@@ -1927,7 +3586,7 @@ if __name__ == "__main__":
     print(f"X steps/degree: {X_STEPS_PER_DEGREE:.6f}")
     print(f"Y steps/degree: {Y_STEPS_PER_DEGREE:.6f}")
     print("Install dependencies if needed:")
-    print("  pip install flask pyserial svgpathtools")
+    print("  pip install flask pyserial svgpathtools shapely")
     print("Open:")
     print("  http://127.0.0.1:5000")
     app.run(host="127.0.0.1", port=5000, debug=False)

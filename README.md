@@ -10,6 +10,8 @@ Files
 Requirements
 - Python 3.8+ on Windows
 - `pyserial` for serial communication
+- `svgpathtools` for SVG path flattening
+- `shapely` for slicer-style fill geometry
 
 Quickstart (Windows)
 1. Create and activate a virtual environment:
@@ -22,7 +24,7 @@ python -m venv .venv
 2. Install dependencies:
 
 ```powershell
-pip install pyserial
+python -m pip install -r requirements.txt
 ```
 
 3. Edit the scripts to set the correct serial/COM port for your device, then run a script:
@@ -35,7 +37,8 @@ python cnc_test.py
 
 Notes
 - Adjust serial settings (baud rate, COM port) inside the scripts before connecting to hardware.
-- If you prefer, create a `requirements.txt` and install packages with `pip install -r requirements.txt`.
+- On Windows, prefer `python -m pip ...` over `pip ...` if the pip launcher is broken.
+- Sample SVG for fill testing: `samples/slicer_fill_test.svg`
 
 License
 - No license specified. Add one if you intend to publish this project.
