@@ -7,6 +7,7 @@ import threading
 import math
 import os
 import re
+import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, asdict, field
 from typing import Optional, Any
@@ -92,6 +93,8 @@ DEFAULT_ENABLE_FILL = True
 DEFAULT_FILL_MODE = "slicer"
 DEFAULT_PARSER_MODE = "visible_geometry"
 DEFAULT_COLOR_MAPPING_MODE = False
+DEFAULT_TRACE_STROKE_ONLY_PATHS = True
+DEFAULT_FILL_ONLY_DARK_SVG_FILLS = True
 DEFAULT_WALL_COUNT = 1
 DEFAULT_INFILL_PATTERN = "zigzag"
 DEFAULT_INFILL_SPACING_MM = DEFAULT_LINE_THICKNESS_MM
@@ -103,6 +106,9 @@ DEFAULT_SIMPLIFY_TOLERANCE_MM = 0.05
 DEFAULT_REMOVE_DUPLICATE_PATHS = True
 DEFAULT_SMALL_SHAPE_MODE = "single-wall"
 DEFAULT_MIN_SEGMENT_LENGTH_MM = 0.5
+SVG_DARK_FILL_LUMINANCE_THRESHOLD = 0.42
+SVG_LIGHT_CUTOUT_LUMINANCE_THRESHOLD = 0.82
+SVG_MIN_PRINT_OPACITY = 0.99
 
 app = Flask(__name__)
 
@@ -196,6 +202,7 @@ class IgnoredSvgElement:
 @dataclass
 class SvgPrintModel:
     fills: list[NormalizedFillRegion] = field(default_factory=list)
+    cutouts: list[NormalizedFillRegion] = field(default_factory=list)
     strokes: list[NormalizedStrokePath] = field(default_factory=list)
     details: list[NormalizedDetailPath] = field(default_factory=list)
     ignored: list[IgnoredSvgElement] = field(default_factory=list)
@@ -210,6 +217,21 @@ class SvgAnalysisResult:
     bundle: GeometryBundle
     print_model: SvgPrintModel
     viewbox_bounds: Optional["SvgBounds"]
+
+
+@dataclass
+class ClassifiedSvgElement:
+    element: str
+    tag: str
+    computed_style: dict[str, str]
+    fill_geometry: Optional[Any] = None
+    stroke_segments: list[Segment] = field(default_factory=list)
+    fill_rule: str = "nonzero"
+    fill_classification: str = "none"
+    has_fill: bool = False
+    is_cutout_fill: bool = False
+    has_stroke: bool = False
+    is_stroke_only: bool = False
 
 
 @dataclass
@@ -406,7 +428,7 @@ HTML = r"""
 
     .preview-title { color: var(--muted); font-size: 0.9rem; margin-bottom: 8px; }
 
-    #svgPreview, #flatPreview, #ballPreview {
+    #svgPreview, #classifiedPreview, #flatPreview, #ballPreview {
       width: 100%;
       height: 380px;
       background: #020617;
@@ -421,7 +443,14 @@ HTML = r"""
       padding: 10px;
     }
 
-    #svgPreview svg {
+    #classifiedPreview {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px;
+    }
+
+    #svgPreview svg, #classifiedPreview svg {
       width: 100%;
       height: 100%;
       max-width: 100%;
@@ -429,7 +458,7 @@ HTML = r"""
       object-fit: contain;
     }
 
-    #svgPreview svg, #svgPreview img {
+    #svgPreview svg, #svgPreview img, #classifiedPreview svg {
       display: block;
     }
 
@@ -654,6 +683,8 @@ HTML = r"""
 
           <h3>Fill</h3>
           <label><input id="enableFill" type="checkbox" {% if default_enable_fill %}checked{% endif %} /> Enable slicer-style fill for filled SVG regions</label>
+          <label><input id="fillOnlyDarkSvgFills" type="checkbox" {% if default_fill_only_dark_svg_fills %}checked{% endif %} /> Fill only dark SVG fills</label>
+          <label><input id="traceStrokeOnlyPaths" type="checkbox" {% if default_trace_stroke_only_paths %}checked{% endif %} /> Trace stroke-only SVG paths</label>
           <div class="two-col">
             <div>
               <label>Fill mode</label>
@@ -728,6 +759,7 @@ HTML = r"""
 
           <button onclick="uploadAndGenerate()" class="purple">Upload SVG + Generate G-code</button>
           <button onclick="downloadGcode()" class="secondary">Download G-code</button>
+          <button onclick="runSvgPipelineSelfTest()" class="secondary">Run Integrated SVG Self-Test</button>
         </div>
 
         <div class="card">
@@ -764,6 +796,11 @@ HTML = r"""
               <div id="svgPreview"><span class="small">No SVG loaded</span></div>
             </div>
             <div class="preview-panel">
+              <div class="preview-title">Classified SVG Regions</div>
+              <div class="small">Amber = printable dark fills, red = cutouts, blue = traced stroke paths.</div>
+              <div id="classifiedPreview"><span class="small">Generate G-code to inspect parsed SVG regions</span></div>
+            </div>
+            <div class="preview-panel">
               <div class="preview-title">Flat coordinate map</div>
               <div class="small">Outline = blue, fill wall = amber, infill = teal, travel = slate</div>
               <canvas id="flatPreview"></canvas>
@@ -792,6 +829,8 @@ HTML = r"""
 <script>
   let latestGcode = [];
   let latestPreview = [];
+  let latestPrintModel = null;
+  let latestViewboxBounds = null;
 
   function appendLog(text) {
     const log = document.getElementById("log");
@@ -889,6 +928,23 @@ HTML = r"""
   function sendRaw() { return sendCommand(document.getElementById('rawCommand').value); }
   function softReset() { return api('/reset'); }
 
+  async function runSvgPipelineSelfTest() {
+    try {
+      const res = await fetch('/self-test-svg-pipeline', { method: 'POST' });
+      const json = await res.json();
+      if (!json.ok) {
+        appendLog(`SVG SELF-TEST ERROR: ${json.error}`);
+        return;
+      }
+      appendLog(`SVG self-test passed: ${json.summary.passed} checks.`);
+      for (const line of (json.summary.messages || [])) {
+        appendLog(`SELF-TEST: ${line}`);
+      }
+    } catch (err) {
+      appendLog(`SVG SELF-TEST FETCH ERROR: ${err}`);
+    }
+  }
+
   function applyMachineConfig() {
     return api('/apply-config', {
       x_max_feed: getNum('xMaxFeed'),
@@ -962,6 +1018,8 @@ HTML = r"""
     form.append('rotation_deg', getNum('rotationDeg'));
     form.append('line_thickness_mm', getNum('lineThicknessMm'));
     form.append('enable_fill', getBool('enableFill') ? '1' : '0');
+    form.append('fill_only_dark_svg_fills', getBool('fillOnlyDarkSvgFills') ? '1' : '0');
+    form.append('trace_stroke_only_paths', getBool('traceStrokeOnlyPaths') ? '1' : '0');
     form.append('fill_mode', document.getElementById('fillMode').value);
     form.append('wall_count', getInt('wallCount'));
     form.append('infill_pattern', document.getElementById('infillPattern').value);
@@ -992,10 +1050,19 @@ HTML = r"""
 
       latestGcode = json.gcode;
       latestPreview = json.preview || [];
+      latestPrintModel = json.print_model || null;
+      latestViewboxBounds = json.viewbox_bounds || null;
       document.getElementById('gcodeBox').value = latestGcode.join('\n');
+      renderClassifiedPreview(latestPrintModel, latestViewboxBounds);
       drawFlatPreview(latestPreview);
       drawBallPreview(latestPreview);
       appendLog(`Generated ${latestGcode.length} G-code lines from ${json.toolpath_count} toolpaths / ${json.point_count} plotted points.`);
+      const classificationCounts = json.print_model?.metadata?.classificationCounts || {};
+      appendLog(`SVG classification: dark fills ${classificationCounts.dark_filled_polygons || 0}, light cutouts ${classificationCounts.light_cutout_polygons || 0}, transparent cutouts ${classificationCounts.transparent_cutout_polygons || 0}, stroke-only ${classificationCounts.stroke_only_paths || 0}, ignored ${classificationCounts.ignored_paths || 0}.`);
+      if (json.debug?.toolpath_counts) {
+        const counts = json.debug.toolpath_counts;
+        appendLog(`Generated toolpaths: walls ${counts.generated_fill_walls || 0}, infill ${counts.generated_infill_paths || 0}, outlines ${counts.generated_outline_paths || 0}.`);
+      }
       for (const warning of (json.print_model?.warnings || [])) {
         appendLog(`WARNING: ${warning}`);
       }
@@ -1006,6 +1073,58 @@ HTML = r"""
     } catch (err) {
       appendLog(`GENERATE ERROR: ${err}`);
     }
+  }
+
+  function renderClassifiedPreview(printModel, viewboxBounds) {
+    const host = document.getElementById('classifiedPreview');
+    if (!host) return;
+    if (!printModel) {
+      host.innerHTML = '<span class="small">No classified SVG regions available</span>';
+      return;
+    }
+
+    const fills = printModel.fills || [];
+    const cutouts = printModel.cutouts || [];
+    const strokes = printModel.strokes || [];
+    const computed = printModel.computed_bounds || {};
+    const vb = viewboxBounds || {};
+    const minX = Number.isFinite(vb.min_x) ? vb.min_x : (Number.isFinite(computed.min_x) ? computed.min_x : 0);
+    const minY = Number.isFinite(vb.min_y) ? vb.min_y : (Number.isFinite(computed.min_y) ? computed.min_y : 0);
+    const maxX = Number.isFinite(vb.max_x) ? vb.max_x : (Number.isFinite(computed.max_x) ? computed.max_x : minX + 100);
+    const maxY = Number.isFinite(vb.max_y) ? vb.max_y : (Number.isFinite(computed.max_y) ? computed.max_y : minY + 100);
+    const width = Math.max(1, maxX - minX);
+    const height = Math.max(1, maxY - minY);
+
+    const fillMarkup = fills.map((region) => {
+      const mergedPath = [...(region.paths || []), ...(region.holes || [])].join(' ');
+      return `<path d="${escapeHtml(mergedPath)}" fill="rgba(245, 158, 11, 0.7)" stroke="#f59e0b" stroke-width="${Math.max(width, height) * 0.0015}" fill-rule="evenodd"/>`;
+    }).join('');
+
+    const cutoutMarkup = cutouts.map((region) => {
+      const mergedPath = [...(region.paths || []), ...(region.holes || [])].join(' ');
+      return `<path d="${escapeHtml(mergedPath)}" fill="rgba(239, 68, 68, 0.18)" stroke="#ef4444" stroke-width="${Math.max(width, height) * 0.0015}" fill-rule="evenodd"/>`;
+    }).join('');
+
+    const strokeMarkup = strokes.map((region) =>
+      `<path d="${escapeHtml(region.path || '')}" fill="none" stroke="rgba(59, 130, 246, 0.95)" stroke-width="${Math.max(region.strokeWidth || 1, Math.max(width, height) * 0.0012)}" stroke-linecap="round" stroke-linejoin="round"/>`
+    ).join('');
+
+    host.innerHTML = `
+      <svg viewBox="${minX} ${minY} ${width} ${height}" xmlns="http://www.w3.org/2000/svg" aria-label="Classified SVG regions">
+        <rect x="${minX}" y="${minY}" width="${width}" height="${height}" fill="#020617"/>
+        <g>${fillMarkup}</g>
+        <g>${cutoutMarkup}</g>
+        <g>${strokeMarkup}</g>
+      </svg>
+    `;
+  }
+
+  function escapeHtml(text) {
+    return String(text || '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('\"', '&quot;');
   }
 
   function setupCanvas(canvasId) {
@@ -1504,6 +1623,12 @@ def debug_append_warning(debug: Optional[dict[str, Any]], message: str) -> None:
     debug.setdefault("parser_warnings", []).append(message)
 
 
+def debug_set_counts(debug: Optional[dict[str, Any]], key: str, counts: dict[str, int]) -> None:
+    if debug is None:
+        return
+    debug[key] = {name: int(value) for name, value in counts.items()}
+
+
 def parse_svg_stylesheet(root: ET.Element, debug: Optional[dict[str, Any]] = None) -> dict[str, dict[str, str]]:
     rules: dict[str, dict[str, str]] = {}
     for elem in root.iter():
@@ -1805,6 +1930,10 @@ def parse_svg_color(value: str) -> Optional[tuple[float, float, float]]:
     named = {
         "black": (0.0, 0.0, 0.0),
         "white": (1.0, 1.0, 1.0),
+        "red": (1.0, 0.0, 0.0),
+        "green": (0.0, 0.502, 0.0),
+        "yellow": (1.0, 1.0, 0.0),
+        "navy": (0.0, 0.0, 0.502),
         "blue": (0.0, 0.0, 1.0),
         "orange": (1.0, 0.647, 0.0),
         "amber": (1.0, 0.749, 0.0),
@@ -1844,6 +1973,28 @@ def parse_svg_color(value: str) -> Optional[tuple[float, float, float]]:
             if len(channels) == 3:
                 return tuple(channels)  # type: ignore[return-value]
     return None
+
+
+def parse_svg_color_alpha(value: str) -> float:
+    color = (value or "").strip().lower()
+    if not color or color in {"none", "transparent"}:
+        return 0.0
+    if color.startswith("rgba"):
+        raw_parts = re.findall(r"[-+]?\d*\.?\d+%?", color)
+        if len(raw_parts) >= 4:
+            alpha = raw_parts[3]
+            try:
+                if alpha.endswith("%"):
+                    return max(0.0, min(1.0, float(alpha[:-1]) / 100.0))
+                return max(0.0, min(1.0, float(alpha)))
+            except ValueError:
+                return 1.0
+    return 1.0
+
+
+def is_unsupported_paint_server(value: str) -> bool:
+    paint = (value or "").strip().lower()
+    return paint.startswith("url(") or paint in {"context-fill", "context-stroke", "currentcolor", "inherit"}
 
 
 def color_luminance(value: str) -> Optional[float]:
@@ -1897,7 +2048,6 @@ def detect_fill_operation_kind(props: dict[str, str], parser_mode: str, color_ma
 def build_fill_geometry(segments: list[Segment], fill_rule: str) -> Optional[Any]:
     require_geometry_support()
     rings: list[dict[str, Any]] = []
-    lines = []
     for segment in segments:
         ring = closed_segment_to_ring(segment)
         if ring is None:
@@ -1905,44 +2055,78 @@ def build_fill_geometry(segments: list[Segment], fill_rule: str) -> Optional[Any
         polygon = make_polygon_from_ring(ring)
         if polygon is None:
             continue
-        coords = [(point.x, point.y) for point in ring]
         rings.append({
+            "ring": ring,
             "polygon": polygon,
             "winding": 1 if signed_ring_area(ring) >= 0 else -1,
+            "area": abs(signed_ring_area(ring)),
+            "sample": polygon.representative_point(),
         })
-        lines.append(LineString(coords))
 
-    if not lines:
+    if not rings:
         return None
 
-    faces = list(polygonize(MultiLineString(lines)))
-    kept = []
-    for face in faces:
-        sample = face.representative_point()
-        winding = 0
-        crossings = 0
-        for ring_info in rings:
-            ring_polygon = ring_info["polygon"]
-            if ring_polygon.covers(sample):
-                crossings += 1
-                winding += ring_info["winding"]
+    rings.sort(key=lambda item: item["area"], reverse=True)
+    for index, ring_info in enumerate(rings):
+        parent_index = None
+        for candidate_index in range(index - 1, -1, -1):
+            candidate = rings[candidate_index]
+            if candidate["polygon"].covers(ring_info["sample"]):
+                if parent_index is None or candidate["area"] < rings[parent_index]["area"]:
+                    parent_index = candidate_index
+        ring_info["parent"] = parent_index
+
+    def state_for_ring(index: int) -> tuple[int, bool]:
+        ring_info = rings[index]
+        cached = ring_info.get("state")
+        if cached is not None:
+            return cached
+        parent_index = ring_info["parent"]
         if fill_rule == "evenodd":
-            include = (crossings % 2) == 1
+            depth = 1 if parent_index is None else state_for_ring(parent_index)[0] + 1
+            state = (depth, (depth % 2) == 1)
         else:
-            include = winding != 0
-        if include:
-            kept.append(face)
+            winding = ring_info["winding"] if parent_index is None else state_for_ring(parent_index)[0] + ring_info["winding"]
+            state = (winding, winding != 0)
+        ring_info["state"] = state
+        return state
 
-    if not kept:
-        fallback_polygons = [ring_info["polygon"] for ring_info in rings]
-        if not fallback_polygons:
-            return None
-        geometry = unary_union(fallback_polygons)
-        if not geometry.is_valid:
-            geometry = make_valid(geometry) if make_valid is not None else geometry.buffer(0)
-        return geometry if not geometry.is_empty else None
+    shell_indices: list[int] = []
+    holes_for_shell: dict[int, list[int]] = {}
+    for index, ring_info in enumerate(rings):
+        parent_index = ring_info["parent"]
+        current_value, current_filled = state_for_ring(index)
+        parent_filled = state_for_ring(parent_index)[1] if parent_index is not None else False
+        if current_filled and not parent_filled:
+            shell_indices.append(index)
+            holes_for_shell.setdefault(index, [])
+        elif parent_filled and not current_filled:
+            owner_index = parent_index
+            while owner_index is not None:
+                owner_value, owner_filled = state_for_ring(owner_index)
+                owner_parent_filled = state_for_ring(rings[owner_index]["parent"])[1] if rings[owner_index]["parent"] is not None else False
+                if owner_filled and not owner_parent_filled:
+                    holes_for_shell.setdefault(owner_index, []).append(index)
+                    break
+                owner_index = rings[owner_index]["parent"]
 
-    geometry = unary_union(kept)
+    polygons: list[Any] = []
+    for shell_index in shell_indices:
+        shell_ring = rings[shell_index]["ring"]
+        hole_rings = [rings[hole_index]["ring"] for hole_index in holes_for_shell.get(shell_index, [])]
+        polygon = Polygon(
+            [(point.x, point.y) for point in shell_ring],
+            [[(point.x, point.y) for point in hole_ring] for hole_ring in hole_rings],
+        )
+        if not polygon.is_valid:
+            polygon = make_valid(polygon) if make_valid is not None else polygon.buffer(0)
+        if not polygon.is_empty:
+            polygons.append(polygon)
+
+    if not polygons:
+        return None
+
+    geometry = unary_union(polygons)
     if not geometry.is_valid:
         geometry = make_valid(geometry) if make_valid is not None else geometry.buffer(0)
     return geometry if not geometry.is_empty else None
@@ -1974,8 +2158,18 @@ def merge_presentation_attrs(
 ) -> dict[str, str]:
     props = dict(inherited)
     stylesheet_map = stylesheet_props_for_elem(elem, stylesheet_rules or {})
+    explicit_fill = inherited.get("__has_explicit_fill") == "1"
+    explicit_stroke = inherited.get("__has_explicit_stroke") == "1"
+    if "fill" in stylesheet_map:
+        explicit_fill = True
+    if "stroke" in stylesheet_map:
+        explicit_stroke = True
     props.update(stylesheet_map)
     style_map = parse_style_map(elem.attrib.get("style", ""))
+    if "fill" in style_map or "fill-opacity" in style_map:
+        explicit_fill = True
+    if "stroke" in style_map or "stroke-opacity" in style_map or "stroke-width" in style_map:
+        explicit_stroke = True
     props.update(style_map)
     for key in [
         "fill", "stroke", "stroke-width", "opacity", "fill-opacity", "stroke-opacity",
@@ -1983,7 +2177,21 @@ def merge_presentation_attrs(
     ]:
         if key in elem.attrib:
             props[key] = elem.attrib[key]
+    if "fill" in elem.attrib or "fill-opacity" in elem.attrib:
+        explicit_fill = True
+    if "stroke" in elem.attrib or "stroke-opacity" in elem.attrib or "stroke-width" in elem.attrib:
+        explicit_stroke = True
+    props["__has_explicit_fill"] = "1" if explicit_fill else "0"
+    props["__has_explicit_stroke"] = "1" if explicit_stroke else "0"
     return props
+
+
+def get_computed_style(
+    elem: ET.Element,
+    inherited_style: dict[str, str],
+    stylesheet_rules: Optional[dict[str, dict[str, str]]] = None,
+) -> dict[str, str]:
+    return merge_presentation_attrs(inherited_style, elem, stylesheet_rules)
 
 
 def combined_opacity(props: dict[str, str], opacity_key: str) -> float:
@@ -1997,6 +2205,14 @@ def combined_opacity(props: dict[str, str], opacity_key: str) -> float:
     return value
 
 
+def effective_paint_opacity(props: dict[str, str], paint_key: str, opacity_key: str) -> float:
+    return combined_opacity(props, opacity_key) * parse_svg_color_alpha(props.get(paint_key, ""))
+
+
+def is_print_opaque(props: dict[str, str], paint_key: str, opacity_key: str) -> bool:
+    return effective_paint_opacity(props, paint_key, opacity_key) >= SVG_MIN_PRINT_OPACITY
+
+
 def parse_stroke_width(props: dict[str, str]) -> float:
     return max(0.0, parse_svg_length(props.get("stroke-width"), 1.0))
 
@@ -2005,14 +2221,16 @@ def has_visible_fill(props: dict[str, str]) -> bool:
     fill = props.get("fill", "").strip().lower()
     if fill in {"", "none", "transparent"}:
         return False
-    return combined_opacity(props, "fill-opacity") > 0
+    if is_unsupported_paint_server(fill):
+        return False
+    return effective_paint_opacity(props, "fill", "fill-opacity") > 0
 
 
 def has_visible_stroke(props: dict[str, str]) -> bool:
     stroke = props.get("stroke", "").strip().lower()
     if stroke in {"", "none", "transparent"}:
         return False
-    return combined_opacity(props, "stroke-opacity") > 0 and parse_stroke_width(props) > 0
+    return is_print_opaque(props, "stroke", "stroke-opacity") and parse_stroke_width(props) > 0
 
 
 def is_hidden(props: dict[str, str]) -> bool:
@@ -2028,6 +2246,55 @@ def is_hidden(props: dict[str, str]) -> bool:
 def is_dark_visible_color(value: str) -> bool:
     luminance = color_luminance(value)
     return luminance is not None and luminance <= 0.45
+
+
+def is_dark_fill(style: dict[str, str]) -> bool:
+    if style.get("__has_explicit_fill") != "1" or not has_visible_fill(style) or not is_print_opaque(style, "fill", "fill-opacity"):
+        return False
+    luminance = color_luminance(style.get("fill", ""))
+    return luminance is not None and luminance <= SVG_DARK_FILL_LUMINANCE_THRESHOLD
+
+
+def is_light_cutout(style: dict[str, str]) -> bool:
+    if style.get("__has_explicit_fill") != "1" or not has_visible_fill(style) or not is_print_opaque(style, "fill", "fill-opacity"):
+        return False
+    luminance = color_luminance(style.get("fill", ""))
+    return luminance is not None and luminance >= SVG_LIGHT_CUTOUT_LUMINANCE_THRESHOLD
+
+
+def is_transparent_cutout(style: dict[str, str]) -> bool:
+    if style.get("__has_explicit_fill") != "1" or not has_visible_fill(style):
+        return False
+    return not is_print_opaque(style, "fill", "fill-opacity")
+
+
+def has_printable_fill(style: dict[str, str], fill_only_dark_svg_fills: bool = True) -> bool:
+    if style.get("__has_explicit_fill") != "1" or not has_visible_fill(style) or not is_print_opaque(style, "fill", "fill-opacity"):
+        return False
+    if fill_only_dark_svg_fills:
+        return is_dark_fill(style)
+    return not is_light_cutout(style)
+
+
+def classify_fill_style(style: dict[str, str], fill_only_dark_svg_fills: bool = True) -> str:
+    fill = style.get("fill", "").strip().lower()
+    if style.get("__has_explicit_fill") != "1":
+        return "none"
+    if fill in {"", "none", "transparent"}:
+        return "none"
+    if is_unsupported_paint_server(fill):
+        return "unsupported"
+    if effective_paint_opacity(style, "fill", "fill-opacity") <= 0:
+        return "transparent"
+    if is_transparent_cutout(style):
+        return "transparent-cutout"
+    if is_dark_fill(style):
+        return "dark-fill"
+    if is_light_cutout(style):
+        return "light-cutout"
+    if has_printable_fill(style, fill_only_dark_svg_fills):
+        return "printable-fill"
+    return "decorative-fill"
 
 
 def should_promote_stroke_to_detail(
@@ -2106,10 +2373,102 @@ def geometry_to_boundary_segments(geometry: Any) -> list[Segment]:
     return segments
 
 
+def compose_classified_elements(
+    elements: list[ClassifiedSvgElement],
+    *,
+    trace_stroke_only_paths: bool,
+    parser_mode: str,
+    color_mapping_mode: bool,
+) -> tuple[GeometryBundle, SvgPrintModel, dict[str, int]]:
+    bundle = GeometryBundle()
+    model = SvgPrintModel()
+    classification_counts = {
+        "dark_filled_polygons": 0,
+        "light_cutout_polygons": 0,
+        "transparent_cutout_polygons": 0,
+        "stroke_only_paths": 0,
+        "ignored_paths": 0,
+    }
+    dark_fill_geometries: list[Any] = []
+    cutout_geometries: list[Any] = []
+
+    for item in elements:
+        props = item.computed_style
+        if item.has_stroke:
+            if not item.is_stroke_only or trace_stroke_only_paths:
+                bundle.outline_segments.extend(item.stroke_segments)
+                for segment in item.stroke_segments:
+                    path_text = format_svg_path(segment.points, segment.closed)
+                    if not path_text:
+                        continue
+                    model.strokes.append(NormalizedStrokePath(
+                        type="stroke_path",
+                        path=path_text,
+                        strokeColor=props.get("stroke", ""),
+                        strokeWidth=parse_stroke_width(props),
+                        source="stroke",
+                    ))
+                    if should_promote_stroke_to_detail(props, item.tag, parser_mode, color_mapping_mode):
+                        model.details.append(NormalizedDetailPath(type="detail_path", path=path_text, source="stroke"))
+            if item.is_stroke_only:
+                classification_counts["stroke_only_paths"] += 1
+
+        if item.has_fill and item.fill_geometry is not None and not item.fill_geometry.is_empty:
+            dark_fill_geometries.append(item.fill_geometry)
+            classification_counts["dark_filled_polygons"] += len(normalize_geometry(item.fill_geometry))
+            outer_paths, holes = path_strings_from_geometry(item.fill_geometry)
+            model.fills.append(NormalizedFillRegion(
+                type="filled_region",
+                paths=outer_paths,
+                fillColor=props.get("fill", ""),
+                fillRule=item.fill_rule,
+                holes=holes,
+                source="path" if item.tag == "path" else "shape",
+            ))
+        elif item.is_cutout_fill and item.fill_geometry is not None and not item.fill_geometry.is_empty:
+            cutout_geometries.append(item.fill_geometry)
+            polygon_count = len(normalize_geometry(item.fill_geometry))
+            outer_paths, holes = path_strings_from_geometry(item.fill_geometry)
+            model.cutouts.append(NormalizedFillRegion(
+                type="cutout_region",
+                paths=outer_paths,
+                fillColor=props.get("fill", ""),
+                fillRule=item.fill_rule,
+                holes=holes,
+                source="path" if item.tag == "path" else "shape",
+            ))
+            if item.fill_classification == "transparent-cutout":
+                classification_counts["transparent_cutout_polygons"] += polygon_count
+            else:
+                classification_counts["light_cutout_polygons"] += polygon_count
+        elif not item.has_stroke:
+            classification_counts["ignored_paths"] += 1
+            model.ignored.append(IgnoredSvgElement(
+                reason="Visible geometry resolved to no printable fill or stroke",
+                element=item.element,
+            ))
+
+    composed_fill = unary_union(dark_fill_geometries) if dark_fill_geometries else None
+    if composed_fill is not None and not composed_fill.is_empty and cutout_geometries:
+        cutout_union = unary_union(cutout_geometries)
+        if cutout_union is not None and not cutout_union.is_empty:
+            composed_fill = composed_fill.difference(cutout_union)
+    if composed_fill is not None and not composed_fill.is_empty and not composed_fill.is_valid:
+        composed_fill = make_valid(composed_fill) if make_valid is not None else composed_fill.buffer(0)
+    if composed_fill is not None and not composed_fill.is_empty:
+        bundle.fill_shapes.append(SvgFillShape(geometry=composed_fill, fill_rule="evenodd", source_tag="composited-visible-fill"))
+        bundle.fill_boundary_segments.extend(geometry_to_boundary_segments(composed_fill))
+
+    model.metadata["classificationCounts"] = classification_counts
+    return bundle, model, classification_counts
+
+
 def analyze_svg(
     svg_text: str,
     parser_mode: str = "visible_geometry",
     color_mapping_mode: bool = False,
+    trace_stroke_only_paths: bool = True,
+    fill_only_dark_svg_fills: bool = True,
     debug: Optional[dict[str, Any]] = None,
 ) -> SvgAnalysisResult:
     require_geometry_support()
@@ -2121,9 +2480,6 @@ def analyze_svg(
     if strip_namespace(root.tag) != "svg":
         raise ValueError("Uploaded file is not an SVG document")
 
-    bundle = GeometryBundle()
-    model = SvgPrintModel()
-    fill_ops: list[tuple[str, Any, str, str]] = []
     stylesheet_rules = parse_svg_stylesheet(root, debug=debug)
     id_map: dict[str, ET.Element] = {}
     for elem in root.iter():
@@ -2151,7 +2507,7 @@ def analyze_svg(
         if len(nums) == 4:
             viewbox_bounds = SvgBounds(nums[0], nums[1], nums[0] + nums[2], nums[1] + nums[3])
 
-    model.metadata = {
+    model_metadata = {
         "viewBox": viewbox or "",
         "width": parse_svg_length(root.attrib.get("width")),
         "height": parse_svg_length(root.attrib.get("height")),
@@ -2161,7 +2517,12 @@ def analyze_svg(
         },
         "parserMode": parser_mode,
         "colorMappingMode": color_mapping_mode,
+        "traceStrokeOnlyPaths": trace_stroke_only_paths,
+        "fillOnlyDarkSvgFills": fill_only_dark_svg_fills,
     }
+    warnings: list[str] = []
+    ignored_non_drawable: list[IgnoredSvgElement] = []
+    classified_elements: list[ClassifiedSvgElement] = []
 
     for elem in root.iter():
         tag = strip_namespace(elem.tag)
@@ -2178,7 +2539,7 @@ def analyze_svg(
         if key in warning_seen:
             return
         warning_seen.add(key)
-        model.warnings.append(message)
+        warnings.append(message)
         debug_append_warning(debug, message)
 
     def element_label(elem: ET.Element, tag_override: Optional[str] = None) -> str:
@@ -2187,7 +2548,7 @@ def analyze_svg(
         return f"<{tag_name}#{elem_id}>" if elem_id else f"<{tag_name}>"
 
     def add_ignored(reason: str, elem: ET.Element, tag_override: Optional[str] = None) -> None:
-        model.ignored.append(IgnoredSvgElement(reason=reason, element=element_label(elem, tag_override)))
+        ignored_non_drawable.append(IgnoredSvgElement(reason=reason, element=element_label(elem, tag_override)))
 
     def clip_geometry_for_reference(ref_id: str, stack: set[str]) -> Optional[Any]:
         if ref_id in clip_cache:
@@ -2242,7 +2603,7 @@ def analyze_svg(
         if tag in {"defs", "symbol", "clipPath"}:
             return
 
-        props = merge_presentation_attrs(inherited_props, elem, stylesheet_rules)
+        props = get_computed_style(elem, inherited_props, stylesheet_rules)
         if is_hidden(props):
             add_ignored("Element hidden by display:none, visibility:hidden, or opacity:0", elem)
             return
@@ -2284,7 +2645,7 @@ def analyze_svg(
                 "element": element_label(elem),
                 "tag": tag,
                 "source": "text",
-                "computedStyle": dict(props),
+                "computedStyle": {key: value for key, value in props.items() if not key.startswith("__")},
                 "styleSource": "computed",
                 "ignored": True,
                 "reason": "Text requires outline conversion",
@@ -2328,61 +2689,48 @@ def analyze_svg(
 
             debug_append_segments(debug, "transformed_paths", stroke_segments or transformed_segments, f"{tag}-transformed")
 
-            has_fill = has_visible_fill(props) and fill_geometry is not None and not fill_geometry.is_empty
-            has_stroke = has_visible_stroke(props) and bool(stroke_segments)
+            if is_unsupported_paint_server(props.get("fill", "")):
+                push_warning("fill-paint", "Unsupported SVG fill paint server detected; non-solid fills are ignored for slicer regions.")
+            fill_classification = classify_fill_style(props, fill_only_dark_svg_fills)
+            has_fill_geometry = fill_geometry is not None and not fill_geometry.is_empty
+            has_fill = fill_classification in {"dark-fill", "printable-fill"} and has_fill_geometry
+            is_cutout_fill = fill_classification in {"light-cutout", "transparent-cutout"} and has_fill_geometry
 
+            stroke_only_candidate = has_visible_stroke(props) and bool(stroke_segments)
+            has_stroke = stroke_only_candidate
             if parser_mode == "detect_visible_print_areas":
-                has_fill = has_fill and is_dark_visible_color(props.get("fill", "")) and detect_fill_operation_kind(props, parser_mode, color_mapping_mode) == "add"
                 has_stroke = has_stroke and is_dark_visible_color(props.get("stroke", ""))
             elif color_mapping_mode:
-                fill_role = classify_color_role(props.get("fill", ""))
                 stroke_role = classify_color_role(props.get("stroke", ""))
-                has_fill = has_fill and fill_role not in {"cutout", "ignored"}
                 has_stroke = has_stroke and stroke_role not in {"cutout", "ignored"}
 
+            public_props = {key: value for key, value in props.items() if not key.startswith("__")}
             parser_entry = {
                 "element": element_label(elem),
                 "tag": tag,
-                "computedStyle": dict(props),
+                "computedStyle": public_props,
                 "styleSource": "computed",
                 "fillVisible": has_fill,
+                "cutoutFill": is_cutout_fill,
                 "strokeVisible": has_stroke,
                 "strokeWidth": parse_stroke_width(props),
+                "fillClassification": fill_classification,
                 "clipApplied": bool(element_clip is not None),
             }
 
-            if has_stroke:
-                bundle.outline_segments.extend(stroke_segments)
-                for segment in stroke_segments:
-                    path_text = format_svg_path(segment.points, segment.closed)
-                    if not path_text:
-                        continue
-                    model.strokes.append(NormalizedStrokePath(
-                        type="stroke_path",
-                        path=path_text,
-                        strokeColor=props.get("stroke", ""),
-                        strokeWidth=parse_stroke_width(props),
-                        source="stroke",
-                    ))
-                    if should_promote_stroke_to_detail(props, tag, parser_mode, color_mapping_mode):
-                        model.details.append(NormalizedDetailPath(type="detail_path", path=path_text, source="stroke"))
-
-            if has_fill:
-                op_kind = detect_fill_operation_kind(props, parser_mode, color_mapping_mode)
-                fill_ops.append((op_kind, fill_geometry, tag, fill_rule))
-                if op_kind == "add":
-                    outer_paths, holes = path_strings_from_geometry(fill_geometry)
-                    model.fills.append(NormalizedFillRegion(
-                        type="filled_region",
-                        paths=outer_paths,
-                        fillColor=props.get("fill", ""),
-                        fillRule=fill_rule,
-                        holes=holes,
-                        source="path" if tag == "path" else "shape",
-                    ))
-
-            if not has_fill and not has_stroke:
-                add_ignored("Visible geometry resolved to no printable fill or stroke", elem)
+            classified_elements.append(ClassifiedSvgElement(
+                element=element_label(elem),
+                tag=tag,
+                computed_style=public_props,
+                fill_geometry=fill_geometry,
+                stroke_segments=stroke_segments,
+                fill_rule=fill_rule,
+                fill_classification=fill_classification,
+                has_fill=has_fill,
+                is_cutout_fill=is_cutout_fill,
+                has_stroke=has_stroke,
+                is_stroke_only=not has_fill and not is_cutout_fill and has_stroke,
+            ))
 
             debug_append_parser_entry(debug, parser_entry)
         elif tag in {"image", "pattern"}:
@@ -2392,25 +2740,16 @@ def analyze_svg(
             walk(child, matrix, props, active_clip=element_clip, ref_stack=ref_stack)
 
     walk(root, SVG_MATRIX_IDENTITY, default_props)
-
-    composed_fill = None
-    composed_fill_rule = "evenodd"
-    for op_kind, geometry, source_tag, source_fill_rule in fill_ops:
-        if geometry is None or geometry.is_empty:
-            continue
-        if composed_fill is None or composed_fill.is_empty:
-            composed_fill = geometry if op_kind == "add" else None
-        elif op_kind == "subtract":
-            composed_fill = composed_fill.difference(geometry)
-        else:
-            composed_fill = unary_union([composed_fill, geometry])
-        composed_fill_rule = source_fill_rule
-        if composed_fill is not None and not composed_fill.is_valid:
-            composed_fill = make_valid(composed_fill) if make_valid is not None else composed_fill.buffer(0)
-
-    if composed_fill is not None and not composed_fill.is_empty:
-        bundle.fill_shapes.append(SvgFillShape(geometry=composed_fill, fill_rule=composed_fill_rule, source_tag="composited-visible-fill"))
-        bundle.fill_boundary_segments.extend(geometry_to_boundary_segments(composed_fill))
+    bundle, model, classification_counts = compose_classified_elements(
+        classified_elements,
+        trace_stroke_only_paths=trace_stroke_only_paths,
+        parser_mode=parser_mode,
+        color_mapping_mode=color_mapping_mode,
+    )
+    model.metadata.update(model_metadata)
+    model.warnings.extend(warnings)
+    model.ignored = ignored_non_drawable + model.ignored
+    debug_set_counts(debug, "classification_counts", classification_counts)
 
     try:
         model.computed_bounds = asdict(bounds_from_bundle(bundle))
@@ -2429,8 +2768,17 @@ def extract_svg_bundle(
     debug: Optional[dict[str, Any]] = None,
     parser_mode: str = "visible_geometry",
     color_mapping_mode: bool = False,
+    trace_stroke_only_paths: bool = True,
+    fill_only_dark_svg_fills: bool = True,
 ) -> tuple[GeometryBundle, Optional[SvgBounds], SvgPrintModel]:
-    result = analyze_svg(svg_text, parser_mode=parser_mode, color_mapping_mode=color_mapping_mode, debug=debug)
+    result = analyze_svg(
+        svg_text,
+        parser_mode=parser_mode,
+        color_mapping_mode=color_mapping_mode,
+        trace_stroke_only_paths=trace_stroke_only_paths,
+        fill_only_dark_svg_fills=fill_only_dark_svg_fills,
+        debug=debug,
+    )
     return result.bundle, result.viewbox_bounds, result.print_model
 
 
@@ -2851,6 +3199,13 @@ def generate_toolpaths(
         toolpaths = dedupe_toolpaths(toolpaths, min_segment_length_deg)
     else:
         toolpaths = [path for path in toolpaths if segment_length(path.points) >= min_segment_length_deg]
+    toolpath_counts = {
+        "generated_fill_walls": sum(1 for path in toolpaths if path.kind == "fill-wall"),
+        "generated_infill_paths": sum(1 for path in toolpaths if path.kind == "fill-infill"),
+        "generated_outline_paths": sum(1 for path in toolpaths if path.kind == "outline"),
+        "generated_travel_paths": sum(1 for path in toolpaths if path.kind == "travel"),
+    }
+    debug_set_counts(debug, "toolpath_counts", toolpath_counts)
     debug_append_toolpaths(debug, "final_toolpaths", toolpaths)
     return toolpaths
 
@@ -2959,6 +3314,113 @@ def generate_gcode_from_toolpaths(
     return g, preview
 
 
+def _svg_pipeline_assert(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+
+def run_integrated_svg_pipeline_self_test() -> dict[str, Any]:
+    checks: list[str] = []
+
+    def expect(condition: bool, message: str) -> None:
+        _svg_pipeline_assert(condition, message)
+        checks.append(message)
+
+    compositing_svg = """
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+      <rect x="0" y="0" width="100" height="100" fill="#111111"/>
+      <rect x="30" y="30" width="40" height="40" fill="white"/>
+      <rect x="10" y="10" width="80" height="80" fill="none" stroke="blue" stroke-width="0.5"/>
+    </svg>
+    """
+    result = analyze_svg(compositing_svg, trace_stroke_only_paths=True, fill_only_dark_svg_fills=True, debug={})
+    counts = result.print_model.metadata["classificationCounts"]
+    expect(len(result.bundle.fill_shapes) == 1, "dark fill plus cutout composes into one printable region")
+    expect(abs(result.bundle.fill_shapes[0].geometry.area - 8400.0) < 0.01, "light cutout subtracts from dark fill area")
+    expect(counts["dark_filled_polygons"] == 1 and counts["light_cutout_polygons"] == 1, "dark fill and light cutout counts are classified correctly")
+    expect(counts["stroke_only_paths"] == 1, "stroke-only geometry is tracked separately from fill geometry")
+    toolpaths = generate_toolpaths(
+        result.bundle,
+        enable_fill=True,
+        line_width_mm=0.75,
+        wall_count=1,
+        infill_spacing_mm=0.75,
+        infill_angle_deg=0.0,
+        outline_after_fill=False,
+        min_fill_area_mm2=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=True,
+        small_shape_mode="single-wall",
+        min_segment_length_mm=0.0,
+        debug={},
+    )
+    expect(any(path.kind == "fill-wall" for path in toolpaths), "printable regions generate fill walls")
+    expect(any(path.kind == "fill-infill" for path in toolpaths), "printable regions generate infill when geometry is large enough")
+
+    stroke_only_svg = """
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">
+      <rect x="1" y="1" width="8" height="8" stroke="#000000" stroke-width="0.5"/>
+    </svg>
+    """
+    result = analyze_svg(stroke_only_svg, trace_stroke_only_paths=True, fill_only_dark_svg_fills=True, debug={})
+    counts = result.print_model.metadata["classificationCounts"]
+    expect(len(result.bundle.fill_shapes) == 0, "closed stroke-only geometry does not create fill regions")
+    expect(len(result.bundle.outline_segments) > 0, "stroke-only geometry still creates traceable outline segments")
+    expect(counts["stroke_only_paths"] == 1, "stroke-only path count increments for closed outlines")
+
+    inherited_svg = """
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+      <g style="fill: rgb(0,0,0); fill-opacity: 1;">
+        <rect x="0" y="0" width="40" height="40"/>
+      </g>
+      <g style="fill: rgba(255,255,255,0.9);">
+        <rect x="10" y="10" width="20" height="20"/>
+      </g>
+    </svg>
+    """
+    result = analyze_svg(inherited_svg, trace_stroke_only_paths=True, fill_only_dark_svg_fills=True, debug={})
+    counts = result.print_model.metadata["classificationCounts"]
+    expect(abs(result.bundle.fill_shapes[0].geometry.area - 1200.0) < 0.01, "group-inherited fill styles affect geometry classification")
+    expect(counts["transparent_cutout_polygons"] == 1, "semi-transparent inherited fills become transparent cutouts")
+
+    transparent_svg = """
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+      <rect x="0" y="0" width="100" height="100" fill="#000000"/>
+      <rect x="30" y="30" width="40" height="40" fill="#000000" fill-opacity="0.2"/>
+      <rect x="10" y="10" width="80" height="80" fill="none" stroke="#000000" stroke-opacity="0.2" stroke-width="2"/>
+    </svg>
+    """
+    result = analyze_svg(transparent_svg, trace_stroke_only_paths=True, fill_only_dark_svg_fills=True, debug={})
+    counts = result.print_model.metadata["classificationCounts"]
+    expect(abs(result.bundle.fill_shapes[0].geometry.area - 8400.0) < 0.01, "transparent fills subtract from printable geometry")
+    expect(counts["transparent_cutout_polygons"] == 1, "transparent fill cutouts are counted explicitly")
+    expect(len(result.bundle.outline_segments) == 0, "transparent strokes are ignored for tracing")
+
+    compound_path_svg = """
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+      <path fill="#000000" d="M 0 0 L 100 0 L 100 100 L 0 100 Z M 30 30 L 30 70 L 70 70 L 70 30 Z"/>
+    </svg>
+    """
+    result = analyze_svg(compound_path_svg, trace_stroke_only_paths=True, fill_only_dark_svg_fills=True, debug={})
+    expect(abs(result.bundle.fill_shapes[0].geometry.area - 8400.0) < 0.01, "compound path holes are preserved in fill geometry")
+
+    arsenal_path = os.path.join(os.getcwd(), "Arsenal.svg")
+    if os.path.exists(arsenal_path):
+        arsenal_svg = open(arsenal_path, "r", encoding="utf-8", errors="ignore").read()
+        arsenal_result = analyze_svg(arsenal_svg, trace_stroke_only_paths=True, fill_only_dark_svg_fills=True, debug={})
+        arsenal_polygons = normalize_geometry(arsenal_result.bundle.fill_shapes[0].geometry) if arsenal_result.bundle.fill_shapes else []
+        arsenal_counts = arsenal_result.print_model.metadata["classificationCounts"]
+        expect(bool(arsenal_polygons), "Arsenal.svg produces printable polygons after parsing")
+        expect(len(arsenal_polygons) >= 10, "Arsenal.svg resolves into multiple separated printable polygons")
+        expect(arsenal_counts["transparent_cutout_polygons"] == 0, "Arsenal.svg contains no explicit transparent cutout fills")
+
+    return {
+        "passed": len(checks),
+        "messages": checks,
+    }
+
+
 def is_streamable_gcode_line(line: str) -> bool:
     s = line.strip()
     if not s:
@@ -3059,6 +3521,8 @@ def index():
         default_parser_mode=DEFAULT_PARSER_MODE,
         default_color_mapping_mode=DEFAULT_COLOR_MAPPING_MODE,
         default_enable_fill=DEFAULT_ENABLE_FILL,
+        default_trace_stroke_only_paths=DEFAULT_TRACE_STROKE_ONLY_PATHS,
+        default_fill_only_dark_svg_fills=DEFAULT_FILL_ONLY_DARK_SVG_FILLS,
         default_wall_count=DEFAULT_WALL_COUNT,
         default_infill_spacing_mm=DEFAULT_INFILL_SPACING_MM,
         default_infill_angle_deg=DEFAULT_INFILL_ANGLE_DEG,
@@ -3348,6 +3812,8 @@ def generate_gcode_route():
         color_mapping_mode = validate_bool(request.form.get("color_mapping_mode", DEFAULT_COLOR_MAPPING_MODE))
         line_thickness_mm = float(request.form.get("line_thickness_mm", DEFAULT_LINE_THICKNESS_MM))
         enable_fill = validate_bool(request.form.get("enable_fill", DEFAULT_ENABLE_FILL))
+        trace_stroke_only_paths = validate_bool(request.form.get("trace_stroke_only_paths", DEFAULT_TRACE_STROKE_ONLY_PATHS))
+        fill_only_dark_svg_fills = validate_bool(request.form.get("fill_only_dark_svg_fills", DEFAULT_FILL_ONLY_DARK_SVG_FILLS))
         fill_mode = request.form.get("fill_mode", DEFAULT_FILL_MODE)
         wall_count = validate_non_negative_int(request.form.get("wall_count", DEFAULT_WALL_COUNT), "Wall count", minimum=1, maximum=8)
         infill_pattern = request.form.get("infill_pattern", DEFAULT_INFILL_PATTERN)
@@ -3395,6 +3861,8 @@ def generate_gcode_route():
             debug=debug_data,
             parser_mode=parser_mode,
             color_mapping_mode=color_mapping_mode,
+            trace_stroke_only_paths=trace_stroke_only_paths,
+            fill_only_dark_svg_fills=fill_only_dark_svg_fills,
         )
         if not bundle.outline_segments and not bundle.fill_boundary_segments and not bundle.fill_shapes:
             raise ValueError("; ".join(print_model.diagnostics or ["Visible SVG content could not be normalized into drawable geometry."]))
@@ -3455,6 +3923,7 @@ def generate_gcode_route():
             "toolpath_count": len(toolpaths),
             "point_count": point_count,
             "bounds": asdict(bounds),
+            "viewbox_bounds": asdict(viewbox_bounds) if viewbox_bounds else None,
             "print_model": asdict(print_model),
             "debug": debug_data,
         })
@@ -3474,6 +3943,8 @@ def analyze_svg_route():
         svg_text = file.read().decode("utf-8", errors="ignore")
         parser_mode = request.form.get("parser_mode", DEFAULT_PARSER_MODE)
         color_mapping_mode = validate_bool(request.form.get("color_mapping_mode", DEFAULT_COLOR_MAPPING_MODE))
+        trace_stroke_only_paths = validate_bool(request.form.get("trace_stroke_only_paths", DEFAULT_TRACE_STROKE_ONLY_PATHS))
+        fill_only_dark_svg_fills = validate_bool(request.form.get("fill_only_dark_svg_fills", DEFAULT_FILL_ONLY_DARK_SVG_FILLS))
         debug_pipeline = validate_bool(request.form.get("debug_pipeline", "0"))
 
         if parser_mode not in {"visible_geometry", "detect_visible_print_areas"}:
@@ -3484,6 +3955,8 @@ def analyze_svg_route():
             svg_text,
             parser_mode=parser_mode,
             color_mapping_mode=color_mapping_mode,
+            trace_stroke_only_paths=trace_stroke_only_paths,
+            fill_only_dark_svg_fills=fill_only_dark_svg_fills,
             debug=debug_data,
         )
 
@@ -3493,6 +3966,15 @@ def analyze_svg_route():
             "viewbox_bounds": asdict(result.viewbox_bounds) if result.viewbox_bounds else None,
             "debug": debug_data,
         })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/self-test-svg-pipeline", methods=["POST"])
+def self_test_svg_pipeline_route():
+    try:
+        summary = run_integrated_svg_pipeline_self_test()
+        return jsonify({"ok": True, "summary": summary})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -3579,6 +4061,12 @@ def stop():
 # ============================================================
 
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        summary = run_integrated_svg_pipeline_self_test()
+        print(f"SVG pipeline self-test passed: {summary['passed']} checks")
+        for message in summary["messages"]:
+            print(f" - {message}")
+        raise SystemExit(0)
     print("Starting SVG -> G-code Golf Ball Plotter Controller...")
     print(f"Serial port: {SERIAL_PORT}")
     print(f"X microsteps: {X_MICROSTEPS}")
