@@ -1,5 +1,5 @@
-from app.services._legacy import legacy
+from app.services import pipeline_core
 
-strip_namespace = legacy.strip_namespace
-parse_float = legacy.parse_float
-parse_points_attr = legacy.parse_points_attr
+strip_namespace = pipeline_core.strip_namespace
+parse_float = pipeline_core.parse_float
+parse_points_attr = pipeline_core.parse_points_attr

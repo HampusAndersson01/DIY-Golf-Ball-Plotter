@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from app.services._legacy import legacy
+from app.services import pipeline_core
 
-Point = legacy.Point
-Segment = legacy.Segment
-SvgFillShape = legacy.SvgFillShape
-GeometryBundle = legacy.GeometryBundle
-Toolpath = legacy.Toolpath
-SvgBounds = legacy.SvgBounds
+Point = pipeline_core.Point
+Segment = pipeline_core.Segment
+SvgFillShape = pipeline_core.SvgFillShape
+GeometryBundle = pipeline_core.GeometryBundle
+Toolpath = pipeline_core.Toolpath
+SvgBounds = pipeline_core.SvgBounds

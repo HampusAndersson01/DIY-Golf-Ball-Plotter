@@ -2,18 +2,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from ._legacy import legacy
+from . import pipeline_core
 
 
 class ValidationService:
-    validate_feed = staticmethod(legacy.validate_feed)
-    validate_degrees = staticmethod(legacy.validate_degrees)
-    validate_y_degrees = staticmethod(legacy.validate_y_degrees)
-    validate_servo_s = staticmethod(legacy.validate_servo_s)
-    validate_dwell = staticmethod(legacy.validate_dwell)
-    validate_bool = staticmethod(legacy.validate_bool)
-    validate_non_negative_float = staticmethod(legacy.validate_non_negative_float)
-    validate_non_negative_int = staticmethod(legacy.validate_non_negative_int)
+    validate_feed = staticmethod(pipeline_core.validate_feed)
+    validate_degrees = staticmethod(pipeline_core.validate_degrees)
+    validate_y_degrees = staticmethod(pipeline_core.validate_y_degrees)
+    validate_servo_s = staticmethod(pipeline_core.validate_servo_s)
+    validate_dwell = staticmethod(pipeline_core.validate_dwell)
+    validate_bool = staticmethod(pipeline_core.validate_bool)
+    validate_non_negative_float = staticmethod(pipeline_core.validate_non_negative_float)
+    validate_non_negative_int = staticmethod(pipeline_core.validate_non_negative_int)
 
     def parse_generate_gcode_form(self, form, config) -> dict[str, Any]:
         options = {

@@ -1,4 +1,4 @@
-from app.services._legacy import legacy
+from app.services import pipeline_core
 
-parse_color = legacy.parse_color
-relative_luminance = legacy.relative_luminance
+parse_color = pipeline_core.parse_color
+relative_luminance = pipeline_core.relative_luminance

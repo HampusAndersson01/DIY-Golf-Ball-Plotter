@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from ._legacy import legacy
+from . import pipeline_core
 
 
 class GcodeService:
-    build_pen_position_commands = staticmethod(legacy.build_pen_position_commands)
-    is_streamable_line = staticmethod(legacy.is_streamable_gcode_line)
+    build_pen_position_commands = staticmethod(pipeline_core.build_pen_position_commands)
+    is_streamable_line = staticmethod(pipeline_core.is_streamable_gcode_line)
 
     def generate_from_toolpaths(self, **kwargs):
-        return legacy.generate_gcode_from_toolpaths(
+        return pipeline_core.generate_gcode_from_toolpaths(
             kwargs["toolpaths"],
             kwargs["draw_feed"],
             kwargs["travel_feed"],

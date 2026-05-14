@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from ._legacy import legacy
+from . import pipeline_core
 
 
 class GeometryService:
-    bounds_from_bundle = staticmethod(legacy.bounds_from_bundle)
-    map_bundle_to_angles = staticmethod(legacy.map_bundle_to_angles)
-    apply_placement_transform = staticmethod(legacy.apply_placement_transform)
-    mm_to_ball_degrees = staticmethod(legacy.mm_to_ball_degrees)
-    debug_append_bundle = staticmethod(legacy.debug_append_bundle)
+    bounds_from_bundle = staticmethod(pipeline_core.bounds_from_bundle)
+    map_bundle_to_angles = staticmethod(pipeline_core.map_bundle_to_angles)
+    apply_placement_transform = staticmethod(pipeline_core.apply_placement_transform)
+    mm_to_ball_degrees = staticmethod(pipeline_core.mm_to_ball_degrees)
+    debug_append_bundle = staticmethod(pipeline_core.debug_append_bundle)

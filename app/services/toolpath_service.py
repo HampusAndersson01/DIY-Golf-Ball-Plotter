@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from ._legacy import legacy
+from . import pipeline_core
 
 
 class ToolpathService:
-    generate_toolpaths = staticmethod(legacy.generate_toolpaths)
+    generate_toolpaths = staticmethod(pipeline_core.generate_toolpaths)

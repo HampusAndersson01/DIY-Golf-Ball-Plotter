@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from ._legacy import legacy
+from . import pipeline_core
 
 
 class SelfTestService:
     def run(self):
-        return legacy.run_integrated_svg_pipeline_self_test()
+        return pipeline_core.run_integrated_svg_pipeline_self_test()

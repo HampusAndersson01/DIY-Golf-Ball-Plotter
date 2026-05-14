@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from ._legacy import legacy
+from . import pipeline_core
 
 
 class MachineService:
@@ -92,7 +92,7 @@ class MachineService:
         dwell_ms = self.validation.validate_non_negative_float(data.get(dwell_key, dwell_default), dwell_label, maximum=5000)
         commands = [
             "$X",
-            *legacy.build_pen_position_commands(
+            *pipeline_core.build_pen_position_commands(
                 start_s,
                 s_value,
                 ramp_enabled=ramp_enabled,
@@ -143,7 +143,7 @@ class MachineService:
         )
         commands = ["$X"]
         commands.extend(
-            legacy.build_pen_position_commands(
+            pipeline_core.build_pen_position_commands(
                 start_s,
                 down_s,
                 ramp_enabled=ramp_enabled,
@@ -153,7 +153,7 @@ class MachineService:
             )
         )
         commands.extend(
-            legacy.build_pen_position_commands(
+            pipeline_core.build_pen_position_commands(
                 down_s,
                 up_s,
                 ramp_enabled=ramp_enabled,
@@ -210,7 +210,7 @@ class MachineService:
         )
         commands = ["$X"]
         commands.extend(
-            legacy.build_pen_position_commands(
+            pipeline_core.build_pen_position_commands(
                 start_s,
                 pen_up_s,
                 ramp_enabled=ramp_enabled,
