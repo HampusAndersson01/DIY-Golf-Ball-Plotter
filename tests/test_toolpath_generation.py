@@ -147,3 +147,36 @@ def test_simple_rectangle_infill_becomes_single_zigzag_path():
 
     y_values = [point.y for point in infill_paths[0].points]
     assert max(y_values) > min(y_values)
+
+
+def test_trapezoid_infill_follows_angled_walls_without_fragmenting():
+    line_width_mm = 1.0
+    line_width_deg = mm_to_ball_degrees(line_width_mm)
+    printable = Polygon([
+        (0.0, 0.0),
+        (line_width_deg * 16.0, 0.0),
+        (line_width_deg * 12.0, line_width_deg * 18.0),
+        (line_width_deg * 4.0, line_width_deg * 18.0),
+    ])
+
+    toolpaths = generate_toolpaths(
+        GeometryBundle(printable_geometry=printable),
+        enable_fill=True,
+        line_width_mm=line_width_mm,
+        wall_count=1,
+        infill_density=100.0,
+        infill_spacing_mm=line_width_mm,
+        infill_angle_deg=0.0,
+        outline_after_fill=False,
+        min_fill_area_mm2=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=False,
+        small_shape_mode="single-wall",
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+    )
+
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    assert len(infill_paths) == 1
+    assert len(infill_paths[0].points) > 10

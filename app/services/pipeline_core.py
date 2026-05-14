@@ -101,7 +101,7 @@ except Exception:
 try:
     from shapely import affinity
     from shapely.geometry import GeometryCollection, LineString, MultiLineString, MultiPolygon, Point as ShapelyPoint, Polygon
-    from shapely.ops import polygonize, unary_union
+    from shapely.ops import polygonize, substring, unary_union
     from shapely.validation import make_valid
 except Exception:
     affinity = None
@@ -112,6 +112,7 @@ except Exception:
     ShapelyPoint = None
     Polygon = None
     polygonize = None
+    substring = None
     unary_union = None
     make_valid = None
 
@@ -2137,6 +2138,90 @@ def extract_lines(geometry: Any) -> list[LineString]:
     return []
 
 
+def _line_coords(geometry: Any) -> list[tuple[float, float]]:
+    if geometry is None or geometry.is_empty:
+        return []
+    if isinstance(geometry, LineString):
+        return list(geometry.coords)
+    if isinstance(geometry, MultiLineString):
+        coords: list[tuple[float, float]] = []
+        for line in geometry.geoms:
+            line_coords = list(line.coords)
+            if not line_coords:
+                continue
+            if coords and coords[-1] == line_coords[0]:
+                coords.extend(line_coords[1:])
+            else:
+                coords.extend(line_coords)
+        return coords
+    return []
+
+
+def _concat_coords(*parts: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    merged: list[tuple[float, float]] = []
+    for part in parts:
+        if not part:
+            continue
+        if merged and merged[-1] == part[0]:
+            merged.extend(part[1:])
+        else:
+            merged.extend(part)
+    return merged
+
+
+def boundary_connector_coords(
+    polygon: Polygon,
+    start: tuple[float, float],
+    end: tuple[float, float],
+    *,
+    tolerance: float = 1e-6,
+) -> list[tuple[float, float]]:
+    if substring is None:
+        return []
+
+    candidate_rings = [LineString(polygon.exterior.coords)]
+    candidate_rings.extend(LineString(interior.coords) for interior in polygon.interiors)
+
+    start_pt = ShapelyPoint(start)
+    end_pt = ShapelyPoint(end)
+    best_coords: list[tuple[float, float]] = []
+    best_length = float("inf")
+
+    for ring in candidate_rings:
+        if ring.distance(start_pt) > tolerance or ring.distance(end_pt) > tolerance:
+            continue
+
+        ring_length = ring.length
+        if ring_length <= tolerance:
+            continue
+
+        start_d = ring.project(start_pt)
+        end_d = ring.project(end_pt)
+
+        forward = _line_coords(substring(ring, start_d, end_d))
+        if start_d <= end_d:
+            wrap = _concat_coords(
+                _line_coords(substring(ring, end_d, ring_length)),
+                _line_coords(substring(ring, 0.0, start_d)),
+            )
+        else:
+            wrap = _concat_coords(
+                _line_coords(substring(ring, start_d, ring_length)),
+                _line_coords(substring(ring, 0.0, end_d)),
+            )
+
+        backward = list(reversed(wrap))
+        for coords in (forward, backward):
+            if len(coords) < 2:
+                continue
+            length = LineString(coords).length
+            if length < best_length:
+                best_length = length
+                best_coords = coords
+
+    return best_coords
+
+
 def path_signature(path: Toolpath, decimals: int = 4) -> tuple[Any, ...]:
     return (
         path.kind,
@@ -2299,54 +2384,65 @@ class SlicerService:
         if not all(math.isfinite(value) for value in [min_x, min_y, max_x, max_y]):
             return []
 
-        row_segments: list[list[tuple[int, list[tuple[float, float]]]]] = []
-        row = 0
-        y = min_y
-        while y <= max_y + 1e-6:
-            raw_scan = LineString([(min_x - spacing_deg, y), (max_x + spacing_deg, y)])
-            if debug is not None:
-                raw_scan_world = affinity.rotate(raw_scan, angle_deg, origin=origin)
-                debug_append_toolpaths(debug, "raw_scanlines", [
-                    Toolpath(points=[Point(x, y2) for x, y2 in raw_scan_world.coords], kind="debug-raw-scanline", closed=False)
-                ])
-
-            clipped = rotated.intersection(raw_scan)
-            clipped_segments: list[list[tuple[float, float]]] = []
-            for line in extract_lines(clipped):
-                if line.length < min_segment_length_deg:
-                    continue
-                coords = list(line.coords)
-                if row % 2 == 1:
-                    coords = list(reversed(coords))
-                clipped_segments.append(coords)
-            clipped_segments.sort(
-                key=lambda coords: coords[0][0],
-                reverse=(row % 2 == 1),
-            )
-
-            row_paths: list[Toolpath] = []
-            for coords in clipped_segments:
-                world_line = affinity.rotate(LineString(coords), angle_deg, origin=origin)
-                points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
-                if len(points) >= 2:
-                    row_paths.append(Toolpath(points=points, kind=kind, closed=False))
-            debug_append_toolpaths(debug, "clipped_infill_lines", row_paths)
-            if clipped_segments:
-                row_segments.append([(row, coords) for coords in clipped_segments])
-            y += spacing_deg
-            row += 1
-
         toolpaths: list[Toolpath] = []
-        current_coords: list[tuple[float, float]] = []
-        for segments in row_segments:
-            for _, coords in segments:
+        for polygon in normalize_geometry(rotated):
+            cover_region = polygon.buffer(max(tolerance_deg, 1e-6), join_style=1)
+            poly_min_x, poly_min_y, poly_max_x, poly_max_y = polygon.bounds
+            row_segments: list[list[tuple[float, float]]] = []
+            row = 0
+            y = poly_min_y
+            while y <= poly_max_y + 1e-6:
+                raw_scan = LineString([(poly_min_x - spacing_deg, y), (poly_max_x + spacing_deg, y)])
+                if debug is not None:
+                    raw_scan_world = affinity.rotate(raw_scan, angle_deg, origin=origin)
+                    debug_append_toolpaths(debug, "raw_scanlines", [
+                        Toolpath(points=[Point(x, y2) for x, y2 in raw_scan_world.coords], kind="debug-raw-scanline", closed=False)
+                    ])
+
+                clipped = polygon.intersection(raw_scan)
+                clipped_segments: list[list[tuple[float, float]]] = []
+                for line in extract_lines(clipped):
+                    if line.length < min_segment_length_deg:
+                        continue
+                    coords = list(line.coords)
+                    if row % 2 == 1:
+                        coords = list(reversed(coords))
+                    clipped_segments.append(coords)
+                clipped_segments.sort(
+                    key=lambda coords: coords[0][0],
+                    reverse=(row % 2 == 1),
+                )
+
+                row_paths: list[Toolpath] = []
+                for coords in clipped_segments:
+                    world_line = affinity.rotate(LineString(coords), angle_deg, origin=origin)
+                    points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
+                    if len(points) >= 2:
+                        row_paths.append(Toolpath(points=points, kind=kind, closed=False))
+                        row_segments.append(coords)
+                debug_append_toolpaths(debug, "clipped_infill_lines", row_paths)
+                y += spacing_deg
+                row += 1
+
+            current_coords: list[tuple[float, float]] = []
+            for coords in row_segments:
                 if not current_coords:
                     current_coords = list(coords)
                     continue
 
                 connector = LineString([current_coords[-1], coords[0]])
-                if rotated.covers(connector):
-                    current_coords.extend(coords)
+                if cover_region.covers(connector):
+                    current_coords = _concat_coords(current_coords, coords)
+                    continue
+
+                boundary_coords = boundary_connector_coords(
+                    polygon,
+                    current_coords[-1],
+                    coords[0],
+                    tolerance=max(tolerance_deg, 1e-6),
+                )
+                if len(boundary_coords) >= 2 and cover_region.covers(LineString(boundary_coords)):
+                    current_coords = _concat_coords(current_coords, boundary_coords, coords)
                     continue
 
                 world_line = affinity.rotate(LineString(current_coords), angle_deg, origin=origin)
@@ -2355,11 +2451,11 @@ class SlicerService:
                     toolpaths.append(Toolpath(points=points, kind=kind, closed=False))
                 current_coords = list(coords)
 
-        if current_coords:
-            world_line = affinity.rotate(LineString(current_coords), angle_deg, origin=origin)
-            points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
-            if len(points) >= 2:
-                toolpaths.append(Toolpath(points=points, kind=kind, closed=False))
+            if current_coords:
+                world_line = affinity.rotate(LineString(current_coords), angle_deg, origin=origin)
+                points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
+                if len(points) >= 2:
+                    toolpaths.append(Toolpath(points=points, kind=kind, closed=False))
 
         return toolpaths
 
