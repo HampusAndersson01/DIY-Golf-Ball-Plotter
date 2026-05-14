@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "golfball-plotter"
+version = "0.1.0"
+description = "Refactored Flask SVG-to-G-code golf ball plotter controller"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "flask>=3.0",
+  "pyserial>=3.5",
+  "svgpathtools>=1.6",
+  "shapely>=2.0",
+  "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

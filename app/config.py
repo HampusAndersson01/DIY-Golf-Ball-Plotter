@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+import os
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+class Config:
+    SECRET_KEY = os.getenv("SECRET_KEY", "dev")
+    MAX_CONTENT_LENGTH = _env_int("MAX_CONTENT_LENGTH", 2 * 1024 * 1024)
+
+    FLASK_HOST = os.getenv("FLASK_HOST", "127.0.0.1")
+    FLASK_PORT = _env_int("FLASK_PORT", 5000)
+    FLASK_DEBUG = _env_bool("FLASK_DEBUG", False)
+
+    SERIAL_PORT = os.getenv("SERIAL_PORT", "COM12")
+    BAUD_RATE = _env_int("BAUD_RATE", 115200)
+
+    MOTOR_FULL_STEPS_PER_REV = _env_int("MOTOR_FULL_STEPS_PER_REV", 200)
+    X_MICROSTEPS = _env_int("X_MICROSTEPS", 16)
+    Y_MICROSTEPS = _env_int("Y_MICROSTEPS", 16)
+
+    X_DRAW_MIN = _env_float("X_DRAW_MIN", -180.0)
+    X_DRAW_MAX = _env_float("X_DRAW_MAX", 180.0)
+    Y_DRAW_MIN = _env_float("Y_DRAW_MIN", -45.0)
+    Y_DRAW_MAX = _env_float("Y_DRAW_MAX", 45.0)
+
+    BALL_CENTER_X = _env_float("BALL_CENTER_X", 0.0)
+    BALL_CENTER_Y = _env_float("BALL_CENTER_Y", 0.0)
+    BALL_DIAMETER_MM = _env_float("BALL_DIAMETER_MM", 42.67)
+
+    DEFAULT_X_MAX_FEED = _env_float("DEFAULT_X_MAX_FEED", 6000.0)
+    DEFAULT_Y_MAX_FEED = _env_float("DEFAULT_Y_MAX_FEED", 6000.0)
+    DEFAULT_X_ACCELERATION = _env_float("DEFAULT_X_ACCELERATION", 100.0)
+    DEFAULT_Y_ACCELERATION = _env_float("DEFAULT_Y_ACCELERATION", 100.0)
+    DEFAULT_DRAW_FEED = _env_float("DEFAULT_DRAW_FEED", 1200.0)
+    DEFAULT_TRAVEL_FEED = _env_float("DEFAULT_TRAVEL_FEED", 3000.0)
+    DEFAULT_LINE_THICKNESS_MM = _env_float("DEFAULT_LINE_THICKNESS_MM", 0.75)
+
+    DEFAULT_PEN_UP_S = _env_int("DEFAULT_PEN_UP_S", 575)
+    DEFAULT_PEN_DOWN_S = _env_int("DEFAULT_PEN_DOWN_S", 700)
+    DEFAULT_SERVO_DWELL = _env_float("DEFAULT_SERVO_DWELL", 0.06)
+    DEFAULT_SERVO_RAMP_ENABLED = _env_bool("DEFAULT_SERVO_RAMP_ENABLED", True)
+    DEFAULT_SERVO_RAMP_STEP = _env_int("DEFAULT_SERVO_RAMP_STEP", 20)
+    DEFAULT_SERVO_RAMP_DELAY_MS = _env_float("DEFAULT_SERVO_RAMP_DELAY_MS", 10.0)
+    DEFAULT_PEN_UP_DWELL_MS = _env_float("DEFAULT_PEN_UP_DWELL_MS", 30.0)
+    DEFAULT_PEN_DOWN_DWELL_MS = _env_float("DEFAULT_PEN_DOWN_DWELL_MS", 60.0)
+    MIN_SERVO_S = _env_int("MIN_SERVO_S", 500)
+    MAX_SERVO_S = _env_int("MAX_SERVO_S", 1000)
+
+    DEFAULT_SAMPLE_STEP_DEG = _env_float("DEFAULT_SAMPLE_STEP_DEG", 1.0)
+    DEFAULT_CURVE_SAMPLES = _env_int("DEFAULT_CURVE_SAMPLES", 80)
+    DEFAULT_MARGIN_PERCENT = _env_float("DEFAULT_MARGIN_PERCENT", 4.0)
+    DEFAULT_ROTATION_DEG = _env_float("DEFAULT_ROTATION_DEG", 0.0)
+    DEFAULT_ENABLE_FILL = _env_bool("DEFAULT_ENABLE_FILL", True)
+    DEFAULT_FILL_MODE = os.getenv("DEFAULT_FILL_MODE", "slicer")
+    DEFAULT_PARSER_MODE = os.getenv("DEFAULT_PARSER_MODE", "visible_geometry")
+    DEFAULT_COLOR_MAPPING_MODE = _env_bool("DEFAULT_COLOR_MAPPING_MODE", False)
+    DEFAULT_TRACE_STROKE_ONLY_PATHS = _env_bool("DEFAULT_TRACE_STROKE_ONLY_PATHS", True)
+    DEFAULT_FILL_ONLY_DARK_SVG_FILLS = _env_bool("DEFAULT_FILL_ONLY_DARK_SVG_FILLS", True)
+    DEFAULT_WALL_COUNT = _env_int("DEFAULT_WALL_COUNT", 1)
+    DEFAULT_INFILL_PATTERN = os.getenv("DEFAULT_INFILL_PATTERN", "zigzag")
+    DEFAULT_INFILL_DENSITY = _env_float("DEFAULT_INFILL_DENSITY", 100.0)
+    DEFAULT_INFILL_SPACING_MM = _env_float("DEFAULT_INFILL_SPACING_MM", 0.75)
+    DEFAULT_INFILL_ANGLE_DEG = _env_float("DEFAULT_INFILL_ANGLE_DEG", 0.0)
+    DEFAULT_OUTLINE_AFTER_FILL = _env_bool("DEFAULT_OUTLINE_AFTER_FILL", False)
+    DEFAULT_MIN_FILL_AREA_MM2 = _env_float("DEFAULT_MIN_FILL_AREA_MM2", 1.0)
+    DEFAULT_MIN_FILL_WIDTH_MM = _env_float("DEFAULT_MIN_FILL_WIDTH_MM", 0.75)
+    DEFAULT_SIMPLIFY_TOLERANCE_MM = _env_float("DEFAULT_SIMPLIFY_TOLERANCE_MM", 0.05)
+    DEFAULT_REMOVE_DUPLICATE_PATHS = _env_bool("DEFAULT_REMOVE_DUPLICATE_PATHS", True)
+    DEFAULT_SMALL_SHAPE_MODE = os.getenv("DEFAULT_SMALL_SHAPE_MODE", "single-wall")
+    DEFAULT_MIN_SEGMENT_LENGTH_MM = _env_float("DEFAULT_MIN_SEGMENT_LENGTH_MM", 0.5)
+    DEFAULT_TRAVEL_OPTIMIZATION = os.getenv("DEFAULT_TRAVEL_OPTIMIZATION", "nearest-neighbor")
+
+    SVG_DARK_FILL_LUMINANCE_THRESHOLD = _env_float("SVG_DARK_FILL_LUMINANCE_THRESHOLD", 0.42)
+    SVG_LIGHT_CUTOUT_LUMINANCE_THRESHOLD = _env_float("SVG_LIGHT_CUTOUT_LUMINANCE_THRESHOLD", 0.82)
+    SVG_MIN_PRINT_OPACITY = _env_float("SVG_MIN_PRINT_OPACITY", 0.99)

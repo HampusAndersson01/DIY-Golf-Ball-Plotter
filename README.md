@@ -1,44 +1,22 @@
-# Golfball Printer
+# Golfball Plotter
 
-Small collection of Python scripts to run and test a CNC plotter adapted for golf-ball artwork.
+Refactored Flask application for converting SVG artwork into G-code for a GRBL-driven golf ball plotter.
 
-Files
-- `cnc_test.py` — simple tests for CNC/serial connectivity.
-- `cnc_web_controller.py` — web-based controller (Flask or similar; run locally).
-- `golf_ball_plotter_svg_gcode_runner.py` — load SVG/gcode and send to the plotter.
+## Run
 
-Requirements
-- Python 3.8+ on Windows
-- `pyserial` for serial communication
-- `svgpathtools` for SVG path flattening
-- `shapely` for slicer-style fill geometry
-
-Quickstart (Windows)
-1. Create and activate a virtual environment:
-
-```powershell
-python -m venv .venv
-& .venv\Scripts\Activate.ps1
+```bash
+pip install -e .[dev]
+python run.py
 ```
 
-2. Install dependencies:
+## Notes
 
-```powershell
-python -m pip install -r requirements.txt
+- The legacy SVG parsing, geometry, and G-code algorithms are preserved through service wrappers to avoid behavior drift during the refactor.
+- The raw SVG preview in the browser is intended for a trusted local workflow only. If this UI is ever exposed remotely, client-side SVG rendering should be sanitized or replaced.
+- Upload size is limited with `MAX_CONTENT_LENGTH`.
+
+## Tests
+
+```bash
+pytest
 ```
-
-3. Edit the scripts to set the correct serial/COM port for your device, then run a script:
-
-```powershell
-python golf_ball_plotter_svg_gcode_runner.py
-python cnc_web_controller.py
-python cnc_test.py
-```
-
-Notes
-- Adjust serial settings (baud rate, COM port) inside the scripts before connecting to hardware.
-- On Windows, prefer `python -m pip ...` over `pip ...` if the pip launcher is broken.
-- Sample SVG for fill testing: `samples/slicer_fill_test.svg`
-
-License
-- No license specified. Add one if you intend to publish this project.
