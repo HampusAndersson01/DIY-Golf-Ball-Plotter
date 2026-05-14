@@ -22,14 +22,14 @@ let latestGcode = [];
     return document.getElementById(id).checked;
   }
 
-  const SERVER_DEFAULTS = {
-    penUpS: {{ default_pen_up_s }},
-    penDownS: {{ default_pen_down_s }},
-    penUpDwellMs: {{ default_pen_up_dwell_ms }},
-    penDownDwellMs: {{ default_pen_down_dwell_ms }},
-    servoRampEnabled: {{ 'true' if default_servo_ramp_enabled else 'false' }},
-    servoRampStep: {{ default_servo_ramp_step }},
-    servoRampDelayMs: {{ default_servo_ramp_delay_ms }}
+  const SERVER_DEFAULTS = window.SERVER_DEFAULTS || {
+    penUpS: 575,
+    penDownS: 700,
+    penUpDwellMs: 30,
+    penDownDwellMs: 60,
+    servoRampEnabled: true,
+    servoRampStep: 20,
+    servoRampDelayMs: 10
   };
 
   function resetServoUiDefaults() {

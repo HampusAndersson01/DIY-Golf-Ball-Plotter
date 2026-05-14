@@ -357,6 +357,17 @@
     </div>
   </div>
 
+  <script>
+    window.SERVER_DEFAULTS = {
+      penUpS: {{ default_pen_up_s|tojson }},
+      penDownS: {{ default_pen_down_s|tojson }},
+      penUpDwellMs: {{ default_pen_up_dwell_ms|tojson }},
+      penDownDwellMs: {{ default_pen_down_dwell_ms|tojson }},
+      servoRampEnabled: {{ default_servo_ramp_enabled|tojson }},
+      servoRampStep: {{ default_servo_ramp_step|tojson }},
+      servoRampDelayMs: {{ default_servo_ramp_delay_ms|tojson }}
+    };
+  </script>
   <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>

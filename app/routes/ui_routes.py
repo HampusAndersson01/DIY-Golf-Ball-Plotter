@@ -1,4 +1,4 @@
-from flask import Blueprint, current_app, jsonify, render_template
+from flask import Blueprint, Response, current_app, jsonify, render_template
 
 from app.extensions import get_state
 
@@ -63,3 +63,8 @@ def get_machine_state():
         "servo_ramp_delay_ms": config["DEFAULT_SERVO_RAMP_DELAY_MS"],
     }
     return jsonify(snapshot)
+
+
+@ui_bp.get("/favicon.ico")
+def favicon():
+    return Response(status=204)
