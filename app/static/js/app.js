@@ -867,6 +867,7 @@ function buildRasterForm(file) {
   if (getValue("minFillWidthMm") !== "") form.append("min_fill_width_mm", getNum("minFillWidthMm"));
   form.append("simplify_tolerance_mm", getNum("simplifyToleranceMm"));
   form.append("remove_duplicate_paths", getBool("removeDuplicatePaths") ? "1" : "0");
+  form.append("allow_pen_down_infill_connectors", getBool("allowPenDownInfillConnectors") ? "1" : "0");
   form.append("small_shape_mode", byId("smallShapeMode").value);
   form.append("thin_detail_mode", getBool("thinDetailMode") ? "1" : "0");
   form.append("thin_detail_min_area_mm2", getNum("thinDetailMinAreaMm2"));
@@ -1015,6 +1016,8 @@ function previewStyle(kind, depth = 1) {
   if (kind === "fill-wall") return { stroke: `rgba(245, 158, 11, ${alpha})`, width: 2.6, dash: [] };
   if (kind === "fill-infill") return { stroke: `rgba(45, 212, 191, ${alpha})`, width: 1.7, dash: [] };
   if (kind === "detail-trace") return { stroke: `rgba(232, 121, 249, ${alpha})`, width: 2.1, dash: [] };
+  if (kind === "debug-valid-connector") return { stroke: `rgba(34, 197, 94, ${alpha})`, width: 1.6, dash: [] };
+  if (kind === "debug-rejected-connector") return { stroke: `rgba(239, 68, 68, ${alpha})`, width: 1.4, dash: [8, 6] };
   return { stroke: `rgba(148, 163, 184, ${alpha * 0.9})`, width: 1.1, dash: [6, 6] };
 }
 

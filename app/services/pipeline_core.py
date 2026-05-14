@@ -62,6 +62,7 @@ RUNTIME_KEYS = [
     "DEFAULT_THIN_DETAIL_OVERLAP",
     "DEFAULT_MIN_SEGMENT_LENGTH_MM",
     "DEFAULT_TRAVEL_OPTIMIZATION",
+    "DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS",
     "SVG_DARK_FILL_LUMINANCE_THRESHOLD",
     "SVG_LIGHT_CUTOUT_LUMINANCE_THRESHOLD",
     "SVG_MIN_PRINT_OPACITY",
@@ -193,6 +194,7 @@ DEFAULT_THIN_DETAIL_SIMPLIFY_MM = 0.1
 DEFAULT_THIN_DETAIL_OVERLAP = True
 DEFAULT_MIN_SEGMENT_LENGTH_MM = 0.5
 DEFAULT_TRAVEL_OPTIMIZATION = "nearest-neighbor"
+DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS = True
 SVG_DARK_FILL_LUMINANCE_THRESHOLD = 0.42
 SVG_LIGHT_CUTOUT_LUMINANCE_THRESHOLD = 0.82
 SVG_MIN_PRINT_OPACITY = 0.99
@@ -350,6 +352,7 @@ class SlicerSettings:
     thin_detail_overlap: bool = DEFAULT_THIN_DETAIL_OVERLAP
     min_segment_length_mm: float = DEFAULT_MIN_SEGMENT_LENGTH_MM
     travel_optimization: str = DEFAULT_TRAVEL_OPTIMIZATION
+    allow_pen_down_infill_connectors: bool = DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS
 
 
 @dataclass
@@ -2364,6 +2367,25 @@ class SlicerService:
         density_scale = max(0.01, settings.infill_density / 100.0)
         return max(mm_to_ball_degrees(settings.line_width_mm) * 0.25, mm_to_ball_degrees(base_spacing_mm) / density_scale)
 
+    def _emit_debug_connector(
+        self,
+        debug: Optional[dict[str, Any]],
+        key: str,
+        start: tuple[float, float],
+        end: tuple[float, float],
+        angle_deg: float,
+        origin: tuple[float, float],
+        kind: str,
+    ) -> None:
+        if debug is None or nearly_same_point(Point(*start), Point(*end)):
+            return
+        world_line = affinity.rotate(LineString([start, end]), angle_deg, origin=origin)
+        debug_append_toolpaths(
+            debug,
+            key,
+            [Toolpath(points=[Point(x, y) for x, y in world_line.coords], kind=kind, closed=False)],
+        )
+
     def _generate_scanline_infill(
         self,
         region: Any,
@@ -2373,6 +2395,7 @@ class SlicerService:
         min_segment_length_deg: float,
         tolerance_deg: float,
         kind: str = "fill-infill",
+        allow_pen_down_infill_connectors: bool = DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS,
         debug: Optional[dict[str, Any]] = None,
     ) -> list[Toolpath]:
         if region is None or region.is_empty or spacing_deg <= 0:
@@ -2385,10 +2408,11 @@ class SlicerService:
             return []
 
         toolpaths: list[Toolpath] = []
+        epsilon = max(tolerance_deg, 1e-6)
         for polygon in normalize_geometry(rotated):
-            cover_region = polygon.buffer(max(tolerance_deg, 1e-6), join_style=1)
+            cover_region = polygon.buffer(epsilon, join_style=1)
             poly_min_x, poly_min_y, poly_max_x, poly_max_y = polygon.bounds
-            row_segments: list[list[tuple[float, float]]] = []
+            rows: list[list[list[tuple[float, float]]]] = []
             row = 0
             y = poly_min_y
             while y <= poly_max_y + 1e-6:
@@ -2405,13 +2429,14 @@ class SlicerService:
                     if line.length < min_segment_length_deg:
                         continue
                     coords = list(line.coords)
-                    if row % 2 == 1:
-                        coords = list(reversed(coords))
                     clipped_segments.append(coords)
                 clipped_segments.sort(
-                    key=lambda coords: coords[0][0],
-                    reverse=(row % 2 == 1),
+                    key=lambda coords: min(point[0] for point in coords),
                 )
+                if row % 2 == 1:
+                    clipped_segments = [list(reversed(coords)) for coords in reversed(clipped_segments)]
+
+                rows.append(clipped_segments)
 
                 row_paths: list[Toolpath] = []
                 for coords in clipped_segments:
@@ -2419,43 +2444,74 @@ class SlicerService:
                     points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
                     if len(points) >= 2:
                         row_paths.append(Toolpath(points=points, kind=kind, closed=False))
-                        row_segments.append(coords)
                 debug_append_toolpaths(debug, "clipped_infill_lines", row_paths)
                 y += spacing_deg
                 row += 1
 
-            current_coords: list[tuple[float, float]] = []
-            for coords in row_segments:
-                if not current_coords:
+            if not allow_pen_down_infill_connectors:
+                for row_segments in rows:
+                    for coords in row_segments:
+                        world_line = affinity.rotate(LineString(coords), angle_deg, origin=origin)
+                        points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
+                        if len(points) >= 2:
+                            toolpaths.append(Toolpath(points=points, kind=kind, closed=False))
+                continue
+
+            used = [[False for _ in row_segments] for row_segments in rows]
+            for row_index, row_segments in enumerate(rows):
+                for segment_index, coords in enumerate(row_segments):
+                    if used[row_index][segment_index]:
+                        continue
                     current_coords = list(coords)
-                    continue
+                    used[row_index][segment_index] = True
+                    current_row = row_index
 
-                connector = LineString([current_coords[-1], coords[0]])
-                if cover_region.covers(connector):
-                    current_coords = _concat_coords(current_coords, coords)
-                    continue
+                    while True:
+                        next_row = current_row + 1
+                        while next_row < len(rows) and not any(not flag for flag in used[next_row]):
+                            next_row += 1
+                        if next_row >= len(rows):
+                            break
 
-                boundary_coords = boundary_connector_coords(
-                    polygon,
-                    current_coords[-1],
-                    coords[0],
-                    tolerance=max(tolerance_deg, 1e-6),
-                )
-                if len(boundary_coords) >= 2 and cover_region.covers(LineString(boundary_coords)):
-                    current_coords = _concat_coords(current_coords, boundary_coords, coords)
-                    continue
+                        candidates: list[tuple[float, int, list[tuple[float, float]]]] = []
+                        for next_index, next_coords in enumerate(rows[next_row]):
+                            if used[next_row][next_index]:
+                                continue
+                            connector = LineString([current_coords[-1], next_coords[0]])
+                            if cover_region.covers(connector):
+                                candidates.append((connector.length, next_index, next_coords))
+                            else:
+                                self._emit_debug_connector(
+                                    debug,
+                                    "rejected_infill_connectors",
+                                    current_coords[-1],
+                                    next_coords[0],
+                                    angle_deg,
+                                    origin,
+                                    "debug-rejected-connector",
+                                )
 
-                world_line = affinity.rotate(LineString(current_coords), angle_deg, origin=origin)
-                points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
-                if len(points) >= 2:
-                    toolpaths.append(Toolpath(points=points, kind=kind, closed=False))
-                current_coords = list(coords)
+                        if not candidates:
+                            break
 
-            if current_coords:
-                world_line = affinity.rotate(LineString(current_coords), angle_deg, origin=origin)
-                points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
-                if len(points) >= 2:
-                    toolpaths.append(Toolpath(points=points, kind=kind, closed=False))
+                        _, next_index, next_coords = min(candidates, key=lambda item: item[0])
+                        self._emit_debug_connector(
+                            debug,
+                            "valid_infill_connectors",
+                            current_coords[-1],
+                            next_coords[0],
+                            angle_deg,
+                            origin,
+                            "debug-valid-connector",
+                        )
+                        current_coords = _concat_coords(current_coords, next_coords)
+                        used[next_row][next_index] = True
+                        current_row = next_row
+
+                    world_line = affinity.rotate(LineString(current_coords), angle_deg, origin=origin)
+                    points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
+                    if len(points) >= 2:
+                        toolpaths.append(Toolpath(points=points, kind=kind, closed=False))
 
         return toolpaths
 
@@ -2522,6 +2578,7 @@ class SlicerService:
         tolerance_deg: float,
         detail_tolerance_deg: float,
         allow_overlap: bool,
+        allow_pen_down_infill_connectors: bool = DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS,
         debug: Optional[dict[str, Any]] = None,
     ) -> list[Toolpath]:
         if region is None or region.is_empty:
@@ -2540,6 +2597,7 @@ class SlicerService:
             min_segment_length_deg=min_segment_length_deg,
             tolerance_deg=max(tolerance_deg, detail_tolerance_deg),
             kind="detail-trace",
+            allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
             debug=debug,
         )
         if detail_paths:
@@ -2574,6 +2632,7 @@ class SlicerService:
         thin_detail_simplify_mm: float = DEFAULT_THIN_DETAIL_SIMPLIFY_MM,
         thin_detail_overlap: bool = DEFAULT_THIN_DETAIL_OVERLAP,
         travel_optimization: str = DEFAULT_TRAVEL_OPTIMIZATION,
+        allow_pen_down_infill_connectors: bool = DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS,
         debug: Optional[dict[str, Any]] = None,
     ) -> list[Toolpath]:
         if printable_geometry is None or printable_geometry.is_empty or line_width_mm <= 0:
@@ -2590,6 +2649,7 @@ class SlicerService:
             wall_count=wall_count,
             infill_density=infill_density,
             infill_spacing_mm=infill_spacing_mm,
+            allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
         ))
 
         debug_append_geometry(debug, "final_composed_fill_region", printable_geometry, "final-composed-fill")
@@ -2656,6 +2716,7 @@ class SlicerService:
                     angle_deg=infill_angle_deg,
                     min_segment_length_deg=min_segment_length_deg,
                     tolerance_deg=simplify_tolerance_deg,
+                    allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
                     debug=debug,
                 )
             multi_pass_infill = len(infill_paths) >= 2 or any(len(path.points) >= 4 for path in infill_paths)
@@ -2673,6 +2734,7 @@ class SlicerService:
                         tolerance_deg=simplify_tolerance_deg,
                         detail_tolerance_deg=thin_detail_tolerance_deg,
                         allow_overlap=thin_detail_overlap,
+                        allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
                         debug=debug,
                     )
                 elif small_shape_mode == "centerline":
@@ -2744,6 +2806,7 @@ def generate_toolpaths(
     thin_detail_overlap: bool = DEFAULT_THIN_DETAIL_OVERLAP,
     min_segment_length_mm: float = DEFAULT_MIN_SEGMENT_LENGTH_MM,
     travel_optimization: str = DEFAULT_TRAVEL_OPTIMIZATION,
+    allow_pen_down_infill_connectors: bool = DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS,
     debug: Optional[dict[str, Any]] = None,
 ) -> list[Toolpath]:
     toolpaths: list[Toolpath] = []
@@ -2779,6 +2842,7 @@ def generate_toolpaths(
             thin_detail_simplify_mm=thin_detail_simplify_mm,
             thin_detail_overlap=thin_detail_overlap,
             travel_optimization=travel_optimization,
+            allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
             debug=debug,
         ))
 

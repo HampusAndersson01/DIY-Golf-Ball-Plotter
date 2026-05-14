@@ -520,6 +520,10 @@
                   <span>Remove duplicate / tiny paths</span>
                 </label>
                 <label class="checkbox">
+                  <input id="allowPenDownInfillConnectors" type="checkbox" {% if default_allow_pen_down_infill_connectors %}checked{% endif %} />
+                  <span>Allow pen-down infill connectors when fully inside fill region</span>
+                </label>
+                <label class="checkbox">
                   <input id="includeComments" type="checkbox" checked />
                   <span>Include comments in G-code</span>
                 </label>

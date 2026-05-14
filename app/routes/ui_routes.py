@@ -46,6 +46,7 @@ def index():
         default_remove_duplicate_paths=config["DEFAULT_REMOVE_DUPLICATE_PATHS"],
         default_min_segment_length_mm=config["DEFAULT_MIN_SEGMENT_LENGTH_MM"],
         default_travel_optimization=config["DEFAULT_TRAVEL_OPTIMIZATION"],
+        default_allow_pen_down_infill_connectors=config["DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS"],
         default_thin_detail_mode=config["DEFAULT_THIN_DETAIL_MODE"],
         default_thin_detail_min_area_mm2=config["DEFAULT_THIN_DETAIL_MIN_AREA_MM2"],
         default_thin_detail_simplify_mm=config["DEFAULT_THIN_DETAIL_SIMPLIFY_MM"],

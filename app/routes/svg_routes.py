@@ -85,6 +85,7 @@ def generate_gcode_route():
                 thin_detail_overlap=options["thin_detail_overlap"],
                 min_segment_length_mm=options["min_segment_length_mm"],
                 travel_optimization=options["travel_optimization"],
+                allow_pen_down_infill_connectors=options["allow_pen_down_infill_connectors"],
                 debug=debug_data,
             )
             if not toolpaths:
@@ -170,6 +171,7 @@ def generate_gcode_route():
             thin_detail_overlap=options["thin_detail_overlap"],
             min_segment_length_mm=options["min_segment_length_mm"],
             travel_optimization=options["travel_optimization"],
+            allow_pen_down_infill_connectors=options["allow_pen_down_infill_connectors"],
             debug=debug_data,
         )
         if not toolpaths:

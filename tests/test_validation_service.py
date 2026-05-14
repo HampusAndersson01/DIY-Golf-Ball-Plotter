@@ -34,6 +34,7 @@ def make_config():
         "DEFAULT_THIN_DETAIL_OVERLAP": True,
         "DEFAULT_MIN_SEGMENT_LENGTH_MM": 0.5,
         "DEFAULT_TRAVEL_OPTIMIZATION": "nearest-neighbor",
+        "DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS": True,
         "DEFAULT_RASTER_MAX_COLORS": 8,
         "DEFAULT_RASTER_COLOR_TOLERANCE": 24,
         "DEFAULT_RASTER_MIN_COMPONENT_AREA_PX": 8,
@@ -48,6 +49,7 @@ def make_config():
         "DEFAULT_SERVO_RAMP_DELAY_MS": 10.0,
         "DEFAULT_PEN_UP_DWELL_MS": 30.0,
         "DEFAULT_PEN_DOWN_DWELL_MS": 60.0,
+        "DEFAULT_GCODE_MODE": "simple",
     }
 
 

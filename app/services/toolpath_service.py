@@ -29,6 +29,7 @@ class ToolpathService:
         thin_detail_overlap: bool = True,
         min_segment_length_mm: float = 0.0,
         travel_optimization: str = "nearest-neighbor",
+        allow_pen_down_infill_connectors: bool = True,
         debug=None,
     ):
         if infill_pattern != "zigzag":
@@ -53,5 +54,6 @@ class ToolpathService:
             thin_detail_overlap=thin_detail_overlap,
             min_segment_length_mm=min_segment_length_mm,
             travel_optimization=travel_optimization,
+            allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
             debug=debug,
         )
