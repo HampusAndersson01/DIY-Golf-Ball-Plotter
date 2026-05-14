@@ -331,14 +331,38 @@
           </div>
           <div class="preview-grid">
             <article class="preview-card">
-              <div class="preview-card__title">Selected-color mask</div>
-              <div class="preview-card__copy">Solid printable regions derived from the selected image colors.</div>
-              <div id="maskPreview" class="image-preview image-preview--large"><span class="small">Generate a mask by selecting colors and creating G-code.</span></div>
+              <div class="preview-card__header">
+                <div>
+                  <div class="preview-card__title">Selected-color mask</div>
+                  <div class="preview-card__copy">Solid printable regions derived from the selected image colors.</div>
+                </div>
+                <div class="preview-controls" aria-label="Mask preview controls">
+                  <button type="button" class="btn btn-ghost btn-small" data-preview-target="mask" data-preview-action="fit">Fit</button>
+                  <button type="button" class="btn btn-ghost btn-small" data-preview-target="mask" data-preview-action="reset">Reset</button>
+                  <button type="button" class="btn btn-ghost btn-small" data-preview-target="mask" data-preview-action="zoom-out" aria-label="Zoom out mask preview">−</button>
+                  <button type="button" class="btn btn-ghost btn-small" data-preview-target="mask" data-preview-action="zoom-100">100%</button>
+                  <button type="button" class="btn btn-ghost btn-small" data-preview-target="mask" data-preview-action="zoom-in" aria-label="Zoom in mask preview">+</button>
+                  <span id="maskZoomLevel" class="preview-zoom" aria-live="polite">100%</span>
+                </div>
+              </div>
+              <canvas id="maskPreviewCanvas" class="preview-canvas preview-canvas--zoomable" aria-label="Selected color mask preview"></canvas>
             </article>
             <article class="preview-card preview-card--wide">
-              <div class="preview-card__title">Flat toolpath map</div>
-              <div class="preview-card__copy">Machine-coordinate preview of the final plotted paths.</div>
-              <canvas id="flatPreview"></canvas>
+              <div class="preview-card__header">
+                <div>
+                  <div class="preview-card__title">Flat toolpath map</div>
+                  <div class="preview-card__copy">Machine-coordinate preview of the final plotted paths.</div>
+                </div>
+                <div class="preview-controls" aria-label="Flat toolpath preview controls">
+                  <button type="button" class="btn btn-ghost btn-small" data-preview-target="flat" data-preview-action="fit">Fit</button>
+                  <button type="button" class="btn btn-ghost btn-small" data-preview-target="flat" data-preview-action="reset">Reset</button>
+                  <button type="button" class="btn btn-ghost btn-small" data-preview-target="flat" data-preview-action="zoom-out" aria-label="Zoom out flat toolpath preview">−</button>
+                  <button type="button" class="btn btn-ghost btn-small" data-preview-target="flat" data-preview-action="zoom-100">100%</button>
+                  <button type="button" class="btn btn-ghost btn-small" data-preview-target="flat" data-preview-action="zoom-in" aria-label="Zoom in flat toolpath preview">+</button>
+                  <span id="flatZoomLevel" class="preview-zoom" aria-live="polite">100%</span>
+                </div>
+              </div>
+              <canvas id="flatPreview" class="preview-canvas preview-canvas--zoomable" aria-label="Flat toolpath map preview"></canvas>
             </article>
             <article class="preview-card preview-card--wide">
               <div class="preview-card__title">Ball preview</div>

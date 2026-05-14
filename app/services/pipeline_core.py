@@ -2299,7 +2299,7 @@ class SlicerService:
         if not all(math.isfinite(value) for value in [min_x, min_y, max_x, max_y]):
             return []
 
-        toolpaths: list[Toolpath] = []
+        row_segments: list[list[tuple[int, list[tuple[float, float]]]]] = []
         row = 0
         y = min_y
         while y <= max_y + 1e-6:
@@ -2311,22 +2311,56 @@ class SlicerService:
                 ])
 
             clipped = rotated.intersection(raw_scan)
-            row_paths: list[Toolpath] = []
+            clipped_segments: list[list[tuple[float, float]]] = []
             for line in extract_lines(clipped):
                 if line.length < min_segment_length_deg:
                     continue
                 coords = list(line.coords)
                 if row % 2 == 1:
                     coords = list(reversed(coords))
+                clipped_segments.append(coords)
+            clipped_segments.sort(
+                key=lambda coords: coords[0][0],
+                reverse=(row % 2 == 1),
+            )
+
+            row_paths: list[Toolpath] = []
+            for coords in clipped_segments:
                 world_line = affinity.rotate(LineString(coords), angle_deg, origin=origin)
                 points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
                 if len(points) >= 2:
                     row_paths.append(Toolpath(points=points, kind=kind, closed=False))
-            row_paths.sort(key=lambda path: (path.points[0].x if path.points else 0.0, path.points[0].y if path.points else 0.0))
             debug_append_toolpaths(debug, "clipped_infill_lines", row_paths)
-            toolpaths.extend(row_paths)
+            if clipped_segments:
+                row_segments.append([(row, coords) for coords in clipped_segments])
             y += spacing_deg
             row += 1
+
+        toolpaths: list[Toolpath] = []
+        current_coords: list[tuple[float, float]] = []
+        for segments in row_segments:
+            for _, coords in segments:
+                if not current_coords:
+                    current_coords = list(coords)
+                    continue
+
+                connector = LineString([current_coords[-1], coords[0]])
+                if rotated.covers(connector):
+                    current_coords.extend(coords)
+                    continue
+
+                world_line = affinity.rotate(LineString(current_coords), angle_deg, origin=origin)
+                points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
+                if len(points) >= 2:
+                    toolpaths.append(Toolpath(points=points, kind=kind, closed=False))
+                current_coords = list(coords)
+
+        if current_coords:
+            world_line = affinity.rotate(LineString(current_coords), angle_deg, origin=origin)
+            points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
+            if len(points) >= 2:
+                toolpaths.append(Toolpath(points=points, kind=kind, closed=False))
+
         return toolpaths
 
     def _generate_centerline_fallback(
@@ -2528,8 +2562,8 @@ class SlicerService:
                     tolerance_deg=simplify_tolerance_deg,
                     debug=debug,
                 )
-            multi_pass_infill = len(infill_paths) >= 2
-            single_pass_infill = len(infill_paths) == 1
+            multi_pass_infill = len(infill_paths) >= 2 or any(len(path.points) >= 4 for path in infill_paths)
+            single_pass_infill = len(infill_paths) == 1 and not multi_pass_infill
             if not multi_pass_infill:
                 detail_region = printable_outline_region if can_fit_outline else polygon
                 if thin_detail_mode and polygon.area >= thin_detail_min_area_deg2:

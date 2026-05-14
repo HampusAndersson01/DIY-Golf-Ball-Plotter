@@ -21,6 +21,25 @@ const appState = {
   calibrationRequestInFlight: false,
 };
 
+const previewViews = {
+  mask: null,
+  flat: null,
+};
+
+const previewData = {
+  maskImage: null,
+  flatPaths: [],
+};
+
+const PREVIEW_EMPTY_TEXT = {
+  mask: "Generate a mask by selecting colors and creating G-code.",
+  flat: "Generate G-code to inspect the flattened toolpath map.",
+};
+
+const FLAT_WORLD_LIMITS = { minX: -180, minY: -45, maxX: 180, maxY: 45 };
+const FLAT_STROKE_SCREEN_MIN = 1.1;
+const FLAT_STROKE_SCREEN_MAX = 3.6;
+
 const SERVER_DEFAULTS = window.SERVER_DEFAULTS || {
   penUpS: 575,
   penDownS: 700,
@@ -265,14 +284,331 @@ function showOriginalPreview(file) {
   host.innerHTML = `<img src="${url}" alt="Original upload preview" />`;
 }
 
-function showMaskPreview(dataUrl) {
-  const host = byId("maskPreview");
-  if (!host) return;
-  if (!dataUrl) {
-    host.innerHTML = '<span class="small">No mask preview available</span>';
-    return;
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeBounds(bounds) {
+  if (!bounds) return null;
+  const minX = Number(bounds.minX);
+  const minY = Number(bounds.minY);
+  const maxX = Number(bounds.maxX);
+  const maxY = Number(bounds.maxY);
+  if (![minX, minY, maxX, maxY].every(Number.isFinite)) return null;
+
+  const epsilon = 0.0001;
+  const width = Math.max(epsilon, maxX - minX);
+  const height = Math.max(epsilon, maxY - minY);
+  return {
+    minX,
+    minY,
+    maxX: minX + width,
+    maxY: minY + height,
+  };
+}
+
+function expandBounds(bounds, padding) {
+  const normalized = normalizeBounds(bounds);
+  if (!normalized) return null;
+  return {
+    minX: normalized.minX - padding,
+    minY: normalized.minY - padding,
+    maxX: normalized.maxX + padding,
+    maxY: normalized.maxY + padding,
+  };
+}
+
+function computePathBounds(paths) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const entry of paths || []) {
+    for (const point of entry.points || []) {
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+      if (point.x < minX) minX = point.x;
+      if (point.y < minY) minY = point.y;
+      if (point.x > maxX) maxX = point.x;
+      if (point.y > maxY) maxY = point.y;
+    }
   }
-  host.innerHTML = `<img src="${dataUrl}" alt="Selected color mask preview" />`;
+
+  if (!Number.isFinite(minX)) return { ...FLAT_WORLD_LIMITS };
+  return expandBounds({ minX, minY, maxX, maxY }, 1.25);
+}
+
+function formatZoomPercent(scale) {
+  if (!Number.isFinite(scale) || scale <= 0) return "100%";
+  return `${Math.round(scale * 100)}%`;
+}
+
+function updatePreviewZoomLabel(id, scale) {
+  const label = byId(id);
+  if (label) label.textContent = formatZoomPercent(scale);
+}
+
+class PanZoomCanvas {
+  constructor(canvas, options = {}) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.options = {
+      minScale: options.minScale ?? 0.1,
+      maxScale: options.maxScale ?? 40,
+      zoomStep: options.zoomStep ?? 1.2,
+      onChange: options.onChange ?? (() => {}),
+    };
+    this.contentBounds = null;
+    this.drawCallback = null;
+    this.scale = 1;
+    this.offsetX = 0;
+    this.offsetY = 0;
+    this.cssWidth = 1;
+    this.cssHeight = 1;
+    this.dpr = window.devicePixelRatio || 1;
+    this.defaultView = null;
+    this.pointerId = null;
+    this.isDragging = false;
+    this.lastPointer = null;
+    this.rafHandle = 0;
+
+    this.handleWheel = this.handleWheel.bind(this);
+    this.handlePointerDown = this.handlePointerDown.bind(this);
+    this.handlePointerMove = this.handlePointerMove.bind(this);
+    this.handlePointerUp = this.handlePointerUp.bind(this);
+    this.handleDoubleClick = this.handleDoubleClick.bind(this);
+
+    this.canvas.addEventListener("wheel", this.handleWheel, { passive: false });
+    this.canvas.addEventListener("pointerdown", this.handlePointerDown);
+    this.canvas.addEventListener("pointermove", this.handlePointerMove);
+    this.canvas.addEventListener("pointerup", this.handlePointerUp);
+    this.canvas.addEventListener("pointercancel", this.handlePointerUp);
+    this.canvas.addEventListener("lostpointercapture", this.handlePointerUp);
+    this.canvas.addEventListener("dblclick", this.handleDoubleClick);
+
+    this.resize(false);
+  }
+
+  getViewState() {
+    return {
+      scale: this.scale,
+      offsetX: this.offsetX,
+      offsetY: this.offsetY,
+      width: this.cssWidth,
+      height: this.cssHeight,
+      dpr: this.dpr,
+      contentBounds: this.contentBounds,
+    };
+  }
+
+  getEventPoint(event) {
+    const rect = this.canvas.getBoundingClientRect();
+    return {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    };
+  }
+
+  resize(preserveCenter = true) {
+    const previousCenter = preserveCenter ? this.screenToWorld(this.cssWidth / 2, this.cssHeight / 2) : null;
+    const rect = this.canvas.getBoundingClientRect();
+    this.cssWidth = Math.max(300, Math.round(rect.width || 300));
+    this.cssHeight = Math.max(300, Math.round(rect.height || 300));
+    this.dpr = window.devicePixelRatio || 1;
+    this.canvas.width = Math.max(1, Math.round(this.cssWidth * this.dpr));
+    this.canvas.height = Math.max(1, Math.round(this.cssHeight * this.dpr));
+
+    if (previousCenter && Number.isFinite(previousCenter.x) && Number.isFinite(previousCenter.y)) {
+      this.offsetX = (this.cssWidth / 2) - (previousCenter.x * this.scale);
+      this.offsetY = (this.cssHeight / 2) - (previousCenter.y * this.scale);
+    }
+
+    this.requestRender();
+    this.options.onChange(this.getViewState());
+  }
+
+  setContentBounds(bounds) {
+    this.contentBounds = normalizeBounds(bounds);
+  }
+
+  setTransform(scale, offsetX, offsetY) {
+    this.scale = clamp(scale, this.options.minScale, this.options.maxScale);
+    this.offsetX = Number.isFinite(offsetX) ? offsetX : this.offsetX;
+    this.offsetY = Number.isFinite(offsetY) ? offsetY : this.offsetY;
+    this.requestRender();
+    this.options.onChange(this.getViewState());
+  }
+
+  fitToView(padding = 24) {
+    if (!this.contentBounds) {
+      this.setTransform(1, this.cssWidth / 2, this.cssHeight / 2);
+      this.defaultView = { scale: this.scale, offsetX: this.offsetX, offsetY: this.offsetY };
+      return;
+    }
+
+    const contentWidth = Math.max(0.0001, this.contentBounds.maxX - this.contentBounds.minX);
+    const contentHeight = Math.max(0.0001, this.contentBounds.maxY - this.contentBounds.minY);
+    const availableWidth = Math.max(1, this.cssWidth - (padding * 2));
+    const availableHeight = Math.max(1, this.cssHeight - (padding * 2));
+    const scale = clamp(
+      Math.min(availableWidth / contentWidth, availableHeight / contentHeight),
+      this.options.minScale,
+      this.options.maxScale,
+    );
+    const contentCenterX = (this.contentBounds.minX + this.contentBounds.maxX) / 2;
+    const contentCenterY = (this.contentBounds.minY + this.contentBounds.maxY) / 2;
+
+    this.setTransform(
+      scale,
+      (this.cssWidth / 2) - (contentCenterX * scale),
+      (this.cssHeight / 2) - (contentCenterY * scale),
+    );
+    this.defaultView = { scale: this.scale, offsetX: this.offsetX, offsetY: this.offsetY };
+  }
+
+  resetView() {
+    if (!this.defaultView) {
+      this.fitToView();
+      return;
+    }
+    this.setTransform(this.defaultView.scale, this.defaultView.offsetX, this.defaultView.offsetY);
+  }
+
+  screenToWorld(x, y) {
+    return {
+      x: (x - this.offsetX) / this.scale,
+      y: (y - this.offsetY) / this.scale,
+    };
+  }
+
+  worldToScreen(x, y) {
+    return {
+      x: (x * this.scale) + this.offsetX,
+      y: (y * this.scale) + this.offsetY,
+    };
+  }
+
+  applyWorldTransform(ctx = this.ctx) {
+    ctx.setTransform(
+      this.dpr * this.scale,
+      0,
+      0,
+      this.dpr * this.scale,
+      this.dpr * this.offsetX,
+      this.dpr * this.offsetY,
+    );
+  }
+
+  zoomAt(factor, screenX, screenY) {
+    const worldPoint = this.screenToWorld(screenX, screenY);
+    const nextScale = clamp(this.scale * factor, this.options.minScale, this.options.maxScale);
+    this.setTransform(
+      nextScale,
+      screenX - (worldPoint.x * nextScale),
+      screenY - (worldPoint.y * nextScale),
+    );
+  }
+
+  zoomTo(scale, screenX = this.cssWidth / 2, screenY = this.cssHeight / 2) {
+    const worldPoint = this.screenToWorld(screenX, screenY);
+    const nextScale = clamp(scale, this.options.minScale, this.options.maxScale);
+    this.setTransform(
+      nextScale,
+      screenX - (worldPoint.x * nextScale),
+      screenY - (worldPoint.y * nextScale),
+    );
+  }
+
+  stepZoom(direction) {
+    const factor = direction > 0 ? this.options.zoomStep : (1 / this.options.zoomStep);
+    this.zoomAt(factor, this.cssWidth / 2, this.cssHeight / 2);
+  }
+
+  panBy(deltaX, deltaY) {
+    this.setTransform(this.scale, this.offsetX + deltaX, this.offsetY + deltaY);
+  }
+
+  isLikelyTrackpadPan(event) {
+    if (event.ctrlKey) return false;
+    if (event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) return false;
+    const precise = !Number.isInteger(event.deltaY) || Math.abs(event.deltaY) < 40;
+    return Math.abs(event.deltaX) > 0 || precise;
+  }
+
+  handleWheel(event) {
+    event.preventDefault();
+    const point = this.getEventPoint(event);
+    const deltaScale = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? this.cssHeight : 1;
+    const deltaX = event.deltaX * deltaScale;
+    const deltaY = event.deltaY * deltaScale;
+
+    if (this.isLikelyTrackpadPan(event)) {
+      this.panBy(-deltaX, -deltaY);
+      return;
+    }
+
+    this.zoomAt(Math.exp((-deltaY) * 0.0015), point.x, point.y);
+  }
+
+  handlePointerDown(event) {
+    if (event.pointerType !== "touch" && event.button !== 0) return;
+    event.preventDefault();
+    this.pointerId = event.pointerId;
+    this.isDragging = true;
+    this.lastPointer = this.getEventPoint(event);
+    this.canvas.setPointerCapture(event.pointerId);
+    this.canvas.classList.add("is-dragging");
+  }
+
+  handlePointerMove(event) {
+    if (!this.isDragging || event.pointerId !== this.pointerId) return;
+    event.preventDefault();
+    const point = this.getEventPoint(event);
+    const deltaX = point.x - this.lastPointer.x;
+    const deltaY = point.y - this.lastPointer.y;
+    this.lastPointer = point;
+    this.panBy(deltaX, deltaY);
+  }
+
+  handlePointerUp(event) {
+    if (event.pointerId !== this.pointerId) return;
+    this.isDragging = false;
+    this.pointerId = null;
+    this.lastPointer = null;
+    this.canvas.classList.remove("is-dragging");
+    if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
+  }
+
+  handleDoubleClick(event) {
+    event.preventDefault();
+    this.resetView();
+  }
+
+  draw(drawCallback) {
+    this.drawCallback = drawCallback;
+    this.requestRender();
+  }
+
+  requestRender() {
+    if (this.rafHandle) return;
+    this.rafHandle = window.requestAnimationFrame(() => {
+      this.rafHandle = 0;
+      this.render();
+    });
+  }
+
+  render() {
+    const ctx = this.ctx;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.clearRect(0, 0, this.cssWidth, this.cssHeight);
+    if (!this.drawCallback) return;
+    this.drawCallback(ctx, {
+      ...this.getViewState(),
+      controller: this,
+      screenToWorld: (x, y) => this.screenToWorld(x, y),
+      worldToScreen: (x, y) => this.worldToScreen(x, y),
+    });
+  }
 }
 
 function getSelectedColorSet() {
@@ -644,7 +980,7 @@ async function generateRasterGcode() {
     appState.latestSummary = json.summary || null;
 
     byId("gcodeBox").value = appState.latestGcode.join("\n");
-    showMaskPreview(appState.latestMaskPreview);
+    drawMaskPreview(appState.latestMaskPreview);
     drawFlatPreview(appState.latestPreview);
     drawBallPreview(appState.latestPreview);
     renderSummary(appState.latestSummary);
@@ -730,6 +1066,196 @@ function drawFlatPreview(paths) {
     ctx.stroke();
   }
   ctx.setLineDash([]);
+}
+
+function drawPreviewEmptyState(ctx, width, height, message) {
+  ctx.save();
+  ctx.fillStyle = "#020617";
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = "rgba(148, 163, 184, 0.92)";
+  ctx.font = '500 14px "Segoe UI"';
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(message, width / 2, height / 2);
+  ctx.restore();
+}
+
+function chooseGridStep(scale) {
+  const targetScreenSpacing = 72;
+  const candidates = [1, 2, 5, 10, 15, 30, 45, 90];
+  for (const step of candidates) {
+    if ((step * scale) >= targetScreenSpacing) return step;
+  }
+  return 90;
+}
+
+function drawFlatWorldGrid(ctx, view, controller) {
+  const visibleTopLeft = controller.screenToWorld(0, 0);
+  const visibleBottomRight = controller.screenToWorld(view.width, view.height);
+  const visibleBounds = {
+    minX: Math.min(visibleTopLeft.x, visibleBottomRight.x),
+    maxX: Math.max(visibleTopLeft.x, visibleBottomRight.x),
+    minY: Math.min(visibleTopLeft.y, visibleBottomRight.y),
+    maxY: Math.max(visibleTopLeft.y, visibleBottomRight.y),
+  };
+  const gridStep = chooseGridStep(view.scale);
+
+  ctx.save();
+  controller.applyWorldTransform(ctx);
+
+  ctx.strokeStyle = "rgba(51, 65, 85, 0.72)";
+  ctx.lineWidth = 1 / view.scale;
+  for (let x = Math.floor(visibleBounds.minX / gridStep) * gridStep; x <= visibleBounds.maxX; x += gridStep) {
+    ctx.beginPath();
+    ctx.moveTo(x, visibleBounds.minY);
+    ctx.lineTo(x, visibleBounds.maxY);
+    ctx.stroke();
+  }
+  for (let y = Math.floor(visibleBounds.minY / gridStep) * gridStep; y <= visibleBounds.maxY; y += gridStep) {
+    ctx.beginPath();
+    ctx.moveTo(visibleBounds.minX, y);
+    ctx.lineTo(visibleBounds.maxX, y);
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.8)";
+  ctx.lineWidth = 1.3 / view.scale;
+  ctx.strokeRect(
+    FLAT_WORLD_LIMITS.minX,
+    FLAT_WORLD_LIMITS.minY,
+    FLAT_WORLD_LIMITS.maxX - FLAT_WORLD_LIMITS.minX,
+    FLAT_WORLD_LIMITS.maxY - FLAT_WORLD_LIMITS.minY,
+  );
+
+  ctx.strokeStyle = "rgba(59, 130, 246, 0.86)";
+  ctx.lineWidth = 1.8 / view.scale;
+  ctx.beginPath();
+  ctx.moveTo(0, visibleBounds.minY);
+  ctx.lineTo(0, visibleBounds.maxY);
+  ctx.moveTo(visibleBounds.minX, 0);
+  ctx.lineTo(visibleBounds.maxX, 0);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function renderMaskPreview(ctx, view) {
+  ctx.fillStyle = "#020617";
+  ctx.fillRect(0, 0, view.width, view.height);
+
+  if (!previewData.maskImage) {
+    drawPreviewEmptyState(ctx, view.width, view.height, PREVIEW_EMPTY_TEXT.mask);
+    return;
+  }
+
+  ctx.save();
+  view.controller.applyWorldTransform(ctx);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(previewData.maskImage, 0, 0, previewData.maskImage.width, previewData.maskImage.height);
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.7)";
+  ctx.lineWidth = 1 / view.scale;
+  ctx.strokeRect(0, 0, previewData.maskImage.width, previewData.maskImage.height);
+  ctx.restore();
+}
+
+function renderFlatPreview(ctx, view) {
+  ctx.fillStyle = "#020617";
+  ctx.fillRect(0, 0, view.width, view.height);
+  drawFlatWorldGrid(ctx, view, view.controller);
+
+  if (!previewData.flatPaths.length) {
+    drawPreviewEmptyState(ctx, view.width, view.height, PREVIEW_EMPTY_TEXT.flat);
+    return;
+  }
+
+  ctx.save();
+  view.controller.applyWorldTransform(ctx);
+  for (const entry of previewData.flatPaths) {
+    const path = entry.points || [];
+    if (!path.length) continue;
+    const style = previewStyle(entry.kind || "outline");
+    ctx.beginPath();
+    ctx.moveTo(path[0].x, path[0].y);
+    for (let index = 1; index < path.length; index += 1) {
+      ctx.lineTo(path[index].x, path[index].y);
+    }
+    const screenStrokeWidth = clamp(style.width, FLAT_STROKE_SCREEN_MIN, FLAT_STROKE_SCREEN_MAX);
+    ctx.setLineDash((style.dash || []).map((value) => value / view.scale));
+    ctx.lineWidth = screenStrokeWidth / view.scale;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.strokeStyle = style.stroke;
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.setLineDash([]);
+}
+
+function ensurePreviewViews() {
+  if (!previewViews.mask) {
+    previewViews.mask = new PanZoomCanvas(byId("maskPreviewCanvas"), {
+      minScale: 0.1,
+      maxScale: 48,
+      onChange: (view) => updatePreviewZoomLabel("maskZoomLevel", view.scale),
+    });
+    previewViews.mask.draw(renderMaskPreview);
+  }
+
+  if (!previewViews.flat) {
+    previewViews.flat = new PanZoomCanvas(byId("flatPreview"), {
+      minScale: 0.2,
+      maxScale: 60,
+      onChange: (view) => updatePreviewZoomLabel("flatZoomLevel", view.scale),
+    });
+    previewViews.flat.draw(renderFlatPreview);
+  }
+}
+
+let latestMaskPreviewToken = 0;
+
+function drawMaskPreview(dataUrl, options = {}) {
+  ensurePreviewViews();
+  const { fit = true } = options;
+  const controller = previewViews.mask;
+  const token = ++latestMaskPreviewToken;
+
+  if (!dataUrl) {
+    previewData.maskImage = null;
+    controller.setContentBounds(null);
+    controller.setTransform(1, 0, 0);
+    controller.defaultView = { scale: controller.scale, offsetX: controller.offsetX, offsetY: controller.offsetY };
+    controller.draw(renderMaskPreview);
+    return;
+  }
+
+  const image = new Image();
+  image.decoding = "async";
+  image.onload = () => {
+    if (token !== latestMaskPreviewToken) return;
+    previewData.maskImage = image;
+    controller.setContentBounds({
+      minX: 0,
+      minY: 0,
+      maxX: image.naturalWidth || image.width,
+      maxY: image.naturalHeight || image.height,
+    });
+    if (fit) controller.fitToView();
+    else controller.draw(renderMaskPreview);
+  };
+  image.onerror = () => {
+    if (token !== latestMaskPreviewToken) return;
+    previewData.maskImage = null;
+    controller.draw(renderMaskPreview);
+  };
+  image.src = dataUrl;
+}
+
+function drawFlatPreview(paths, options = {}) {
+  ensurePreviewViews();
+  const { fit = true } = options;
+  previewData.flatPaths = Array.isArray(paths) ? paths : [];
+  previewViews.flat.setContentBounds(computePathBounds(previewData.flatPaths));
+  if (fit) previewViews.flat.fitToView();
+  else previewViews.flat.draw(renderFlatPreview);
 }
 
 function projectBallPoint(point, cx, cy, radius) {
@@ -927,7 +1453,32 @@ function handleCalibrationDialog() {
   else zeroAndMarkCalibrated();
 }
 
+function fitAll2DPreviews() {
+  ensurePreviewViews();
+  previewViews.mask?.fitToView();
+  previewViews.flat?.fitToView();
+}
+
+function resetAll2DPreviews() {
+  ensurePreviewViews();
+  previewViews.mask?.resetView();
+  previewViews.flat?.resetView();
+}
+
+function handlePreviewControlAction(target, action) {
+  ensurePreviewViews();
+  const controller = previewViews[target];
+  if (!controller) return;
+
+  if (action === "fit") controller.fitToView();
+  else if (action === "reset") controller.resetView();
+  else if (action === "zoom-in") controller.stepZoom(1);
+  else if (action === "zoom-out") controller.stepZoom(-1);
+  else if (action === "zoom-100") controller.zoomTo(1);
+}
+
 function bindEvents() {
+  ensurePreviewViews();
   byId("connectButton")?.addEventListener("click", connectMachine);
   byId("applyMachineConfigButton")?.addEventListener("click", applyMachineConfig);
   byId("statusButton")?.addEventListener("click", () => sendCommand("?"));
@@ -956,12 +1507,16 @@ function bindEvents() {
     generateRasterGcode();
   });
   byId("fitPreviewButton")?.addEventListener("click", () => {
-    drawFlatPreview(appState.latestPreview);
-    drawBallPreview(appState.latestPreview);
+    fitAll2DPreviews();
   });
   byId("resetPreviewButton")?.addEventListener("click", () => {
-    drawFlatPreview(appState.latestPreview);
-    drawBallPreview(appState.latestPreview);
+    resetAll2DPreviews();
+  });
+
+  document.querySelectorAll("[data-preview-target][data-preview-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      handlePreviewControlAction(button.dataset.previewTarget, button.dataset.previewAction);
+    });
   });
 
   byId("runButton")?.addEventListener("click", runGcode);
@@ -984,7 +1539,7 @@ function bindEvents() {
       appState.latestMaskPreview = null;
       appState.latestSummary = null;
       setSelectedColors([]);
-      showMaskPreview(null);
+      drawMaskPreview(null);
       updateActionStates();
       updateStepper();
       return;
@@ -1063,7 +1618,8 @@ function bindEvents() {
   }
 
   window.addEventListener("resize", () => {
-    drawFlatPreview(appState.latestPreview);
+    previewViews.mask?.resize(true);
+    previewViews.flat?.resize(true);
     drawBallPreview(appState.latestPreview);
   });
 }
@@ -1072,7 +1628,7 @@ setupDerivedPenFieldSync();
 bindEvents();
 syncDerivedPenFields(true);
 showOriginalPreview(null);
-showMaskPreview(null);
+drawMaskPreview(null);
 renderSummary(null);
 renderProgressTiming();
 drawFlatPreview([]);
