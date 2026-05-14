@@ -97,6 +97,7 @@ DEFAULT_TRACE_STROKE_ONLY_PATHS = True
 DEFAULT_FILL_ONLY_DARK_SVG_FILLS = True
 DEFAULT_WALL_COUNT = 1
 DEFAULT_INFILL_PATTERN = "zigzag"
+DEFAULT_INFILL_DENSITY = 100.0
 DEFAULT_INFILL_SPACING_MM = DEFAULT_LINE_THICKNESS_MM
 DEFAULT_INFILL_ANGLE_DEG = 0.0
 DEFAULT_OUTLINE_AFTER_FILL = False
@@ -106,6 +107,7 @@ DEFAULT_SIMPLIFY_TOLERANCE_MM = 0.05
 DEFAULT_REMOVE_DUPLICATE_PATHS = True
 DEFAULT_SMALL_SHAPE_MODE = "single-wall"
 DEFAULT_MIN_SEGMENT_LENGTH_MM = 0.5
+DEFAULT_TRAVEL_OPTIMIZATION = "nearest-neighbor"
 SVG_DARK_FILL_LUMINANCE_THRESHOLD = 0.42
 SVG_LIGHT_CUTOUT_LUMINANCE_THRESHOLD = 0.82
 SVG_MIN_PRINT_OPACITY = 0.99
@@ -165,6 +167,8 @@ class GeometryBundle:
     outline_segments: list[Segment] = field(default_factory=list)
     fill_boundary_segments: list[Segment] = field(default_factory=list)
     fill_shapes: list[SvgFillShape] = field(default_factory=list)
+    printable_geometry: Any = None
+    cutout_geometry: Any = None
 
 
 @dataclass
@@ -239,6 +243,23 @@ class Toolpath:
     points: list[Point]
     kind: str
     closed: bool = False
+
+
+@dataclass
+class SlicerSettings:
+    line_width_mm: float
+    wall_count: int
+    infill_density: float = 100.0
+    infill_spacing_mm: float = DEFAULT_INFILL_SPACING_MM
+    infill_angle_deg: float = 0.0
+    outline_after_fill: bool = False
+    min_fill_area_mm2: float = 1.0
+    min_fill_width_mm: float = DEFAULT_MIN_FILL_WIDTH_MM
+    simplify_tolerance_mm: float = DEFAULT_SIMPLIFY_TOLERANCE_MM
+    remove_duplicate_paths: bool = True
+    small_shape_mode: str = DEFAULT_SMALL_SHAPE_MODE
+    min_segment_length_mm: float = DEFAULT_MIN_SEGMENT_LENGTH_MM
+    travel_optimization: str = DEFAULT_TRAVEL_OPTIMIZATION
 
 
 @dataclass
@@ -699,15 +720,27 @@ HTML = r"""
           </div>
           <div class="two-col">
             <div>
+              <label>Infill density %</label>
+              <input id="infillDensity" type="number" value="{{ default_infill_density }}" min="1" max="100" step="1" />
+            </div>
+            <div>
               <label>Infill pattern</label>
               <select id="infillPattern">
                 <option value="zigzag" selected>Zigzag</option>
                 <option value="hatch">Hatch</option>
               </select>
             </div>
+          </div>
+          <div class="two-col">
             <div>
               <label>Infill spacing mm</label>
               <input id="infillSpacingMm" type="number" value="{{ default_infill_spacing_mm }}" min="0.1" max="10" step="0.01" />
+            </div>
+            <div>
+              <label>Travel optimization</label>
+              <select id="travelOptimization">
+                <option value="nearest-neighbor" {% if default_travel_optimization == "nearest-neighbor" %}selected{% endif %}>Nearest neighbor</option>
+              </select>
             </div>
           </div>
           <div class="two-col">
@@ -720,7 +753,7 @@ HTML = r"""
               <select id="smallShapeMode">
                 <option value="single-wall" selected>Single wall</option>
                 <option value="skip">Skip</option>
-                <option value="centerline-todo">Centerline TODO</option>
+                <option value="centerline">Centerline</option>
               </select>
             </div>
           </div>
@@ -1023,6 +1056,7 @@ HTML = r"""
     form.append('fill_mode', document.getElementById('fillMode').value);
     form.append('wall_count', getInt('wallCount'));
     form.append('infill_pattern', document.getElementById('infillPattern').value);
+    form.append('infill_density', getNum('infillDensity'));
     form.append('infill_spacing_mm', getNum('infillSpacingMm'));
     form.append('infill_angle_deg', getNum('infillAngleDeg'));
     form.append('outline_after_fill', getBool('outlineAfterFill') ? '1' : '0');
@@ -1032,6 +1066,7 @@ HTML = r"""
     form.append('remove_duplicate_paths', getBool('removeDuplicatePaths') ? '1' : '0');
     form.append('small_shape_mode', document.getElementById('smallShapeMode').value);
     form.append('min_segment_length_mm', getNum('minSegmentLengthMm'));
+    form.append('travel_optimization', document.getElementById('travelOptimization').value);
     form.append('pen_up_s', getInt('penUpS'));
     form.append('pen_down_s', getInt('penDownS'));
     form.append('servo_ramp_enabled', getBool('servoRampEnabled') ? '1' : '0');
@@ -1548,9 +1583,10 @@ def build_pen_position_commands(
 
 
 def mm_to_ball_degrees(mm: float) -> float:
-  if mm < 0:
-    raise ValueError("Line thickness must not be negative")
-  return (mm / BALL_DIAMETER_MM) * 360.0
+    if mm < 0:
+        raise ValueError("Line thickness must not be negative")
+    circumference_mm = math.pi * BALL_DIAMETER_MM
+    return (mm / circumference_mm) * 360.0
 
 
 # ============================================================
@@ -1843,6 +1879,24 @@ def debug_append_toolpaths(debug: Optional[dict[str, Any]], key: str, toolpaths:
             "closed": toolpath.closed,
             "points": [asdict(point) for point in toolpath.points],
         })
+
+
+def debug_append_geometry(debug: Optional[dict[str, Any]], key: str, geometry: Any, kind: str) -> None:
+    if debug is None or geometry is None or geometry.is_empty:
+        return
+    entries = debug.setdefault(key, [])
+    for polygon in normalize_geometry(geometry):
+        entries.append({
+            "kind": kind,
+            "closed": True,
+            "points": [asdict(Point(x, y)) for x, y in polygon.exterior.coords],
+        })
+        for interior in polygon.interiors:
+            entries.append({
+                "kind": f"{kind}-hole",
+                "closed": True,
+                "points": [asdict(Point(x, y)) for x, y in interior.coords],
+            })
 
 
 def element_segments(tag: str, elem: ET.Element) -> list[Segment]:
@@ -2449,8 +2503,10 @@ def compose_classified_elements(
             ))
 
     composed_fill = unary_union(dark_fill_geometries) if dark_fill_geometries else None
+    bundle.printable_geometry = composed_fill
+    bundle.cutout_geometry = unary_union(cutout_geometries) if cutout_geometries else None
     if composed_fill is not None and not composed_fill.is_empty and cutout_geometries:
-        cutout_union = unary_union(cutout_geometries)
+        cutout_union = bundle.cutout_geometry
         if cutout_union is not None and not cutout_union.is_empty:
             composed_fill = composed_fill.difference(cutout_union)
     if composed_fill is not None and not composed_fill.is_empty and not composed_fill.is_valid:
@@ -2458,6 +2514,7 @@ def compose_classified_elements(
     if composed_fill is not None and not composed_fill.is_empty:
         bundle.fill_shapes.append(SvgFillShape(geometry=composed_fill, fill_rule="evenodd", source_tag="composited-visible-fill"))
         bundle.fill_boundary_segments.extend(geometry_to_boundary_segments(composed_fill))
+    bundle.printable_geometry = composed_fill
 
     model.metadata["classificationCounts"] = classification_counts
     return bundle, model, classification_counts
@@ -2746,6 +2803,9 @@ def analyze_svg(
         parser_mode=parser_mode,
         color_mapping_mode=color_mapping_mode,
     )
+    debug_append_geometry(debug, "printable_polygons", unary_union([item.fill_geometry for item in classified_elements if item.has_fill and item.fill_geometry is not None]) if any(item.has_fill and item.fill_geometry is not None for item in classified_elements) else None, "printable-polygon")
+    debug_append_geometry(debug, "cutout_polygons", unary_union([item.fill_geometry for item in classified_elements if item.is_cutout_fill and item.fill_geometry is not None]) if any(item.is_cutout_fill and item.fill_geometry is not None for item in classified_elements) else None, "cutout-polygon")
+    debug_append_geometry(debug, "composed_fill_region", bundle.printable_geometry, "composed-fill-region")
     model.metadata.update(model_metadata)
     model.warnings.extend(warnings)
     model.ignored = ignored_non_drawable + model.ignored
@@ -2891,7 +2951,15 @@ def map_bundle_to_angles(
         )
         for fill_shape in bundle.fill_shapes
     ]
-    return GeometryBundle(outline_segments=outline_segments, fill_boundary_segments=fill_boundary_segments, fill_shapes=fill_shapes)
+    printable_geometry = affinity.affine_transform(bundle.printable_geometry, matrix) if bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty else bundle.printable_geometry
+    cutout_geometry = affinity.affine_transform(bundle.cutout_geometry, matrix) if bundle.cutout_geometry is not None and not bundle.cutout_geometry.is_empty else bundle.cutout_geometry
+    return GeometryBundle(
+        outline_segments=outline_segments,
+        fill_boundary_segments=fill_boundary_segments,
+        fill_shapes=fill_shapes,
+        printable_geometry=printable_geometry,
+        cutout_geometry=cutout_geometry,
+    )
 
 
 def apply_placement_transform(
@@ -2939,8 +3007,24 @@ def apply_placement_transform(
         geometry = affinity.rotate(geometry, rotation_deg, origin=(center_x, center_y))
         geometry = affinity.translate(geometry, xoff=offset_x, yoff=offset_y)
         fill_shapes.append(SvgFillShape(geometry=geometry, fill_rule=fill_shape.fill_rule, source_tag=fill_shape.source_tag))
+    printable_geometry = bundle.printable_geometry
+    if printable_geometry is not None and not printable_geometry.is_empty:
+        printable_geometry = affinity.scale(printable_geometry, xfact=scale, yfact=scale, origin=(center_x, center_y))
+        printable_geometry = affinity.rotate(printable_geometry, rotation_deg, origin=(center_x, center_y))
+        printable_geometry = affinity.translate(printable_geometry, xoff=offset_x, yoff=offset_y)
+    cutout_geometry = bundle.cutout_geometry
+    if cutout_geometry is not None and not cutout_geometry.is_empty:
+        cutout_geometry = affinity.scale(cutout_geometry, xfact=scale, yfact=scale, origin=(center_x, center_y))
+        cutout_geometry = affinity.rotate(cutout_geometry, rotation_deg, origin=(center_x, center_y))
+        cutout_geometry = affinity.translate(cutout_geometry, xoff=offset_x, yoff=offset_y)
 
-    return GeometryBundle(outline_segments=outline_segments, fill_boundary_segments=fill_boundary_segments, fill_shapes=fill_shapes)
+    return GeometryBundle(
+        outline_segments=outline_segments,
+        fill_boundary_segments=fill_boundary_segments,
+        fill_shapes=fill_shapes,
+        printable_geometry=printable_geometry,
+        cutout_geometry=cutout_geometry,
+    )
 
 
 def segment_length(points: list[Point]) -> float:
@@ -2948,7 +3032,7 @@ def segment_length(points: list[Point]) -> float:
 
 
 def mm_area_to_ball_degree_area(area_mm2: float) -> float:
-    scale = 360.0 / BALL_DIAMETER_MM
+    scale = 360.0 / (math.pi * BALL_DIAMETER_MM)
     return area_mm2 * scale * scale
 
 
@@ -2991,6 +3075,8 @@ def debug_append_bundle(debug: Optional[dict[str, Any]], key: str, bundle: Geome
         return
     debug_append_segments(debug, key, bundle.outline_segments, f"{key}-outline")
     debug_append_segments(debug, key, bundle.fill_boundary_segments, f"{key}-fill-boundary")
+    debug_append_geometry(debug, f"{key}_printable_geometry", bundle.printable_geometry, f"{key}-printable-geometry")
+    debug_append_geometry(debug, f"{key}_cutout_geometry", bundle.cutout_geometry, f"{key}-cutout-geometry")
 
 
 def geometry_to_closed_toolpaths(geometry: Any, kind: str, tolerance: float) -> list[Toolpath]:
@@ -3025,59 +3111,6 @@ def extract_lines(geometry: Any) -> list[LineString]:
     return []
 
 
-def generate_zigzag_infill(
-    region: Any,
-    spacing: float,
-    angle_deg: float,
-    min_segment_length: float,
-    tolerance: float,
-    debug: Optional[dict[str, Any]] = None,
-) -> list[Toolpath]:
-    if region is None or region.is_empty or spacing <= 0:
-        return []
-
-    origin = region.centroid.coords[0]
-    rotated = affinity.rotate(region, -angle_deg, origin=origin)
-    min_x, min_y, max_x, max_y = rotated.bounds
-    if not all(math.isfinite(value) for value in [min_x, min_y, max_x, max_y]):
-        return []
-
-    paths: list[Toolpath] = []
-    row = 0
-    y = min_y
-    while y <= max_y + 1e-6:
-        scan = LineString([(min_x - spacing, y), (max_x + spacing, y)])
-        if debug is not None:
-            scan_unrotated = affinity.rotate(scan, angle_deg, origin=origin)
-            debug_append_toolpaths(debug, "hatch_before_clipping", [
-                Toolpath(
-                    points=[Point(x, y2) for x, y2 in scan_unrotated.coords],
-                    kind="debug-hatch-before",
-                    closed=False,
-                )
-            ])
-        clipped = rotated.intersection(scan)
-        row_lines = []
-        for line in extract_lines(clipped):
-            if line.length < min_segment_length:
-                continue
-            coords = list(line.coords)
-            if row % 2 == 1:
-                coords = list(reversed(coords))
-            unrotated = affinity.rotate(LineString(coords), angle_deg, origin=origin)
-            row_lines.append(Toolpath(
-                points=simplify_segment_points([Point(x, y2) for x, y2 in unrotated.coords], tolerance, False),
-                kind="fill-infill",
-                closed=False,
-            ))
-        row_lines.sort(key=lambda path: (path.points[0].y if path.points else 0.0, path.points[0].x if path.points else 0.0))
-        debug_append_toolpaths(debug, "hatch_after_clipping", row_lines)
-        paths.extend(row_lines)
-        y += spacing
-        row += 1
-    return paths
-
-
 def path_signature(path: Toolpath, decimals: int = 4) -> tuple[Any, ...]:
     return (
         path.kind,
@@ -3102,12 +3135,241 @@ def dedupe_toolpaths(paths: list[Toolpath], minimum_length: float) -> list[Toolp
     return deduped
 
 
+def rotate_closed_toolpath(path: Toolpath, anchor: Point) -> Toolpath:
+    if not path.closed or len(path.points) <= 2:
+        return path
+    core = path.points[:-1]
+    if len(core) < 2:
+        return path
+    best_index = min(range(len(core)), key=lambda i: math.hypot(core[i].x - anchor.x, core[i].y - anchor.y))
+    rotated = core[best_index:] + core[:best_index] + [core[best_index]]
+    return Toolpath(points=rotated, kind=path.kind, closed=True)
+
+
+def optimize_toolpath_order(
+    toolpaths: list[Toolpath],
+    *,
+    strategy: str,
+    start_point: Optional[Point] = None,
+) -> list[Toolpath]:
+    if strategy != "nearest-neighbor" or len(toolpaths) <= 1:
+        return toolpaths
+
+    pending = list(toolpaths)
+    ordered: list[Toolpath] = []
+    current = start_point or Point(0.0, 0.0)
+    while pending:
+        best_index = 0
+        best_path = pending[0]
+        best_score = float("inf")
+        best_reversed = False
+        best_rotated = best_path
+
+        for index, path in enumerate(pending):
+            candidate = rotate_closed_toolpath(path, current)
+            if candidate.points:
+                start_distance = math.hypot(candidate.points[0].x - current.x, candidate.points[0].y - current.y)
+                if start_distance < best_score:
+                    best_index = index
+                    best_path = path
+                    best_score = start_distance
+                    best_reversed = False
+                    best_rotated = candidate
+            if not path.closed and len(path.points) >= 2:
+                reversed_points = list(reversed(path.points))
+                reverse_distance = math.hypot(reversed_points[0].x - current.x, reversed_points[0].y - current.y)
+                if reverse_distance < best_score:
+                    best_index = index
+                    best_path = path
+                    best_score = reverse_distance
+                    best_reversed = True
+                    best_rotated = Toolpath(points=reversed_points, kind=path.kind, closed=False)
+
+        pending.pop(best_index)
+        selected = best_rotated
+        if best_reversed and best_path.closed:
+            selected = best_path
+        ordered.append(selected)
+        if selected.points:
+            current = selected.points[-1]
+    return ordered
+
+
+class SlicerService:
+    def _scanline_spacing_deg(self, settings: SlicerSettings) -> float:
+        base_spacing_mm = settings.infill_spacing_mm if settings.infill_spacing_mm > 0 else settings.line_width_mm
+        density_scale = max(0.01, settings.infill_density / 100.0)
+        return max(mm_to_ball_degrees(settings.line_width_mm) * 0.25, mm_to_ball_degrees(base_spacing_mm) / density_scale)
+
+    def _generate_scanline_infill(
+        self,
+        region: Any,
+        *,
+        spacing_deg: float,
+        angle_deg: float,
+        min_segment_length_deg: float,
+        tolerance_deg: float,
+        debug: Optional[dict[str, Any]] = None,
+    ) -> list[Toolpath]:
+        if region is None or region.is_empty or spacing_deg <= 0:
+            return []
+
+        origin = region.centroid.coords[0]
+        rotated = affinity.rotate(region, -angle_deg, origin=origin)
+        min_x, min_y, max_x, max_y = rotated.bounds
+        if not all(math.isfinite(value) for value in [min_x, min_y, max_x, max_y]):
+            return []
+
+        toolpaths: list[Toolpath] = []
+        row = 0
+        y = min_y
+        while y <= max_y + 1e-6:
+            raw_scan = LineString([(min_x - spacing_deg, y), (max_x + spacing_deg, y)])
+            if debug is not None:
+                raw_scan_world = affinity.rotate(raw_scan, angle_deg, origin=origin)
+                debug_append_toolpaths(debug, "raw_scanlines", [
+                    Toolpath(points=[Point(x, y2) for x, y2 in raw_scan_world.coords], kind="debug-raw-scanline", closed=False)
+                ])
+
+            clipped = rotated.intersection(raw_scan)
+            row_paths: list[Toolpath] = []
+            for line in extract_lines(clipped):
+                if line.length < min_segment_length_deg:
+                    continue
+                coords = list(line.coords)
+                if row % 2 == 1:
+                    coords = list(reversed(coords))
+                world_line = affinity.rotate(LineString(coords), angle_deg, origin=origin)
+                points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
+                if len(points) >= 2:
+                    row_paths.append(Toolpath(points=points, kind="fill-infill", closed=False))
+            row_paths.sort(key=lambda path: (path.points[0].x if path.points else 0.0, path.points[0].y if path.points else 0.0))
+            debug_append_toolpaths(debug, "clipped_infill_lines", row_paths)
+            toolpaths.extend(row_paths)
+            y += spacing_deg
+            row += 1
+        return toolpaths
+
+    def slice_one_layer(
+        self,
+        printable_geometry: Any,
+        *,
+        line_width_mm: float,
+        wall_count: int,
+        infill_density: float = 100.0,
+        infill_angle_deg: float = 0.0,
+        outline_after_fill: bool = False,
+        min_fill_area_mm2: float = 1.0,
+        min_segment_length_mm: float = 0.5,
+        infill_spacing_mm: float = DEFAULT_INFILL_SPACING_MM,
+        min_fill_width_mm: float = DEFAULT_MIN_FILL_WIDTH_MM,
+        simplify_tolerance_mm: float = DEFAULT_SIMPLIFY_TOLERANCE_MM,
+        remove_duplicate_paths: bool = True,
+        small_shape_mode: str = DEFAULT_SMALL_SHAPE_MODE,
+        travel_optimization: str = DEFAULT_TRAVEL_OPTIMIZATION,
+        debug: Optional[dict[str, Any]] = None,
+    ) -> list[Toolpath]:
+        if printable_geometry is None or printable_geometry.is_empty or line_width_mm <= 0:
+            return []
+
+        line_width_deg = mm_to_ball_degrees(line_width_mm)
+        simplify_tolerance_deg = mm_to_ball_degrees(simplify_tolerance_mm)
+        min_segment_length_deg = mm_to_ball_degrees(min_segment_length_mm)
+        min_fill_area_deg2 = mm_area_to_ball_degree_area(min_fill_area_mm2)
+        min_fill_width_deg = mm_to_ball_degrees(min_fill_width_mm)
+        scanline_spacing_deg = self._scanline_spacing_deg(SlicerSettings(
+            line_width_mm=line_width_mm,
+            wall_count=wall_count,
+            infill_density=infill_density,
+            infill_spacing_mm=infill_spacing_mm,
+        ))
+
+        debug_append_geometry(debug, "final_composed_fill_region", printable_geometry, "final-composed-fill")
+        polygons = sorted(
+            normalize_geometry(printable_geometry),
+            key=lambda poly: (-round(poly.area, 5), -round(poly.centroid.y, 5), round(poly.centroid.x, 5)),
+        )
+
+        ordered: list[Toolpath] = []
+        for polygon in polygons:
+            area = polygon.area
+            bounds = polygon.bounds
+            min_width = min(bounds[2] - bounds[0], bounds[3] - bounds[1])
+            too_small = area < min_fill_area_deg2 or min_width < min_fill_width_deg
+            if too_small and small_shape_mode == "skip":
+                continue
+
+            debug_append_geometry(debug, "detected_printable_polygons", polygon, "detected-printable-polygon")
+            region_paths: list[Toolpath] = []
+
+            outer_walls = geometry_to_closed_toolpaths(polygon, "fill-wall", simplify_tolerance_deg)
+            debug_append_toolpaths(debug, "outer_walls", outer_walls)
+            region_paths.extend(optimize_toolpath_order(outer_walls, strategy=travel_optimization))
+
+            if too_small and small_shape_mode == "centerline":
+                ordered.extend(region_paths)
+                continue
+
+            anchor = region_paths[-1].points[-1] if region_paths and region_paths[-1].points else Point(0.0, 0.0)
+            inner_wall_paths: list[Toolpath] = []
+            for wall_index in range(1, max(1, wall_count)):
+                wall_geometry = polygon.buffer(-(line_width_deg * wall_index), join_style=1)
+                if wall_geometry.is_empty:
+                    continue
+                debug_append_geometry(debug, "inner_wall_regions", wall_geometry, f"inner-wall-region-{wall_index}")
+                inner_wall_paths.extend(geometry_to_closed_toolpaths(wall_geometry, "fill-wall", simplify_tolerance_deg))
+            debug_append_toolpaths(debug, "inner_walls", inner_wall_paths)
+            inner_wall_paths = optimize_toolpath_order(inner_wall_paths, strategy=travel_optimization, start_point=anchor)
+            region_paths.extend(inner_wall_paths)
+
+            infill_paths: list[Toolpath] = []
+            infill_offset = line_width_deg * max(1, wall_count)
+            infill_region = polygon.buffer(-infill_offset, join_style=1)
+            if infill_region.is_empty and small_shape_mode == "single-wall":
+                infill_region = None
+            if infill_region is not None and not infill_region.is_empty:
+                debug_append_geometry(debug, "infill_regions", infill_region, "infill-region")
+                infill_paths = self._generate_scanline_infill(
+                    infill_region,
+                    spacing_deg=scanline_spacing_deg,
+                    angle_deg=infill_angle_deg,
+                    min_segment_length_deg=min_segment_length_deg,
+                    tolerance_deg=simplify_tolerance_deg,
+                    debug=debug,
+                )
+            infill_paths = optimize_toolpath_order(
+                infill_paths,
+                strategy=travel_optimization,
+                start_point=region_paths[-1].points[-1] if region_paths and region_paths[-1].points else anchor,
+            )
+            region_paths.extend(infill_paths)
+
+            if outline_after_fill:
+                cleanup_paths = geometry_to_closed_toolpaths(polygon, "outline", simplify_tolerance_deg)
+                debug_append_toolpaths(debug, "cleanup_outlines", cleanup_paths)
+                cleanup_paths = optimize_toolpath_order(
+                    cleanup_paths,
+                    strategy=travel_optimization,
+                    start_point=region_paths[-1].points[-1] if region_paths and region_paths[-1].points else anchor,
+                )
+                region_paths.extend(cleanup_paths)
+
+            ordered.extend(region_paths)
+
+        if remove_duplicate_paths:
+            ordered = dedupe_toolpaths(ordered, min_segment_length_deg)
+        else:
+            ordered = [path for path in ordered if segment_length(path.points) >= min_segment_length_deg]
+        return ordered
+
+
 def generate_toolpaths(
     bundle: GeometryBundle,
     *,
     enable_fill: bool,
     line_width_mm: float,
     wall_count: int,
+    infill_density: float,
     infill_spacing_mm: float,
     infill_angle_deg: float,
     outline_after_fill: bool,
@@ -3117,88 +3379,40 @@ def generate_toolpaths(
     remove_duplicate_paths: bool,
     small_shape_mode: str,
     min_segment_length_mm: float,
+    travel_optimization: str,
     debug: Optional[dict[str, Any]] = None,
 ) -> list[Toolpath]:
     toolpaths: list[Toolpath] = []
-    line_width_deg = mm_to_ball_degrees(line_width_mm)
-    infill_spacing_deg = mm_to_ball_degrees(infill_spacing_mm)
     simplify_tolerance_deg = mm_to_ball_degrees(simplify_tolerance_mm)
-    min_segment_length_deg = mm_to_ball_degrees(min_segment_length_mm)
-    min_fill_area_deg2 = mm_area_to_ball_degree_area(min_fill_area_mm2)
-    min_fill_width_deg = mm_to_ball_degrees(min_fill_width_mm)
 
     outline_segments = list(bundle.outline_segments)
-    if not enable_fill or outline_after_fill:
+    if not enable_fill:
         outline_segments.extend(bundle.fill_boundary_segments)
 
     for segment in outline_segments:
         simplified = simplify_segment_points(segment.points, simplify_tolerance_deg, segment.closed)
         toolpaths.append(Toolpath(points=simplified, kind="outline", closed=segment.closed))
 
-    if enable_fill and line_width_deg > 0:
-        sorted_shapes = sorted(
-            bundle.fill_shapes,
-            key=lambda item: (
-                round(item.geometry.centroid.y, 5),
-                round(item.geometry.centroid.x, 5),
-                round(item.geometry.area, 5),
-            ),
-        )
-        for fill_shape in sorted_shapes:
-            geometry = fill_shape.geometry
-            if geometry.is_empty:
-                continue
-            if not geometry.is_valid:
-                geometry = make_valid(geometry) if make_valid is not None else geometry.buffer(0)
-            if geometry.is_empty:
-                continue
-            if simplify_tolerance_deg > 0:
-                geometry = geometry.simplify(simplify_tolerance_deg, preserve_topology=True)
-            polygons = normalize_geometry(geometry)
-            for polygon in polygons:
-                area = polygon.area
-                bounds = polygon.bounds
-                min_width = min(bounds[2] - bounds[0], bounds[3] - bounds[1])
-                too_small = area < min_fill_area_deg2 or min_width < min_fill_width_deg
-                if too_small and small_shape_mode == "skip":
-                    continue
+    if enable_fill and bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
+        slicer = SlicerService()
+        toolpaths.extend(slicer.slice_one_layer(
+            bundle.printable_geometry,
+            line_width_mm=line_width_mm,
+            wall_count=wall_count,
+            infill_density=infill_density,
+            infill_angle_deg=infill_angle_deg,
+            outline_after_fill=outline_after_fill,
+            min_fill_area_mm2=min_fill_area_mm2,
+            min_segment_length_mm=min_segment_length_mm,
+            infill_spacing_mm=infill_spacing_mm,
+            min_fill_width_mm=min_fill_width_mm,
+            simplify_tolerance_mm=simplify_tolerance_mm,
+            remove_duplicate_paths=remove_duplicate_paths,
+            small_shape_mode=small_shape_mode,
+            travel_optimization=travel_optimization,
+            debug=debug,
+        ))
 
-                wall_geometries = []
-                for wall_index in range(max(1, wall_count)):
-                    wall_offset = line_width_deg * (0.5 + wall_index)
-                    wall_geometry = polygon.buffer(-wall_offset, join_style=1)
-                    if not wall_geometry.is_empty:
-                        wall_geometries.append(wall_geometry)
-
-                if not wall_geometries:
-                    if small_shape_mode == "single-wall":
-                        wall_paths = geometry_to_closed_toolpaths(polygon, "fill-wall", simplify_tolerance_deg)
-                    else:
-                        continue
-                else:
-                    wall_paths = []
-                    for wall_geometry in wall_geometries:
-                        wall_paths.extend(geometry_to_closed_toolpaths(wall_geometry, "fill-wall", simplify_tolerance_deg))
-
-                infill_paths: list[Toolpath] = []
-                infill_region = polygon.buffer(-(line_width_deg * max(1, wall_count)), join_style=1)
-                if not infill_region.is_empty:
-                    infill_paths = generate_zigzag_infill(
-                        region=infill_region,
-                        spacing=max(infill_spacing_deg, line_width_deg),
-                        angle_deg=infill_angle_deg,
-                        min_segment_length=min_segment_length_deg,
-                        tolerance=simplify_tolerance_deg,
-                        debug=debug,
-                    )
-
-                toolpaths.extend(infill_paths)
-                toolpaths.extend(wall_paths)
-
-    if remove_duplicate_paths:
-        toolpaths = dedupe_toolpaths(toolpaths, min_segment_length_deg)
-    else:
-        toolpaths = [path for path in toolpaths if segment_length(path.points) >= min_segment_length_deg]
     toolpath_counts = {
         "generated_fill_walls": sum(1 for path in toolpaths if path.kind == "fill-wall"),
         "generated_infill_paths": sum(1 for path in toolpaths if path.kind == "fill-infill"),
@@ -3344,6 +3558,7 @@ def run_integrated_svg_pipeline_self_test() -> dict[str, Any]:
         enable_fill=True,
         line_width_mm=0.75,
         wall_count=1,
+        infill_density=100.0,
         infill_spacing_mm=0.75,
         infill_angle_deg=0.0,
         outline_after_fill=False,
@@ -3353,10 +3568,20 @@ def run_integrated_svg_pipeline_self_test() -> dict[str, Any]:
         remove_duplicate_paths=True,
         small_shape_mode="single-wall",
         min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
         debug={},
     )
     expect(any(path.kind == "fill-wall" for path in toolpaths), "printable regions generate fill walls")
     expect(any(path.kind == "fill-infill" for path in toolpaths), "printable regions generate infill when geometry is large enough")
+    hole_box = Polygon([(30, 30), (70, 30), (70, 70), (30, 70)])
+    infill_points = [point for path in toolpaths if path.kind == "fill-infill" for point in path.points]
+    expect(not any(hole_box.buffer(-0.01).contains(ShapelyPoint(point.x, point.y)) for point in infill_points), "infill lines do not cross cutout holes")
+    infill_rows = [path for path in toolpaths if path.kind == "fill-infill"]
+    if len(infill_rows) >= 2:
+        y_values = sorted({round(path.points[0].y, 4) for path in infill_rows if path.points})
+        if len(y_values) >= 2:
+            measured_spacing_deg = abs(y_values[1] - y_values[0])
+            expect(abs(measured_spacing_deg - mm_to_ball_degrees(0.75)) < 0.05, "100 percent infill spacing defaults to line width")
 
     stroke_only_svg = """
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">
@@ -3524,6 +3749,7 @@ def index():
         default_trace_stroke_only_paths=DEFAULT_TRACE_STROKE_ONLY_PATHS,
         default_fill_only_dark_svg_fills=DEFAULT_FILL_ONLY_DARK_SVG_FILLS,
         default_wall_count=DEFAULT_WALL_COUNT,
+        default_infill_density=DEFAULT_INFILL_DENSITY,
         default_infill_spacing_mm=DEFAULT_INFILL_SPACING_MM,
         default_infill_angle_deg=DEFAULT_INFILL_ANGLE_DEG,
         default_min_fill_area_mm2=DEFAULT_MIN_FILL_AREA_MM2,
@@ -3532,6 +3758,7 @@ def index():
         default_outline_after_fill=DEFAULT_OUTLINE_AFTER_FILL,
         default_remove_duplicate_paths=DEFAULT_REMOVE_DUPLICATE_PATHS,
         default_min_segment_length_mm=DEFAULT_MIN_SEGMENT_LENGTH_MM,
+        default_travel_optimization=DEFAULT_TRAVEL_OPTIMIZATION,
     )
 
 
@@ -3817,6 +4044,7 @@ def generate_gcode_route():
         fill_mode = request.form.get("fill_mode", DEFAULT_FILL_MODE)
         wall_count = validate_non_negative_int(request.form.get("wall_count", DEFAULT_WALL_COUNT), "Wall count", minimum=1, maximum=8)
         infill_pattern = request.form.get("infill_pattern", DEFAULT_INFILL_PATTERN)
+        infill_density = validate_non_negative_float(request.form.get("infill_density", DEFAULT_INFILL_DENSITY), "Infill density", maximum=100)
         infill_spacing_mm = validate_non_negative_float(request.form.get("infill_spacing_mm", DEFAULT_INFILL_SPACING_MM), "Infill spacing", maximum=10)
         infill_angle_deg = float(request.form.get("infill_angle_deg", DEFAULT_INFILL_ANGLE_DEG))
         outline_after_fill = validate_bool(request.form.get("outline_after_fill", DEFAULT_OUTLINE_AFTER_FILL))
@@ -3826,6 +4054,7 @@ def generate_gcode_route():
         remove_duplicate_paths = validate_bool(request.form.get("remove_duplicate_paths", DEFAULT_REMOVE_DUPLICATE_PATHS))
         small_shape_mode = request.form.get("small_shape_mode", DEFAULT_SMALL_SHAPE_MODE)
         min_segment_length_mm = validate_non_negative_float(request.form.get("min_segment_length_mm", DEFAULT_MIN_SEGMENT_LENGTH_MM), "Minimum segment length", maximum=20)
+        travel_optimization = request.form.get("travel_optimization", DEFAULT_TRAVEL_OPTIMIZATION)
         fit_mode = request.form.get("fit_mode", "contain")
         invert_y = request.form.get("invert_y", "1") == "1"
         include_comments = request.form.get("include_comments", "1") == "1"
@@ -3852,8 +4081,12 @@ def generate_gcode_route():
             raise ValueError("Only slicer fill mode is currently supported")
         if infill_pattern not in {"zigzag", "hatch"}:
             raise ValueError("Infill pattern must be zigzag or hatch")
-        if small_shape_mode not in {"single-wall", "skip", "centerline-todo"}:
+        if infill_density <= 0 or infill_density > 100:
+            raise ValueError("Infill density must be between 0 and 100")
+        if small_shape_mode not in {"single-wall", "skip", "centerline"}:
             raise ValueError("Invalid small shape mode")
+        if travel_optimization not in {"nearest-neighbor"}:
+            raise ValueError("Invalid travel optimization")
 
         debug_data: Optional[dict[str, Any]] = {} if debug_pipeline else None
         bundle, viewbox_bounds, print_model = extract_svg_bundle(
@@ -3877,6 +4110,7 @@ def generate_gcode_route():
             enable_fill=enable_fill,
             line_width_mm=line_thickness_mm,
             wall_count=wall_count,
+            infill_density=infill_density,
             infill_spacing_mm=infill_spacing_mm if infill_spacing_mm > 0 else line_thickness_mm,
             infill_angle_deg=infill_angle_deg,
             outline_after_fill=outline_after_fill,
@@ -3886,6 +4120,7 @@ def generate_gcode_route():
             remove_duplicate_paths=remove_duplicate_paths,
             small_shape_mode=small_shape_mode,
             min_segment_length_mm=min_segment_length_mm,
+            travel_optimization=travel_optimization,
             debug=debug_data,
         )
         if not toolpaths:
