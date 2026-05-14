@@ -5,6 +5,7 @@ from . import pipeline_core
 
 class ToolpathService:
     generate_toolpaths = staticmethod(pipeline_core.generate_toolpaths)
+    summarize_toolpaths = staticmethod(pipeline_core.summarize_toolpaths)
 
     def generate_from_regions(
         self,

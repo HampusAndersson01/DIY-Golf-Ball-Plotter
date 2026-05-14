@@ -1,59 +1,25 @@
-let latestGcode = [];
-let latestPreview = [];
-let latestAnalysis = null;
-let latestMask = null;
-let latestRegions = null;
-let selectedColors = new Set();
-let generateRequestInFlight = false;
-
-function appendLog(text) {
-  const log = document.getElementById("log");
-  const now = new Date().toLocaleTimeString();
-  log.textContent += `[${now}] ${text}\n`;
-  log.scrollTop = log.scrollHeight;
-}
-
-function getNum(id) {
-  const element = document.getElementById(id);
-  return parseFloat(element?.value || "0");
-}
-
-function getInt(id) {
-  const element = document.getElementById(id);
-  return parseInt(element?.value || "0", 10);
-}
-
-function getBool(id) {
-  return Boolean(document.getElementById(id)?.checked);
-}
-
-function getValue(id) {
-  return document.getElementById(id)?.value?.trim() || "";
-}
-
-function setGenerateButtonBusy(isBusy) {
-  const button = document.getElementById("generateGcodeButton");
-  if (!button) return;
-  button.disabled = isBusy;
-  button.dataset.busy = isBusy ? "1" : "0";
-  button.textContent = isBusy ? "Generating..." : "Generate G-code";
-}
-
-function formDataEntries(form) {
-  return Array.from(form.entries()).map(([key, value]) => {
-    if (value instanceof File) return `${key}=[File:${value.name || "unnamed"}]`;
-    return `${key}=${value}`;
-  });
-}
-
-async function readJsonResponse(res) {
-  const rawText = await res.text();
-  try {
-    return { json: JSON.parse(rawText), rawText };
-  } catch (_) {
-    return { json: null, rawText };
-  }
-}
+const appState = {
+  connected: false,
+  calibrated: false,
+  running: false,
+  paused: false,
+  status: "Not connected",
+  selectedColors: [],
+  latestGcode: [],
+  latestPreview: [],
+  latestMaskPreview: null,
+  latestSummary: null,
+  latestAnalysis: null,
+  latestMask: null,
+  latestRegions: null,
+  progressDone: 0,
+  progressTotal: 0,
+  runStartedAt: null,
+  pauseStartedAt: null,
+  pausedDurationSeconds: 0,
+  generateRequestInFlight: false,
+  calibrationRequestInFlight: false,
+};
 
 const SERVER_DEFAULTS = window.SERVER_DEFAULTS || {
   penUpS: 575,
@@ -62,14 +28,79 @@ const SERVER_DEFAULTS = window.SERVER_DEFAULTS || {
   penDownDwellMs: 60,
   servoRampEnabled: true,
   servoRampStep: 20,
-  servoRampDelayMs: 10
+  servoRampDelayMs: 10,
 };
 
 const DERIVED_PEN_FIELDS = {
   infillSpacingMm: (penThickness) => penThickness,
   minFillWidthMm: (penThickness) => penThickness,
-  minFillAreaMm2: (penThickness) => penThickness * penThickness
+  minFillAreaMm2: (penThickness) => penThickness * penThickness,
 };
+
+function byId(id) {
+  return document.getElementById(id);
+}
+
+function getNum(id) {
+  return parseFloat(byId(id)?.value || "0");
+}
+
+function getInt(id) {
+  return parseInt(byId(id)?.value || "0", 10);
+}
+
+function getBool(id) {
+  return Boolean(byId(id)?.checked);
+}
+
+function getValue(id) {
+  return byId(id)?.value?.trim() || "";
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function formatNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toLocaleString() : "-";
+}
+
+function formatDuration(totalSeconds) {
+  const numeric = Number(totalSeconds);
+  if (!Number.isFinite(numeric) || numeric < 0) return "--:--";
+  const wholeSeconds = Math.round(numeric);
+  const hours = Math.floor(wholeSeconds / 3600);
+  const minutes = Math.floor((wholeSeconds % 3600) / 60);
+  const seconds = wholeSeconds % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function appendLog(text) {
+  const log = byId("log");
+  if (!log) return;
+  const now = new Date().toLocaleTimeString();
+  log.textContent += `[${now}] ${text}\n`;
+  log.scrollTop = log.scrollHeight;
+}
+
+function showToast(message, tone = "info") {
+  const stack = byId("toastStack");
+  if (!stack) return;
+  const toast = document.createElement("div");
+  toast.className = `toast toast--${tone}`;
+  toast.textContent = message;
+  stack.appendChild(toast);
+  window.setTimeout(() => {
+    toast.remove();
+  }, 3200);
+}
 
 function roundTo(value, decimals) {
   const factor = 10 ** decimals;
@@ -79,7 +110,7 @@ function roundTo(value, decimals) {
 function syncDerivedPenFields(force = false) {
   const penThickness = Math.max(0, getNum("lineThicknessMm"));
   for (const [id, compute] of Object.entries(DERIVED_PEN_FIELDS)) {
-    const input = document.getElementById(id);
+    const input = byId(id);
     if (!input) continue;
     if (!force && input.dataset.userOverride === "1") continue;
     const decimals = id === "minFillAreaMm2" ? 3 : 2;
@@ -87,24 +118,19 @@ function syncDerivedPenFields(force = false) {
     input.dataset.userOverride = "0";
   }
 
-  const summary = document.getElementById("derivedPenSummary");
-  if (summary) {
-    const outlineInset = roundTo(penThickness / 2, 3);
-    const infillSpacing = roundTo(DERIVED_PEN_FIELDS.infillSpacingMm(penThickness), 3);
-    const minFillWidth = roundTo(DERIVED_PEN_FIELDS.minFillWidthMm(penThickness), 3);
-    const minFillArea = roundTo(DERIVED_PEN_FIELDS.minFillAreaMm2(penThickness), 3);
-    summary.textContent = `Auto defaults: outline inset ${outlineInset} mm, infill spacing ${infillSpacing} mm, min fill width ${minFillWidth} mm, min fill area ${minFillArea} mm^2.`;
-  }
+  const summary = byId("derivedPenSummary");
+  if (!summary) return;
+  const outlineInset = roundTo(penThickness / 2, 3);
+  const infillSpacing = roundTo(DERIVED_PEN_FIELDS.infillSpacingMm(penThickness), 3);
+  const minFillWidth = roundTo(DERIVED_PEN_FIELDS.minFillWidthMm(penThickness), 3);
+  const minFillArea = roundTo(DERIVED_PEN_FIELDS.minFillAreaMm2(penThickness), 3);
+  summary.textContent = `Auto defaults: outline inset ${outlineInset} mm, infill spacing ${infillSpacing} mm, min fill width ${minFillWidth} mm, min fill area ${minFillArea} mm^2.`;
 }
 
 function setupDerivedPenFieldSync() {
-  const penInput = document.getElementById("lineThicknessMm");
-  if (penInput) {
-    penInput.addEventListener("input", () => syncDerivedPenFields(false));
-  }
-
+  byId("lineThicknessMm")?.addEventListener("input", () => syncDerivedPenFields(false));
   for (const id of Object.keys(DERIVED_PEN_FIELDS)) {
-    const input = document.getElementById(id);
+    const input = byId(id);
     if (!input) continue;
     input.addEventListener("input", () => {
       input.dataset.userOverride = input.value.trim() === "" ? "0" : "1";
@@ -116,14 +142,14 @@ function setupDerivedPenFieldSync() {
 }
 
 function resetServoUiDefaults() {
-  document.getElementById("penUpS").value = SERVER_DEFAULTS.penUpS;
-  document.getElementById("penDownS").value = SERVER_DEFAULTS.penDownS;
-  document.getElementById("penUpDwellMs").value = SERVER_DEFAULTS.penUpDwellMs;
-  document.getElementById("penDownDwellMs").value = SERVER_DEFAULTS.penDownDwellMs;
-  document.getElementById("servoRampEnabled").checked = SERVER_DEFAULTS.servoRampEnabled;
-  document.getElementById("servoRampStep").value = SERVER_DEFAULTS.servoRampStep;
-  document.getElementById("servoRampDelayMs").value = SERVER_DEFAULTS.servoRampDelayMs;
-  document.getElementById("rawCommand").value = `M3 S${SERVER_DEFAULTS.penUpS}`;
+  byId("penUpS").value = SERVER_DEFAULTS.penUpS;
+  byId("penDownS").value = SERVER_DEFAULTS.penDownS;
+  byId("penUpDwellMs").value = SERVER_DEFAULTS.penUpDwellMs;
+  byId("penDownDwellMs").value = SERVER_DEFAULTS.penDownDwellMs;
+  byId("servoRampEnabled").checked = SERVER_DEFAULTS.servoRampEnabled;
+  byId("servoRampStep").value = SERVER_DEFAULTS.servoRampStep;
+  byId("servoRampDelayMs").value = SERVER_DEFAULTS.servoRampDelayMs;
+  byId("rawCommand").value = `M3 S${SERVER_DEFAULTS.penUpS}`;
   appendLog(`Reset servo UI fields to server defaults S${SERVER_DEFAULTS.penUpS}/S${SERVER_DEFAULTS.penDownS}.`);
 }
 
@@ -136,24 +162,43 @@ function appendServoSettings(target) {
   return target;
 }
 
-async function api(url, data = {}) {
+async function readJsonResponse(res) {
+  const rawText = await res.text();
+  try {
+    return { json: JSON.parse(rawText), rawText };
+  } catch (_) {
+    return { json: null, rawText };
+  }
+}
+
+async function api(url, data = {}, options = {}) {
+  const { successMessage = "", errorPrefix = "ERROR", refresh = true } = options;
   try {
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data)
+      body: JSON.stringify(data),
     });
-    const json = await res.json();
+    const { json, rawText } = await readJsonResponse(res);
+    if (!json) {
+      appendLog(`${errorPrefix}: Non-JSON response from ${url}`);
+      if (rawText) appendLog(rawText.slice(0, 600));
+      showToast(`${errorPrefix}: request failed`, "error");
+      return { ok: false, error: "Non-JSON response" };
+    }
     if (json.ok) {
       if (json.command) appendLog(`> ${json.command}`);
       if (json.response) appendLog(`< ${json.response}`);
+      if (successMessage) showToast(successMessage, "success");
     } else {
-      appendLog(`ERROR: ${json.error}`);
+      appendLog(`${errorPrefix}: ${json.error}`);
+      showToast(json.error || `${errorPrefix}`, "error");
     }
-    await refreshState();
+    if (refresh) await refreshState();
     return json;
   } catch (err) {
-    appendLog(`FETCH ERROR: ${err}`);
+    appendLog(`${errorPrefix}: ${err}`);
+    showToast(String(err), "error");
     return { ok: false, error: String(err) };
   }
 }
@@ -161,64 +206,57 @@ async function api(url, data = {}) {
 async function refreshState() {
   try {
     const res = await fetch("/state");
-    const s = await res.json();
-    document.getElementById("serialStatus").textContent = s.connected ? "Connected" : "Disconnected";
-    document.getElementById("serialStatus").className = s.connected ? "value ok-text" : "value danger-text";
-    document.getElementById("calStatus").textContent = s.calibrated ? "Ready" : "Not calibrated";
-    document.getElementById("calStatus").className = s.calibrated ? "value ok-text" : "value warning";
-    document.getElementById("runStatus").textContent = s.status || "-";
-    document.getElementById("progressStatus").textContent = `${s.progress_done || 0} / ${s.progress_total || 0}`;
-    if (s.defaults) {
-      document.getElementById("servoDefaultsInfo").textContent =
-        `Server defaults: pen up S${s.defaults.pen_up_s}, pen down S${s.defaults.pen_down_s}, PID ${s.server_pid}`;
-    }
-    const pct = s.progress_total ? Math.round((s.progress_done / s.progress_total) * 100) : 0;
-    document.getElementById("progressFill").style.width = `${pct}%`;
-  } catch (_) {}
-}
+    const state = await res.json();
+    appState.connected = Boolean(state.connected);
+    appState.calibrated = Boolean(state.calibrated);
+    appState.running = Boolean(state.running);
+    appState.paused = Boolean(state.paused);
+    appState.status = state.status || "Idle";
+    appState.progressDone = Number(state.progress_done || 0);
+    appState.progressTotal = Number(state.progress_total || 0);
+    appState.runStartedAt = state.run_started_at ? Number(state.run_started_at) : null;
+    appState.pauseStartedAt = state.pause_started_at ? Number(state.pause_started_at) : null;
+    appState.pausedDurationSeconds = Number(state.paused_duration_seconds || 0);
 
-function sendCommand(command) { return api("/command", { command }); }
-function sendRaw() { return sendCommand(document.getElementById("rawCommand").value); }
-function softReset() { return api("/reset"); }
-function applyMachineConfig() {
-  return api("/apply-config", {
-    x_max_feed: getNum("xMaxFeed"),
-    y_max_feed: getNum("yMaxFeed"),
-    x_acceleration: getNum("xAcceleration"),
-    y_acceleration: getNum("yAcceleration")
-  });
+    const serialStatus = byId("serialStatus");
+    serialStatus.textContent = appState.connected ? "Connected" : "Disconnected";
+    serialStatus.className = `status-chip__value ${appState.connected ? "status-green" : "status-red"}`;
+
+    const calStatus = byId("calStatus");
+    calStatus.textContent = appState.calibrated ? "Calibrated" : "Not calibrated";
+    calStatus.className = `status-chip__value ${appState.calibrated ? "status-green" : "status-yellow"}`;
+
+    const runStatus = byId("runStatus");
+    runStatus.textContent = appState.status;
+    runStatus.className = `status-chip__value ${appState.running ? "status-blue" : "status-slate"}`;
+
+    byId("progressStatus").textContent = `${appState.progressDone} / ${appState.progressTotal}`;
+    const pct = appState.progressTotal ? Math.round((appState.progressDone / appState.progressTotal) * 100) : 0;
+    byId("progressFill").style.width = `${pct}%`;
+    byId("runProgressFill").style.width = `${pct}%`;
+    byId("progressPercent").textContent = `${pct}%`;
+
+    if (state.defaults) {
+      byId("servoDefaultsInfo").textContent =
+        `Server defaults: pen up S${state.defaults.pen_up_s}, pen down S${state.defaults.pen_down_s}, PID ${state.server_pid}`;
+    }
+
+    renderStateBadges();
+    renderProgressTiming();
+    updateActionStates();
+    updateStepper();
+  } catch (_) {
+    // Keep previous state on poll failures.
+  }
 }
-function penUp() { return api("/pen-up", appendServoSettings({ s: getInt("penUpS") })); }
-function penDown() { return api("/pen-down", appendServoSettings({ s: getInt("penDownS") })); }
-function penTest() {
-  return api("/pen-test", appendServoSettings({
-    up_s: getInt("penUpS"),
-    down_s: getInt("penDownS")
-  }));
-}
-function servoOff() { return api("/servo-off"); }
-function jogX(degrees) { return api("/jog", { axis: "X", degrees, feed: getNum("travelFeed") }); }
-function jogY(degrees) { return api("/jog", { axis: "Y", degrees, feed: getNum("travelFeed") }); }
-function zeroPosition() { return api("/zero-position"); }
-function goHome() {
-  return api("/go-home", appendServoSettings({
-    pen_up_s: getInt("penUpS"),
-    travel_feed: getNum("travelFeed")
-  }));
-}
-function markCalibrated() { return api("/mark-calibrated"); }
-function clearCalibrated() { return api("/clear-calibrated"); }
-function runGcode() { return api("/run-gcode"); }
-function pauseRun() { return api("/pause"); }
-function resumeRun() { return api("/resume"); }
-function stopRun() { return api("/stop"); }
 
 function currentImageFile() {
-  return document.getElementById("imageFile").files[0] || null;
+  return byId("imageFile").files[0] || null;
 }
 
 function showOriginalPreview(file) {
-  const host = document.getElementById("originalPreview");
+  const host = byId("originalPreview");
+  if (!host) return;
   if (!file) {
     host.innerHTML = '<span class="small">No image loaded</span>';
     return;
@@ -228,7 +266,8 @@ function showOriginalPreview(file) {
 }
 
 function showMaskPreview(dataUrl) {
-  const host = document.getElementById("maskPreview");
+  const host = byId("maskPreview");
+  if (!host) return;
   if (!dataUrl) {
     host.innerHTML = '<span class="small">No mask preview available</span>';
     return;
@@ -236,20 +275,27 @@ function showMaskPreview(dataUrl) {
   host.innerHTML = `<img src="${dataUrl}" alt="Selected color mask preview" />`;
 }
 
+function getSelectedColorSet() {
+  return new Set(appState.selectedColors);
+}
+
 function setSelectedColors(colors) {
-  selectedColors = new Set(colors);
-  renderColorSwatches(latestAnalysis?.colors || []);
+  const changed = JSON.stringify(appState.selectedColors) !== JSON.stringify([...colors]);
+  appState.selectedColors = [...colors];
+  if (changed) invalidateGeneratedArtifacts();
+  renderColorSwatches(appState.latestAnalysis?.colors || []);
   updateSelectedColorSummary();
+  updateActionStates();
 }
 
 function updateSelectedColorSummary() {
-  const host = document.getElementById("selectedColorSummary");
-  const values = [...selectedColors];
-  if (!values.length) {
+  const host = byId("selectedColorSummary");
+  if (!host) return;
+  if (!appState.selectedColors.length) {
     host.textContent = "No colors selected.";
     return;
   }
-  host.textContent = `Selected for printing: ${values.join(", ")}`;
+  host.textContent = `Selected for printing: ${appState.selectedColors.join(", ")}`;
 }
 
 function guessInitialColors(colors) {
@@ -262,80 +308,211 @@ function guessInitialColors(colors) {
 }
 
 function renderColorSwatches(colors) {
-  const host = document.getElementById("colorSwatches");
+  const host = byId("colorSwatches");
+  if (!host) return;
   if (!colors.length) {
     host.innerHTML = '<span class="small">Analyze an image to populate selectable colors.</span>';
     return;
   }
+  const selected = getSelectedColorSet();
   host.innerHTML = colors.map((color) => {
-    const active = selectedColors.has(color.hex);
+    const active = selected.has(color.hex);
     const coverage = `${(color.coverage * 100).toFixed(1)}%`;
     return `
       <button
         type="button"
         class="swatch ${active ? "active" : ""}"
-        data-color="${color.hex}"
-        onclick="toggleColorSelection('${color.hex}')"
+        data-color="${escapeHtml(color.hex)}"
       >
-        <span class="swatch-chip" style="background:${color.hex}"></span>
-        <span class="swatch-text">${color.hex}</span>
-        <span class="swatch-meta">${coverage} · ${color.pixel_count}px</span>
+        <span class="swatch-chip" style="background:${escapeHtml(color.hex)}"></span>
+        <span class="swatch-text">${escapeHtml(color.hex)}</span>
+        <span class="swatch-meta">${coverage} · ${formatNumber(color.pixel_count)} px</span>
       </button>
     `;
   }).join("");
+
+  host.querySelectorAll(".swatch").forEach((button) => {
+    button.addEventListener("click", () => {
+      toggleColorSelection(button.dataset.color);
+    });
+  });
 }
 
 function toggleColorSelection(hex) {
-  if (selectedColors.has(hex)) selectedColors.delete(hex);
-  else selectedColors.add(hex);
-  renderColorSwatches(latestAnalysis?.colors || []);
-  updateSelectedColorSummary();
+  const selected = getSelectedColorSet();
+  if (selected.has(hex)) selected.delete(hex);
+  else selected.add(hex);
+  setSelectedColors([...selected]);
 }
 
-async function analyzeRasterImage() {
-  const file = currentImageFile();
-  if (!file) {
-    appendLog("ERROR: Choose a PNG or JPG file first.");
+function setGenerateButtonBusy(isBusy) {
+  const button = byId("generateGcodeButton");
+  if (!button) return;
+  button.disabled = isBusy;
+  button.textContent = isBusy ? "Generating..." : "Generate G-code";
+}
+
+function renderSummary(summary) {
+  const host = byId("jobSummary");
+  if (!host) return;
+  if (!summary) {
+    host.innerHTML = '<div class="summary-empty">Generate G-code to see the job summary.</div>';
     return;
   }
+  const entries = [
+    ["Image size", summary.image_size],
+    ["Selected colors", Array.isArray(summary.selected_colors) ? summary.selected_colors.join(", ") : "-"],
+    ["Mask pixels", formatNumber(summary.mask_pixel_count)],
+    ["Components", formatNumber(summary.component_count)],
+    ["Walls", formatNumber(summary.wall_path_count)],
+    ["Infill paths", formatNumber(summary.infill_path_count)],
+    ["Detail traces", formatNumber(summary.detail_trace_path_count)],
+    ["G-code lines", formatNumber(summary.gcode_line_count)],
+    ["Plotted points", formatNumber(summary.point_count)],
+    ["Estimated runtime", formatDuration(summary.estimated_runtime_seconds)],
+  ];
+  host.innerHTML = entries.map(([label, value]) => `
+    <div class="summary-item">
+      <span class="summary-item__label">${escapeHtml(label)}</span>
+      <span class="summary-item__value">${escapeHtml(value || "-")}</span>
+    </div>
+  `).join("");
+}
 
-  showOriginalPreview(file);
-  const form = new FormData();
-  form.append("image", file);
-  form.append("simplify_colors", getBool("simplifyColors") ? "1" : "0");
-  form.append("max_colors", getInt("maxColors"));
+function invalidateGeneratedArtifacts() {
+  if (!appState.latestGcode.length && !appState.latestSummary) return;
+  appState.latestGcode = [];
+  appState.latestPreview = [];
+  appState.latestSummary = null;
+  byId("gcodeBox").value = "";
+  drawFlatPreview([]);
+  drawBallPreview([]);
+  renderSummary(null);
+  renderProgressTiming();
+  updateActionStates();
+  updateStepper();
+}
 
-  try {
-    const res = await fetch("/analyze-image", { method: "POST", body: form });
-    const json = await res.json();
-    if (!json.ok) {
-      appendLog(`ANALYZE ERROR: ${json.error}`);
-      return;
-    }
+function renderStateBadges() {
+  const connectBadge = byId("connectBadge");
+  connectBadge.textContent = appState.connected ? "Connected" : "Offline";
+  connectBadge.className = `badge ${appState.connected ? "badge-green" : "badge-red"}`;
 
-    latestAnalysis = json.analysis;
-    renderColorSwatches(latestAnalysis.colors || []);
-    if (!selectedColors.size) {
-      setSelectedColors(guessInitialColors(latestAnalysis.colors || []));
-    } else {
-      renderColorSwatches(latestAnalysis.colors || []);
-      updateSelectedColorSummary();
-    }
-    appendLog(`Detected ${latestAnalysis.colors.length} major colors in ${latestAnalysis.width}x${latestAnalysis.height} image.`);
-  } catch (err) {
-    appendLog(`ANALYZE FETCH ERROR: ${err}`);
+  const calibrationBadge = byId("calibrationBadge");
+  calibrationBadge.textContent = appState.calibrated ? "Calibrated" : "Required";
+  calibrationBadge.className = `badge ${appState.calibrated ? "badge-green" : "badge-amber"}`;
+
+  const hasImage = Boolean(currentImageFile());
+  const imageBadge = byId("imageBadge");
+  imageBadge.textContent = hasImage ? "Image loaded" : "Awaiting image";
+  imageBadge.className = `badge ${hasImage ? "badge-blue" : "badge-slate"}`;
+
+  const runBadge = byId("runBadge");
+  const runReady = canRunJob();
+  if (appState.running) {
+    runBadge.textContent = appState.paused ? "Paused" : "Running";
+    runBadge.className = "badge badge-blue";
+  } else {
+    runBadge.textContent = runReady ? "Ready" : "Locked";
+    runBadge.className = `badge ${runReady ? "badge-green" : "badge-slate"}`;
   }
+
+  const calibrationMessage = byId("calibrationMessage");
+  calibrationMessage.textContent = appState.calibrated
+    ? "Calibrated: current position is X0/Y0."
+    : "Place the pen at the exact center of the ball before setting origin.";
+}
+
+function getActiveElapsedSeconds() {
+  if (!appState.runStartedAt) return null;
+  const nowSeconds = Date.now() / 1000;
+  const currentPauseSeconds = appState.paused && appState.pauseStartedAt
+    ? Math.max(0, nowSeconds - appState.pauseStartedAt)
+    : 0;
+  return Math.max(0, nowSeconds - appState.runStartedAt - appState.pausedDurationSeconds - currentPauseSeconds);
+}
+
+function renderProgressTiming() {
+  const generatedEstimate = appState.latestSummary?.estimated_runtime_seconds ?? null;
+  const elapsedSeconds = getActiveElapsedSeconds();
+  let estimatedTotalSeconds = generatedEstimate;
+  let remainingSeconds = null;
+
+  if (elapsedSeconds != null && appState.progressDone > 0 && appState.progressTotal >= appState.progressDone) {
+    estimatedTotalSeconds = elapsedSeconds / (appState.progressDone / Math.max(appState.progressTotal, 1));
+    remainingSeconds = Math.max(0, estimatedTotalSeconds - elapsedSeconds);
+  } else if (elapsedSeconds != null && generatedEstimate != null) {
+    remainingSeconds = Math.max(0, generatedEstimate - elapsedSeconds);
+  }
+
+  byId("runElapsed").textContent = formatDuration(elapsedSeconds);
+  byId("runRemaining").textContent = formatDuration(remainingSeconds);
+  byId("runEstimatedTotal").textContent = formatDuration(estimatedTotalSeconds);
+
+  if (appState.running) {
+    byId("headerEta").textContent = `ETA ${formatDuration(remainingSeconds)}`;
+  } else if (generatedEstimate != null) {
+    byId("headerEta").textContent = `Est ${formatDuration(generatedEstimate)}`;
+  } else {
+    byId("headerEta").textContent = "ETA --:--";
+  }
+}
+
+function canRunJob() {
+  return appState.connected && appState.calibrated && appState.latestGcode.length > 0;
+}
+
+function updateActionStates() {
+  const hasImage = Boolean(currentImageFile());
+  const hasColors = appState.selectedColors.length > 0;
+  const hasGcode = appState.latestGcode.length > 0;
+  const machineBusy = appState.running || appState.generateRequestInFlight || appState.calibrationRequestInFlight;
+
+  byId("analyzeButton").disabled = !hasImage || appState.generateRequestInFlight;
+  byId("generateGcodeButton").disabled = !hasImage || !hasColors || appState.generateRequestInFlight;
+  byId("runButton").disabled = !canRunJob() || machineBusy;
+  byId("pauseButton").disabled = !appState.running || appState.paused;
+  byId("resumeButton").disabled = !appState.running || !appState.paused;
+  byId("stopButton").disabled = !appState.connected;
+  byId("headerStopButton").disabled = !appState.connected;
+  byId("downloadGcodeButton").disabled = !hasGcode;
+  byId("zeroAndCalibrateButton").disabled = !appState.connected || appState.running || appState.calibrationRequestInFlight;
+  byId("clearCalibratedButton").disabled = !appState.calibrated || appState.running;
+}
+
+function updateStepper() {
+  const statuses = {
+    "step-connect": appState.connected,
+    "step-calibrate": appState.calibrated,
+    "step-prepare": Boolean(currentImageFile()) && appState.selectedColors.length > 0,
+    "step-generate": appState.latestGcode.length > 0,
+    "step-run": canRunJob(),
+  };
+
+  document.querySelectorAll(".stepper__item").forEach((item) => {
+    const stepId = item.dataset.step;
+    item.classList.remove("done", "locked");
+    if (statuses[stepId]) item.classList.add("done");
+    else if (stepId !== "step-connect") item.classList.add("locked");
+  });
+}
+
+function formDataEntries(form) {
+  return Array.from(form.entries()).map(([key, value]) => {
+    if (value instanceof File) return `${key}=[File:${value.name || "unnamed"}]`;
+    return `${key}=${value}`;
+  });
 }
 
 function buildRasterForm(file) {
   const form = new FormData();
   form.append("image", file);
-  form.append("selected_colors", JSON.stringify([...selectedColors]));
+  form.append("selected_colors", JSON.stringify(appState.selectedColors));
   form.append("draw_feed", getNum("drawFeed"));
   form.append("travel_feed", getNum("travelFeed"));
   form.append("sample_step_deg", getNum("sampleStepDeg"));
   form.append("margin_percent", getNum("marginPercent"));
-  form.append("fit_mode", document.getElementById("fitMode").value);
+  form.append("fit_mode", byId("fitMode").value);
   form.append("invert_y", getBool("invertY") ? "1" : "0");
   form.append("include_comments", getBool("includeComments") ? "1" : "0");
   form.append("debug_pipeline", getBool("debugPipeline") ? "1" : "0");
@@ -345,7 +522,7 @@ function buildRasterForm(file) {
   form.append("rotation_deg", getNum("rotationDeg"));
   form.append("line_thickness_mm", getNum("lineThicknessMm"));
   form.append("wall_count", getInt("wallCount"));
-  form.append("infill_pattern", document.getElementById("infillPattern").value);
+  form.append("infill_pattern", byId("infillPattern").value);
   form.append("infill_density", getNum("infillDensity"));
   if (getValue("infillSpacingMm") !== "") form.append("infill_spacing_mm", getNum("infillSpacingMm"));
   form.append("infill_angle_deg", getNum("infillAngleDeg"));
@@ -354,13 +531,13 @@ function buildRasterForm(file) {
   if (getValue("minFillWidthMm") !== "") form.append("min_fill_width_mm", getNum("minFillWidthMm"));
   form.append("simplify_tolerance_mm", getNum("simplifyToleranceMm"));
   form.append("remove_duplicate_paths", getBool("removeDuplicatePaths") ? "1" : "0");
-  form.append("small_shape_mode", document.getElementById("smallShapeMode").value);
+  form.append("small_shape_mode", byId("smallShapeMode").value);
   form.append("thin_detail_mode", getBool("thinDetailMode") ? "1" : "0");
   form.append("thin_detail_min_area_mm2", getNum("thinDetailMinAreaMm2"));
   form.append("thin_detail_simplify_mm", getNum("thinDetailSimplifyMm"));
   form.append("thin_detail_overlap", getBool("thinDetailOverlap") ? "1" : "0");
   form.append("min_segment_length_mm", getNum("minSegmentLengthMm"));
-  form.append("travel_optimization", document.getElementById("travelOptimization").value);
+  form.append("travel_optimization", byId("travelOptimization").value);
   form.append("color_tolerance", getInt("colorTolerance"));
   form.append("min_component_area_px", getInt("minComponentAreaPx"));
   form.append("mask_open_radius_px", getInt("maskOpenRadiusPx"));
@@ -377,82 +554,119 @@ function buildRasterForm(file) {
   return form;
 }
 
-async function generateRasterGcode() {
-  appendLog("Generate clicked");
-  if (generateRequestInFlight) {
-    appendLog("Generate request already running.");
-    return;
-  }
+async function analyzeRasterImage() {
   const file = currentImageFile();
   if (!file) {
-    appendLog("Choose an image first.");
-    return;
-  }
-  if (!selectedColors.size) {
-    appendLog("Select at least one color to print.");
+    appendLog("ERROR: Choose a PNG or JPG file first.");
+    showToast("Choose an image first.", "error");
     return;
   }
 
-  const selectedColorList = [...selectedColors];
-  appendLog(`Selected colors for generate: ${selectedColorList.join(", ")}`);
   showOriginalPreview(file);
-  const url = "/generate-image-gcode";
-  const form = buildRasterForm(file);
-  appendLog(`POST ${url}`);
-  appendLog(`Generate form fields: ${formDataEntries(form).join(", ")}`);
-  generateRequestInFlight = true;
-  setGenerateButtonBusy(true);
+  const form = new FormData();
+  form.append("image", file);
+  form.append("simplify_colors", getBool("simplifyColors") ? "1" : "0");
+  form.append("max_colors", getInt("maxColors"));
+
   try {
-    appendLog("Sending generate request...");
-    const res = await fetch(url, {
+    const res = await fetch("/analyze-image", { method: "POST", body: form });
+    const json = await res.json();
+    if (!json.ok) {
+      appendLog(`ANALYZE ERROR: ${json.error}`);
+      showToast(json.error || "Analyze failed", "error");
+      return;
+    }
+
+    appState.latestAnalysis = json.analysis;
+    if (!appState.selectedColors.length) {
+      setSelectedColors(guessInitialColors(appState.latestAnalysis.colors || []));
+    } else {
+      renderColorSwatches(appState.latestAnalysis.colors || []);
+      updateSelectedColorSummary();
+    }
+    appendLog(`Detected ${appState.latestAnalysis.colors.length} major colors in ${appState.latestAnalysis.width}x${appState.latestAnalysis.height} image.`);
+    showToast("Colors analyzed.", "success");
+    updateStepper();
+  } catch (err) {
+    appendLog(`ANALYZE FETCH ERROR: ${err}`);
+    showToast(String(err), "error");
+  }
+}
+
+async function generateRasterGcode() {
+  const file = currentImageFile();
+  if (appState.generateRequestInFlight) {
+    appendLog("Generate request already running.");
+    return;
+  }
+  if (!file) {
+    appendLog("Choose an image first.");
+    showToast("Choose an image first.", "error");
+    return;
+  }
+  if (!appState.selectedColors.length) {
+    appendLog("Select at least one color to print.");
+    showToast("Select at least one color.", "error");
+    return;
+  }
+
+  const form = buildRasterForm(file);
+  appState.generateRequestInFlight = true;
+  setGenerateButtonBusy(true);
+  updateActionStates();
+  appendLog(`POST /generate-image-gcode`);
+  appendLog(`Generate form fields: ${formDataEntries(form).join(", ")}`);
+
+  try {
+    const res = await fetch("/generate-image-gcode", {
       method: "POST",
-      body: form
+      body: form,
     });
     const { json, rawText } = await readJsonResponse(res);
     if (!json) {
       appendLog(`GENERATE ERROR: Non-JSON response (${res.status}).`);
       if (rawText) appendLog(rawText.slice(0, 1000));
+      showToast("Generate failed.", "error");
       return;
     }
     if (!json.ok) {
       appendLog(`GENERATE ERROR: ${json.error || `HTTP ${res.status}`}`);
       if (json.debug) appendLog(`GENERATE DEBUG: ${JSON.stringify(json.debug)}`);
+      showToast(json.error || "Generate failed.", "error");
       return;
     }
 
-    latestGcode = json.gcode || [];
-    latestPreview = json.preview || [];
-    latestMask = json.mask || null;
-    latestRegions = json.regions || null;
+    appState.latestGcode = json.gcode || [];
+    appState.latestPreview = json.preview || [];
+    appState.latestMask = json.mask || null;
+    appState.latestRegions = json.regions || null;
+    appState.latestMaskPreview = json.mask_preview || appState.latestMask?.mask_preview_url || appState.latestRegions?.boundary_preview_url || null;
+    appState.latestSummary = json.summary || null;
 
-    document.getElementById("gcodeBox").value = latestGcode.join("\n");
-    showMaskPreview(json.mask_preview || latestMask?.mask_preview_url || latestRegions?.boundary_preview_url || null);
-    drawFlatPreview(latestPreview);
-    drawBallPreview(latestPreview);
+    byId("gcodeBox").value = appState.latestGcode.join("\n");
+    showMaskPreview(appState.latestMaskPreview);
+    drawFlatPreview(appState.latestPreview);
+    drawBallPreview(appState.latestPreview);
+    renderSummary(appState.latestSummary);
 
-    appendLog(`Generated ${latestGcode.length} G-code lines from ${json.toolpath_count} toolpaths / ${json.point_count} plotted points.`);
-    appendLog(`Selected colors: ${json.selected_colors.join(", ")}. Regions: ${latestRegions?.region_count || 0}, holes: ${latestRegions?.hole_count || 0}.`);
-    appendLog(`Mask printable pixels: ${latestMask?.printable_pixel_count || 0}. Area extracted from mask: ${(latestRegions?.printable_area_px || 0).toFixed(1)} px².`);
-    if (json.stage_counts) {
-      const s = json.stage_counts;
-      appendLog(`Stage counts: selected components ${s.selected_component_count || s.connected_component_count || 0}, detail-trace components ${s.detail_trace_component_count || 0}, skeleton pixels ${s.skeleton_pixel_count || 0}, contours ${s.contour_count || 0}, polygons ${s.polygon_count || 0}, outline-empty ${s.outline_buffer_empty_region_count || 0}, infill-empty ${s.normal_infill_empty_region_count || 0}, detail fallback regions ${s.thin_detail_fallback_region_count || 0}, detail-trace paths ${s.detail_trace_path_count || s.thin_detail_path_count || 0}.`);
-      appendLog(`Final toolpaths: total ${s.final_toolpath_count || 0}, walls ${s.generated_fill_walls || 0}, infill ${s.generated_infill_paths || 0}, detail trace ${s.generated_detail_trace_paths || s.generated_thin_detail_paths || 0}, outlines ${s.generated_outline_paths || 0}.`);
-    }
-    if (json.debug?.toolpath_counts) {
-      const counts = json.debug.toolpath_counts;
-      appendLog(`Generated toolpaths: walls ${counts.generated_fill_walls || 0}, infill ${counts.generated_infill_paths || 0}, detail trace ${counts.generated_detail_trace_paths || counts.generated_thin_detail_paths || 0}, outlines ${counts.generated_outline_paths || 0}.`);
-    }
+    appendLog(`Generated ${appState.latestGcode.length} G-code lines from ${json.toolpath_count} toolpaths / ${json.point_count} plotted points.`);
+    appendLog(`Selected colors: ${json.selected_colors.join(", ")}. Regions: ${appState.latestRegions?.region_count || 0}, holes: ${appState.latestRegions?.hole_count || 0}.`);
+    appendLog(`Mask printable pixels: ${appState.latestMask?.printable_pixel_count || 0}. Area extracted from mask: ${(appState.latestRegions?.printable_area_px || 0).toFixed(1)} px^2.`);
+    showToast("Toolpaths and G-code generated.", "success");
+    openUtilityTab("summaryTab");
     await refreshState();
   } catch (err) {
     appendLog(`GENERATE FETCH ERROR: ${err}`);
+    showToast(String(err), "error");
   } finally {
-    generateRequestInFlight = false;
+    appState.generateRequestInFlight = false;
     setGenerateButtonBusy(false);
+    updateActionStates();
   }
 }
 
 function setupCanvas(canvasId) {
-  const canvas = document.getElementById(canvasId);
+  const canvas = byId(canvasId);
   const rect = canvas.getBoundingClientRect();
   canvas.width = Math.max(300, Math.floor(rect.width * window.devicePixelRatio));
   canvas.height = Math.max(300, Math.floor(rect.height * window.devicePixelRatio));
@@ -461,10 +675,10 @@ function setupCanvas(canvasId) {
 
 function previewStyle(kind, depth = 1) {
   const alpha = Math.max(0.18, Math.min(1, depth));
-  if (kind === "outline") return { stroke: `rgba(59, 130, 246, ${alpha})`, width: 2.1, dash: [] };
-  if (kind === "fill-wall") return { stroke: `rgba(245, 158, 11, ${alpha})`, width: 2.4, dash: [] };
-  if (kind === "fill-infill") return { stroke: `rgba(45, 212, 191, ${alpha})`, width: 1.6, dash: [] };
-  if (kind === "detail-trace") return { stroke: `rgba(217, 70, 239, ${alpha})`, width: 2.1, dash: [] };
+  if (kind === "outline") return { stroke: `rgba(245, 158, 11, ${alpha})`, width: 2.2, dash: [] };
+  if (kind === "fill-wall") return { stroke: `rgba(245, 158, 11, ${alpha})`, width: 2.6, dash: [] };
+  if (kind === "fill-infill") return { stroke: `rgba(45, 212, 191, ${alpha})`, width: 1.7, dash: [] };
+  if (kind === "detail-trace") return { stroke: `rgba(232, 121, 249, ${alpha})`, width: 2.1, dash: [] };
   return { stroke: `rgba(148, 163, 184, ${alpha * 0.9})`, width: 1.1, dash: [6, 6] };
 }
 
@@ -476,7 +690,7 @@ function drawFlatPreview(paths) {
   ctx.fillStyle = "#020617";
   ctx.fillRect(0, 0, w, h);
 
-  const pad = 24 * window.devicePixelRatio;
+  const pad = 28 * window.devicePixelRatio;
   const plotW = w - pad * 2;
   const plotH = h - pad * 2;
   const scale = Math.min(plotW / 360, plotH / 90);
@@ -491,18 +705,15 @@ function drawFlatPreview(paths) {
   ctx.lineWidth = 1 * window.devicePixelRatio;
   ctx.strokeRect(left, top, drawW, drawH);
 
-  ctx.fillStyle = "rgba(37, 99, 235, 0.45)";
+  ctx.fillStyle = "rgba(59, 130, 246, 0.28)";
   ctx.fillRect(sx(0) - 1 * window.devicePixelRatio, top, 2 * window.devicePixelRatio, drawH);
   ctx.fillRect(left, sy(0) - 1 * window.devicePixelRatio, drawW, 2 * window.devicePixelRatio);
 
   ctx.fillStyle = "#94a3b8";
-  ctx.font = `${11 * window.devicePixelRatio}px Arial`;
-  ctx.fillText("X -180°", left, h - 7 * window.devicePixelRatio);
-  ctx.fillText("X 0°", left + (180 * scale) - 18 * window.devicePixelRatio, h - 7 * window.devicePixelRatio);
-  ctx.fillText("X +180°", w - left - 52 * window.devicePixelRatio, h - 7 * window.devicePixelRatio);
-  ctx.fillText("Y +45°", 8 * window.devicePixelRatio, top + 4 * window.devicePixelRatio);
-  ctx.fillText("Y 0°", 8 * window.devicePixelRatio, top + (45 * scale) + 4 * window.devicePixelRatio);
-  ctx.fillText("Y -45°", 8 * window.devicePixelRatio, h - top);
+  ctx.font = `${11 * window.devicePixelRatio}px Segoe UI`;
+  ctx.fillText("X -180°", left, h - 9 * window.devicePixelRatio);
+  ctx.fillText("X 0°", left + (180 * scale) - 13 * window.devicePixelRatio, h - 9 * window.devicePixelRatio);
+  ctx.fillText("X +180°", w - left - 54 * window.devicePixelRatio, h - 9 * window.devicePixelRatio);
 
   for (const entry of paths) {
     const path = entry.points || [];
@@ -510,8 +721,8 @@ function drawFlatPreview(paths) {
     const style = previewStyle(entry.kind || "outline");
     ctx.beginPath();
     ctx.moveTo(sx(path[0].x), sy(path[0].y));
-    for (let i = 1; i < path.length; i++) {
-      ctx.lineTo(sx(path[i].x), sy(path[i].y));
+    for (let index = 1; index < path.length; index += 1) {
+      ctx.lineTo(sx(path[index].x), sy(path[index].y));
     }
     ctx.setLineDash((style.dash || []).map((value) => value * window.devicePixelRatio));
     ctx.lineWidth = style.width * window.devicePixelRatio;
@@ -531,7 +742,7 @@ function projectBallPoint(point, cx, cy, radius) {
   return {
     x: cx + y * radius * perspective,
     y: cy + x * radius * perspective,
-    z
+    z,
   };
 }
 
@@ -548,9 +759,9 @@ function drawBallPreview(paths) {
   const cy = h / 2;
 
   const sphere = ctx.createRadialGradient(cx - radius * 0.35, cy - radius * 0.35, radius * 0.1, cx, cy, radius);
-  sphere.addColorStop(0, "#e2e8f0");
-  sphere.addColorStop(0.22, "#94a3b8");
-  sphere.addColorStop(0.65, "#334155");
+  sphere.addColorStop(0, "#f8fafc");
+  sphere.addColorStop(0.22, "#cbd5e1");
+  sphere.addColorStop(0.65, "#475569");
   sphere.addColorStop(1, "#0f172a");
   ctx.fillStyle = sphere;
   ctx.beginPath();
@@ -569,7 +780,7 @@ function drawBallPreview(paths) {
     if (!path.length) continue;
     projectedPaths.push({
       kind: entry.kind || "outline",
-      points: path.map((point) => projectBallPoint(point, cx, cy, radius))
+      points: path.map((point) => projectBallPoint(point, cx, cy, radius)),
     });
   }
   projectedPaths.sort((a, b) => ((a.points[0]?.z || 0) - (b.points[0]?.z || 0)));
@@ -577,12 +788,12 @@ function drawBallPreview(paths) {
   for (const entry of projectedPaths) {
     const projected = entry.points;
     ctx.beginPath();
-    for (let i = 0; i < projected.length; i++) {
-      const p = projected[i];
-      if (i === 0) ctx.moveTo(p.x, p.y);
-      else ctx.lineTo(p.x, p.y);
+    for (let index = 0; index < projected.length; index += 1) {
+      const point = projected[index];
+      if (index === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
     }
-    const depth = projected.reduce((sum, p) => sum + p.z, 0) / projected.length;
+    const depth = projected.reduce((sum, point) => sum + point.z, 0) / projected.length;
     const style = previewStyle(entry.kind, 0.35 + ((depth + 1) * 0.325));
     ctx.setLineDash((style.dash || []).map((value) => value * window.devicePixelRatio));
     ctx.lineWidth = style.width * window.devicePixelRatio;
@@ -593,9 +804,10 @@ function drawBallPreview(paths) {
 }
 
 function downloadGcode() {
-  const text = document.getElementById("gcodeBox").value;
+  const text = byId("gcodeBox").value;
   if (!text.trim()) {
     appendLog("ERROR: No G-code generated.");
+    showToast("No G-code generated.", "error");
     return;
   }
   const blob = new Blob([text], { type: "text/plain" });
@@ -606,37 +818,266 @@ function downloadGcode() {
   URL.revokeObjectURL(link.href);
 }
 
-document.getElementById("imageFile").addEventListener("change", () => {
-  const file = currentImageFile();
-  showOriginalPreview(file);
-  if (!file) {
-    latestAnalysis = null;
-    latestMask = null;
-    latestRegions = null;
-    setSelectedColors([]);
-    showMaskPreview(null);
+function openUtilityTab(id) {
+  document.querySelectorAll(".utility-tab").forEach((button) => {
+    button.classList.toggle("active", button.dataset.tab === id);
+  });
+  document.querySelectorAll(".utility-pane").forEach((pane) => {
+    pane.classList.toggle("active", pane.id === id);
+  });
+}
+
+async function connectMachine() {
+  await api("/connect", {}, { successMessage: "Controller connected." });
+}
+
+async function applyMachineConfig() {
+  await api("/apply-config", {
+    x_max_feed: getNum("xMaxFeed"),
+    y_max_feed: getNum("yMaxFeed"),
+    x_acceleration: getNum("xAcceleration"),
+    y_acceleration: getNum("yAcceleration"),
+  }, { successMessage: "Machine settings applied." });
+}
+
+function sendCommand(command) {
+  return api("/command", { command });
+}
+
+function sendRaw() {
+  return sendCommand(byId("rawCommand").value);
+}
+
+function softReset() {
+  return api("/reset", {}, { successMessage: "Soft reset sent." });
+}
+
+function penUp() {
+  return api("/pen-up", appendServoSettings({ s: getInt("penUpS") }), { successMessage: "Pen moved up." });
+}
+
+function penDown() {
+  return api("/pen-down", appendServoSettings({ s: getInt("penDownS") }), { successMessage: "Pen moved down." });
+}
+
+function penTest() {
+  return api("/pen-test", appendServoSettings({
+    up_s: getInt("penUpS"),
+    down_s: getInt("penDownS"),
+  }));
+}
+
+function servoOff() {
+  return api("/servo-off", {}, { successMessage: "Servo disabled." });
+}
+
+function jog(axis, degrees) {
+  return api("/jog", { axis, degrees, feed: getNum("travelFeed") });
+}
+
+function goHome() {
+  return api("/go-home", appendServoSettings({
+    pen_up_s: getInt("penUpS"),
+    travel_feed: getNum("travelFeed"),
+  }));
+}
+
+function clearCalibrated() {
+  appState.latestGcode = appState.latestGcode;
+  return api("/clear-calibrated", {}, { successMessage: "Calibration cleared." });
+}
+
+function runGcode() {
+  return api("/run-gcode", {}, { successMessage: "Job started." });
+}
+
+function pauseRun() {
+  return api("/pause", {}, { successMessage: "Pause requested." });
+}
+
+function resumeRun() {
+  return api("/resume", {}, { successMessage: "Resume requested." });
+}
+
+function stopRun() {
+  return api("/stop", {}, { successMessage: "Stop requested." });
+}
+
+async function zeroAndMarkCalibrated() {
+  if (!appState.connected) {
+    showToast("Connect the machine first.", "error");
     return;
   }
-  setSelectedColors([]);
-});
+  appState.calibrationRequestInFlight = true;
+  updateActionStates();
+  const result = await api("/zero-and-mark-calibrated", {}, {
+    successMessage: "Calibrated: current position is X0/Y0.",
+  });
+  appState.calibrationRequestInFlight = false;
+  updateActionStates();
+  if (result.ok) {
+    showToast("Run is now available if G-code has been generated.", "info");
+  }
+}
 
-document.getElementById("generateGcodeButton")?.addEventListener("click", (event) => {
-  event.preventDefault();
-  generateRasterGcode();
-});
+function handleCalibrationDialog() {
+  const dialog = byId("calibrationConfirmDialog");
+  if (!dialog) return;
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else zeroAndMarkCalibrated();
+}
 
-window.addEventListener("resize", () => {
-  drawFlatPreview(latestPreview);
-  drawBallPreview(latestPreview);
-});
+function bindEvents() {
+  byId("connectButton")?.addEventListener("click", connectMachine);
+  byId("applyMachineConfigButton")?.addEventListener("click", applyMachineConfig);
+  byId("statusButton")?.addEventListener("click", () => sendCommand("?"));
+  byId("settingsButton")?.addEventListener("click", () => sendCommand("$$"));
+  byId("firmwareButton")?.addEventListener("click", () => sendCommand("$I"));
+  byId("softResetButton")?.addEventListener("click", softReset);
+
+  byId("penUpButton")?.addEventListener("click", penUp);
+  byId("penDownButton")?.addEventListener("click", penDown);
+  byId("penTestButton")?.addEventListener("click", penTest);
+  byId("goHomeButton")?.addEventListener("click", goHome);
+  byId("servoOffButton")?.addEventListener("click", servoOff);
+  byId("resetServoDefaultsButton")?.addEventListener("click", resetServoUiDefaults);
+
+  byId("jogUpButton")?.addEventListener("click", () => jog("Y", getNum("yJog")));
+  byId("jogDownButton")?.addEventListener("click", () => jog("Y", -getNum("yJog")));
+  byId("jogLeftButton")?.addEventListener("click", () => jog("X", -getNum("xJog")));
+  byId("jogRightButton")?.addEventListener("click", () => jog("X", getNum("xJog")));
+
+  byId("zeroAndCalibrateButton")?.addEventListener("click", handleCalibrationDialog);
+  byId("clearCalibratedButton")?.addEventListener("click", clearCalibrated);
+
+  byId("analyzeButton")?.addEventListener("click", analyzeRasterImage);
+  byId("generateGcodeButton")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    generateRasterGcode();
+  });
+  byId("fitPreviewButton")?.addEventListener("click", () => {
+    drawFlatPreview(appState.latestPreview);
+    drawBallPreview(appState.latestPreview);
+  });
+  byId("resetPreviewButton")?.addEventListener("click", () => {
+    drawFlatPreview(appState.latestPreview);
+    drawBallPreview(appState.latestPreview);
+  });
+
+  byId("runButton")?.addEventListener("click", runGcode);
+  byId("pauseButton")?.addEventListener("click", pauseRun);
+  byId("resumeButton")?.addEventListener("click", resumeRun);
+  byId("stopButton")?.addEventListener("click", stopRun);
+  byId("headerStopButton")?.addEventListener("click", stopRun);
+
+  byId("sendRawButton")?.addEventListener("click", sendRaw);
+  byId("downloadGcodeButton")?.addEventListener("click", downloadGcode);
+
+  byId("imageFile")?.addEventListener("change", () => {
+    const file = currentImageFile();
+    showOriginalPreview(file);
+    invalidateGeneratedArtifacts();
+    if (!file) {
+      appState.latestAnalysis = null;
+      appState.latestMask = null;
+      appState.latestRegions = null;
+      appState.latestMaskPreview = null;
+      appState.latestSummary = null;
+      setSelectedColors([]);
+      showMaskPreview(null);
+      updateActionStates();
+      updateStepper();
+      return;
+    }
+    setSelectedColors([]);
+    updateActionStates();
+    updateStepper();
+  });
+
+  document.querySelectorAll(".utility-tab").forEach((button) => {
+    button.addEventListener("click", () => openUtilityTab(button.dataset.tab));
+  });
+
+  [
+    "drawFeed",
+    "travelFeed",
+    "placementScale",
+    "placementOffsetX",
+    "placementOffsetY",
+    "rotationDeg",
+    "lineThicknessMm",
+    "wallCount",
+    "infillPattern",
+    "infillDensity",
+    "infillSpacingMm",
+    "infillAngleDeg",
+    "outlineAfterFill",
+    "minFillAreaMm2",
+    "minFillWidthMm",
+    "simplifyToleranceMm",
+    "removeDuplicatePaths",
+    "smallShapeMode",
+    "thinDetailMode",
+    "thinDetailMinAreaMm2",
+    "thinDetailSimplifyMm",
+    "thinDetailOverlap",
+    "minSegmentLengthMm",
+    "travelOptimization",
+    "colorTolerance",
+    "minComponentAreaPx",
+    "maskOpenRadiusPx",
+    "maskCloseRadiusPx",
+    "minRegionAreaPx",
+    "regionSimplifyPx",
+    "sampleStepDeg",
+    "includeComments",
+    "invertY",
+    "debugPipeline",
+  ].forEach((id) => {
+    byId(id)?.addEventListener("change", invalidateGeneratedArtifacts);
+    byId(id)?.addEventListener("input", () => {
+      if (["lineThicknessMm", "infillSpacingMm", "minFillWidthMm", "minFillAreaMm2"].includes(id)) {
+        invalidateGeneratedArtifacts();
+      }
+    });
+  });
+
+  byId("utilityToggleButton")?.addEventListener("click", () => {
+    byId("utilityDrawer").classList.toggle("open");
+  });
+
+  document.querySelectorAll(".stepper__item").forEach((button) => {
+    button.addEventListener("click", () => {
+      byId(button.dataset.step)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+
+  const dialog = byId("calibrationConfirmDialog");
+  const confirmButton = byId("confirmCalibrationButton");
+  if (dialog && confirmButton) {
+    confirmButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      dialog.close("confirm");
+      zeroAndMarkCalibrated();
+    });
+  }
+
+  window.addEventListener("resize", () => {
+    drawFlatPreview(appState.latestPreview);
+    drawBallPreview(appState.latestPreview);
+  });
+}
 
 setupDerivedPenFieldSync();
+bindEvents();
 syncDerivedPenFields(true);
-setInterval(refreshState, 750);
-refreshState();
 showOriginalPreview(null);
 showMaskPreview(null);
+renderSummary(null);
+renderProgressTiming();
 drawFlatPreview([]);
 drawBallPreview([]);
+openUtilityTab("summaryTab");
 appendLog("Controller loaded. Connect, calibrate, analyze a PNG/JPG, select colors, generate G-code, then run.");
-window.generateRasterGcode = generateRasterGcode;
+refreshState();
+window.setInterval(refreshState, 750);

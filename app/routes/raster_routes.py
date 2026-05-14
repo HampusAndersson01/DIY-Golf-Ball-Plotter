@@ -26,6 +26,24 @@ def build_generate_debug_payload(*, selected_colors=None, mask_pixel_count=0):
     }
 
 
+def estimate_runtime_seconds(preview: list[dict], *, draw_feed: float, travel_feed: float) -> float:
+    total_minutes = 0.0
+    draw_feed = max(float(draw_feed or 0.0), 1e-6)
+    travel_feed = max(float(travel_feed or 0.0), 1e-6)
+    for entry in preview or []:
+        points = entry.get("points") or []
+        if len(points) < 2:
+            continue
+        feed = travel_feed if entry.get("kind") == "travel" else draw_feed
+        path_distance = 0.0
+        for index in range(1, len(points)):
+            dx = float(points[index]["x"]) - float(points[index - 1]["x"])
+            dy = float(points[index]["y"]) - float(points[index - 1]["y"])
+            path_distance += (dx * dx + dy * dy) ** 0.5
+        total_minutes += path_distance / feed
+    return max(0.0, total_minutes * 60.0)
+
+
 @raster_bp.post("/analyze-image")
 def analyze_image_route():
     try:
@@ -119,6 +137,7 @@ def generate_image_gcode_route():
         if not toolpaths:
             raise ValueError("No toolpaths were generated from the selected image regions")
 
+        toolpath_diagnostics = get_toolpath_service().summarize_toolpaths(toolpaths)
         gcode, preview = get_gcode_service().generate_from_toolpaths(toolpaths=toolpaths, **options)
         if debug_data is not None:
             debug_data["gcode_preview"] = preview
@@ -133,6 +152,7 @@ def generate_image_gcode_route():
             "contour_count": region_result.contour_count,
             "polygon_count": region_result.polygon_count,
             "final_toolpath_count": len(toolpaths),
+            "one_move_toolpaths": toolpath_diagnostics["one_move_toolpaths"],
             "generated_fill_walls": sum(1 for path in toolpaths if path.kind == "fill-wall"),
             "generated_infill_paths": sum(1 for path in toolpaths if path.kind == "fill-infill"),
             "generated_thin_detail_paths": sum(1 for path in toolpaths if path.kind == "detail-trace"),
@@ -151,6 +171,23 @@ def generate_image_gcode_route():
             stage_counts.update(debug_data.get("toolpath_counts", {}))
 
         point_count = sum(len(path["points"]) for path in preview if path["kind"] != "travel")
+        estimated_runtime_seconds = estimate_runtime_seconds(
+            preview,
+            draw_feed=options["draw_feed"],
+            travel_feed=options["travel_feed"],
+        )
+        summary = {
+            "image_size": f"{mask_result.width}x{mask_result.height}",
+            "selected_colors": options["selected_colors"],
+            "mask_pixel_count": mask_result.printable_pixel_count,
+            "component_count": mask_result.connected_component_count,
+            "wall_path_count": stage_counts["generated_fill_walls"],
+            "infill_path_count": stage_counts["generated_infill_paths"],
+            "detail_trace_path_count": stage_counts["generated_detail_trace_paths"],
+            "gcode_line_count": len(gcode),
+            "point_count": point_count,
+            "estimated_runtime_seconds": estimated_runtime_seconds,
+        }
         state.update(
             last_svg_name=file.filename,
             last_gcode=gcode,
@@ -165,6 +202,7 @@ def generate_image_gcode_route():
             gcode=gcode,
             preview=preview,
             toolpath_count=len(toolpaths),
+            toolpath_diagnostics=toolpath_diagnostics,
             point_count=point_count,
             mask_pixel_count=mask_result.printable_pixel_count,
             component_count=mask_result.connected_component_count,
@@ -173,6 +211,7 @@ def generate_image_gcode_route():
             mask_preview=mask_result.mask_preview_url,
             regions=raster.serialize_regions(region_result),
             selected_colors=options["selected_colors"],
+            summary=summary,
             stage_counts=stage_counts,
             debug=debug_data,
         )

@@ -64,6 +64,7 @@ class Config:
     DEFAULT_SERVO_RAMP_DELAY_MS = _env_float("DEFAULT_SERVO_RAMP_DELAY_MS", 10.0)
     DEFAULT_PEN_UP_DWELL_MS = _env_float("DEFAULT_PEN_UP_DWELL_MS", 30.0)
     DEFAULT_PEN_DOWN_DWELL_MS = _env_float("DEFAULT_PEN_DOWN_DWELL_MS", 60.0)
+    DEFAULT_GCODE_MODE = os.getenv("DEFAULT_GCODE_MODE", "simple")
     MIN_SERVO_S = _env_int("MIN_SERVO_S", 500)
     MAX_SERVO_S = _env_int("MAX_SERVO_S", 1000)
 

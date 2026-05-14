@@ -187,6 +187,11 @@ class MachineService:
         self.state.update(calibrated=False, status="Zero set - click calibrated when physically ready")
         return response
 
+    def zero_and_mark_calibrated(self) -> str:
+        response = self.serial_service.send_many(["$X", "G21", "G92 X0 Y0", "G90"], wait_idle_between=True)
+        self.state.update(calibrated=True, status="Origin set and calibrated")
+        return response
+
     def go_home(self, data, config) -> str:
         pen_up_s = self.validation.validate_servo_s(data.get("pen_up_s", config["DEFAULT_PEN_UP_S"]))
         travel_feed = self.validation.validate_feed(data.get("travel_feed", config["DEFAULT_TRAVEL_FEED"]))

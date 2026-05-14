@@ -1,4 +1,5 @@
 from app.models.geometry import Point, Toolpath
+from app.services import pipeline_core
 from app.services.gcode_service import GcodeService
 
 
@@ -17,7 +18,38 @@ def test_generate_gcode_from_simple_toolpath():
         servo_ramp_delay_ms=10.0,
         pen_up_dwell_ms=30.0,
         pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
         include_comments=True,
     )
     assert any(line.startswith("G1 X1.0000 Y1.0000") for line in gcode)
     assert preview[0]["kind"] == "outline"
+
+
+def test_merge_connected_toolpaths_collapses_touching_fragments():
+    toolpaths = [
+        Toolpath(points=[Point(0.0, 0.0), Point(1.0, 0.0)], kind="detail-trace", closed=False),
+        Toolpath(points=[Point(1.0, 0.0), Point(2.0, 0.0)], kind="detail-trace", closed=False),
+        Toolpath(points=[Point(2.0, 0.0), Point(3.0, 0.0)], kind="detail-trace", closed=False),
+    ]
+
+    merged = pipeline_core.merge_connected_toolpaths(toolpaths)
+    assert len(merged) == 1
+    assert [(point.x, point.y) for point in merged[0].points] == [
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (2.0, 0.0),
+        (3.0, 0.0),
+    ]
+
+
+def test_summarize_toolpaths_reports_required_diagnostics():
+    toolpaths = [
+        Toolpath(points=[Point(0.0, 0.0), Point(1.0, 0.0)], kind="detail-trace", closed=False),
+        Toolpath(points=[Point(1.0, 0.0), Point(2.0, 0.0), Point(3.0, 0.0)], kind="fill-infill", closed=False),
+    ]
+
+    summary = pipeline_core.summarize_toolpaths(toolpaths)
+    assert summary["total_toolpaths"] == 2
+    assert summary["one_move_toolpaths"] == 1
+    assert summary["paths_by_kind"] == {"detail-trace": 1, "fill-infill": 1}
+    assert summary["points_by_kind"] == {"detail-trace": 2, "fill-infill": 3}

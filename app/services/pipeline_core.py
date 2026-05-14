@@ -32,6 +32,7 @@ RUNTIME_KEYS = [
     "DEFAULT_SERVO_RAMP_DELAY_MS",
     "DEFAULT_PEN_UP_DWELL_MS",
     "DEFAULT_PEN_DOWN_DWELL_MS",
+    "DEFAULT_GCODE_MODE",
     "MIN_SERVO_S",
     "MAX_SERVO_S",
     "DEFAULT_SAMPLE_STEP_DEG",
@@ -159,6 +160,7 @@ DEFAULT_SERVO_RAMP_STEP = 20
 DEFAULT_SERVO_RAMP_DELAY_MS = 10
 DEFAULT_PEN_UP_DWELL_MS = 30
 DEFAULT_PEN_DOWN_DWELL_MS = 60
+DEFAULT_GCODE_MODE = "simple"
 MIN_SERVO_S = 500
 MAX_SERVO_S = 1000
 
@@ -869,6 +871,29 @@ def debug_append_toolpaths(debug: Optional[dict[str, Any]], key: str, toolpaths:
             "closed": toolpath.closed,
             "points": [asdict(point) for point in toolpath.points],
         })
+
+
+def summarize_toolpaths(toolpaths: list["Toolpath"]) -> dict[str, Any]:
+    paths_by_kind: dict[str, int] = {}
+    points_by_kind: dict[str, int] = {}
+    one_move_toolpaths = 0
+    total_points = 0
+    for toolpath in toolpaths:
+        kind = toolpath.kind
+        point_count = len(toolpath.points)
+        total_points += point_count
+        paths_by_kind[kind] = paths_by_kind.get(kind, 0) + 1
+        points_by_kind[kind] = points_by_kind.get(kind, 0) + point_count
+        if point_count == 2:
+            one_move_toolpaths += 1
+
+    return {
+        "total_toolpaths": len(toolpaths),
+        "one_move_toolpaths": one_move_toolpaths,
+        "average_points_per_toolpath": (total_points / len(toolpaths)) if toolpaths else 0.0,
+        "paths_by_kind": paths_by_kind,
+        "points_by_kind": points_by_kind,
+    }
 
 
 def debug_append_geometry(debug: Optional[dict[str, Any]], key: str, geometry: Any, kind: str) -> None:
@@ -2209,6 +2234,45 @@ def optimize_toolpath_order(
     return ordered
 
 
+def merge_connected_toolpaths(
+    toolpaths: list[Toolpath],
+    *,
+    tolerance: float = 1e-6,
+) -> list[Toolpath]:
+    if len(toolpaths) <= 1:
+        return toolpaths
+
+    merged: list[Toolpath] = []
+    current = toolpaths[0]
+    for candidate in toolpaths[1:]:
+        can_merge = (
+            current.kind == candidate.kind
+            and not current.closed
+            and not candidate.closed
+            and len(current.points) >= 2
+            and len(candidate.points) >= 2
+        )
+        if can_merge and nearly_same_point(current.points[-1], candidate.points[0], tolerance):
+            current = Toolpath(
+                points=current.points + candidate.points[1:],
+                kind=current.kind,
+                closed=False,
+            )
+            continue
+        if can_merge and nearly_same_point(current.points[-1], candidate.points[-1], tolerance):
+            current = Toolpath(
+                points=current.points + list(reversed(candidate.points[:-1])),
+                kind=current.kind,
+                closed=False,
+            )
+            continue
+        merged.append(current)
+        current = candidate
+
+    merged.append(current)
+    return merged
+
+
 class SlicerService:
     def _scanline_spacing_deg(self, settings: SlicerSettings) -> float:
         base_spacing_mm = settings.infill_spacing_mm if settings.infill_spacing_mm > 0 else settings.line_width_mm
@@ -2524,7 +2588,7 @@ class SlicerService:
         else:
             non_detail_paths = filter_toolpaths_by_length(non_detail_paths, min_segment_length_deg)
         thin_detail_paths = filter_toolpaths_by_length(thin_detail_paths, min_segment_length_deg)
-        ordered = non_detail_paths + thin_detail_paths
+        ordered = merge_connected_toolpaths(non_detail_paths + thin_detail_paths)
         debug_set_counts(debug, "slicer_counts", slicer_counts)
         return ordered
 
@@ -2595,7 +2659,11 @@ def generate_toolpaths(
             continue
         detail_paths.append(Toolpath(points=simplified, kind="detail-trace", closed=segment.closed))
     if detail_paths:
-        toolpaths.extend(optimize_toolpath_order(detail_paths, strategy=travel_optimization))
+        toolpaths.extend(merge_connected_toolpaths(
+            optimize_toolpath_order(detail_paths, strategy=travel_optimization)
+        ))
+
+    toolpaths = merge_connected_toolpaths(toolpaths)
 
     toolpath_counts = {
         "generated_fill_walls": sum(1 for path in toolpaths if path.kind == "fill-wall"),
@@ -2606,6 +2674,8 @@ def generate_toolpaths(
         "generated_travel_paths": sum(1 for path in toolpaths if path.kind == "travel"),
     }
     debug_set_counts(debug, "toolpath_counts", toolpath_counts)
+    if debug is not None:
+        debug["toolpath_diagnostics"] = summarize_toolpaths(toolpaths)
     debug_append_toolpaths(debug, "final_toolpaths", toolpaths)
     return toolpaths
 
@@ -2622,8 +2692,12 @@ def generate_gcode_from_toolpaths(
     servo_ramp_delay_ms: float,
     pen_up_dwell_ms: float,
     pen_down_dwell_ms: float,
+    gcode_mode: str,
     include_comments: bool,
 ) -> tuple[list[str], list[dict[str, Any]]]:
+    if gcode_mode != "simple":
+        raise ValueError("Invalid G-code mode")
+
     g: list[str] = []
     preview: list[dict[str, Any]] = []
     current_servo = pen_up_s

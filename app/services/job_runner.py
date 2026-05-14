@@ -21,7 +21,7 @@ class JobRunner:
         if snapshot["running"]:
             raise ValueError("A job is already running")
         if not snapshot["calibrated"]:
-            raise ValueError("Machine is not calibrated. Jog/zero first, then click 'I Have Calibrated'.")
+            raise ValueError("Machine is not calibrated. Jog to the ball center, then use 'Set Origin & Calibrate'.")
         if not snapshot["last_gcode"]:
             raise ValueError("No G-code generated yet")
         with self._lock:
@@ -36,15 +36,27 @@ class JobRunner:
         with self.serial_service.lock:
             ser = self.serial_service.get_serial()
             ser.write(b"!")
-        self.state.update(paused=True, status="Feed hold requested")
+        snapshot = self.state.snapshot()
+        pause_started_at = snapshot.get("pause_started_at") or time.time()
+        self.state.update(paused=True, status="Feed hold requested", pause_started_at=pause_started_at)
 
     def resume(self) -> None:
+        snapshot = self.state.snapshot()
+        pause_started_at = snapshot.get("pause_started_at")
+        paused_duration_seconds = float(snapshot.get("paused_duration_seconds") or 0.0)
+        if pause_started_at:
+            paused_duration_seconds += max(0.0, time.time() - float(pause_started_at))
         with self._lock:
             self._pause_requested = False
         with self.serial_service.lock:
             ser = self.serial_service.get_serial()
             ser.write(b"~")
-        self.state.update(paused=False, status="Resume requested")
+        self.state.update(
+            paused=False,
+            status="Resume requested",
+            pause_started_at=None,
+            paused_duration_seconds=paused_duration_seconds,
+        )
 
     def request_stop(self) -> None:
         with self._lock:
@@ -54,6 +66,7 @@ class JobRunner:
     def _worker(self, gcode: list[str]) -> None:
         stream_lines = [line for line in gcode if self.gcode_service.is_streamable_line(line)]
         try:
+            started_at = time.time()
             self.state.update(
                 running=True,
                 paused=False,
@@ -61,6 +74,9 @@ class JobRunner:
                 progress_total=len(stream_lines),
                 progress_done=0,
                 last_error=None,
+                run_started_at=started_at,
+                pause_started_at=None,
+                paused_duration_seconds=0.0,
             )
             with self.serial_service.lock:
                 ser = self.serial_service.get_serial()
@@ -71,7 +87,9 @@ class JobRunner:
                             break
                         paused = self._pause_requested
                     while paused:
-                        self.state.update(paused=True, status="Paused")
+                        pause_snapshot = self.state.snapshot()
+                        pause_started_at = pause_snapshot.get("pause_started_at") or time.time()
+                        self.state.update(paused=True, status="Paused", pause_started_at=pause_started_at)
                         time.sleep(0.1)
                         with self._lock:
                             if self._stop_requested:
@@ -88,7 +106,17 @@ class JobRunner:
         except Exception as exc:
             self.state.update(last_error=str(exc), status=f"Error: {exc}")
         finally:
-            self.state.update(running=False, paused=False)
+            snapshot = self.state.snapshot()
+            paused_duration_seconds = float(snapshot.get("paused_duration_seconds") or 0.0)
+            pause_started_at = snapshot.get("pause_started_at")
+            if pause_started_at:
+                paused_duration_seconds += max(0.0, time.time() - float(pause_started_at))
+            self.state.update(
+                running=False,
+                paused=False,
+                pause_started_at=None,
+                paused_duration_seconds=paused_duration_seconds,
+            )
             with self._lock:
                 self._stop_requested = False
                 self._pause_requested = False

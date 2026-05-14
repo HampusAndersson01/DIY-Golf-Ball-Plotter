@@ -90,6 +90,7 @@ def generate_gcode_route():
             if not toolpaths:
                 raise ValueError("No toolpaths were generated from the selected image regions")
 
+            toolpath_diagnostics = get_toolpath_service().summarize_toolpaths(toolpaths)
             gcode, preview = get_gcode_service().generate_from_toolpaths(toolpaths=toolpaths, **options)
             state.update(
                 last_svg_name=raster_file.filename,
@@ -104,6 +105,7 @@ def generate_gcode_route():
                 gcode=gcode,
                 preview=preview,
                 toolpath_count=len(toolpaths),
+                toolpath_diagnostics=toolpath_diagnostics,
                 point_count=sum(len(path["points"]) for path in preview if path["kind"] != "travel"),
                 mask_pixel_count=mask_result.printable_pixel_count,
                 component_count=mask_result.connected_component_count,
@@ -173,6 +175,7 @@ def generate_gcode_route():
         if not toolpaths:
             raise ValueError("No toolpaths were generated from the current SVG/settings")
 
+        toolpath_diagnostics = get_toolpath_service().summarize_toolpaths(toolpaths)
         gcode, preview = get_gcode_service().generate_from_toolpaths(toolpaths=toolpaths, **options)
         if debug_data is not None:
             debug_data["gcode_preview"] = preview
@@ -192,6 +195,7 @@ def generate_gcode_route():
             gcode=gcode,
             preview=preview,
             toolpath_count=len(toolpaths),
+            toolpath_diagnostics=toolpath_diagnostics,
             point_count=point_count,
             bounds=asdict(bounds),
             viewbox_bounds=asdict(viewbox_bounds) if viewbox_bounds else None,

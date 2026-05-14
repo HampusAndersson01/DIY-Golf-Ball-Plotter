@@ -100,6 +100,7 @@ class ValidationService:
             "servo_ramp_delay_ms": self.validate_non_negative_float(form.get("servo_ramp_delay_ms", config["DEFAULT_SERVO_RAMP_DELAY_MS"]), "Servo ramp delay", maximum=1000),
             "pen_up_dwell_ms": self.validate_non_negative_float(form.get("pen_up_dwell_ms", config["DEFAULT_PEN_UP_DWELL_MS"]), "Pen up dwell", maximum=5000),
             "pen_down_dwell_ms": self.validate_non_negative_float(form.get("pen_down_dwell_ms", config["DEFAULT_PEN_DOWN_DWELL_MS"]), "Pen down dwell", maximum=5000),
+            "gcode_mode": form.get("gcode_mode", config["DEFAULT_GCODE_MODE"]),
             "debug_pipeline": self.validate_bool(form.get("debug_pipeline", "0")),
         }
         if options["sample_step_deg"] <= 0:
@@ -122,6 +123,8 @@ class ValidationService:
             raise ValueError("Invalid small shape mode")
         if options["travel_optimization"] not in {"nearest-neighbor"}:
             raise ValueError("Invalid travel optimization")
+        if options["gcode_mode"] not in {"simple"}:
+            raise ValueError("Invalid G-code mode")
         return options
 
     def parse_analyze_svg_form(self, form, config) -> dict[str, Any]:
@@ -212,6 +215,7 @@ class ValidationService:
             "servo_ramp_delay_ms": self.validate_non_negative_float(form.get("servo_ramp_delay_ms", config["DEFAULT_SERVO_RAMP_DELAY_MS"]), "Servo ramp delay", maximum=1000),
             "pen_up_dwell_ms": self.validate_non_negative_float(form.get("pen_up_dwell_ms", config["DEFAULT_PEN_UP_DWELL_MS"]), "Pen up dwell", maximum=5000),
             "pen_down_dwell_ms": self.validate_non_negative_float(form.get("pen_down_dwell_ms", config["DEFAULT_PEN_DOWN_DWELL_MS"]), "Pen down dwell", maximum=5000),
+            "gcode_mode": form.get("gcode_mode", config["DEFAULT_GCODE_MODE"]),
             "color_tolerance": self.validate_non_negative_int(form.get("color_tolerance", config["DEFAULT_RASTER_COLOR_TOLERANCE"]), "Color tolerance", minimum=0, maximum=255),
             "min_component_area_px": self.validate_non_negative_int(form.get("min_component_area_px", config["DEFAULT_RASTER_MIN_COMPONENT_AREA_PX"]), "Min component area", minimum=0, maximum=1000000),
             "mask_open_radius_px": self.validate_non_negative_int(form.get("mask_open_radius_px", config["DEFAULT_RASTER_MASK_OPEN_RADIUS_PX"]), "Mask open radius", minimum=0, maximum=50),
@@ -239,4 +243,6 @@ class ValidationService:
             raise ValueError("Invalid small shape mode")
         if options["travel_optimization"] not in {"nearest-neighbor"}:
             raise ValueError("Invalid travel optimization")
+        if options["gcode_mode"] not in {"simple"}:
+            raise ValueError("Invalid G-code mode")
         return options

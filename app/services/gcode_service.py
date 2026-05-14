@@ -20,5 +20,6 @@ class GcodeService:
             kwargs["servo_ramp_delay_ms"],
             kwargs["pen_up_dwell_ms"],
             kwargs["pen_down_dwell_ms"],
+            kwargs["gcode_mode"],
             kwargs["include_comments"],
         )

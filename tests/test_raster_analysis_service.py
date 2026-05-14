@@ -131,6 +131,7 @@ def test_generated_gcode_contains_motion_for_black_regions():
         servo_ramp_delay_ms=10.0,
         pen_up_dwell_ms=30.0,
         pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
         include_comments=True,
     )
     assert any(line.startswith("G1 X") for line in gcode)

@@ -25,6 +25,9 @@ class MachineState:
             "last_error": None,
             "progress_total": 0,
             "progress_done": 0,
+            "run_started_at": None,
+            "pause_started_at": None,
+            "paused_duration_seconds": 0.0,
             "current_servo_s": self.default_pen_up_s,
             "server_pid": os.getpid(),
         }

@@ -97,6 +97,19 @@ def zero_position():
         return json_error(str(exc), status=500)
 
 
+@machine_bp.post("/zero-and-mark-calibrated")
+def zero_and_mark_calibrated():
+    try:
+        response = get_machine_service().zero_and_mark_calibrated()
+        return json_ok(
+            command="ZERO AND MARK CALIBRATED",
+            response=response,
+            calibrated=True,
+        )
+    except Exception as exc:
+        return json_error(str(exc), status=500)
+
+
 @machine_bp.post("/go-home")
 def go_home():
     try:
