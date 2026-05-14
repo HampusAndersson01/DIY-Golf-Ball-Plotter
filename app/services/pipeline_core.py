@@ -80,6 +80,7 @@ def configure_runtime(config, state_dict, serial_lock_obj):
     serial_lock = serial_lock_obj
 
 
+from collections import deque
 from flask import Flask, request, jsonify, render_template_string
 import serial
 import time
@@ -90,7 +91,7 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, asdict, field
-from typing import Optional, Any
+from typing import Optional, Any, Callable
 
 # Optional dependency for real SVG path support:
 #   pip install svgpathtools pyserial flask
@@ -203,6 +204,7 @@ app = Flask(__name__)
 
 serial_lock = threading.Lock()
 grbl: Optional[serial.Serial] = None
+GRBL_RX_BUFFER_SIZE = 128
 
 job_lock = threading.Lock()
 job_thread: Optional[threading.Thread] = None
@@ -421,6 +423,86 @@ def read_until_ok_or_error(ser: serial.Serial, timeout: float = 15) -> str:
             break
 
     return "\n".join(lines) if lines else "NO RESPONSE"
+
+
+def read_next_grbl_line(ser: serial.Serial, timeout: float = 15) -> str:
+    end_time = time.time() + timeout
+
+    while time.time() < end_time:
+        line = ser.readline().decode(errors="ignore").strip()
+        if line:
+            return line
+
+    raise TimeoutError("Timed out waiting for GRBL response")
+
+
+def process_streaming_ack_unlocked(
+    ser: serial.Serial,
+    pending_lengths: deque[int],
+    timeout: float = 15,
+) -> int:
+    while True:
+        line = read_next_grbl_line(ser, timeout=timeout)
+        if line == "ok":
+            if not pending_lengths:
+                raise RuntimeError("Received unexpected GRBL ok with no pending commands")
+            return pending_lengths.popleft()
+        if line.startswith("error:") or line.startswith("ALARM:"):
+            raise RuntimeError(f"GRBL streaming error: {line}")
+        if line.startswith("<") or line.startswith("["):
+            continue
+        if line.lower().startswith("grbl"):
+            continue
+
+
+def stream_gcode_lines_unlocked(
+    ser: serial.Serial,
+    lines: list[str],
+    *,
+    rx_buffer_size: int = GRBL_RX_BUFFER_SIZE,
+    response_timeout: float = 20,
+    should_stop: Optional[Callable[[], bool]] = None,
+    wait_while_paused: Optional[Callable[[], None]] = None,
+    on_line_sent: Optional[Callable[[str, int], None]] = None,
+) -> int:
+    pending_lengths: deque[int] = deque()
+    pending_bytes = 0
+    sent_count = 0
+
+    for raw_line in lines:
+        if should_stop and should_stop():
+            return sent_count
+        if wait_while_paused:
+            wait_while_paused()
+        if should_stop and should_stop():
+            return sent_count
+
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        payload = (line + "\n").encode("ascii")
+        if len(payload) >= rx_buffer_size:
+            raise ValueError(f"G-code line exceeds GRBL RX buffer size: {line}")
+
+        while pending_bytes + len(payload) >= rx_buffer_size:
+            pending_bytes -= process_streaming_ack_unlocked(ser, pending_lengths, timeout=response_timeout)
+            if should_stop and should_stop():
+                return sent_count
+            if wait_while_paused:
+                wait_while_paused()
+
+        ser.write(payload)
+        pending_lengths.append(len(payload))
+        pending_bytes += len(payload)
+        sent_count += 1
+        if on_line_sent:
+            on_line_sent(line, sent_count)
+
+    while pending_lengths:
+        pending_bytes -= process_streaming_ack_unlocked(ser, pending_lengths, timeout=response_timeout)
+
+    return sent_count
 
 
 def wait_until_idle_unlocked(ser: serial.Serial, timeout: float = 60) -> bool:
@@ -3128,14 +3210,16 @@ def run_gcode_worker(gcode: list[str]) -> None:
 
         with serial_lock:
             ser = connect_grbl()
-
-            for line in stream_lines:
+            def should_stop() -> bool:
                 with job_lock:
                     if job_stop_requested:
                         state["status"] = "Stopped"
-                        break
-                    paused = job_pause_requested
+                        return True
+                return False
 
+            def wait_while_paused() -> None:
+                with job_lock:
+                    paused = job_pause_requested
                 while paused:
                     state["paused"] = True
                     state["status"] = "Paused"
@@ -3145,12 +3229,20 @@ def run_gcode_worker(gcode: list[str]) -> None:
                             state["status"] = "Stopped"
                             return
                         paused = job_pause_requested
-
                 state["paused"] = False
-                state["status"] = f"Running: {line}"
 
-                send_to_grbl_unlocked(ser, line, timeout=20)
-                state["progress_done"] += 1
+            def on_line_sent(line: str, sent_count: int) -> None:
+                state["status"] = f"Running: {line}"
+                state["progress_done"] = sent_count
+
+            stream_gcode_lines_unlocked(
+                ser,
+                stream_lines,
+                response_timeout=20,
+                should_stop=should_stop,
+                wait_while_paused=wait_while_paused,
+                on_line_sent=on_line_sent,
+            )
 
             wait_until_idle_unlocked(ser, timeout=120)
 

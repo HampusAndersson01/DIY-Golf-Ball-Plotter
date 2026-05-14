@@ -80,11 +80,15 @@ class JobRunner:
             )
             with self.serial_service.lock:
                 ser = self.serial_service.get_serial()
-                for line in stream_lines:
+                def should_stop() -> bool:
                     with self._lock:
                         if self._stop_requested:
                             self.state.update(status="Stopped")
-                            break
+                            return True
+                    return False
+
+                def wait_while_paused() -> None:
+                    with self._lock:
                         paused = self._pause_requested
                     while paused:
                         pause_snapshot = self.state.snapshot()
@@ -96,10 +100,19 @@ class JobRunner:
                                 self.state.update(status="Stopped")
                                 return
                             paused = self._pause_requested
-                    self.state.update(paused=False, status=f"Running: {line}")
-                    self.serial_service.send_to_grbl_unlocked(ser, line, timeout=20)
-                    progress = self.state.snapshot()["progress_done"] + 1
-                    self.state.update(progress_done=progress)
+                    self.state.update(paused=False)
+
+                def on_line_sent(line: str, sent_count: int) -> None:
+                    self.state.update(status=f"Running: {line}", progress_done=sent_count)
+
+                self.serial_service.stream_gcode_lines_unlocked(
+                    ser,
+                    stream_lines,
+                    response_timeout=20,
+                    should_stop=should_stop,
+                    wait_while_paused=wait_while_paused,
+                    on_line_sent=on_line_sent,
+                )
                 self.serial_service.wait_until_idle_unlocked(ser, timeout=120)
             if self.state.snapshot()["status"] != "Stopped":
                 self.state.update(status="Finished")

@@ -36,5 +36,24 @@ class SerialService:
     def send_to_grbl_unlocked(self, ser, command: str, timeout: float = 15):
         return pipeline_core.send_to_grbl_unlocked(ser, command, timeout=timeout)
 
+    def stream_gcode_lines_unlocked(
+        self,
+        ser,
+        lines: list[str],
+        *,
+        response_timeout: float = 20,
+        should_stop=None,
+        wait_while_paused=None,
+        on_line_sent=None,
+    ):
+        return pipeline_core.stream_gcode_lines_unlocked(
+            ser,
+            lines,
+            response_timeout=response_timeout,
+            should_stop=should_stop,
+            wait_while_paused=wait_while_paused,
+            on_line_sent=on_line_sent,
+        )
+
     def get_serial(self):
         return self.connect()
