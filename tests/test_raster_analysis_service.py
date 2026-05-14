@@ -1,5 +1,7 @@
 import io
 
+import cv2
+import numpy as np
 from PIL import Image, ImageDraw
 from shapely.geometry import Point as ShapelyPoint, Polygon
 
@@ -23,6 +25,14 @@ def make_logo_bytes() -> bytes:
     draw.ellipse((40, 40, 80, 80), fill="white")
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def make_text_logo_bytes() -> bytes:
+    canvas = np.full((120, 420, 3), 255, dtype=np.uint8)
+    cv2.putText(canvas, "Arsenal", (8, 82), cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 0), 3, cv2.LINE_8)
+    buffer = io.BytesIO()
+    Image.fromarray(canvas, mode="RGB").save(buffer, format="PNG")
     return buffer.getvalue()
 
 
@@ -125,3 +135,50 @@ def test_generated_gcode_contains_motion_for_black_regions():
     )
     assert any(line.startswith("G1 X") for line in gcode)
     assert any(entry["kind"] == "fill-infill" for entry in preview)
+
+
+def test_text_mask_generates_thin_detail_paths():
+    service = make_service()
+    geometry = GeometryService()
+    toolpaths_service = ToolpathService()
+
+    mask = service.build_mask(
+        make_text_logo_bytes(),
+        ["#000000"],
+        tolerance=8,
+        min_component_area_px=0,
+        open_radius_px=0,
+        close_radius_px=0,
+    )
+    regions = service.extract_regions(mask, min_region_area_px=0, simplify_tolerance_px=0)
+    assert regions.detail_trace_component_count > 0
+    assert regions.detail_trace_path_count > 0
+    assert regions.skeleton_pixel_count > 0
+    assert regions.bundle.detail_segments
+    mapped = geometry.map_bundle_to_angles(regions.bundle, regions.bounds, "contain", True, 4.0)
+    debug = {}
+    toolpaths = toolpaths_service.generate_from_regions(
+        mapped,
+        pen_width_mm=1.2,
+        wall_count=1,
+        infill_pattern="zigzag",
+        infill_spacing_mm=1.2,
+        infill_density=100.0,
+        infill_angle_deg=0.0,
+        min_region_area=0.0,
+        min_fill_width_mm=1.2,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=True,
+        small_shape_mode="single-wall",
+        thin_detail_mode=True,
+        thin_detail_min_area_mm2=0.0,
+        thin_detail_simplify_mm=0.0,
+        thin_detail_overlap=True,
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+        debug=debug,
+    )
+
+    assert debug["slicer_counts"]["thin_detail_fallback_region_count"] > 0
+    assert debug["toolpath_counts"]["generated_detail_trace_paths"] > 0
+    assert any(path.kind == "detail-trace" for path in toolpaths)

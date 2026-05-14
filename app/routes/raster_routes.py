@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from flask import Blueprint, current_app, request
+from flask import Blueprint, current_app, jsonify, request
 
 from app.extensions import (
     get_gcode_service,
@@ -15,6 +15,15 @@ from app.extensions import (
 from app.utils.response_utils import json_error, json_ok
 
 raster_bp = Blueprint("raster", __name__)
+
+
+def build_generate_debug_payload(*, selected_colors=None, mask_pixel_count=0):
+    return {
+        "received_files": sorted(list(request.files.keys())),
+        "received_form_keys": sorted(list(request.form.keys())),
+        "selected_colors": list(selected_colors or []),
+        "mask_pixel_count": int(mask_pixel_count or 0),
+    }
 
 
 @raster_bp.post("/analyze-image")
@@ -59,10 +68,12 @@ def generate_image_gcode_route():
         )
         region_result = raster.extract_regions(
             mask_result,
-            min_region_area_px=options["min_region_area_px"],
+            min_region_area_px=0.0 if options["thin_detail_mode"] else options["min_region_area_px"],
             simplify_tolerance_px=options["region_simplify_px"],
         )
-        if region_result.bundle.printable_geometry is None or region_result.bundle.printable_geometry.is_empty:
+        has_area_geometry = region_result.bundle.printable_geometry is not None and not region_result.bundle.printable_geometry.is_empty
+        has_detail_geometry = bool(region_result.bundle.detail_segments)
+        if not has_area_geometry and not has_detail_geometry:
             raise ValueError("No printable regions were found for the selected colors")
 
         geometry = get_geometry_service()
@@ -97,6 +108,10 @@ def generate_image_gcode_route():
             simplify_tolerance_mm=options["simplify_tolerance_mm"],
             remove_duplicate_paths=options["remove_duplicate_paths"],
             small_shape_mode=options["small_shape_mode"],
+            thin_detail_mode=options["thin_detail_mode"],
+            thin_detail_min_area_mm2=options["thin_detail_min_area_mm2"],
+            thin_detail_simplify_mm=options["thin_detail_simplify_mm"],
+            thin_detail_overlap=options["thin_detail_overlap"],
             min_segment_length_mm=options["min_segment_length_mm"],
             travel_optimization=options["travel_optimization"],
             debug=debug_data,
@@ -107,6 +122,33 @@ def generate_image_gcode_route():
         gcode, preview = get_gcode_service().generate_from_toolpaths(toolpaths=toolpaths, **options)
         if debug_data is not None:
             debug_data["gcode_preview"] = preview
+
+        stage_counts = {
+            "selected_mask_pixel_count": mask_result.printable_pixel_count,
+            "connected_component_count": mask_result.connected_component_count,
+            "selected_component_count": region_result.selected_component_count,
+            "detail_trace_component_count": region_result.detail_trace_component_count,
+            "detail_trace_path_count": region_result.detail_trace_path_count,
+            "skeleton_pixel_count": region_result.skeleton_pixel_count,
+            "contour_count": region_result.contour_count,
+            "polygon_count": region_result.polygon_count,
+            "final_toolpath_count": len(toolpaths),
+            "generated_fill_walls": sum(1 for path in toolpaths if path.kind == "fill-wall"),
+            "generated_infill_paths": sum(1 for path in toolpaths if path.kind == "fill-infill"),
+            "generated_thin_detail_paths": sum(1 for path in toolpaths if path.kind == "detail-trace"),
+            "generated_detail_trace_paths": sum(1 for path in toolpaths if path.kind == "detail-trace"),
+            "generated_outline_paths": sum(1 for path in toolpaths if path.kind == "outline"),
+            "final_toolpaths_by_kind": {
+                "fill-wall": sum(1 for path in toolpaths if path.kind == "fill-wall"),
+                "fill-infill": sum(1 for path in toolpaths if path.kind == "fill-infill"),
+                "detail-trace": sum(1 for path in toolpaths if path.kind == "detail-trace"),
+                "outline": sum(1 for path in toolpaths if path.kind == "outline"),
+                "travel": sum(1 for path in toolpaths if path.kind == "travel"),
+            },
+        }
+        if debug_data is not None:
+            stage_counts.update(debug_data.get("slicer_counts", {}))
+            stage_counts.update(debug_data.get("toolpath_counts", {}))
 
         point_count = sum(len(path["points"]) for path in preview if path["kind"] != "travel")
         state.update(
@@ -124,12 +166,25 @@ def generate_image_gcode_route():
             preview=preview,
             toolpath_count=len(toolpaths),
             point_count=point_count,
+            mask_pixel_count=mask_result.printable_pixel_count,
+            component_count=mask_result.connected_component_count,
             source_bounds=asdict(region_result.bounds),
             mask=raster.serialize_mask(mask_result),
+            mask_preview=mask_result.mask_preview_url,
             regions=raster.serialize_regions(region_result),
             selected_colors=options["selected_colors"],
+            stage_counts=stage_counts,
             debug=debug_data,
         )
     except Exception as exc:
         state.update(last_error=str(exc), status=f"Generate error: {exc}")
-        return json_error(str(exc), status=500)
+        selected_colors = []
+        try:
+            selected_colors = validation.parse_generate_raster_form(request.form, config).get("selected_colors", [])
+        except Exception:
+            selected_colors = []
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+            "debug": build_generate_debug_payload(selected_colors=selected_colors),
+        }), 500

@@ -45,7 +45,7 @@ def test_fill_wall_is_inset_by_half_pen_width():
     assert max_x == pytest.approx((line_width_deg * 10.0) - (line_width_deg * 0.5), abs=1e-6)
 
 
-def test_single_pass_regions_keep_or_drop_infill_by_small_shape_mode():
+def test_single_pass_regions_use_detail_fill_by_default():
     line_width_mm = 1.0
     line_width_deg = mm_to_ball_degrees(line_width_mm)
     printable = _rect(width_deg=line_width_deg * 6.0, height_deg=line_width_deg * 2.8)
@@ -68,7 +68,7 @@ def test_single_pass_regions_keep_or_drop_infill_by_small_shape_mode():
         min_segment_length_mm=0.0,
         travel_optimization="nearest-neighbor",
     )
-    assert not any(path.kind == "fill-infill" for path in single_wall_paths)
+    assert any(path.kind == "detail-trace" for path in single_wall_paths)
 
     centerline_paths = generate_toolpaths(
         bundle,
@@ -83,8 +83,36 @@ def test_single_pass_regions_keep_or_drop_infill_by_small_shape_mode():
         min_fill_width_mm=0.0,
         simplify_tolerance_mm=0.0,
         remove_duplicate_paths=False,
+        thin_detail_mode=False,
         small_shape_mode="centerline",
         min_segment_length_mm=0.0,
         travel_optimization="nearest-neighbor",
     )
-    assert any(path.kind == "fill-infill" for path in centerline_paths)
+    assert any(path.kind == "detail-trace" for path in centerline_paths)
+
+
+def test_regions_without_outline_clearance_fall_back_to_detail_fill():
+    line_width_mm = 1.0
+    line_width_deg = mm_to_ball_degrees(line_width_mm)
+    printable = _rect(width_deg=line_width_deg * 0.8, height_deg=line_width_deg * 4.0)
+
+    toolpaths = generate_toolpaths(
+        GeometryBundle(printable_geometry=printable),
+        enable_fill=True,
+        line_width_mm=line_width_mm,
+        wall_count=1,
+        infill_density=100.0,
+        infill_spacing_mm=line_width_mm,
+        infill_angle_deg=0.0,
+        outline_after_fill=False,
+        min_fill_area_mm2=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=False,
+        small_shape_mode="single-wall",
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+    )
+
+    assert any(path.kind == "detail-trace" for path in toolpaths)
+    assert not any(path.kind == "fill-wall" for path in toolpaths)

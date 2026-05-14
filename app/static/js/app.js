@@ -4,6 +4,7 @@ let latestAnalysis = null;
 let latestMask = null;
 let latestRegions = null;
 let selectedColors = new Set();
+let generateRequestInFlight = false;
 
 function appendLog(text) {
   const log = document.getElementById("log");
@@ -13,19 +14,45 @@ function appendLog(text) {
 }
 
 function getNum(id) {
-  return parseFloat(document.getElementById(id).value || "0");
+  const element = document.getElementById(id);
+  return parseFloat(element?.value || "0");
 }
 
 function getInt(id) {
-  return parseInt(document.getElementById(id).value || "0", 10);
+  const element = document.getElementById(id);
+  return parseInt(element?.value || "0", 10);
 }
 
 function getBool(id) {
-  return document.getElementById(id).checked;
+  return Boolean(document.getElementById(id)?.checked);
 }
 
 function getValue(id) {
-  return document.getElementById(id).value.trim();
+  return document.getElementById(id)?.value?.trim() || "";
+}
+
+function setGenerateButtonBusy(isBusy) {
+  const button = document.getElementById("generateGcodeButton");
+  if (!button) return;
+  button.disabled = isBusy;
+  button.dataset.busy = isBusy ? "1" : "0";
+  button.textContent = isBusy ? "Generating..." : "Generate G-code";
+}
+
+function formDataEntries(form) {
+  return Array.from(form.entries()).map(([key, value]) => {
+    if (value instanceof File) return `${key}=[File:${value.name || "unnamed"}]`;
+    return `${key}=${value}`;
+  });
+}
+
+async function readJsonResponse(res) {
+  const rawText = await res.text();
+  try {
+    return { json: JSON.parse(rawText), rawText };
+  } catch (_) {
+    return { json: null, rawText };
+  }
 }
 
 const SERVER_DEFAULTS = window.SERVER_DEFAULTS || {
@@ -328,6 +355,10 @@ function buildRasterForm(file) {
   form.append("simplify_tolerance_mm", getNum("simplifyToleranceMm"));
   form.append("remove_duplicate_paths", getBool("removeDuplicatePaths") ? "1" : "0");
   form.append("small_shape_mode", document.getElementById("smallShapeMode").value);
+  form.append("thin_detail_mode", getBool("thinDetailMode") ? "1" : "0");
+  form.append("thin_detail_min_area_mm2", getNum("thinDetailMinAreaMm2"));
+  form.append("thin_detail_simplify_mm", getNum("thinDetailSimplifyMm"));
+  form.append("thin_detail_overlap", getBool("thinDetailOverlap") ? "1" : "0");
   form.append("min_segment_length_mm", getNum("minSegmentLengthMm"));
   form.append("travel_optimization", document.getElementById("travelOptimization").value);
   form.append("color_tolerance", getInt("colorTolerance"));
@@ -347,25 +378,45 @@ function buildRasterForm(file) {
 }
 
 async function generateRasterGcode() {
+  appendLog("Generate clicked");
+  if (generateRequestInFlight) {
+    appendLog("Generate request already running.");
+    return;
+  }
   const file = currentImageFile();
   if (!file) {
-    appendLog("ERROR: Choose a PNG or JPG file first.");
+    appendLog("Choose an image first.");
     return;
   }
   if (!selectedColors.size) {
-    appendLog("ERROR: Select at least one detected color first.");
+    appendLog("Select at least one color to print.");
     return;
   }
 
+  const selectedColorList = [...selectedColors];
+  appendLog(`Selected colors for generate: ${selectedColorList.join(", ")}`);
   showOriginalPreview(file);
+  const url = "/generate-image-gcode";
+  const form = buildRasterForm(file);
+  appendLog(`POST ${url}`);
+  appendLog(`Generate form fields: ${formDataEntries(form).join(", ")}`);
+  generateRequestInFlight = true;
+  setGenerateButtonBusy(true);
   try {
-    const res = await fetch("/generate-image-gcode", {
+    appendLog("Sending generate request...");
+    const res = await fetch(url, {
       method: "POST",
-      body: buildRasterForm(file)
+      body: form
     });
-    const json = await res.json();
+    const { json, rawText } = await readJsonResponse(res);
+    if (!json) {
+      appendLog(`GENERATE ERROR: Non-JSON response (${res.status}).`);
+      if (rawText) appendLog(rawText.slice(0, 1000));
+      return;
+    }
     if (!json.ok) {
-      appendLog(`GENERATE ERROR: ${json.error}`);
+      appendLog(`GENERATE ERROR: ${json.error || `HTTP ${res.status}`}`);
+      if (json.debug) appendLog(`GENERATE DEBUG: ${JSON.stringify(json.debug)}`);
       return;
     }
 
@@ -375,20 +426,28 @@ async function generateRasterGcode() {
     latestRegions = json.regions || null;
 
     document.getElementById("gcodeBox").value = latestGcode.join("\n");
-    showMaskPreview(latestMask?.mask_preview_url || latestRegions?.boundary_preview_url || null);
+    showMaskPreview(json.mask_preview || latestMask?.mask_preview_url || latestRegions?.boundary_preview_url || null);
     drawFlatPreview(latestPreview);
     drawBallPreview(latestPreview);
 
     appendLog(`Generated ${latestGcode.length} G-code lines from ${json.toolpath_count} toolpaths / ${json.point_count} plotted points.`);
     appendLog(`Selected colors: ${json.selected_colors.join(", ")}. Regions: ${latestRegions?.region_count || 0}, holes: ${latestRegions?.hole_count || 0}.`);
     appendLog(`Mask printable pixels: ${latestMask?.printable_pixel_count || 0}. Area extracted from mask: ${(latestRegions?.printable_area_px || 0).toFixed(1)} px².`);
+    if (json.stage_counts) {
+      const s = json.stage_counts;
+      appendLog(`Stage counts: selected components ${s.selected_component_count || s.connected_component_count || 0}, detail-trace components ${s.detail_trace_component_count || 0}, skeleton pixels ${s.skeleton_pixel_count || 0}, contours ${s.contour_count || 0}, polygons ${s.polygon_count || 0}, outline-empty ${s.outline_buffer_empty_region_count || 0}, infill-empty ${s.normal_infill_empty_region_count || 0}, detail fallback regions ${s.thin_detail_fallback_region_count || 0}, detail-trace paths ${s.detail_trace_path_count || s.thin_detail_path_count || 0}.`);
+      appendLog(`Final toolpaths: total ${s.final_toolpath_count || 0}, walls ${s.generated_fill_walls || 0}, infill ${s.generated_infill_paths || 0}, detail trace ${s.generated_detail_trace_paths || s.generated_thin_detail_paths || 0}, outlines ${s.generated_outline_paths || 0}.`);
+    }
     if (json.debug?.toolpath_counts) {
       const counts = json.debug.toolpath_counts;
-      appendLog(`Generated toolpaths: walls ${counts.generated_fill_walls || 0}, infill ${counts.generated_infill_paths || 0}, outlines ${counts.generated_outline_paths || 0}.`);
+      appendLog(`Generated toolpaths: walls ${counts.generated_fill_walls || 0}, infill ${counts.generated_infill_paths || 0}, detail trace ${counts.generated_detail_trace_paths || counts.generated_thin_detail_paths || 0}, outlines ${counts.generated_outline_paths || 0}.`);
     }
     await refreshState();
   } catch (err) {
     appendLog(`GENERATE FETCH ERROR: ${err}`);
+  } finally {
+    generateRequestInFlight = false;
+    setGenerateButtonBusy(false);
   }
 }
 
@@ -405,6 +464,7 @@ function previewStyle(kind, depth = 1) {
   if (kind === "outline") return { stroke: `rgba(59, 130, 246, ${alpha})`, width: 2.1, dash: [] };
   if (kind === "fill-wall") return { stroke: `rgba(245, 158, 11, ${alpha})`, width: 2.4, dash: [] };
   if (kind === "fill-infill") return { stroke: `rgba(45, 212, 191, ${alpha})`, width: 1.6, dash: [] };
+  if (kind === "detail-trace") return { stroke: `rgba(217, 70, 239, ${alpha})`, width: 2.1, dash: [] };
   return { stroke: `rgba(148, 163, 184, ${alpha * 0.9})`, width: 1.1, dash: [6, 6] };
 }
 
@@ -560,6 +620,11 @@ document.getElementById("imageFile").addEventListener("change", () => {
   setSelectedColors([]);
 });
 
+document.getElementById("generateGcodeButton")?.addEventListener("click", (event) => {
+  event.preventDefault();
+  generateRasterGcode();
+});
+
 window.addEventListener("resize", () => {
   drawFlatPreview(latestPreview);
   drawBallPreview(latestPreview);
@@ -574,3 +639,4 @@ showMaskPreview(null);
 drawFlatPreview([]);
 drawBallPreview([]);
 appendLog("Controller loaded. Connect, calibrate, analyze a PNG/JPG, select colors, generate G-code, then run.");
+window.generateRasterGcode = generateRasterGcode;

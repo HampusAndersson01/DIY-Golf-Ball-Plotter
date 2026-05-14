@@ -137,9 +137,9 @@
           <h2>3. Image import</h2>
           <input id="imageFile" type="file" accept=".png,.jpg,.jpeg,image/png,image/jpeg" />
           <div class="row">
-            <button onclick="analyzeRasterImage()" class="secondary">Analyze Colors</button>
-            <button onclick="generateRasterGcode()" class="purple">Generate G-code</button>
-            <button onclick="downloadGcode()" class="secondary">Download G-code</button>
+            <button type="button" onclick="analyzeRasterImage()" class="secondary">Analyze Colors</button>
+            <button type="button" id="generateGcodeButton" class="purple">Generate G-code</button>
+            <button type="button" onclick="downloadGcode()" class="secondary">Download G-code</button>
           </div>
           <p class="small">
             Selected colors become solid printable regions. The software traces the mask boundaries and fills only those selected regions while leaving unselected areas blank.
@@ -279,6 +279,22 @@
 
             <div class="three-col">
               <div>
+                <label><input id="thinDetailMode" type="checkbox" {% if default_thin_detail_mode %}checked{% endif %} /> Thin detail mode</label>
+              </div>
+              <div>
+                <label>Thin detail min area mm^2</label>
+                <input id="thinDetailMinAreaMm2" type="number" value="{{ default_thin_detail_min_area_mm2 }}" min="0" max="1000" step="0.01" />
+              </div>
+              <div>
+                <label>Thin detail simplify mm</label>
+                <input id="thinDetailSimplifyMm" type="number" value="{{ default_thin_detail_simplify_mm }}" min="0" max="5" step="0.01" />
+              </div>
+            </div>
+
+            <label><input id="thinDetailOverlap" type="checkbox" {% if default_thin_detail_overlap %}checked{% endif %} /> Allow thin detail overlap</label>
+
+            <div class="three-col">
+              <div>
                 <label>Sample step degrees</label>
                 <input id="sampleStepDeg" type="number" value="{{ default_sample_step_deg }}" step="0.1" min="0.05" />
               </div>
@@ -367,7 +383,7 @@
             </div>
             <div class="preview-panel">
               <div class="preview-title">Flat coordinate map</div>
-              <div class="small">Perimeter = amber, infill = teal, travel = slate.</div>
+              <div class="small">Walls/outlines = amber, infill = teal, detail trace = magenta, travel = slate.</div>
               <canvas id="flatPreview"></canvas>
             </div>
             <div class="preview-panel">

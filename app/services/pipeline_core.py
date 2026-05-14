@@ -55,6 +55,10 @@ RUNTIME_KEYS = [
     "DEFAULT_SIMPLIFY_TOLERANCE_MM",
     "DEFAULT_REMOVE_DUPLICATE_PATHS",
     "DEFAULT_SMALL_SHAPE_MODE",
+    "DEFAULT_THIN_DETAIL_MODE",
+    "DEFAULT_THIN_DETAIL_MIN_AREA_MM2",
+    "DEFAULT_THIN_DETAIL_SIMPLIFY_MM",
+    "DEFAULT_THIN_DETAIL_OVERLAP",
     "DEFAULT_MIN_SEGMENT_LENGTH_MM",
     "DEFAULT_TRAVEL_OPTIMIZATION",
     "SVG_DARK_FILL_LUMINANCE_THRESHOLD",
@@ -180,6 +184,10 @@ DEFAULT_MIN_FILL_WIDTH_MM = DEFAULT_LINE_THICKNESS_MM
 DEFAULT_SIMPLIFY_TOLERANCE_MM = 0.05
 DEFAULT_REMOVE_DUPLICATE_PATHS = True
 DEFAULT_SMALL_SHAPE_MODE = "single-wall"
+DEFAULT_THIN_DETAIL_MODE = True
+DEFAULT_THIN_DETAIL_MIN_AREA_MM2 = 0.05
+DEFAULT_THIN_DETAIL_SIMPLIFY_MM = 0.1
+DEFAULT_THIN_DETAIL_OVERLAP = True
 DEFAULT_MIN_SEGMENT_LENGTH_MM = 0.5
 DEFAULT_TRAVEL_OPTIMIZATION = "nearest-neighbor"
 SVG_DARK_FILL_LUMINANCE_THRESHOLD = 0.42
@@ -240,6 +248,7 @@ class SvgFillShape:
 class GeometryBundle:
     outline_segments: list[Segment] = field(default_factory=list)
     fill_boundary_segments: list[Segment] = field(default_factory=list)
+    detail_segments: list[Segment] = field(default_factory=list)
     fill_shapes: list[SvgFillShape] = field(default_factory=list)
     printable_geometry: Any = None
     cutout_geometry: Any = None
@@ -332,6 +341,10 @@ class SlicerSettings:
     simplify_tolerance_mm: float = DEFAULT_SIMPLIFY_TOLERANCE_MM
     remove_duplicate_paths: bool = True
     small_shape_mode: str = DEFAULT_SMALL_SHAPE_MODE
+    thin_detail_mode: bool = DEFAULT_THIN_DETAIL_MODE
+    thin_detail_min_area_mm2: float = DEFAULT_THIN_DETAIL_MIN_AREA_MM2
+    thin_detail_simplify_mm: float = DEFAULT_THIN_DETAIL_SIMPLIFY_MM
+    thin_detail_overlap: bool = DEFAULT_THIN_DETAIL_OVERLAP
     min_segment_length_mm: float = DEFAULT_MIN_SEGMENT_LENGTH_MM
     travel_optimization: str = DEFAULT_TRAVEL_OPTIMIZATION
 
@@ -1835,7 +1848,7 @@ def bounds_from_bundle(bundle: GeometryBundle) -> SvgBounds:
     min_x = min_y = float("inf")
     max_x = max_y = float("-inf")
 
-    all_segments = bundle.outline_segments + bundle.fill_boundary_segments
+    all_segments = bundle.outline_segments + bundle.fill_boundary_segments + bundle.detail_segments
     if all_segments:
         seg_bounds = bounds_from_segments(all_segments)
         min_x = min(min_x, seg_bounds.min_x)
@@ -1920,6 +1933,10 @@ def map_bundle_to_angles(
         Segment([Point((matrix[0] * p.x) + matrix[4], (matrix[3] * p.y) + matrix[5]) for p in seg.points], closed=seg.closed)
         for seg in bundle.fill_boundary_segments
     ]
+    detail_segments = [
+        Segment([Point((matrix[0] * p.x) + matrix[4], (matrix[3] * p.y) + matrix[5]) for p in seg.points], closed=seg.closed)
+        for seg in bundle.detail_segments
+    ]
     fill_shapes = [
         SvgFillShape(
             geometry=affinity.affine_transform(fill_shape.geometry, matrix),
@@ -1933,6 +1950,7 @@ def map_bundle_to_angles(
     return GeometryBundle(
         outline_segments=outline_segments,
         fill_boundary_segments=fill_boundary_segments,
+        detail_segments=detail_segments,
         fill_shapes=fill_shapes,
         printable_geometry=printable_geometry,
         cutout_geometry=cutout_geometry,
@@ -1949,7 +1967,7 @@ def apply_placement_transform(
     if scale_percent <= 0:
         raise ValueError("Placement scale must be greater than 0")
 
-    if not bundle.outline_segments and not bundle.fill_boundary_segments and not bundle.fill_shapes:
+    if not bundle.outline_segments and not bundle.fill_boundary_segments and not bundle.detail_segments and not bundle.fill_shapes:
         return GeometryBundle()
 
     scale = scale_percent / 100.0
@@ -1977,6 +1995,10 @@ def apply_placement_transform(
         Segment([place_point(point) for point in seg.points], closed=seg.closed)
         for seg in bundle.fill_boundary_segments
     ]
+    detail_segments = [
+        Segment([place_point(point) for point in seg.points], closed=seg.closed)
+        for seg in bundle.detail_segments
+    ]
 
     fill_shapes = []
     for fill_shape in bundle.fill_shapes:
@@ -1998,6 +2020,7 @@ def apply_placement_transform(
     return GeometryBundle(
         outline_segments=outline_segments,
         fill_boundary_segments=fill_boundary_segments,
+        detail_segments=detail_segments,
         fill_shapes=fill_shapes,
         printable_geometry=printable_geometry,
         cutout_geometry=cutout_geometry,
@@ -2052,6 +2075,7 @@ def debug_append_bundle(debug: Optional[dict[str, Any]], key: str, bundle: Geome
         return
     debug_append_segments(debug, key, bundle.outline_segments, f"{key}-outline")
     debug_append_segments(debug, key, bundle.fill_boundary_segments, f"{key}-fill-boundary")
+    debug_append_segments(debug, key, bundle.detail_segments, f"{key}-detail")
     debug_append_geometry(debug, f"{key}_printable_geometry", bundle.printable_geometry, f"{key}-printable-geometry")
     debug_append_geometry(debug, f"{key}_cutout_geometry", bundle.cutout_geometry, f"{key}-cutout-geometry")
 
@@ -2110,6 +2134,19 @@ def dedupe_toolpaths(paths: list[Toolpath], minimum_length: float) -> list[Toolp
         seen.add(signature)
         deduped.append(path)
     return deduped
+
+
+def filter_toolpaths_by_length(paths: list[Toolpath], minimum_length: float) -> list[Toolpath]:
+    filtered: list[Toolpath] = []
+    relaxed_minimum = max(0.0, minimum_length * 0.25)
+    for path in paths:
+        if len(path.points) < 2:
+            continue
+        threshold = relaxed_minimum if path.kind == "detail-trace" else minimum_length
+        if segment_length(path.points) < threshold:
+            continue
+        filtered.append(path)
+    return filtered
 
 
 def rotate_closed_toolpath(path: Toolpath, anchor: Point) -> Toolpath:
@@ -2186,6 +2223,7 @@ class SlicerService:
         angle_deg: float,
         min_segment_length_deg: float,
         tolerance_deg: float,
+        kind: str = "fill-infill",
         debug: Optional[dict[str, Any]] = None,
     ) -> list[Toolpath]:
         if region is None or region.is_empty or spacing_deg <= 0:
@@ -2219,7 +2257,7 @@ class SlicerService:
                 world_line = affinity.rotate(LineString(coords), angle_deg, origin=origin)
                 points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
                 if len(points) >= 2:
-                    row_paths.append(Toolpath(points=points, kind="fill-infill", closed=False))
+                    row_paths.append(Toolpath(points=points, kind=kind, closed=False))
             row_paths.sort(key=lambda path: (path.points[0].x if path.points else 0.0, path.points[0].y if path.points else 0.0))
             debug_append_toolpaths(debug, "clipped_infill_lines", row_paths)
             toolpaths.extend(row_paths)
@@ -2234,25 +2272,92 @@ class SlicerService:
         angle_deg: float,
         min_segment_length_deg: float,
         tolerance_deg: float,
+        kind: str = "fill-infill",
     ) -> list[Toolpath]:
         if region is None or region.is_empty:
             return []
 
         origin = region.centroid.coords[0]
-        rotated = affinity.rotate(region, -angle_deg, origin=origin)
-        min_x, _, max_x, _ = rotated.bounds
-        center_y = rotated.centroid.y
-        probe = LineString([(min_x - 1.0, center_y), (max_x + 1.0, center_y)])
-        clipped = rotated.intersection(probe)
-        lines = sorted(extract_lines(clipped), key=lambda line: line.length, reverse=True)
-        if not lines or lines[0].length < min_segment_length_deg:
+        candidate_angles = [angle_deg, angle_deg + 90.0]
+        try:
+            oriented = region.minimum_rotated_rectangle
+            coords = list(oriented.exterior.coords)
+            if len(coords) >= 3:
+                edges = []
+                for start, end in zip(coords, coords[1:]):
+                    dx = end[0] - start[0]
+                    dy = end[1] - start[1]
+                    length = math.hypot(dx, dy)
+                    if length > 1e-6:
+                        edges.append((length, math.degrees(math.atan2(dy, dx))))
+                if edges:
+                    edges.sort(reverse=True)
+                    candidate_angles.append(edges[0][1])
+        except Exception:
+            pass
+
+        best_line = None
+        best_length = -1.0
+        for candidate_angle in candidate_angles:
+            rotated = affinity.rotate(region, -candidate_angle, origin=origin)
+            min_x, _, max_x, _ = rotated.bounds
+            center_y = rotated.centroid.y
+            probe = LineString([(min_x - 1.0, center_y), (max_x + 1.0, center_y)])
+            clipped = rotated.intersection(probe)
+            lines = sorted(extract_lines(clipped), key=lambda line: line.length, reverse=True)
+            if lines and lines[0].length > best_length:
+                best_line = affinity.rotate(lines[0], candidate_angle, origin=origin)
+                best_length = lines[0].length
+
+        if best_line is None or best_length < min_segment_length_deg:
             return []
 
-        world_line = affinity.rotate(lines[0], angle_deg, origin=origin)
-        points = simplify_segment_points([Point(x, y) for x, y in world_line.coords], tolerance_deg, False)
+        points = simplify_segment_points([Point(x, y) for x, y in best_line.coords], tolerance_deg, False)
         if len(points) < 2:
             return []
-        return [Toolpath(points=points, kind="fill-infill", closed=False)]
+        return [Toolpath(points=points, kind=kind, closed=False)]
+
+    def _generate_detail_fill(
+        self,
+        region: Any,
+        *,
+        line_width_deg: float,
+        scanline_spacing_deg: float,
+        angle_deg: float,
+        min_segment_length_deg: float,
+        tolerance_deg: float,
+        detail_tolerance_deg: float,
+        allow_overlap: bool,
+        debug: Optional[dict[str, Any]] = None,
+    ) -> list[Toolpath]:
+        if region is None or region.is_empty:
+            return []
+
+        detail_spacing = max(line_width_deg * 0.35, scanline_spacing_deg * (0.5 if allow_overlap else 1.0))
+        inset_amount = min(line_width_deg * 0.15, line_width_deg * 0.5)
+        detail_region = region.buffer(-inset_amount, join_style=1)
+        if detail_region.is_empty:
+            detail_region = region
+
+        detail_paths = self._generate_scanline_infill(
+            detail_region,
+            spacing_deg=detail_spacing,
+            angle_deg=angle_deg,
+            min_segment_length_deg=min_segment_length_deg,
+            tolerance_deg=max(tolerance_deg, detail_tolerance_deg),
+            kind="detail-trace",
+            debug=debug,
+        )
+        if detail_paths:
+            return detail_paths
+
+        return self._generate_centerline_fallback(
+            detail_region,
+            angle_deg=angle_deg,
+            min_segment_length_deg=min_segment_length_deg,
+            tolerance_deg=max(tolerance_deg, detail_tolerance_deg),
+            kind="detail-trace",
+        )
 
     def slice_one_layer(
         self,
@@ -2270,6 +2375,10 @@ class SlicerService:
         simplify_tolerance_mm: float = DEFAULT_SIMPLIFY_TOLERANCE_MM,
         remove_duplicate_paths: bool = True,
         small_shape_mode: str = DEFAULT_SMALL_SHAPE_MODE,
+        thin_detail_mode: bool = DEFAULT_THIN_DETAIL_MODE,
+        thin_detail_min_area_mm2: float = DEFAULT_THIN_DETAIL_MIN_AREA_MM2,
+        thin_detail_simplify_mm: float = DEFAULT_THIN_DETAIL_SIMPLIFY_MM,
+        thin_detail_overlap: bool = DEFAULT_THIN_DETAIL_OVERLAP,
         travel_optimization: str = DEFAULT_TRAVEL_OPTIMIZATION,
         debug: Optional[dict[str, Any]] = None,
     ) -> list[Toolpath]:
@@ -2278,8 +2387,10 @@ class SlicerService:
 
         line_width_deg = mm_to_ball_degrees(line_width_mm)
         simplify_tolerance_deg = mm_to_ball_degrees(simplify_tolerance_mm)
+        thin_detail_tolerance_deg = mm_to_ball_degrees(thin_detail_simplify_mm)
         min_segment_length_deg = mm_to_ball_degrees(min_segment_length_mm)
         min_fill_area_deg2 = mm_area_to_ball_degree_area(min_fill_area_mm2)
+        thin_detail_min_area_deg2 = mm_area_to_ball_degree_area(thin_detail_min_area_mm2)
         scanline_spacing_deg = self._scanline_spacing_deg(SlicerSettings(
             line_width_mm=line_width_mm,
             wall_count=wall_count,
@@ -2294,39 +2405,55 @@ class SlicerService:
         )
 
         ordered: list[Toolpath] = []
+        slicer_counts = {
+            "normal_slicer_region_count": 0,
+            "outline_buffer_empty_region_count": 0,
+            "normal_infill_empty_region_count": 0,
+            "thin_detail_fallback_region_count": 0,
+            "thin_detail_path_count": 0,
+            "detail_trace_path_count": 0,
+        }
         for polygon in polygons:
             printable_outline_region = polygon.buffer(-(line_width_deg * 0.5), join_style=1)
-            if printable_outline_region.is_empty:
+            can_fit_outline = not printable_outline_region.is_empty
+            if not can_fit_outline:
+                slicer_counts["outline_buffer_empty_region_count"] += 1
+            if not can_fit_outline and not thin_detail_mode:
                 continue
 
             debug_append_geometry(debug, "detected_printable_polygons", polygon, "detected-printable-polygon")
             region_paths: list[Toolpath] = []
 
-            outer_walls = geometry_to_closed_toolpaths(printable_outline_region, "fill-wall", simplify_tolerance_deg)
-            debug_append_toolpaths(debug, "outer_walls", outer_walls)
-            region_paths.extend(optimize_toolpath_order(outer_walls, strategy=travel_optimization))
+            if can_fit_outline:
+                slicer_counts["normal_slicer_region_count"] += 1
+                outer_walls = geometry_to_closed_toolpaths(printable_outline_region, "fill-wall", simplify_tolerance_deg)
+                debug_append_toolpaths(debug, "outer_walls", outer_walls)
+                region_paths.extend(optimize_toolpath_order(outer_walls, strategy=travel_optimization))
 
             anchor = region_paths[-1].points[-1] if region_paths and region_paths[-1].points else Point(0.0, 0.0)
             inner_wall_paths: list[Toolpath] = []
-            for wall_index in range(1, max(1, wall_count)):
-                wall_geometry = polygon.buffer(-(line_width_deg * (wall_index + 0.5)), join_style=1)
-                if wall_geometry.is_empty:
-                    continue
-                debug_append_geometry(debug, "inner_wall_regions", wall_geometry, f"inner-wall-region-{wall_index}")
-                inner_wall_paths.extend(geometry_to_closed_toolpaths(wall_geometry, "fill-wall", simplify_tolerance_deg))
-            debug_append_toolpaths(debug, "inner_walls", inner_wall_paths)
-            inner_wall_paths = optimize_toolpath_order(inner_wall_paths, strategy=travel_optimization, start_point=anchor)
-            region_paths.extend(inner_wall_paths)
+            if can_fit_outline:
+                for wall_index in range(1, max(1, wall_count)):
+                    wall_geometry = polygon.buffer(-(line_width_deg * (wall_index + 0.5)), join_style=1)
+                    if wall_geometry.is_empty:
+                        continue
+                    debug_append_geometry(debug, "inner_wall_regions", wall_geometry, f"inner-wall-region-{wall_index}")
+                    inner_wall_paths.extend(geometry_to_closed_toolpaths(wall_geometry, "fill-wall", simplify_tolerance_deg))
+                debug_append_toolpaths(debug, "inner_walls", inner_wall_paths)
+                inner_wall_paths = optimize_toolpath_order(inner_wall_paths, strategy=travel_optimization, start_point=anchor)
+                region_paths.extend(inner_wall_paths)
 
             infill_paths: list[Toolpath] = []
-            infill_offset = line_width_deg * max(1, wall_count)
-            infill_region = polygon.buffer(-infill_offset, join_style=1)
-            fill_threshold_failed = False
-            if infill_region.is_empty:
-                fill_threshold_failed = True
-            else:
-                fill_area = infill_region.area
-                fill_threshold_failed = fill_area < min_fill_area_deg2
+            infill_region = None
+            fill_threshold_failed = True
+            if can_fit_outline:
+                infill_offset = line_width_deg * max(1, wall_count)
+                infill_region = polygon.buffer(-infill_offset, join_style=1)
+                if not infill_region.is_empty:
+                    fill_area = infill_region.area
+                    fill_threshold_failed = fill_area < min_fill_area_deg2
+                else:
+                    slicer_counts["normal_infill_empty_region_count"] += 1
             if not fill_threshold_failed and infill_region is not None and not infill_region.is_empty:
                 debug_append_geometry(debug, "infill_regions", infill_region, "infill-region")
                 infill_paths = self._generate_scanline_infill(
@@ -2340,18 +2467,36 @@ class SlicerService:
             multi_pass_infill = len(infill_paths) >= 2
             single_pass_infill = len(infill_paths) == 1
             if not multi_pass_infill:
-                if small_shape_mode == "skip" and (fill_threshold_failed or single_pass_infill):
-                    continue
-                if small_shape_mode == "centerline":
-                    centerline_region = infill_region if infill_region is not None and not infill_region.is_empty else printable_outline_region
+                detail_region = printable_outline_region if can_fit_outline else polygon
+                if thin_detail_mode and polygon.area >= thin_detail_min_area_deg2:
+                    slicer_counts["thin_detail_fallback_region_count"] += 1
+                    infill_paths = self._generate_detail_fill(
+                        detail_region,
+                        line_width_deg=line_width_deg,
+                        scanline_spacing_deg=scanline_spacing_deg,
+                        angle_deg=infill_angle_deg,
+                        min_segment_length_deg=min_segment_length_deg,
+                        tolerance_deg=simplify_tolerance_deg,
+                        detail_tolerance_deg=thin_detail_tolerance_deg,
+                        allow_overlap=thin_detail_overlap,
+                        debug=debug,
+                    )
+                elif small_shape_mode == "centerline":
+                    slicer_counts["thin_detail_fallback_region_count"] += 1
+                    centerline_region = infill_region if infill_region is not None and not infill_region.is_empty else detail_region
                     infill_paths = self._generate_centerline_fallback(
                         centerline_region,
                         angle_deg=infill_angle_deg,
                         min_segment_length_deg=min_segment_length_deg,
-                        tolerance_deg=simplify_tolerance_deg,
+                        tolerance_deg=max(simplify_tolerance_deg, thin_detail_tolerance_deg),
+                        kind="detail-trace",
                     )
+                elif small_shape_mode == "skip":
+                    continue
                 else:
                     infill_paths = []
+            slicer_counts["thin_detail_path_count"] += sum(1 for path in infill_paths if path.kind == "detail-trace")
+            slicer_counts["detail_trace_path_count"] = slicer_counts["thin_detail_path_count"]
 
             infill_paths = optimize_toolpath_order(
                 infill_paths,
@@ -2360,7 +2505,7 @@ class SlicerService:
             )
             region_paths.extend(infill_paths)
 
-            if outline_after_fill:
+            if outline_after_fill and can_fit_outline:
                 cleanup_paths = geometry_to_closed_toolpaths(printable_outline_region, "outline", simplify_tolerance_deg)
                 debug_append_toolpaths(debug, "cleanup_outlines", cleanup_paths)
                 cleanup_paths = optimize_toolpath_order(
@@ -2372,10 +2517,15 @@ class SlicerService:
 
             ordered.extend(region_paths)
 
+        non_detail_paths = [path for path in ordered if path.kind != "detail-trace"]
+        thin_detail_paths = [path for path in ordered if path.kind == "detail-trace"]
         if remove_duplicate_paths:
-            ordered = dedupe_toolpaths(ordered, min_segment_length_deg)
+            non_detail_paths = dedupe_toolpaths(non_detail_paths, min_segment_length_deg)
         else:
-            ordered = [path for path in ordered if segment_length(path.points) >= min_segment_length_deg]
+            non_detail_paths = filter_toolpaths_by_length(non_detail_paths, min_segment_length_deg)
+        thin_detail_paths = filter_toolpaths_by_length(thin_detail_paths, min_segment_length_deg)
+        ordered = non_detail_paths + thin_detail_paths
+        debug_set_counts(debug, "slicer_counts", slicer_counts)
         return ordered
 
 
@@ -2394,12 +2544,17 @@ def generate_toolpaths(
     simplify_tolerance_mm: float,
     remove_duplicate_paths: bool,
     small_shape_mode: str,
-    min_segment_length_mm: float,
-    travel_optimization: str,
+    thin_detail_mode: bool = DEFAULT_THIN_DETAIL_MODE,
+    thin_detail_min_area_mm2: float = DEFAULT_THIN_DETAIL_MIN_AREA_MM2,
+    thin_detail_simplify_mm: float = DEFAULT_THIN_DETAIL_SIMPLIFY_MM,
+    thin_detail_overlap: bool = DEFAULT_THIN_DETAIL_OVERLAP,
+    min_segment_length_mm: float = DEFAULT_MIN_SEGMENT_LENGTH_MM,
+    travel_optimization: str = DEFAULT_TRAVEL_OPTIMIZATION,
     debug: Optional[dict[str, Any]] = None,
 ) -> list[Toolpath]:
     toolpaths: list[Toolpath] = []
     simplify_tolerance_deg = mm_to_ball_degrees(simplify_tolerance_mm)
+    detail_tolerance_deg = mm_to_ball_degrees(max(simplify_tolerance_mm, thin_detail_simplify_mm))
 
     outline_segments = list(bundle.outline_segments)
     if not enable_fill:
@@ -2425,13 +2580,28 @@ def generate_toolpaths(
             simplify_tolerance_mm=simplify_tolerance_mm,
             remove_duplicate_paths=remove_duplicate_paths,
             small_shape_mode=small_shape_mode,
+            thin_detail_mode=thin_detail_mode,
+            thin_detail_min_area_mm2=thin_detail_min_area_mm2,
+            thin_detail_simplify_mm=thin_detail_simplify_mm,
+            thin_detail_overlap=thin_detail_overlap,
             travel_optimization=travel_optimization,
             debug=debug,
         ))
 
+    detail_paths: list[Toolpath] = []
+    for segment in bundle.detail_segments:
+        simplified = simplify_segment_points(segment.points, detail_tolerance_deg, segment.closed)
+        if len(simplified) < 2:
+            continue
+        detail_paths.append(Toolpath(points=simplified, kind="detail-trace", closed=segment.closed))
+    if detail_paths:
+        toolpaths.extend(optimize_toolpath_order(detail_paths, strategy=travel_optimization))
+
     toolpath_counts = {
         "generated_fill_walls": sum(1 for path in toolpaths if path.kind == "fill-wall"),
         "generated_infill_paths": sum(1 for path in toolpaths if path.kind == "fill-infill"),
+        "generated_thin_detail_paths": sum(1 for path in toolpaths if path.kind == "detail-trace"),
+        "generated_detail_trace_paths": sum(1 for path in toolpaths if path.kind == "detail-trace"),
         "generated_outline_paths": sum(1 for path in toolpaths if path.kind == "outline"),
         "generated_travel_paths": sum(1 for path in toolpaths if path.kind == "travel"),
     }
