@@ -2227,6 +2227,33 @@ class SlicerService:
             row += 1
         return toolpaths
 
+    def _generate_centerline_fallback(
+        self,
+        region: Any,
+        *,
+        angle_deg: float,
+        min_segment_length_deg: float,
+        tolerance_deg: float,
+    ) -> list[Toolpath]:
+        if region is None or region.is_empty:
+            return []
+
+        origin = region.centroid.coords[0]
+        rotated = affinity.rotate(region, -angle_deg, origin=origin)
+        min_x, _, max_x, _ = rotated.bounds
+        center_y = rotated.centroid.y
+        probe = LineString([(min_x - 1.0, center_y), (max_x + 1.0, center_y)])
+        clipped = rotated.intersection(probe)
+        lines = sorted(extract_lines(clipped), key=lambda line: line.length, reverse=True)
+        if not lines or lines[0].length < min_segment_length_deg:
+            return []
+
+        world_line = affinity.rotate(lines[0], angle_deg, origin=origin)
+        points = simplify_segment_points([Point(x, y) for x, y in world_line.coords], tolerance_deg, False)
+        if len(points) < 2:
+            return []
+        return [Toolpath(points=points, kind="fill-infill", closed=False)]
+
     def slice_one_layer(
         self,
         printable_geometry: Any,
@@ -2253,7 +2280,6 @@ class SlicerService:
         simplify_tolerance_deg = mm_to_ball_degrees(simplify_tolerance_mm)
         min_segment_length_deg = mm_to_ball_degrees(min_segment_length_mm)
         min_fill_area_deg2 = mm_area_to_ball_degree_area(min_fill_area_mm2)
-        min_fill_width_deg = mm_to_ball_degrees(min_fill_width_mm)
         scanline_spacing_deg = self._scanline_spacing_deg(SlicerSettings(
             line_width_mm=line_width_mm,
             wall_count=wall_count,
@@ -2269,28 +2295,21 @@ class SlicerService:
 
         ordered: list[Toolpath] = []
         for polygon in polygons:
-            area = polygon.area
-            bounds = polygon.bounds
-            min_width = min(bounds[2] - bounds[0], bounds[3] - bounds[1])
-            too_small = area < min_fill_area_deg2 or min_width < min_fill_width_deg
-            if too_small and small_shape_mode == "skip":
+            printable_outline_region = polygon.buffer(-(line_width_deg * 0.5), join_style=1)
+            if printable_outline_region.is_empty:
                 continue
 
             debug_append_geometry(debug, "detected_printable_polygons", polygon, "detected-printable-polygon")
             region_paths: list[Toolpath] = []
 
-            outer_walls = geometry_to_closed_toolpaths(polygon, "fill-wall", simplify_tolerance_deg)
+            outer_walls = geometry_to_closed_toolpaths(printable_outline_region, "fill-wall", simplify_tolerance_deg)
             debug_append_toolpaths(debug, "outer_walls", outer_walls)
             region_paths.extend(optimize_toolpath_order(outer_walls, strategy=travel_optimization))
-
-            if too_small and small_shape_mode == "centerline":
-                ordered.extend(region_paths)
-                continue
 
             anchor = region_paths[-1].points[-1] if region_paths and region_paths[-1].points else Point(0.0, 0.0)
             inner_wall_paths: list[Toolpath] = []
             for wall_index in range(1, max(1, wall_count)):
-                wall_geometry = polygon.buffer(-(line_width_deg * wall_index), join_style=1)
+                wall_geometry = polygon.buffer(-(line_width_deg * (wall_index + 0.5)), join_style=1)
                 if wall_geometry.is_empty:
                     continue
                 debug_append_geometry(debug, "inner_wall_regions", wall_geometry, f"inner-wall-region-{wall_index}")
@@ -2302,9 +2321,13 @@ class SlicerService:
             infill_paths: list[Toolpath] = []
             infill_offset = line_width_deg * max(1, wall_count)
             infill_region = polygon.buffer(-infill_offset, join_style=1)
-            if infill_region.is_empty and small_shape_mode == "single-wall":
-                infill_region = None
-            if infill_region is not None and not infill_region.is_empty:
+            fill_threshold_failed = False
+            if infill_region.is_empty:
+                fill_threshold_failed = True
+            else:
+                fill_area = infill_region.area
+                fill_threshold_failed = fill_area < min_fill_area_deg2
+            if not fill_threshold_failed and infill_region is not None and not infill_region.is_empty:
                 debug_append_geometry(debug, "infill_regions", infill_region, "infill-region")
                 infill_paths = self._generate_scanline_infill(
                     infill_region,
@@ -2314,6 +2337,22 @@ class SlicerService:
                     tolerance_deg=simplify_tolerance_deg,
                     debug=debug,
                 )
+            multi_pass_infill = len(infill_paths) >= 2
+            single_pass_infill = len(infill_paths) == 1
+            if not multi_pass_infill:
+                if small_shape_mode == "skip" and (fill_threshold_failed or single_pass_infill):
+                    continue
+                if small_shape_mode == "centerline":
+                    centerline_region = infill_region if infill_region is not None and not infill_region.is_empty else printable_outline_region
+                    infill_paths = self._generate_centerline_fallback(
+                        centerline_region,
+                        angle_deg=infill_angle_deg,
+                        min_segment_length_deg=min_segment_length_deg,
+                        tolerance_deg=simplify_tolerance_deg,
+                    )
+                else:
+                    infill_paths = []
+
             infill_paths = optimize_toolpath_order(
                 infill_paths,
                 strategy=travel_optimization,
@@ -2322,7 +2361,7 @@ class SlicerService:
             region_paths.extend(infill_paths)
 
             if outline_after_fill:
-                cleanup_paths = geometry_to_closed_toolpaths(polygon, "outline", simplify_tolerance_deg)
+                cleanup_paths = geometry_to_closed_toolpaths(printable_outline_region, "outline", simplify_tolerance_deg)
                 debug_append_toolpaths(debug, "cleanup_outlines", cleanup_paths)
                 cleanup_paths = optimize_toolpath_order(
                     cleanup_paths,

@@ -24,6 +24,10 @@ function getBool(id) {
   return document.getElementById(id).checked;
 }
 
+function getValue(id) {
+  return document.getElementById(id).value.trim();
+}
+
 const SERVER_DEFAULTS = window.SERVER_DEFAULTS || {
   penUpS: 575,
   penDownS: 700,
@@ -33,6 +37,56 @@ const SERVER_DEFAULTS = window.SERVER_DEFAULTS || {
   servoRampStep: 20,
   servoRampDelayMs: 10
 };
+
+const DERIVED_PEN_FIELDS = {
+  infillSpacingMm: (penThickness) => penThickness,
+  minFillWidthMm: (penThickness) => penThickness,
+  minFillAreaMm2: (penThickness) => penThickness * penThickness
+};
+
+function roundTo(value, decimals) {
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
+
+function syncDerivedPenFields(force = false) {
+  const penThickness = Math.max(0, getNum("lineThicknessMm"));
+  for (const [id, compute] of Object.entries(DERIVED_PEN_FIELDS)) {
+    const input = document.getElementById(id);
+    if (!input) continue;
+    if (!force && input.dataset.userOverride === "1") continue;
+    const decimals = id === "minFillAreaMm2" ? 3 : 2;
+    input.value = String(roundTo(compute(penThickness), decimals));
+    input.dataset.userOverride = "0";
+  }
+
+  const summary = document.getElementById("derivedPenSummary");
+  if (summary) {
+    const outlineInset = roundTo(penThickness / 2, 3);
+    const infillSpacing = roundTo(DERIVED_PEN_FIELDS.infillSpacingMm(penThickness), 3);
+    const minFillWidth = roundTo(DERIVED_PEN_FIELDS.minFillWidthMm(penThickness), 3);
+    const minFillArea = roundTo(DERIVED_PEN_FIELDS.minFillAreaMm2(penThickness), 3);
+    summary.textContent = `Auto defaults: outline inset ${outlineInset} mm, infill spacing ${infillSpacing} mm, min fill width ${minFillWidth} mm, min fill area ${minFillArea} mm^2.`;
+  }
+}
+
+function setupDerivedPenFieldSync() {
+  const penInput = document.getElementById("lineThicknessMm");
+  if (penInput) {
+    penInput.addEventListener("input", () => syncDerivedPenFields(false));
+  }
+
+  for (const id of Object.keys(DERIVED_PEN_FIELDS)) {
+    const input = document.getElementById(id);
+    if (!input) continue;
+    input.addEventListener("input", () => {
+      input.dataset.userOverride = input.value.trim() === "" ? "0" : "1";
+    });
+    input.addEventListener("blur", () => {
+      if (input.value.trim() === "") syncDerivedPenFields(false);
+    });
+  }
+}
 
 function resetServoUiDefaults() {
   document.getElementById("penUpS").value = SERVER_DEFAULTS.penUpS;
@@ -266,11 +320,11 @@ function buildRasterForm(file) {
   form.append("wall_count", getInt("wallCount"));
   form.append("infill_pattern", document.getElementById("infillPattern").value);
   form.append("infill_density", getNum("infillDensity"));
-  form.append("infill_spacing_mm", getNum("infillSpacingMm"));
+  if (getValue("infillSpacingMm") !== "") form.append("infill_spacing_mm", getNum("infillSpacingMm"));
   form.append("infill_angle_deg", getNum("infillAngleDeg"));
   form.append("outline_after_fill", getBool("outlineAfterFill") ? "1" : "0");
-  form.append("min_fill_area_mm2", getNum("minFillAreaMm2"));
-  form.append("min_fill_width_mm", getNum("minFillWidthMm"));
+  if (getValue("minFillAreaMm2") !== "") form.append("min_fill_area_mm2", getNum("minFillAreaMm2"));
+  if (getValue("minFillWidthMm") !== "") form.append("min_fill_width_mm", getNum("minFillWidthMm"));
   form.append("simplify_tolerance_mm", getNum("simplifyToleranceMm"));
   form.append("remove_duplicate_paths", getBool("removeDuplicatePaths") ? "1" : "0");
   form.append("small_shape_mode", document.getElementById("smallShapeMode").value);
@@ -511,6 +565,8 @@ window.addEventListener("resize", () => {
   drawBallPreview(latestPreview);
 });
 
+setupDerivedPenFieldSync();
+syncDerivedPenFields(true);
 setInterval(refreshState, 750);
 refreshState();
 showOriginalPreview(null);

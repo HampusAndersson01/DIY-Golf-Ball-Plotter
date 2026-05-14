@@ -63,3 +63,21 @@ def test_generate_raster_form_requires_selected_colors():
     service = ValidationService()
     with pytest.raises(ValueError, match="Select at least one color to print"):
         service.parse_generate_raster_form({}, make_config())
+
+
+def test_generate_raster_form_derives_fill_defaults_from_pen_thickness():
+    service = ValidationService()
+    options = service.parse_generate_raster_form(
+        {
+            "selected_colors": "[\"#000000\"]",
+            "line_thickness_mm": "0.6",
+            "infill_spacing_mm": "",
+            "min_fill_width_mm": "",
+            "min_fill_area_mm2": "",
+        },
+        make_config(),
+    )
+
+    assert options["infill_spacing_mm"] == pytest.approx(0.6)
+    assert options["min_fill_width_mm"] == pytest.approx(0.6)
+    assert options["min_fill_area_mm2"] == pytest.approx(0.36)

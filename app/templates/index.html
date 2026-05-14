@@ -161,6 +161,23 @@
           </div>
           <div id="selectedColorSummary" class="small">No colors selected.</div>
 
+          <label>Pen thickness (mm on ball)</label>
+          <input id="lineThicknessMm" type="number" value="{{ default_line_thickness_mm }}" step="0.01" min="0.05" max="10" />
+          <p id="derivedPenSummary" class="small">
+            Outline inset, infill spacing, and narrow-fill thresholds derive from the pen thickness by default.
+          </p>
+
+          <div class="two-col">
+            <div>
+              <label>Draw feed</label>
+              <input id="drawFeed" type="number" value="{{ default_draw_feed }}" step="100" />
+            </div>
+            <div>
+              <label>Travel feed</label>
+              <input id="travelFeed" type="number" value="{{ default_travel_feed }}" step="100" />
+            </div>
+          </div>
+
           <div class="three-col">
             <div>
               <label>Placement scale %</label>
@@ -189,144 +206,125 @@
 
           <div class="two-col">
             <div>
-              <label>Draw feed</label>
-              <input id="drawFeed" type="number" value="{{ default_draw_feed }}" step="100" />
-            </div>
-            <div>
-              <label>Travel feed</label>
-              <input id="travelFeed" type="number" value="{{ default_travel_feed }}" step="100" />
-            </div>
-          </div>
-
-          <div class="two-col">
-            <div>
-              <label>Sample step degrees</label>
-              <input id="sampleStepDeg" type="number" value="{{ default_sample_step_deg }}" step="0.1" min="0.05" />
-            </div>
-            <div>
               <label>Fit mode</label>
               <select id="fitMode">
                 <option value="contain" selected>Contain inside drawing area</option>
                 <option value="stretch">Stretch to full 360 x 90 area</option>
               </select>
             </div>
-          </div>
-
-          <label>Line width / pen tip thickness (mm on ball)</label>
-          <input id="lineThicknessMm" type="number" value="{{ default_line_thickness_mm }}" step="0.01" min="0.05" max="10" />
-          <p class="small">
-            Infill spacing defaults to the same pen width so filled regions do not leave visible gaps.
-          </p>
-
-          <h3>Mask</h3>
-          <div class="three-col">
             <div>
               <label>Color tolerance</label>
               <input id="colorTolerance" type="number" value="{{ default_raster_color_tolerance }}" min="0" max="255" step="1" />
             </div>
-            <div>
-              <label>Noise min area px</label>
-              <input id="minComponentAreaPx" type="number" value="{{ default_raster_min_component_area_px }}" min="0" max="1000000" step="1" />
-            </div>
-            <div>
-              <label>Min region area px</label>
-              <input id="minRegionAreaPx" type="number" value="{{ default_raster_min_region_area_px }}" min="0" max="1000000" step="1" />
-            </div>
           </div>
 
           <div class="three-col">
-            <div>
-              <label>Open radius px</label>
-              <input id="maskOpenRadiusPx" type="number" value="{{ default_raster_mask_open_radius_px }}" min="0" max="50" step="1" />
-            </div>
-            <div>
-              <label>Close radius px</label>
-              <input id="maskCloseRadiusPx" type="number" value="{{ default_raster_mask_close_radius_px }}" min="0" max="50" step="1" />
-            </div>
-            <div>
-              <label>Region simplify px</label>
-              <input id="regionSimplifyPx" type="number" value="{{ default_raster_region_simplify_px }}" min="0" max="50" step="0.5" />
-            </div>
-          </div>
-
-          <h3>Toolpaths</h3>
-          <div class="two-col">
-            <div>
-              <label>Wall count</label>
-              <input id="wallCount" type="number" value="{{ default_wall_count }}" min="1" max="8" step="1" />
-            </div>
             <div>
               <label>Infill pattern</label>
               <select id="infillPattern">
                 <option value="zigzag" selected>Zigzag</option>
               </select>
             </div>
-          </div>
-
-          <div class="two-col">
-            <div>
-              <label>Infill density %</label>
-              <input id="infillDensity" type="number" value="{{ default_infill_density }}" min="1" max="100" step="1" />
-            </div>
-            <div>
-              <label>Infill spacing mm</label>
-              <input id="infillSpacingMm" type="number" value="{{ default_infill_spacing_mm }}" min="0" max="10" step="0.01" />
-            </div>
-          </div>
-
-          <div class="two-col">
             <div>
               <label>Infill angle degrees</label>
               <input id="infillAngleDeg" type="number" value="{{ default_infill_angle_deg }}" min="-180" max="180" step="1" />
             </div>
             <div>
-              <label>Travel optimization</label>
-              <select id="travelOptimization">
-                <option value="nearest-neighbor" {% if default_travel_optimization == "nearest-neighbor" %}selected{% endif %}>Nearest neighbor</option>
-              </select>
+              <label>Wall count</label>
+              <input id="wallCount" type="number" value="{{ default_wall_count }}" min="1" max="8" step="1" />
             </div>
           </div>
 
-          <div class="two-col">
-            <div>
-              <label>Small shape mode</label>
-              <select id="smallShapeMode">
-                <option value="single-wall" selected>Single wall</option>
-                <option value="skip">Skip</option>
-                <option value="centerline">Centerline</option>
-              </select>
-            </div>
-            <div>
-              <label>Min fill width mm</label>
-              <input id="minFillWidthMm" type="number" value="{{ default_min_fill_width_mm }}" min="0" max="10" step="0.01" />
-            </div>
-          </div>
+          <details class="advanced-panel">
+            <summary>Advanced settings</summary>
+            <p class="small">
+              Leave derived fields at their auto values unless you need to override the pen-driven defaults.
+            </p>
 
-          <div class="two-col">
-            <div>
-              <label>Min fill area mm²</label>
-              <input id="minFillAreaMm2" type="number" value="{{ default_min_fill_area_mm2 }}" min="0" max="1000" step="0.1" />
+            <div class="three-col">
+              <div>
+                <label>Infill spacing mm</label>
+                <input id="infillSpacingMm" type="number" value="{{ default_infill_spacing_mm }}" min="0" max="10" step="0.01" />
+              </div>
+              <div>
+                <label>Min fill width mm</label>
+                <input id="minFillWidthMm" type="number" value="{{ default_min_fill_width_mm }}" min="0" max="10" step="0.01" />
+              </div>
+              <div>
+                <label>Min fill area mm^2</label>
+                <input id="minFillAreaMm2" type="number" value="{{ default_min_fill_area_mm2 }}" min="0" max="1000" step="0.1" />
+              </div>
             </div>
-            <div>
-              <label>Min segment length mm</label>
-              <input id="minSegmentLengthMm" type="number" value="{{ default_min_segment_length_mm }}" min="0" max="10" step="0.01" />
-            </div>
-          </div>
 
-          <div class="two-col">
-            <div>
-              <label>Simplify tolerance mm</label>
-              <input id="simplifyToleranceMm" type="number" value="{{ default_simplify_tolerance_mm }}" min="0" max="2" step="0.01" />
+            <div class="three-col">
+              <div>
+                <label>Infill density %</label>
+                <input id="infillDensity" type="number" value="{{ default_infill_density }}" min="1" max="100" step="1" />
+              </div>
+              <div>
+                <label>Small shape mode</label>
+                <select id="smallShapeMode">
+                  <option value="single-wall" selected>Single wall</option>
+                  <option value="skip">Skip</option>
+                  <option value="centerline">Centerline</option>
+                </select>
+              </div>
+              <div>
+                <label>Travel optimization</label>
+                <select id="travelOptimization">
+                  <option value="nearest-neighbor" {% if default_travel_optimization == "nearest-neighbor" %}selected{% endif %}>Nearest neighbor</option>
+                </select>
+              </div>
             </div>
-            <div>
-              <label><input id="invertY" type="checkbox" checked /> Invert image Y so the top becomes +Y</label>
-            </div>
-          </div>
 
-          <label><input id="outlineAfterFill" type="checkbox" {% if default_outline_after_fill %}checked{% endif %} /> Draw cleanup outline after fill</label>
-          <label><input id="removeDuplicatePaths" type="checkbox" {% if default_remove_duplicate_paths %}checked{% endif %} /> Remove duplicate / tiny paths</label>
-          <label><input id="includeComments" type="checkbox" checked /> Include comments in G-code</label>
-          <label><input id="debugPipeline" type="checkbox" /> Include debug geometry snapshots in the generate response</label>
+            <div class="three-col">
+              <div>
+                <label>Sample step degrees</label>
+                <input id="sampleStepDeg" type="number" value="{{ default_sample_step_deg }}" step="0.1" min="0.05" />
+              </div>
+              <div>
+                <label>Min segment length mm</label>
+                <input id="minSegmentLengthMm" type="number" value="{{ default_min_segment_length_mm }}" min="0" max="10" step="0.01" />
+              </div>
+              <div>
+                <label>Simplify tolerance mm</label>
+                <input id="simplifyToleranceMm" type="number" value="{{ default_simplify_tolerance_mm }}" min="0" max="2" step="0.01" />
+              </div>
+            </div>
+
+            <h3>Mask cleanup</h3>
+            <div class="three-col">
+              <div>
+                <label>Noise min area px</label>
+                <input id="minComponentAreaPx" type="number" value="{{ default_raster_min_component_area_px }}" min="0" max="1000000" step="1" />
+              </div>
+              <div>
+                <label>Min region area px</label>
+                <input id="minRegionAreaPx" type="number" value="{{ default_raster_min_region_area_px }}" min="0" max="1000000" step="1" />
+              </div>
+              <div>
+                <label>Region simplify px</label>
+                <input id="regionSimplifyPx" type="number" value="{{ default_raster_region_simplify_px }}" min="0" max="50" step="0.5" />
+              </div>
+            </div>
+
+            <div class="two-col">
+              <div>
+                <label>Open radius px</label>
+                <input id="maskOpenRadiusPx" type="number" value="{{ default_raster_mask_open_radius_px }}" min="0" max="50" step="1" />
+              </div>
+              <div>
+                <label>Close radius px</label>
+                <input id="maskCloseRadiusPx" type="number" value="{{ default_raster_mask_close_radius_px }}" min="0" max="50" step="1" />
+              </div>
+            </div>
+
+            <label><input id="outlineAfterFill" type="checkbox" {% if default_outline_after_fill %}checked{% endif %} /> Draw cleanup outline after fill</label>
+            <label><input id="removeDuplicatePaths" type="checkbox" {% if default_remove_duplicate_paths %}checked{% endif %} /> Remove duplicate / tiny paths</label>
+            <label><input id="includeComments" type="checkbox" checked /> Include comments in G-code</label>
+            <label><input id="invertY" type="checkbox" checked /> Invert image Y so the top becomes +Y</label>
+            <label><input id="debugPipeline" type="checkbox" /> Include debug geometry snapshots in the generate response</label>
+          </details>
         </div>
 
         <div class="card">

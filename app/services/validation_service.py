@@ -16,7 +16,25 @@ class ValidationService:
     validate_non_negative_float = staticmethod(pipeline_core.validate_non_negative_float)
     validate_non_negative_int = staticmethod(pipeline_core.validate_non_negative_int)
 
+    @staticmethod
+    def _form_value(form, key: str):
+        value = form.get(key)
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
+    def _derived_pen_defaults(self, line_thickness_mm: float) -> dict[str, float]:
+        return {
+            "infill_spacing_mm": line_thickness_mm,
+            "min_fill_width_mm": line_thickness_mm,
+            "min_fill_area_mm2": line_thickness_mm * line_thickness_mm,
+        }
+
     def parse_generate_gcode_form(self, form, config) -> dict[str, Any]:
+        line_thickness_mm = float(form.get("line_thickness_mm", config["DEFAULT_LINE_THICKNESS_MM"]))
+        derived_defaults = self._derived_pen_defaults(line_thickness_mm)
         options = {
             "draw_feed": self.validate_feed(form.get("draw_feed", config["DEFAULT_DRAW_FEED"])),
             "travel_feed": self.validate_feed(form.get("travel_feed", config["DEFAULT_TRAVEL_FEED"])),
@@ -28,7 +46,7 @@ class ValidationService:
             "rotation_deg": float(form.get("rotation_deg", config["DEFAULT_ROTATION_DEG"])),
             "parser_mode": form.get("parser_mode", config["DEFAULT_PARSER_MODE"]),
             "color_mapping_mode": self.validate_bool(form.get("color_mapping_mode", config["DEFAULT_COLOR_MAPPING_MODE"])),
-            "line_thickness_mm": float(form.get("line_thickness_mm", config["DEFAULT_LINE_THICKNESS_MM"])),
+            "line_thickness_mm": line_thickness_mm,
             "enable_fill": self.validate_bool(form.get("enable_fill", config["DEFAULT_ENABLE_FILL"])),
             "trace_stroke_only_paths": self.validate_bool(form.get("trace_stroke_only_paths", config["DEFAULT_TRACE_STROKE_ONLY_PATHS"])),
             "fill_only_dark_svg_fills": self.validate_bool(
@@ -38,11 +56,23 @@ class ValidationService:
             "wall_count": self.validate_non_negative_int(form.get("wall_count", config["DEFAULT_WALL_COUNT"]), "Wall count", minimum=1, maximum=8),
             "infill_pattern": form.get("infill_pattern", config["DEFAULT_INFILL_PATTERN"]),
             "infill_density": self.validate_non_negative_float(form.get("infill_density", config["DEFAULT_INFILL_DENSITY"]), "Infill density", maximum=100),
-            "infill_spacing_mm": self.validate_non_negative_float(form.get("infill_spacing_mm", config["DEFAULT_INFILL_SPACING_MM"]), "Infill spacing", maximum=10),
+            "infill_spacing_mm": self.validate_non_negative_float(
+                self._form_value(form, "infill_spacing_mm") if self._form_value(form, "infill_spacing_mm") is not None else derived_defaults["infill_spacing_mm"],
+                "Infill spacing",
+                maximum=10,
+            ),
             "infill_angle_deg": float(form.get("infill_angle_deg", config["DEFAULT_INFILL_ANGLE_DEG"])),
             "outline_after_fill": self.validate_bool(form.get("outline_after_fill", config["DEFAULT_OUTLINE_AFTER_FILL"])),
-            "min_fill_area_mm2": self.validate_non_negative_float(form.get("min_fill_area_mm2", config["DEFAULT_MIN_FILL_AREA_MM2"]), "Minimum fill area", maximum=10000),
-            "min_fill_width_mm": self.validate_non_negative_float(form.get("min_fill_width_mm", config["DEFAULT_MIN_FILL_WIDTH_MM"]), "Minimum fill width", maximum=10),
+            "min_fill_area_mm2": self.validate_non_negative_float(
+                self._form_value(form, "min_fill_area_mm2") if self._form_value(form, "min_fill_area_mm2") is not None else derived_defaults["min_fill_area_mm2"],
+                "Minimum fill area",
+                maximum=10000,
+            ),
+            "min_fill_width_mm": self.validate_non_negative_float(
+                self._form_value(form, "min_fill_width_mm") if self._form_value(form, "min_fill_width_mm") is not None else derived_defaults["min_fill_width_mm"],
+                "Minimum fill width",
+                maximum=10,
+            ),
             "simplify_tolerance_mm": self.validate_non_negative_float(form.get("simplify_tolerance_mm", config["DEFAULT_SIMPLIFY_TOLERANCE_MM"]), "Simplify tolerance", maximum=5),
             "remove_duplicate_paths": self.validate_bool(form.get("remove_duplicate_paths", config["DEFAULT_REMOVE_DUPLICATE_PATHS"])),
             "small_shape_mode": form.get("small_shape_mode", config["DEFAULT_SMALL_SHAPE_MODE"]),
@@ -111,6 +141,8 @@ class ValidationService:
         return options
 
     def parse_generate_raster_form(self, form, config) -> dict[str, Any]:
+        line_thickness_mm = float(form.get("line_thickness_mm", config["DEFAULT_LINE_THICKNESS_MM"]))
+        derived_defaults = self._derived_pen_defaults(line_thickness_mm)
         options = {
             "draw_feed": self.validate_feed(form.get("draw_feed", config["DEFAULT_DRAW_FEED"])),
             "travel_feed": self.validate_feed(form.get("travel_feed", config["DEFAULT_TRAVEL_FEED"])),
@@ -120,15 +152,27 @@ class ValidationService:
             "placement_offset_x": float(form.get("placement_offset_x", 0.0)),
             "placement_offset_y": float(form.get("placement_offset_y", 0.0)),
             "rotation_deg": float(form.get("rotation_deg", config["DEFAULT_ROTATION_DEG"])),
-            "line_thickness_mm": float(form.get("line_thickness_mm", config["DEFAULT_LINE_THICKNESS_MM"])),
+            "line_thickness_mm": line_thickness_mm,
             "wall_count": self.validate_non_negative_int(form.get("wall_count", config["DEFAULT_WALL_COUNT"]), "Wall count", minimum=1, maximum=8),
             "infill_pattern": form.get("infill_pattern", config["DEFAULT_INFILL_PATTERN"]),
             "infill_density": self.validate_non_negative_float(form.get("infill_density", config["DEFAULT_INFILL_DENSITY"]), "Infill density", maximum=100),
-            "infill_spacing_mm": self.validate_non_negative_float(form.get("infill_spacing_mm", config["DEFAULT_INFILL_SPACING_MM"]), "Infill spacing", maximum=10),
+            "infill_spacing_mm": self.validate_non_negative_float(
+                self._form_value(form, "infill_spacing_mm") if self._form_value(form, "infill_spacing_mm") is not None else derived_defaults["infill_spacing_mm"],
+                "Infill spacing",
+                maximum=10,
+            ),
             "infill_angle_deg": float(form.get("infill_angle_deg", config["DEFAULT_INFILL_ANGLE_DEG"])),
             "outline_after_fill": self.validate_bool(form.get("outline_after_fill", config["DEFAULT_OUTLINE_AFTER_FILL"])),
-            "min_fill_area_mm2": self.validate_non_negative_float(form.get("min_fill_area_mm2", config["DEFAULT_MIN_FILL_AREA_MM2"]), "Minimum fill area", maximum=10000),
-            "min_fill_width_mm": self.validate_non_negative_float(form.get("min_fill_width_mm", config["DEFAULT_MIN_FILL_WIDTH_MM"]), "Minimum fill width", maximum=10),
+            "min_fill_area_mm2": self.validate_non_negative_float(
+                self._form_value(form, "min_fill_area_mm2") if self._form_value(form, "min_fill_area_mm2") is not None else derived_defaults["min_fill_area_mm2"],
+                "Minimum fill area",
+                maximum=10000,
+            ),
+            "min_fill_width_mm": self.validate_non_negative_float(
+                self._form_value(form, "min_fill_width_mm") if self._form_value(form, "min_fill_width_mm") is not None else derived_defaults["min_fill_width_mm"],
+                "Minimum fill width",
+                maximum=10,
+            ),
             "simplify_tolerance_mm": self.validate_non_negative_float(form.get("simplify_tolerance_mm", config["DEFAULT_SIMPLIFY_TOLERANCE_MM"]), "Simplify tolerance", maximum=5),
             "remove_duplicate_paths": self.validate_bool(form.get("remove_duplicate_paths", config["DEFAULT_REMOVE_DUPLICATE_PATHS"])),
             "small_shape_mode": form.get("small_shape_mode", config["DEFAULT_SMALL_SHAPE_MODE"]),
