@@ -1,7 +1,9 @@
 import pytest
 from shapely.geometry import LineString, MultiPolygon, Polygon
 
+from app.models.geometry import Point, Segment
 from app.services.pipeline_core import GeometryBundle, generate_toolpaths, mm_to_ball_degrees
+from app.services.toolpath_service import ToolpathService
 
 
 def _rect(width_deg: float, height_deg: float) -> Polygon:
@@ -268,3 +270,43 @@ def test_disabling_pen_down_infill_connectors_outputs_separate_spans():
     infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
     assert len(infill_paths) > 1
     _assert_infill_segments_stay_inside_region(infill_paths, _infill_region(printable))
+
+
+def test_raster_area_fill_suppresses_injected_detail_segments():
+    line_width_deg = mm_to_ball_degrees(1.0)
+    printable = _rect(line_width_deg * 20.0, line_width_deg * 20.0)
+    bundle = GeometryBundle(
+        printable_geometry=printable,
+        detail_segments=[
+            Segment(
+                points=[
+                    Point(line_width_deg * 10.0, 0.0),
+                    Point(line_width_deg * 10.0, line_width_deg * 20.0),
+                ],
+                closed=False,
+            )
+        ],
+    )
+
+    toolpaths = ToolpathService().generate_from_regions(
+        bundle,
+        pen_width_mm=1.0,
+        wall_count=1,
+        infill_pattern="zigzag",
+        infill_spacing_mm=1.0,
+        infill_density=100.0,
+        infill_angle_deg=0.0,
+        min_region_area=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=False,
+        small_shape_mode="single-wall",
+        thin_detail_mode=True,
+        thin_detail_min_area_mm2=0.0,
+        thin_detail_simplify_mm=0.0,
+        thin_detail_overlap=True,
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+    )
+
+    assert not any(path.kind == "detail-trace" for path in toolpaths)

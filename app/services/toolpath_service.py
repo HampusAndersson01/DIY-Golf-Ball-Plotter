@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from . import pipeline_core
 
 
@@ -34,8 +36,17 @@ class ToolpathService:
     ):
         if infill_pattern != "zigzag":
             raise ValueError("Only zigzag infill is currently implemented for raster regions")
+        effective_regions = regions
+        if (
+            regions.printable_geometry is not None
+            and not regions.printable_geometry.is_empty
+            and regions.detail_segments
+        ):
+            # Raster region extraction includes skeleton-derived detail traces for all components.
+            # When area fill is available, the slicer should decide where thin-detail fallback is needed.
+            effective_regions = replace(regions, detail_segments=[])
         return pipeline_core.generate_toolpaths(
-            regions,
+            effective_regions,
             enable_fill=True,
             line_width_mm=pen_width_mm,
             wall_count=wall_count,
