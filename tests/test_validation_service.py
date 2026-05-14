@@ -30,6 +30,13 @@ def make_config():
         "DEFAULT_SMALL_SHAPE_MODE": "single-wall",
         "DEFAULT_MIN_SEGMENT_LENGTH_MM": 0.5,
         "DEFAULT_TRAVEL_OPTIMIZATION": "nearest-neighbor",
+        "DEFAULT_RASTER_MAX_COLORS": 8,
+        "DEFAULT_RASTER_COLOR_TOLERANCE": 24,
+        "DEFAULT_RASTER_MIN_COMPONENT_AREA_PX": 8,
+        "DEFAULT_RASTER_MASK_OPEN_RADIUS_PX": 0,
+        "DEFAULT_RASTER_MASK_CLOSE_RADIUS_PX": 1,
+        "DEFAULT_RASTER_MIN_REGION_AREA_PX": 16.0,
+        "DEFAULT_RASTER_REGION_SIMPLIFY_PX": 1.0,
         "DEFAULT_PEN_UP_S": 575,
         "DEFAULT_PEN_DOWN_S": 700,
         "DEFAULT_SERVO_RAMP_ENABLED": True,
@@ -50,3 +57,9 @@ def test_invalid_servo_value_raises():
     service = ValidationService()
     with pytest.raises(ValueError):
         service.validate_servo_s(1001)
+
+
+def test_generate_raster_form_requires_selected_colors():
+    service = ValidationService()
+    with pytest.raises(ValueError, match="Select at least one color to print"):
+        service.parse_generate_raster_form({}, make_config())

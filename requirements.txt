@@ -1,4 +1,7 @@
 flask
+numpy
+opencv-python-headless
+pillow
 pyserial
 svgpathtools
 shapely

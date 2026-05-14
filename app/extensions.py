@@ -7,6 +7,7 @@ from .services.gcode_service import GcodeService
 from .services.geometry_service import GeometryService
 from .services.job_runner import JobRunner
 from .services.machine_service import MachineService
+from .services.raster_analysis_service import RasterAnalysisService
 from .services.self_test_service import SelfTestService
 from .services.serial_service import SerialService
 from .services.svg_parser import SvgParser
@@ -19,6 +20,7 @@ def init_extensions(app: Flask) -> None:
     serial_service = SerialService(app.config, state)
     validation_service = ValidationService()
     svg_parser = SvgParser(app.config, state)
+    raster_analysis_service = RasterAnalysisService(app.config, state)
     geometry_service = GeometryService()
     toolpath_service = ToolpathService()
     gcode_service = GcodeService()
@@ -36,6 +38,7 @@ def init_extensions(app: Flask) -> None:
     app.extensions["serial_service"] = serial_service
     app.extensions["validation_service"] = validation_service
     app.extensions["svg_parser"] = svg_parser
+    app.extensions["raster_analysis_service"] = raster_analysis_service
     app.extensions["geometry_service"] = geometry_service
     app.extensions["toolpath_service"] = toolpath_service
     app.extensions["gcode_service"] = gcode_service
@@ -58,6 +61,10 @@ def get_validation_service() -> ValidationService:
 
 def get_svg_parser() -> SvgParser:
     return current_app.extensions["svg_parser"]
+
+
+def get_raster_analysis_service() -> RasterAnalysisService:
+    return current_app.extensions["raster_analysis_service"]
 
 
 def get_geometry_service() -> GeometryService:

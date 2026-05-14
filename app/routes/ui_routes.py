@@ -46,6 +46,13 @@ def index():
         default_remove_duplicate_paths=config["DEFAULT_REMOVE_DUPLICATE_PATHS"],
         default_min_segment_length_mm=config["DEFAULT_MIN_SEGMENT_LENGTH_MM"],
         default_travel_optimization=config["DEFAULT_TRAVEL_OPTIMIZATION"],
+        default_raster_max_colors=config["DEFAULT_RASTER_MAX_COLORS"],
+        default_raster_color_tolerance=config["DEFAULT_RASTER_COLOR_TOLERANCE"],
+        default_raster_min_component_area_px=config["DEFAULT_RASTER_MIN_COMPONENT_AREA_PX"],
+        default_raster_mask_open_radius_px=config["DEFAULT_RASTER_MASK_OPEN_RADIUS_PX"],
+        default_raster_mask_close_radius_px=config["DEFAULT_RASTER_MASK_CLOSE_RADIUS_PX"],
+        default_raster_min_region_area_px=config["DEFAULT_RASTER_MIN_REGION_AREA_PX"],
+        default_raster_region_simplify_px=config["DEFAULT_RASTER_REGION_SIMPLIFY_PX"],
     )
 
 

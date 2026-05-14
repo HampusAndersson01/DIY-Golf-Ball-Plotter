@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "flask>=3.0",
+  "numpy>=1.26",
+  "opencv-python-headless>=4.10",
+  "pillow>=10.0",
   "pyserial>=3.5",
   "svgpathtools>=1.6",
   "shapely>=2.0",
@@ -21,3 +24,6 @@ dev = ["pytest>=8.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["app"]
