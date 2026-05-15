@@ -124,4 +124,5 @@ class GcodeService:
             kwargs["pen_down_dwell_ms"],
             kwargs["gcode_mode"],
             kwargs["include_comments"],
+            kwargs.get("header_comment_settings"),
         )

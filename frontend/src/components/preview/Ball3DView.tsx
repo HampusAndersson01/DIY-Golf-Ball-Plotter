@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import type { MutableRefObject } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
 import { Line, OrbitControls } from '@react-three/drei'
@@ -27,6 +27,8 @@ export const Ball3DView = forwardRef<Ball3DHandle, Props>(function Ball3DView(
   ref,
 ) {
   const controlsRef = useRef<{ reset: () => void } | null>(null)
+  const hostRef = useRef<HTMLDivElement | null>(null)
+  const [size, setSize] = useState({ width: 0, height: 0 })
 
   useImperativeHandle(ref, () => ({
     fit: () => controlsRef.current?.reset(),
@@ -38,9 +40,25 @@ export const Ball3DView = forwardRef<Ball3DHandle, Props>(function Ball3DView(
     [filter, machine, paths, showTravel],
   )
 
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    const update = () => {
+      const rect = host.getBoundingClientRect()
+      setSize({
+        width: Math.max(1, Math.round(rect.width)),
+        height: Math.max(1, Math.round(rect.height)),
+      })
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(host)
+    return () => observer.disconnect()
+  }, [])
+
   return (
-    <div className="ball-view">
-      <Canvas camera={{ position: preset === 'front' ? [0, 0, 2.8] : [1.7, 0.95, 2.45], fov: 38 }}>
+    <div ref={hostRef} className="ball-view">
+      <Canvas camera={{ position: preset === 'front' ? [0, 0, 2.8] : [1.7, 0.95, 2.45], fov: 38 }} style={{ width: size.width || '100%', height: size.height || '100%' }}>
         <ScenePaths machine={machine} paths={visiblePaths} />
         <SceneCamera controlsRef={controlsRef} preset={preset} />
       </Canvas>

@@ -13,9 +13,8 @@ import { GcodePanel } from './components/job/GcodePanel'
 import { JobSummaryPanel } from './components/job/JobSummaryPanel'
 import { LogsPanel } from './components/job/LogsPanel'
 import { CalibrationCard } from './components/machine/CalibrationCard'
-import { JogControls } from './components/machine/JogControls'
 import { MachineCard } from './components/machine/MachineCard'
-import { PenControls } from './components/machine/PenControls'
+import { ManualControlCard } from './components/machine/ManualControlCard'
 import { RunControls } from './components/machine/RunControls'
 import { PreviewWorkspace } from './components/preview/PreviewWorkspace'
 import { getProgressPercent } from './components/preview/previewMath'
@@ -348,8 +347,7 @@ function DashboardApp() {
             <div data-step-anchor="calibrate">
               <CalibrationCard machine={machine} onCalibrate={handleCalibrate} onClear={handleClearCalibrated} />
             </div>
-            <JogControls onGoHome={handleGoHome} onJog={handleJog} />
-            <PenControls onGoHome={handleGoHome} onPenDown={handlePenDown} onPenUp={handlePenUp} />
+            <ManualControlCard onGoHome={handleGoHome} onJog={handleJog} onPenDown={handlePenDown} onPenUp={handlePenUp} />
             <div data-step-anchor="run">
               <RunControls machine={machine} onPause={() => void handlePause()} onResume={() => void handleResume()} onRun={handleRun} onStop={handleStop} runReady={runReady} />
             </div>

@@ -31,20 +31,20 @@ export function PreviewToolbar({
     <div className="preview-toolbar">
       <div className="segmented">
         <button className={previewMode === '2d' ? 'active' : ''} onClick={() => onModeChange('2d')} type="button">
-          2D Toolpath
+          2D
         </button>
         <button className={previewMode === '3d' ? 'active' : ''} onClick={() => onModeChange('3d')} type="button">
-          3D Ball
+          3D
         </button>
         <button className={showCompare ? 'active' : ''} onClick={() => onShowCompare(!showCompare)} type="button">
-          Original / Mask
+          Mask
         </button>
       </div>
 
       <div className="toolbar-group">
         <div className="segmented compact">
           <button className={progressFilter === 'all' ? 'active' : ''} onClick={() => onFilterChange('all')} type="button">
-            All paths
+            All
           </button>
           <button className={progressFilter === 'progress' ? 'active' : ''} onClick={() => onFilterChange('progress')} type="button">
             Progress
@@ -59,10 +59,10 @@ export function PreviewToolbar({
 
       <div className="toolbar-group">
         <button className="button subtle" onClick={() => onViewPreset('printer')} type="button">
-          Printer view
+          Printer
         </button>
         <button className="button subtle" onClick={() => onViewPreset('front')} type="button">
-          Front view
+          Front
         </button>
         <button className="button subtle" onClick={onFit} type="button">
           Fit

@@ -84,10 +84,10 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
     controller.setContentBounds(flipBoundsY(derivePreviewBounds(paths)))
     controller.fitToView()
 
-    const resize = () => controller.resize(true)
-    window.addEventListener('resize', resize)
+    const observer = new ResizeObserver(() => controller.resize(true))
+    observer.observe(canvas)
     return () => {
-      window.removeEventListener('resize', resize)
+      observer.disconnect()
       controller.destroy()
       controllerRef.current = null
     }

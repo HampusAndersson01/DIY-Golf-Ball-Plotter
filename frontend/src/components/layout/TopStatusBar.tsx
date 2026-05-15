@@ -19,9 +19,8 @@ export function TopStatusBar({ machine, progressPercent, canStop, onStop, curren
   return (
     <header className="top-status-bar">
       <div className="title-block">
-        <div className="title-kicker">Golf Ball Plotter</div>
         <h1>Golf Ball Plotter</h1>
-        <p>Preview, generate, calibrate and monitor golf ball prints</p>
+        <p>{machine?.status ?? 'Idle'}</p>
       </div>
 
       <div className="top-progress">
@@ -37,8 +36,8 @@ export function TopStatusBar({ machine, progressPercent, canStop, onStop, curren
         </div>
         <div className="progress-meta">
           <strong>{progressPercent}%</strong>
-          <span>{elapsedLabel}</span>
-          <span>{remainingLabel}</span>
+          <span>{elapsedLabel} elapsed</span>
+          <span>{remainingLabel} left</span>
         </div>
       </div>
 

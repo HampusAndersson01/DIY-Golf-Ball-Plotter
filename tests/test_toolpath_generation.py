@@ -2,16 +2,16 @@ import pytest
 from shapely.geometry import LineString, MultiPolygon, Polygon
 
 from app.models.geometry import Point, Segment
-from app.services.pipeline_core import GeometryBundle, generate_toolpaths, mm_to_ball_degrees
+from app.services.pipeline_core import GeometryBundle, generate_toolpaths
 from app.services.toolpath_service import ToolpathService
 
 
-def _rect(width_deg: float, height_deg: float) -> Polygon:
+def _rect(width_mm: float, height_mm: float) -> Polygon:
     return Polygon([
         (0.0, 0.0),
-        (width_deg, 0.0),
-        (width_deg, height_deg),
-        (0.0, height_deg),
+        (width_mm, 0.0),
+        (width_mm, height_mm),
+        (0.0, height_mm),
     ])
 
 
@@ -38,8 +38,7 @@ def _generate_fill_toolpaths(printable_geometry, **overrides):
 
 
 def _infill_region(printable_geometry, line_width_mm=1.0, wall_count=1):
-    line_width_deg = mm_to_ball_degrees(line_width_mm)
-    return printable_geometry.buffer(-(line_width_deg * max(1, wall_count)), join_style=1)
+    return printable_geometry.buffer(-(line_width_mm * max(1, wall_count)), join_style=1)
 
 
 def _assert_infill_segments_stay_inside_region(toolpaths, region, epsilon=1e-6):
@@ -53,8 +52,7 @@ def _assert_infill_segments_stay_inside_region(toolpaths, region, epsilon=1e-6):
 
 def test_fill_wall_is_inset_by_half_pen_width():
     line_width_mm = 1.0
-    line_width_deg = mm_to_ball_degrees(line_width_mm)
-    printable = _rect(width_deg=line_width_deg * 10.0, height_deg=line_width_deg * 6.0)
+    printable = _rect(width_mm=10.0, height_mm=6.0)
 
     toolpaths = generate_toolpaths(
         GeometryBundle(printable_geometry=printable),
@@ -79,14 +77,13 @@ def test_fill_wall_is_inset_by_half_pen_width():
 
     min_x = min(point.x for point in wall_paths[0].points)
     max_x = max(point.x for point in wall_paths[0].points)
-    assert min_x == pytest.approx(line_width_deg * 0.5, abs=1e-6)
-    assert max_x == pytest.approx((line_width_deg * 10.0) - (line_width_deg * 0.5), abs=1e-6)
+    assert min_x == pytest.approx(line_width_mm * 0.5, abs=1e-6)
+    assert max_x == pytest.approx(10.0 - (line_width_mm * 0.5), abs=1e-6)
 
 
 def test_single_pass_regions_use_detail_fill_by_default():
     line_width_mm = 1.0
-    line_width_deg = mm_to_ball_degrees(line_width_mm)
-    printable = _rect(width_deg=line_width_deg * 6.0, height_deg=line_width_deg * 2.8)
+    printable = _rect(width_mm=6.0, height_mm=2.8)
     bundle = GeometryBundle(printable_geometry=printable)
 
     single_wall_paths = generate_toolpaths(
@@ -131,8 +128,7 @@ def test_single_pass_regions_use_detail_fill_by_default():
 
 def test_regions_without_outline_clearance_fall_back_to_detail_fill():
     line_width_mm = 1.0
-    line_width_deg = mm_to_ball_degrees(line_width_mm)
-    printable = _rect(width_deg=line_width_deg * 0.8, height_deg=line_width_deg * 4.0)
+    printable = _rect(width_mm=0.8, height_mm=4.0)
 
     toolpaths = generate_toolpaths(
         GeometryBundle(printable_geometry=printable),
@@ -158,8 +154,7 @@ def test_regions_without_outline_clearance_fall_back_to_detail_fill():
 
 def test_simple_rectangle_infill_becomes_single_zigzag_path():
     line_width_mm = 1.0
-    line_width_deg = mm_to_ball_degrees(line_width_mm)
-    printable = _rect(width_deg=line_width_deg * 10.0, height_deg=line_width_deg * 10.0)
+    printable = _rect(width_mm=10.0, height_mm=10.0)
 
     toolpaths = generate_toolpaths(
         GeometryBundle(printable_geometry=printable),
@@ -189,12 +184,11 @@ def test_simple_rectangle_infill_becomes_single_zigzag_path():
 
 def test_trapezoid_infill_follows_angled_walls_without_fragmenting():
     line_width_mm = 1.0
-    line_width_deg = mm_to_ball_degrees(line_width_mm)
     printable = Polygon([
         (0.0, 0.0),
-        (line_width_deg * 16.0, 0.0),
-        (line_width_deg * 12.0, line_width_deg * 18.0),
-        (line_width_deg * 4.0, line_width_deg * 18.0),
+        (16.0, 0.0),
+        (12.0, 18.0),
+        (4.0, 18.0),
     ])
     toolpaths = generate_toolpaths(
         GeometryBundle(printable_geometry=printable),
@@ -220,10 +214,9 @@ def test_trapezoid_infill_follows_angled_walls_without_fragmenting():
 
 
 def test_concave_c_shape_does_not_connect_across_open_gap():
-    line_width_deg = mm_to_ball_degrees(1.0)
-    outer = _rect(line_width_deg * 24.0, line_width_deg * 24.0)
-    gap = _rect(line_width_deg * 16.0, line_width_deg * 8.0)
-    gap = Polygon([(point[0] + line_width_deg * 8.0, point[1] + line_width_deg * 8.0) for point in gap.exterior.coords[:-1]])
+    outer = _rect(24.0, 24.0)
+    gap = _rect(16.0, 8.0)
+    gap = Polygon([(point[0] + 8.0, point[1] + 8.0) for point in gap.exterior.coords[:-1]])
     printable = outer.difference(gap)
 
     toolpaths = _generate_fill_toolpaths(printable)
@@ -233,10 +226,9 @@ def test_concave_c_shape_does_not_connect_across_open_gap():
 
 
 def test_rectangle_with_hole_does_not_connect_across_hole():
-    line_width_deg = mm_to_ball_degrees(1.0)
-    outer = _rect(line_width_deg * 24.0, line_width_deg * 24.0)
-    hole = _rect(line_width_deg * 8.0, line_width_deg * 8.0)
-    hole = Polygon([(point[0] + line_width_deg * 8.0, point[1] + line_width_deg * 8.0) for point in hole.exterior.coords[:-1]])
+    outer = _rect(24.0, 24.0)
+    hole = _rect(8.0, 8.0)
+    hole = Polygon([(point[0] + 8.0, point[1] + 8.0) for point in hole.exterior.coords[:-1]])
     printable = Polygon(outer.exterior.coords, [hole.exterior.coords])
 
     toolpaths = _generate_fill_toolpaths(printable)
@@ -246,9 +238,8 @@ def test_rectangle_with_hole_does_not_connect_across_hole():
 
 
 def test_multi_island_shape_does_not_connect_between_islands():
-    line_width_deg = mm_to_ball_degrees(1.0)
-    left = _rect(line_width_deg * 10.0, line_width_deg * 16.0)
-    right = Polygon([(x + line_width_deg * 14.0, y) for x, y in _rect(line_width_deg * 10.0, line_width_deg * 16.0).exterior.coords[:-1]])
+    left = _rect(10.0, 16.0)
+    right = Polygon([(x + 14.0, y) for x, y in _rect(10.0, 16.0).exterior.coords[:-1]])
     printable = MultiPolygon([left, right])
 
     toolpaths = _generate_fill_toolpaths(printable)
@@ -258,12 +249,11 @@ def test_multi_island_shape_does_not_connect_between_islands():
 
 
 def test_disabling_pen_down_infill_connectors_outputs_separate_spans():
-    line_width_deg = mm_to_ball_degrees(1.0)
     printable = Polygon([
         (0.0, 0.0),
-        (line_width_deg * 16.0, 0.0),
-        (line_width_deg * 12.0, line_width_deg * 18.0),
-        (line_width_deg * 4.0, line_width_deg * 18.0),
+        (16.0, 0.0),
+        (12.0, 18.0),
+        (4.0, 18.0),
     ])
 
     toolpaths = _generate_fill_toolpaths(printable, allow_pen_down_infill_connectors=False)
@@ -273,15 +263,14 @@ def test_disabling_pen_down_infill_connectors_outputs_separate_spans():
 
 
 def test_raster_area_fill_suppresses_injected_detail_segments():
-    line_width_deg = mm_to_ball_degrees(1.0)
-    printable = _rect(line_width_deg * 20.0, line_width_deg * 20.0)
+    printable = _rect(20.0, 20.0)
     bundle = GeometryBundle(
         printable_geometry=printable,
         detail_segments=[
             Segment(
                 points=[
-                    Point(line_width_deg * 10.0, 0.0),
-                    Point(line_width_deg * 10.0, line_width_deg * 20.0),
+                    Point(10.0, 0.0),
+                    Point(10.0, 20.0),
                 ],
                 closed=False,
             )
@@ -310,3 +299,15 @@ def test_raster_area_fill_suppresses_injected_detail_segments():
     )
 
     assert not any(path.kind == "detail-trace" for path in toolpaths)
+
+
+def test_smaller_mm_infill_spacing_generates_many_more_rows():
+    printable = _rect(30.0, 30.0)
+
+    sparse = _generate_fill_toolpaths(printable, line_width_mm=0.75, infill_spacing_mm=0.75)
+    dense = _generate_fill_toolpaths(printable, line_width_mm=0.15, infill_spacing_mm=0.15)
+
+    sparse_segments = sum(max(0, len(path.points) - 1) for path in sparse if path.kind == "fill-infill")
+    dense_segments = sum(max(0, len(path.points) - 1) for path in dense if path.kind == "fill-infill")
+
+    assert dense_segments > sparse_segments * 4.5

@@ -21,11 +21,11 @@ export function ImageImportCard({ imagePreviewUrl, hasAnalysis, onFileChange, on
 
       <label className="upload-zone">
         <input accept=".png,.jpg,.jpeg,image/png,image/jpeg" onChange={onFileChange} type="file" />
-        <span>{imagePreviewUrl ? 'Replace PNG/JPG' : 'Drag and drop or select PNG/JPG'}</span>
+        <span>{imagePreviewUrl ? 'Replace image' : 'Select PNG/JPG'}</span>
       </label>
 
       <div className="thumb-frame">
-        {imagePreviewUrl ? <img alt="Original upload" src={imagePreviewUrl} /> : <span>Original preview appears here.</span>}
+        {imagePreviewUrl ? <img alt="Original upload" src={imagePreviewUrl} /> : <span>Image preview</span>}
       </div>
 
       <button className="button primary" disabled={disabled} onClick={onAnalyze} type="button">

@@ -12,6 +12,7 @@ from app.extensions import (
     get_toolpath_service,
     get_validation_service,
 )
+from app.services import pipeline_core
 from app.utils.response_utils import json_error, json_ok
 
 raster_bp = Blueprint("raster", __name__)
@@ -23,6 +24,20 @@ def build_generate_debug_payload(*, selected_colors=None, mask_pixel_count=0):
         "received_form_keys": sorted(list(request.form.keys())),
         "selected_colors": list(selected_colors or []),
         "mask_pixel_count": int(mask_pixel_count or 0),
+    }
+
+
+def build_fill_header_settings(options: dict, design_bounds) -> dict:
+    resolved_spacing = options["infill_spacing_mm"] if options["infill_spacing_mm"] > 0 else options["line_thickness_mm"]
+    return {
+        "lineWidthMm": f'{options["line_thickness_mm"]:.4f}',
+        "infillSpacingMm": f"{resolved_spacing:.4f}",
+        "wallCount": options["wall_count"],
+        "infillAngle": f'{options["infill_angle_deg"]:.4f}',
+        "rotationDeg": f'{options["rotation_deg"]:.4f}',
+        "designWidthMm": f"{design_bounds.width:.4f}",
+        "designHeightMm": f"{design_bounds.height:.4f}",
+        "coordinateSpaceUsedForFill": "surface-mm-on-ball",
     }
 
 
@@ -110,6 +125,30 @@ def generate_image_gcode_route():
             options["rotation_deg"],
         )
         geometry.debug_append_bundle(debug_data, "placed_paths", placed)
+        resolved_spacing = options["infill_spacing_mm"] if options["infill_spacing_mm"] > 0 else options["line_thickness_mm"]
+        design_bounds = geometry.bounds_from_bundle(placed)
+        final_polygon_count = len(pipeline_core.normalize_geometry(placed.printable_geometry)) if placed.printable_geometry is not None and not placed.printable_geometry.is_empty else 0
+        current_app.logger.debug(
+            "Received fill settings: line_width_mm=%.4f infill_spacing_mm=%.4f min_fill_width_mm=%.4f min_fill_area_mm2=%.4f min_segment_length_mm=%.4f wall_count=%d infill_angle_deg=%.4f rotation_deg=%.4f",
+            options["line_thickness_mm"],
+            resolved_spacing,
+            options["min_fill_width_mm"],
+            options["min_fill_area_mm2"],
+            options["min_segment_length_mm"],
+            options["wall_count"],
+            options["infill_angle_deg"],
+            options["rotation_deg"],
+        )
+        current_app.logger.debug(
+            "Final design bounds in mm: min_x=%.4f min_y=%.4f max_x=%.4f max_y=%.4f width=%.4f height=%.4f filled_polygons=%d",
+            design_bounds.min_x,
+            design_bounds.min_y,
+            design_bounds.max_x,
+            design_bounds.max_y,
+            design_bounds.width,
+            design_bounds.height,
+            final_polygon_count,
+        )
 
         toolpaths = get_toolpath_service().generate_from_regions(
             placed,
@@ -138,7 +177,17 @@ def generate_image_gcode_route():
             raise ValueError("No toolpaths were generated from the selected image regions")
 
         toolpath_diagnostics = get_toolpath_service().summarize_toolpaths(toolpaths)
-        gcode, preview = get_gcode_service().generate_from_toolpaths(toolpaths=toolpaths, **options)
+        current_app.logger.debug(
+            "Generated toolpath counts: wall_paths=%d infill_paths=%d infill_segments=%d",
+            sum(1 for path in toolpaths if path.kind == "fill-wall"),
+            sum(1 for path in toolpaths if path.kind == "fill-infill"),
+            sum(max(0, len(path.points) - 1) for path in toolpaths if path.kind == "fill-infill"),
+        )
+        gcode, preview = get_gcode_service().generate_from_toolpaths(
+            toolpaths=toolpaths,
+            header_comment_settings=build_fill_header_settings(options, design_bounds),
+            **options,
+        )
         if debug_data is not None:
             debug_data["gcode_preview"] = preview
 

@@ -16,7 +16,6 @@ export function CalibrationCard({ machine, onCalibrate, onClear }: Props) {
         </div>
         <span className={`badge ${machine?.calibrated ? 'good' : 'warn'}`}>{machine?.calibrated ? 'Locked' : 'Pending'}</span>
       </div>
-      <p className="panel-copy">Jog to the ball center, then lock the current position as the printable origin in one safe action.</p>
       <div className="stack-col">
         <button className="button primary" disabled={!machine?.connected || machine?.running} onClick={onCalibrate} type="button">
           Set Origin &amp; Calibrate

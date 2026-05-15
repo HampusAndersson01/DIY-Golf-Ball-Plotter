@@ -1,3 +1,5 @@
+import { useMemo, useState } from 'react'
+
 import type { ImageAnalysis } from '../../api/types'
 
 type Props = {
@@ -7,6 +9,13 @@ type Props = {
 }
 
 export function ColorPickerPanel({ analysis, selectedColors, onToggle }: Props) {
+  const [expanded, setExpanded] = useState(false)
+  const colors = analysis?.colors ?? []
+  const selectedSet = useMemo(() => new Set(selectedColors), [selectedColors])
+  const selected = colors.filter((color) => selectedSet.has(color.hex))
+  const remaining = colors.filter((color) => !selectedSet.has(color.hex))
+  const compactRemaining = expanded ? remaining : remaining.slice(0, 12)
+
   return (
     <section className="panel">
       <div className="panel-heading">
@@ -17,27 +26,52 @@ export function ColorPickerPanel({ analysis, selectedColors, onToggle }: Props) 
         <span className="badge muted">{selectedColors.length} selected</span>
       </div>
 
-      <div className="swatch-grid">
-        {analysis?.colors?.length ? (
-          analysis.colors.map((color) => {
-            const active = selectedColors.includes(color.hex)
-            return (
+      {!colors.length ? <div className="panel-copy muted">Analyze the image to populate selectable color swatches.</div> : null}
+
+      {selected.length ? (
+        <div className="compact-color-section">
+          <div className="section-label">Selected</div>
+          <div className="selected-swatch-list">
+            {selected.map((color) => (
               <button
                 key={color.hex}
-                className={`swatch-card ${active ? 'is-active' : ''}`}
+                className="selected-swatch"
                 onClick={() => onToggle(color.hex)}
                 type="button"
               >
-                <span className="swatch-chip" style={{ background: color.hex }} />
+                <i style={{ background: color.hex }} />
                 <strong>{color.hex}</strong>
-                <small>{(color.coverage * 100).toFixed(1)}% coverage</small>
+                <small>{(color.coverage * 100).toFixed(1)}%</small>
               </button>
-            )
-          })
-        ) : (
-          <div className="panel-copy muted">Analyze the image to populate selectable color swatches.</div>
-        )}
-      </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {remaining.length ? (
+        <div className="compact-color-section">
+          <div className="stack-row">
+            <div className="section-label">Available</div>
+            {remaining.length > 12 ? (
+              <button className="text-button" onClick={() => setExpanded((value) => !value)} type="button">
+                {expanded ? 'Show fewer' : `Show all (${remaining.length})`}
+              </button>
+            ) : null}
+          </div>
+          <div className="swatch-dot-grid">
+            {compactRemaining.map((color) => (
+              <button
+                key={color.hex}
+                className="swatch-dot"
+                onClick={() => onToggle(color.hex)}
+                style={{ background: color.hex }}
+                title={`${color.hex} ${(color.coverage * 100).toFixed(1)}%`}
+                type="button"
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
     </section>
   )
 }

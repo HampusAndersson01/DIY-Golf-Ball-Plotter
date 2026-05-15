@@ -27,35 +27,40 @@ export function MachineCard({ onConnect, onApplyConfig }: Props) {
         <button className="button primary" disabled={busy} onClick={onConnect} type="button">
           {busy ? 'Connecting...' : 'Connect'}
         </button>
-        <button className="button" disabled={!machine?.connected} onClick={onApplyConfig} type="button">
-          Apply Settings
-        </button>
       </div>
 
-      <div className="field-grid compact two">
-        <label>
-          <span>Max feed X</span>
-          <input onChange={(event) => updateSetting('xMaxFeed', Number(event.target.value))} type="number" value={settings.xMaxFeed} />
-        </label>
-        <label>
-          <span>Max feed Y</span>
-          <input onChange={(event) => updateSetting('yMaxFeed', Number(event.target.value))} type="number" value={settings.yMaxFeed} />
-        </label>
-        <label>
-          <span>Accel X</span>
-          <input onChange={(event) => updateSetting('xAcceleration', Number(event.target.value))} type="number" value={settings.xAcceleration} />
-        </label>
-        <label>
-          <span>Accel Y</span>
-          <input onChange={(event) => updateSetting('yAcceleration', Number(event.target.value))} type="number" value={settings.yAcceleration} />
-        </label>
-      </div>
+      <details className="details-panel">
+        <summary>Machine settings</summary>
+        <div className="stack-col">
+          <div className="field-grid compact two">
+            <label>
+              <span>Max feed X</span>
+              <input onChange={(event) => updateSetting('xMaxFeed', Number(event.target.value))} type="number" value={settings.xMaxFeed} />
+            </label>
+            <label>
+              <span>Max feed Y</span>
+              <input onChange={(event) => updateSetting('yMaxFeed', Number(event.target.value))} type="number" value={settings.yMaxFeed} />
+            </label>
+            <label>
+              <span>Accel X</span>
+              <input onChange={(event) => updateSetting('xAcceleration', Number(event.target.value))} type="number" value={settings.xAcceleration} />
+            </label>
+            <label>
+              <span>Accel Y</span>
+              <input onChange={(event) => updateSetting('yAcceleration', Number(event.target.value))} type="number" value={settings.yAcceleration} />
+            </label>
+          </div>
 
-      <div className="micro-actions">
-        <button className="text-button" onClick={() => appendLog(`Endpoint map loaded from ${apiConfig.endpoints.connect}`)} type="button">
-          API map
-        </button>
-      </div>
+          <div className="stack-row">
+            <button className="button" disabled={!machine?.connected} onClick={onApplyConfig} type="button">
+              Apply Settings
+            </button>
+            <button className="text-button" onClick={() => appendLog(`Endpoint map loaded from ${apiConfig.endpoints.connect}`)} type="button">
+              API map
+            </button>
+          </div>
+        </div>
+      </details>
     </section>
   )
 }

@@ -2,7 +2,7 @@ import { create } from 'zustand'
 
 import type { AppConfig, AppDefaults, ImageAnalysis, JobSummary, MachineState, PreviewPath } from '../api/types'
 
-export type DrawerTab = 'summary' | 'settings' | 'gcode' | 'logs' | 'advanced'
+export type DrawerTab = 'advanced' | 'gcode' | 'logs'
 export type PreviewMode = '2d' | '3d'
 export type ProgressFilter = 'all' | 'progress'
 export type ViewPreset = 'printer' | 'front'
@@ -187,7 +187,7 @@ export const useAppStore = create<AppStore>((set) => ({
   progressFilter: 'all',
   showTravel: true,
   showCompare: false,
-  drawerTab: 'summary',
+  drawerTab: 'advanced',
   advancedOpen: false,
   viewPreset: 'printer',
   busy: {
@@ -233,7 +233,7 @@ export const useAppStore = create<AppStore>((set) => ({
     maskPreviewUrl,
     gcode,
     summary,
-    drawerTab: 'summary',
+    drawerTab: 'advanced',
   }),
   setPreviewMode: (previewMode) => set({ previewMode }),
   setProgressFilter: (progressFilter) => set({ progressFilter }),

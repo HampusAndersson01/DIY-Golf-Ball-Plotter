@@ -19,11 +19,9 @@ export function RunControls({ machine, runReady, onRun, onPause, onResume, onSto
         </div>
         <span className={`badge ${runReady ? 'good' : 'muted'}`}>{runReady ? 'Ready' : 'Locked'}</span>
       </div>
-
-      <p className="panel-copy">Run unlocks only when the machine is connected, origin is calibrated, and generated G-code exists.</p>
       <div className="stack-col">
         <button className="button primary" disabled={!runReady || machine?.running} onClick={onRun} type="button">
-          Run Generated G-code
+          Run G-code
         </button>
         <div className="stack-row three-up">
           <button className="button" disabled={!machine?.running || machine?.paused} onClick={onPause} type="button">

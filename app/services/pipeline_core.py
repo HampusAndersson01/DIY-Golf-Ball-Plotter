@@ -81,6 +81,7 @@ def configure_runtime(config, state_dict, serial_lock_obj):
 
 
 from collections import deque
+import logging
 from flask import Flask, request, jsonify, render_template_string
 import serial
 import time
@@ -116,7 +117,9 @@ except Exception:
     polygonize = None
     substring = None
     unary_union = None
-    make_valid = None
+make_valid = None
+
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # Machine / serial setup
@@ -2488,10 +2491,10 @@ def merge_connected_toolpaths(
 
 
 class SlicerService:
-    def _scanline_spacing_deg(self, settings: SlicerSettings) -> float:
+    def _scanline_spacing_mm(self, settings: SlicerSettings) -> float:
         base_spacing_mm = settings.infill_spacing_mm if settings.infill_spacing_mm > 0 else settings.line_width_mm
         density_scale = max(0.01, settings.infill_density / 100.0)
-        return max(mm_to_ball_degrees(settings.line_width_mm) * 0.25, mm_to_ball_degrees(base_spacing_mm) / density_scale)
+        return base_spacing_mm / density_scale
 
     def _emit_debug_connector(
         self,
@@ -2516,15 +2519,15 @@ class SlicerService:
         self,
         region: Any,
         *,
-        spacing_deg: float,
+        spacing_mm: float,
         angle_deg: float,
-        min_segment_length_deg: float,
-        tolerance_deg: float,
+        min_segment_length_mm: float,
+        tolerance_mm: float,
         kind: str = "fill-infill",
         allow_pen_down_infill_connectors: bool = DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS,
         debug: Optional[dict[str, Any]] = None,
     ) -> list[Toolpath]:
-        if region is None or region.is_empty or spacing_deg <= 0:
+        if region is None or region.is_empty or spacing_mm <= 0:
             return []
 
         origin = region.centroid.coords[0]
@@ -2534,7 +2537,7 @@ class SlicerService:
             return []
 
         toolpaths: list[Toolpath] = []
-        epsilon = max(tolerance_deg, 1e-6)
+        epsilon = max(tolerance_mm, 1e-6)
         for polygon in normalize_geometry(rotated):
             cover_region = polygon.buffer(epsilon, join_style=1)
             poly_min_x, poly_min_y, poly_max_x, poly_max_y = polygon.bounds
@@ -2542,7 +2545,7 @@ class SlicerService:
             row = 0
             y = poly_min_y
             while y <= poly_max_y + 1e-6:
-                raw_scan = LineString([(poly_min_x - spacing_deg, y), (poly_max_x + spacing_deg, y)])
+                raw_scan = LineString([(poly_min_x - spacing_mm, y), (poly_max_x + spacing_mm, y)])
                 if debug is not None:
                     raw_scan_world = affinity.rotate(raw_scan, angle_deg, origin=origin)
                     debug_append_toolpaths(debug, "raw_scanlines", [
@@ -2552,7 +2555,7 @@ class SlicerService:
                 clipped = polygon.intersection(raw_scan)
                 clipped_segments: list[list[tuple[float, float]]] = []
                 for line in extract_lines(clipped):
-                    if line.length < min_segment_length_deg:
+                    if line.length < min_segment_length_mm:
                         continue
                     coords = list(line.coords)
                     clipped_segments.append(coords)
@@ -2567,18 +2570,18 @@ class SlicerService:
                 row_paths: list[Toolpath] = []
                 for coords in clipped_segments:
                     world_line = affinity.rotate(LineString(coords), angle_deg, origin=origin)
-                    points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
+                    points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_mm, False)
                     if len(points) >= 2:
                         row_paths.append(Toolpath(points=points, kind=kind, closed=False))
                 debug_append_toolpaths(debug, "clipped_infill_lines", row_paths)
-                y += spacing_deg
+                y += spacing_mm
                 row += 1
 
             if not allow_pen_down_infill_connectors:
                 for row_segments in rows:
                     for coords in row_segments:
                         world_line = affinity.rotate(LineString(coords), angle_deg, origin=origin)
-                        points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
+                        points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_mm, False)
                         if len(points) >= 2:
                             toolpaths.append(Toolpath(points=points, kind=kind, closed=False))
                 continue
@@ -2635,7 +2638,7 @@ class SlicerService:
                         current_row = next_row
 
                     world_line = affinity.rotate(LineString(current_coords), angle_deg, origin=origin)
-                    points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_deg, False)
+                    points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_mm, False)
                     if len(points) >= 2:
                         toolpaths.append(Toolpath(points=points, kind=kind, closed=False))
 
@@ -2646,8 +2649,8 @@ class SlicerService:
         region: Any,
         *,
         angle_deg: float,
-        min_segment_length_deg: float,
-        tolerance_deg: float,
+        min_segment_length_mm: float,
+        tolerance_mm: float,
         kind: str = "fill-infill",
     ) -> list[Toolpath]:
         if region is None or region.is_empty:
@@ -2685,10 +2688,10 @@ class SlicerService:
                 best_line = affinity.rotate(lines[0], candidate_angle, origin=origin)
                 best_length = lines[0].length
 
-        if best_line is None or best_length < min_segment_length_deg:
+        if best_line is None or best_length < min_segment_length_mm:
             return []
 
-        points = simplify_segment_points([Point(x, y) for x, y in best_line.coords], tolerance_deg, False)
+        points = simplify_segment_points([Point(x, y) for x, y in best_line.coords], tolerance_mm, False)
         if len(points) < 2:
             return []
         return [Toolpath(points=points, kind=kind, closed=False)]
@@ -2697,12 +2700,12 @@ class SlicerService:
         self,
         region: Any,
         *,
-        line_width_deg: float,
-        scanline_spacing_deg: float,
+        line_width_mm: float,
+        scanline_spacing_mm: float,
         angle_deg: float,
-        min_segment_length_deg: float,
-        tolerance_deg: float,
-        detail_tolerance_deg: float,
+        min_segment_length_mm: float,
+        tolerance_mm: float,
+        detail_tolerance_mm: float,
         allow_overlap: bool,
         allow_pen_down_infill_connectors: bool = DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS,
         debug: Optional[dict[str, Any]] = None,
@@ -2710,18 +2713,18 @@ class SlicerService:
         if region is None or region.is_empty:
             return []
 
-        detail_spacing = max(line_width_deg * 0.35, scanline_spacing_deg * (0.5 if allow_overlap else 1.0))
-        inset_amount = min(line_width_deg * 0.15, line_width_deg * 0.5)
+        detail_spacing = max(line_width_mm * 0.35, scanline_spacing_mm * (0.5 if allow_overlap else 1.0))
+        inset_amount = min(line_width_mm * 0.15, line_width_mm * 0.5)
         detail_region = region.buffer(-inset_amount, join_style=1)
         if detail_region.is_empty:
             detail_region = region
 
         detail_paths = self._generate_scanline_infill(
             detail_region,
-            spacing_deg=detail_spacing,
+            spacing_mm=detail_spacing,
             angle_deg=angle_deg,
-            min_segment_length_deg=min_segment_length_deg,
-            tolerance_deg=max(tolerance_deg, detail_tolerance_deg),
+            min_segment_length_mm=min_segment_length_mm,
+            tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
             kind="detail-trace",
             allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
             debug=debug,
@@ -2732,8 +2735,8 @@ class SlicerService:
         return self._generate_centerline_fallback(
             detail_region,
             angle_deg=angle_deg,
-            min_segment_length_deg=min_segment_length_deg,
-            tolerance_deg=max(tolerance_deg, detail_tolerance_deg),
+            min_segment_length_mm=min_segment_length_mm,
+            tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
             kind="detail-trace",
         )
 
@@ -2764,25 +2767,37 @@ class SlicerService:
         if printable_geometry is None or printable_geometry.is_empty or line_width_mm <= 0:
             return []
 
-        line_width_deg = mm_to_ball_degrees(line_width_mm)
-        simplify_tolerance_deg = mm_to_ball_degrees(simplify_tolerance_mm)
-        thin_detail_tolerance_deg = mm_to_ball_degrees(thin_detail_simplify_mm)
-        min_segment_length_deg = mm_to_ball_degrees(min_segment_length_mm)
-        min_fill_area_deg2 = mm_area_to_ball_degree_area(min_fill_area_mm2)
-        thin_detail_min_area_deg2 = mm_area_to_ball_degree_area(thin_detail_min_area_mm2)
-        scanline_spacing_deg = self._scanline_spacing_deg(SlicerSettings(
+        simplify_tolerance_resolved_mm = simplify_tolerance_mm
+        thin_detail_tolerance_mm = thin_detail_simplify_mm
+        min_segment_length_resolved_mm = min_segment_length_mm
+        min_fill_area_resolved_mm2 = min_fill_area_mm2
+        thin_detail_min_area_resolved_mm2 = thin_detail_min_area_mm2
+        scanline_spacing_mm = self._scanline_spacing_mm(SlicerSettings(
             line_width_mm=line_width_mm,
             wall_count=wall_count,
             infill_density=infill_density,
             infill_spacing_mm=infill_spacing_mm,
             allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
         ))
+        logger.debug(
+            "Fill generation resolved settings: line_width_mm=%.4f infill_spacing_mm=%.4f wall_count=%d infill_density=%.2f infill_angle_deg=%.2f min_fill_area_mm2=%.4f min_fill_width_mm=%.4f min_segment_length_mm=%.4f coordinate_space=%s",
+            line_width_mm,
+            scanline_spacing_mm,
+            wall_count,
+            infill_density,
+            infill_angle_deg,
+            min_fill_area_resolved_mm2,
+            min_fill_width_mm,
+            min_segment_length_resolved_mm,
+            "surface-mm-on-ball",
+        )
 
         debug_append_geometry(debug, "final_composed_fill_region", printable_geometry, "final-composed-fill")
         polygons = sorted(
             normalize_geometry(printable_geometry),
             key=lambda poly: (-round(poly.area, 5), -round(poly.centroid.y, 5), round(poly.centroid.x, 5)),
         )
+        logger.debug("Filled polygon count: %d", len(polygons))
 
         ordered: list[Toolpath] = []
         slicer_counts = {
@@ -2794,7 +2809,7 @@ class SlicerService:
             "detail_trace_path_count": 0,
         }
         for polygon in polygons:
-            printable_outline_region = polygon.buffer(-(line_width_deg * 0.5), join_style=1)
+            printable_outline_region = polygon.buffer(-(line_width_mm * 0.5), join_style=1)
             can_fit_outline = not printable_outline_region.is_empty
             if not can_fit_outline:
                 slicer_counts["outline_buffer_empty_region_count"] += 1
@@ -2806,7 +2821,7 @@ class SlicerService:
 
             if can_fit_outline:
                 slicer_counts["normal_slicer_region_count"] += 1
-                outer_walls = geometry_to_closed_toolpaths(printable_outline_region, "fill-wall", simplify_tolerance_deg)
+                outer_walls = geometry_to_closed_toolpaths(printable_outline_region, "fill-wall", simplify_tolerance_resolved_mm)
                 debug_append_toolpaths(debug, "outer_walls", outer_walls)
                 region_paths.extend(optimize_toolpath_order(outer_walls, strategy=travel_optimization))
 
@@ -2814,11 +2829,11 @@ class SlicerService:
             inner_wall_paths: list[Toolpath] = []
             if can_fit_outline:
                 for wall_index in range(1, max(1, wall_count)):
-                    wall_geometry = polygon.buffer(-(line_width_deg * (wall_index + 0.5)), join_style=1)
+                    wall_geometry = polygon.buffer(-(line_width_mm * (wall_index + 0.5)), join_style=1)
                     if wall_geometry.is_empty:
                         continue
                     debug_append_geometry(debug, "inner_wall_regions", wall_geometry, f"inner-wall-region-{wall_index}")
-                    inner_wall_paths.extend(geometry_to_closed_toolpaths(wall_geometry, "fill-wall", simplify_tolerance_deg))
+                    inner_wall_paths.extend(geometry_to_closed_toolpaths(wall_geometry, "fill-wall", simplify_tolerance_resolved_mm))
                 debug_append_toolpaths(debug, "inner_walls", inner_wall_paths)
                 inner_wall_paths = optimize_toolpath_order(inner_wall_paths, strategy=travel_optimization, start_point=anchor)
                 region_paths.extend(inner_wall_paths)
@@ -2827,21 +2842,21 @@ class SlicerService:
             infill_region = None
             fill_threshold_failed = True
             if can_fit_outline:
-                infill_offset = line_width_deg * max(1, wall_count)
+                infill_offset = line_width_mm * max(1, wall_count)
                 infill_region = polygon.buffer(-infill_offset, join_style=1)
                 if not infill_region.is_empty:
                     fill_area = infill_region.area
-                    fill_threshold_failed = fill_area < min_fill_area_deg2
+                    fill_threshold_failed = fill_area < min_fill_area_resolved_mm2
                 else:
                     slicer_counts["normal_infill_empty_region_count"] += 1
             if not fill_threshold_failed and infill_region is not None and not infill_region.is_empty:
                 debug_append_geometry(debug, "infill_regions", infill_region, "infill-region")
                 infill_paths = self._generate_scanline_infill(
                     infill_region,
-                    spacing_deg=scanline_spacing_deg,
+                    spacing_mm=scanline_spacing_mm,
                     angle_deg=infill_angle_deg,
-                    min_segment_length_deg=min_segment_length_deg,
-                    tolerance_deg=simplify_tolerance_deg,
+                    min_segment_length_mm=min_segment_length_resolved_mm,
+                    tolerance_mm=simplify_tolerance_resolved_mm,
                     allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
                     debug=debug,
                 )
@@ -2849,16 +2864,16 @@ class SlicerService:
             single_pass_infill = len(infill_paths) == 1 and not multi_pass_infill
             if not multi_pass_infill:
                 detail_region = printable_outline_region if can_fit_outline else polygon
-                if thin_detail_mode and polygon.area >= thin_detail_min_area_deg2:
+                if thin_detail_mode and polygon.area >= thin_detail_min_area_resolved_mm2:
                     slicer_counts["thin_detail_fallback_region_count"] += 1
                     infill_paths = self._generate_detail_fill(
                         detail_region,
-                        line_width_deg=line_width_deg,
-                        scanline_spacing_deg=scanline_spacing_deg,
+                        line_width_mm=line_width_mm,
+                        scanline_spacing_mm=scanline_spacing_mm,
                         angle_deg=infill_angle_deg,
-                        min_segment_length_deg=min_segment_length_deg,
-                        tolerance_deg=simplify_tolerance_deg,
-                        detail_tolerance_deg=thin_detail_tolerance_deg,
+                        min_segment_length_mm=min_segment_length_resolved_mm,
+                        tolerance_mm=simplify_tolerance_resolved_mm,
+                        detail_tolerance_mm=thin_detail_tolerance_mm,
                         allow_overlap=thin_detail_overlap,
                         allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
                         debug=debug,
@@ -2869,8 +2884,8 @@ class SlicerService:
                     infill_paths = self._generate_centerline_fallback(
                         centerline_region,
                         angle_deg=infill_angle_deg,
-                        min_segment_length_deg=min_segment_length_deg,
-                        tolerance_deg=max(simplify_tolerance_deg, thin_detail_tolerance_deg),
+                        min_segment_length_mm=min_segment_length_resolved_mm,
+                        tolerance_mm=max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
                         kind="detail-trace",
                     )
                 elif small_shape_mode == "skip":
@@ -2888,7 +2903,7 @@ class SlicerService:
             region_paths.extend(infill_paths)
 
             if outline_after_fill and can_fit_outline:
-                cleanup_paths = geometry_to_closed_toolpaths(printable_outline_region, "outline", simplify_tolerance_deg)
+                cleanup_paths = geometry_to_closed_toolpaths(printable_outline_region, "outline", simplify_tolerance_resolved_mm)
                 debug_append_toolpaths(debug, "cleanup_outlines", cleanup_paths)
                 cleanup_paths = optimize_toolpath_order(
                     cleanup_paths,
@@ -2902,11 +2917,18 @@ class SlicerService:
         non_detail_paths = [path for path in ordered if path.kind != "detail-trace"]
         thin_detail_paths = [path for path in ordered if path.kind == "detail-trace"]
         if remove_duplicate_paths:
-            non_detail_paths = dedupe_toolpaths(non_detail_paths, min_segment_length_deg)
+            non_detail_paths = dedupe_toolpaths(non_detail_paths, min_segment_length_resolved_mm)
         else:
-            non_detail_paths = filter_toolpaths_by_length(non_detail_paths, min_segment_length_deg)
-        thin_detail_paths = filter_toolpaths_by_length(thin_detail_paths, min_segment_length_deg)
+            non_detail_paths = filter_toolpaths_by_length(non_detail_paths, min_segment_length_resolved_mm)
+        thin_detail_paths = filter_toolpaths_by_length(thin_detail_paths, min_segment_length_resolved_mm)
         ordered = merge_connected_toolpaths(non_detail_paths + thin_detail_paths)
+        logger.debug(
+            "Generated fill toolpaths: wall_paths=%d infill_paths=%d infill_segments=%d spacing_mm=%.4f",
+            sum(1 for path in ordered if path.kind == "fill-wall"),
+            sum(1 for path in ordered if path.kind == "fill-infill"),
+            sum(max(0, len(path.points) - 1) for path in ordered if path.kind == "fill-infill"),
+            scanline_spacing_mm,
+        )
         debug_set_counts(debug, "slicer_counts", slicer_counts)
         return ordered
 
@@ -2936,15 +2958,15 @@ def generate_toolpaths(
     debug: Optional[dict[str, Any]] = None,
 ) -> list[Toolpath]:
     toolpaths: list[Toolpath] = []
-    simplify_tolerance_deg = mm_to_ball_degrees(simplify_tolerance_mm)
-    detail_tolerance_deg = mm_to_ball_degrees(max(simplify_tolerance_mm, thin_detail_simplify_mm))
+    simplify_tolerance_resolved_mm = simplify_tolerance_mm
+    detail_tolerance_mm = max(simplify_tolerance_mm, thin_detail_simplify_mm)
 
     outline_segments = list(bundle.outline_segments)
     if not enable_fill:
         outline_segments.extend(bundle.fill_boundary_segments)
 
     for segment in outline_segments:
-        simplified = simplify_segment_points(segment.points, simplify_tolerance_deg, segment.closed)
+        simplified = simplify_segment_points(segment.points, simplify_tolerance_resolved_mm, segment.closed)
         toolpaths.append(Toolpath(points=simplified, kind="outline", closed=segment.closed))
 
     if enable_fill and bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
@@ -2974,7 +2996,7 @@ def generate_toolpaths(
 
     detail_paths: list[Toolpath] = []
     for segment in bundle.detail_segments:
-        simplified = simplify_segment_points(segment.points, detail_tolerance_deg, segment.closed)
+        simplified = simplify_segment_points(segment.points, detail_tolerance_mm, segment.closed)
         if len(simplified) < 2:
             continue
         detail_paths.append(Toolpath(points=simplified, kind="detail-trace", closed=segment.closed))
@@ -3016,6 +3038,7 @@ def generate_gcode_from_toolpaths(
     pen_down_dwell_ms: float,
     gcode_mode: str,
     include_comments: bool,
+    header_comment_settings: Optional[dict[str, Any]] = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     if gcode_mode != "simple":
         raise ValueError("Invalid G-code mode")
@@ -3032,6 +3055,9 @@ def generate_gcode_from_toolpaths(
         if include_comments:
             g.append(f"({text})")
 
+    def header_comment(text: str) -> None:
+        g.append(f"({text})")
+
     def append_gcode(line: str) -> int | None:
         nonlocal stream_line_number
         g.append(line)
@@ -3040,8 +3066,21 @@ def generate_gcode_from_toolpaths(
             return stream_line_number
         return None
 
-    comment("Generated for golf ball plotter")
-    comment("Units are angular degrees. X=-180..180 ball rotation, Y=-45..45 arm tilt")
+    header_comment("Generated for golf ball plotter")
+    header_comment("Units are angular degrees. X=-180..180 ball rotation, Y=-45..45 arm tilt")
+    if header_comment_settings:
+        for key in (
+            "lineWidthMm",
+            "infillSpacingMm",
+            "wallCount",
+            "infillAngle",
+            "rotationDeg",
+            "designWidthMm",
+            "designHeightMm",
+            "coordinateSpaceUsedForFill",
+        ):
+            if key in header_comment_settings:
+                header_comment(f"{key}: {header_comment_settings[key]}")
     for command in ["$X", "G21", "G90"]:
         append_gcode(command)
     for command in build_pen_position_commands(

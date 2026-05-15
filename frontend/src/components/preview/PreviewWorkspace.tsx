@@ -58,7 +58,7 @@ export function PreviewWorkspace(props: Props) {
 
   return (
     <section className="panel preview-panel" data-step-anchor="generate">
-      <div className="panel-heading">
+      <div className="panel-heading compact">
         <div>
           <div className="panel-kicker">Workspace</div>
           <h2>Preview &amp; Live Visualization</h2>
@@ -81,33 +81,37 @@ export function PreviewWorkspace(props: Props) {
 
       <ToolpathLegend />
 
-      <div className="preview-surface">
-        <CurrentLineOverlay currentPath={currentPath} machine={props.machine} />
-        {props.previewMode === '2d' ? (
-          <Toolpath2DView ref={twoDRef} filter={props.progressFilter} machine={props.machine} paths={props.paths} showTravel={props.showTravel} />
-        ) : (
-          <Ball3DView
-            ref={threeDRef}
-            filter={props.progressFilter}
-            machine={props.machine}
-            paths={props.paths}
-            preset={props.viewPreset}
-            showTravel={props.showTravel}
-          />
-        )}
+      <div className="preview-workspace">
+        <div className="preview-canvas-shell">
+          <div className="preview-surface">
+            <CurrentLineOverlay currentPath={currentPath} machine={props.machine} />
+            {props.previewMode === '2d' ? (
+              <Toolpath2DView ref={twoDRef} filter={props.progressFilter} machine={props.machine} paths={props.paths} showTravel={props.showTravel} />
+            ) : (
+              <Ball3DView
+                ref={threeDRef}
+                filter={props.progressFilter}
+                machine={props.machine}
+                paths={props.paths}
+                preset={props.viewPreset}
+                showTravel={props.showTravel}
+              />
+            )}
 
-        {props.showCompare ? (
-          <aside className="compare-popover">
-            <div>
-              <span>Original</span>
-              {props.imagePreviewUrl ? <img alt="Original upload" src={props.imagePreviewUrl} /> : <div className="compare-empty">No source image</div>}
-            </div>
-            <div>
-              <span>Mask</span>
-              {props.maskPreviewUrl ? <img alt="Selected mask" src={props.maskPreviewUrl} /> : <div className="compare-empty">No generated mask</div>}
-            </div>
-          </aside>
-        ) : null}
+            {props.showCompare ? (
+              <aside className="compare-popover">
+                <div>
+                  <span>Original</span>
+                  {props.imagePreviewUrl ? <img alt="Original upload" src={props.imagePreviewUrl} /> : <div className="compare-empty">No source image</div>}
+                </div>
+                <div>
+                  <span>Mask</span>
+                  {props.maskPreviewUrl ? <img alt="Selected mask" src={props.maskPreviewUrl} /> : <div className="compare-empty">No generated mask</div>}
+                </div>
+              </aside>
+            ) : null}
+          </div>
+        </div>
       </div>
     </section>
   )
