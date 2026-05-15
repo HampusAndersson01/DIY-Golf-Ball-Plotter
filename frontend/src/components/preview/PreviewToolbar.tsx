@@ -1,0 +1,76 @@
+import type { PreviewMode } from '../../store/appStore'
+
+type Props = {
+  previewMode: PreviewMode
+  progressFilter: 'all' | 'progress'
+  showTravel: boolean
+  showCompare: boolean
+  onModeChange: (mode: PreviewMode) => void
+  onFilterChange: (value: 'all' | 'progress') => void
+  onShowTravel: (value: boolean) => void
+  onShowCompare: (value: boolean) => void
+  onFit: () => void
+  onReset: () => void
+  onViewPreset: (preset: 'printer' | 'front') => void
+}
+
+export function PreviewToolbar({
+  previewMode,
+  progressFilter,
+  showTravel,
+  showCompare,
+  onModeChange,
+  onFilterChange,
+  onShowTravel,
+  onShowCompare,
+  onFit,
+  onReset,
+  onViewPreset,
+}: Props) {
+  return (
+    <div className="preview-toolbar">
+      <div className="segmented">
+        <button className={previewMode === '2d' ? 'active' : ''} onClick={() => onModeChange('2d')} type="button">
+          2D Toolpath
+        </button>
+        <button className={previewMode === '3d' ? 'active' : ''} onClick={() => onModeChange('3d')} type="button">
+          3D Ball
+        </button>
+        <button className={showCompare ? 'active' : ''} onClick={() => onShowCompare(!showCompare)} type="button">
+          Original / Mask
+        </button>
+      </div>
+
+      <div className="toolbar-group">
+        <div className="segmented compact">
+          <button className={progressFilter === 'all' ? 'active' : ''} onClick={() => onFilterChange('all')} type="button">
+            All paths
+          </button>
+          <button className={progressFilter === 'progress' ? 'active' : ''} onClick={() => onFilterChange('progress')} type="button">
+            Progress
+          </button>
+        </div>
+
+        <label className="toggle">
+          <input checked={showTravel} onChange={(event) => onShowTravel(event.target.checked)} type="checkbox" />
+          <span>Travel</span>
+        </label>
+      </div>
+
+      <div className="toolbar-group">
+        <button className="button subtle" onClick={() => onViewPreset('printer')} type="button">
+          Printer view
+        </button>
+        <button className="button subtle" onClick={() => onViewPreset('front')} type="button">
+          Front view
+        </button>
+        <button className="button subtle" onClick={onFit} type="button">
+          Fit
+        </button>
+        <button className="button subtle" onClick={onReset} type="button">
+          Reset
+        </button>
+      </div>
+    </div>
+  )
+}

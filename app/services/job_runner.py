@@ -63,8 +63,24 @@ class JobRunner:
             self._stop_requested = True
             self._pause_requested = False
 
+    @staticmethod
+    def _resolve_preview_progress(preview_paths: list[dict], stream_line: int) -> tuple[str | None, int]:
+        for entry in preview_paths:
+            start_line = entry.get("gcode_start_line")
+            end_line = entry.get("gcode_end_line")
+            if start_line is None or end_line is None:
+                continue
+            if int(start_line) <= stream_line <= int(end_line):
+                points = entry.get("points") or []
+                if len(points) < 2:
+                    return entry.get("id"), 0
+                segment_index = max(0, min(stream_line - int(start_line), len(points) - 2))
+                return entry.get("id"), segment_index + 1
+        return None, 0
+
     def _worker(self, gcode: list[str]) -> None:
         stream_lines = [line for line in gcode if self.gcode_service.is_streamable_line(line)]
+        preview_paths = list(self.state.snapshot().get("last_preview") or [])
         try:
             started_at = time.time()
             self.state.update(
@@ -77,6 +93,9 @@ class JobRunner:
                 run_started_at=started_at,
                 pause_started_at=None,
                 paused_duration_seconds=0.0,
+                current_gcode_line=0,
+                current_path_id=None,
+                current_preview_point_index=0,
             )
             with self.serial_service.lock:
                 ser = self.serial_service.get_serial()
@@ -103,7 +122,14 @@ class JobRunner:
                     self.state.update(paused=False)
 
                 def on_line_sent(line: str, sent_count: int) -> None:
-                    self.state.update(status=f"Running: {line}", progress_done=sent_count)
+                    current_path_id, current_preview_point_index = self._resolve_preview_progress(preview_paths, sent_count)
+                    self.state.update(
+                        status=f"Running: {line}",
+                        progress_done=sent_count,
+                        current_gcode_line=sent_count,
+                        current_path_id=current_path_id,
+                        current_preview_point_index=current_preview_point_index,
+                    )
 
                 self.serial_service.stream_gcode_lines_unlocked(
                     ser,
@@ -129,6 +155,7 @@ class JobRunner:
                 paused=False,
                 pause_started_at=None,
                 paused_duration_seconds=paused_duration_seconds,
+                current_path_id=None,
             )
             with self._lock:
                 self._stop_requested = False

@@ -28,7 +28,11 @@ class MachineState:
             "run_started_at": None,
             "pause_started_at": None,
             "paused_duration_seconds": 0.0,
+            "current_gcode_line": 0,
+            "current_path_id": None,
+            "current_preview_point_index": 0,
             "current_servo_s": self.default_pen_up_s,
+            "last_summary": None,
             "server_pid": os.getpid(),
         }
 

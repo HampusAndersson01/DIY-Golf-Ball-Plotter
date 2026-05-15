@@ -3026,22 +3026,33 @@ def generate_gcode_from_toolpaths(
     current_position = Point(0.0, 0.0)
     current_pen_down = False
     sample_step_mm = ball_radius_mm() * math.radians(max(0.05, sample_step_deg)) * 0.5
+    stream_line_number = 0
 
     def comment(text: str) -> None:
         if include_comments:
             g.append(f"({text})")
 
+    def append_gcode(line: str) -> int | None:
+        nonlocal stream_line_number
+        g.append(line)
+        if is_streamable_gcode_line(line):
+            stream_line_number += 1
+            return stream_line_number
+        return None
+
     comment("Generated for golf ball plotter")
     comment("Units are angular degrees. X=-180..180 ball rotation, Y=-45..45 arm tilt")
-    g.extend(["$X", "G21", "G90"])
-    g.extend(build_pen_position_commands(
+    for command in ["$X", "G21", "G90"]:
+        append_gcode(command)
+    for command in build_pen_position_commands(
         pen_up_s,
         pen_up_s,
         ramp_enabled=False,
         ramp_step=servo_ramp_step,
         ramp_delay_ms=servo_ramp_delay_ms,
         dwell_ms=pen_up_dwell_ms,
-    ))
+    ):
+        append_gcode(command)
 
     for index, toolpath in enumerate(toolpaths, start=1):
         sampled_surface_points = resample_segment(toolpath.points, max_step=sample_step_mm)
@@ -3064,63 +3075,96 @@ def generate_gcode_from_toolpaths(
 
         start = pts[0]
         if not nearly_same_point(current_position, start):
-            preview.append({"kind": "travel", "closed": False, "points": [asdict(current_position), asdict(start)]})
+            travel_id = f"travel-{index:04d}"
             if current_pen_down:
-                g.extend(build_pen_position_commands(
+                for command in build_pen_position_commands(
                     current_servo,
                     pen_up_s,
                     ramp_enabled=servo_ramp_enabled,
                     ramp_step=servo_ramp_step,
                     ramp_delay_ms=servo_ramp_delay_ms,
                     dwell_ms=pen_up_dwell_ms,
-                ))
+                ):
+                    append_gcode(command)
                 current_servo = pen_up_s
                 current_pen_down = False
             comment(f"Travel to {toolpath.kind} path {index}")
-            g.append(f"G1 X{start.x:.4f} Y{start.y:.4f} F{travel_feed:.3f}")
+            travel_line = append_gcode(f"G1 X{start.x:.4f} Y{start.y:.4f} F{travel_feed:.3f}")
+            preview.append({
+                "id": travel_id,
+                "kind": "travel",
+                "closed": False,
+                "points": [asdict(current_position), asdict(start)],
+                "gcode_start_line": travel_line,
+                "gcode_end_line": travel_line,
+            })
             current_position = start
 
         if not current_pen_down:
-            g.extend(build_pen_position_commands(
+            for command in build_pen_position_commands(
                 current_servo,
                 pen_down_s,
                 ramp_enabled=servo_ramp_enabled,
                 ramp_step=servo_ramp_step,
                 ramp_delay_ms=servo_ramp_delay_ms,
                 dwell_ms=pen_down_dwell_ms,
-            ))
+            ):
+                append_gcode(command)
             current_servo = pen_down_s
             current_pen_down = True
 
-        preview.append({"kind": toolpath.kind, "closed": toolpath.closed, "points": [asdict(point) for point in pts]})
+        path_id = f"path-{index:04d}"
+        draw_start_line = None
+        draw_end_line = None
         comment(f"{toolpath.kind} path {index}, {len(pts)} points")
         for point in pts[1:]:
-            g.append(f"G1 X{point.x:.4f} Y{point.y:.4f} F{draw_feed:.3f}")
+            line_number = append_gcode(f"G1 X{point.x:.4f} Y{point.y:.4f} F{draw_feed:.3f}")
+            if line_number is not None:
+                if draw_start_line is None:
+                    draw_start_line = line_number
+                draw_end_line = line_number
             current_position = point
+        preview.append({
+            "id": path_id,
+            "kind": toolpath.kind,
+            "closed": toolpath.closed,
+            "points": [asdict(point) for point in pts],
+            "gcode_start_line": draw_start_line,
+            "gcode_end_line": draw_end_line,
+        })
 
-        g.extend(build_pen_position_commands(
+        for command in build_pen_position_commands(
             current_servo,
             pen_up_s,
             ramp_enabled=servo_ramp_enabled,
             ramp_step=servo_ramp_step,
             ramp_delay_ms=servo_ramp_delay_ms,
             dwell_ms=pen_up_dwell_ms,
-        ))
+        ):
+            append_gcode(command)
         current_servo = pen_up_s
         current_pen_down = False
 
     comment("Return to zero with pen up")
     if not nearly_same_point(current_position, Point(0.0, 0.0)):
-        preview.append({"kind": "travel", "closed": False, "points": [asdict(current_position), asdict(Point(0.0, 0.0))]})
-        g.append(f"G1 X0.0000 Y0.0000 F{travel_feed:.3f}")
-    g.extend(build_pen_position_commands(
+        return_home_line = append_gcode(f"G1 X0.0000 Y0.0000 F{travel_feed:.3f}")
+        preview.append({
+            "id": "travel-home",
+            "kind": "travel",
+            "closed": False,
+            "points": [asdict(current_position), asdict(Point(0.0, 0.0))],
+            "gcode_start_line": return_home_line,
+            "gcode_end_line": return_home_line,
+        })
+    for command in build_pen_position_commands(
         current_servo,
         pen_up_s,
         ramp_enabled=False,
         ramp_step=servo_ramp_step,
         ramp_delay_ms=servo_ramp_delay_ms,
         dwell_ms=pen_up_dwell_ms,
-    ))
+    ):
+        append_gcode(command)
 
     return g, preview
 

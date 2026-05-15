@@ -6,7 +6,36 @@ Refactored Flask application for converting SVG artwork into G-code for a GRBL-d
 
 ```bash
 pip install -e .[dev]
+python dev.py
+```
+
+## React Dashboard
+
+One-command local development:
+
+```bash
+python dev.py
+```
+
+That starts:
+- Flask backend on `http://127.0.0.1:5000`
+- React/Vite dashboard on `http://127.0.0.1:5173`
+
+If you want to run them separately, use:
+
+```bash
 python run.py
+
+cd frontend
+npm install
+npm run dev
+```
+
+Vite proxies API requests to Flask. For a production frontend build:
+
+```bash
+cd frontend
+npm run build
 ```
 
 ## Notes

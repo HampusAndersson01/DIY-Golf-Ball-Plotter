@@ -45,6 +45,7 @@ def estimate_runtime_seconds(preview: list[dict], *, draw_feed: float, travel_fe
 
 
 @raster_bp.post("/analyze-image")
+@raster_bp.post("/analyze-image-colors")
 def analyze_image_route():
     try:
         file = request.files.get("image")
@@ -180,19 +181,26 @@ def generate_image_gcode_route():
             "selected_colors": options["selected_colors"],
             "mask_pixel_count": mask_result.printable_pixel_count,
             "component_count": mask_result.connected_component_count,
+            "toolpath_counts": stage_counts["final_toolpaths_by_kind"],
             "wall_path_count": stage_counts["generated_fill_walls"],
             "infill_path_count": stage_counts["generated_infill_paths"],
             "detail_trace_path_count": stage_counts["generated_detail_trace_paths"],
+            "travel_path_count": stage_counts["final_toolpaths_by_kind"]["travel"],
             "gcode_line_count": len(gcode),
             "point_count": point_count,
             "estimated_runtime_seconds": estimated_runtime_seconds,
+            "pen_lift_count": len(toolpaths),
         }
         state.update(
             last_svg_name=file.filename,
             last_gcode=gcode,
             last_preview=preview,
+            last_summary=summary,
             progress_total=0,
             progress_done=0,
+            current_gcode_line=0,
+            current_path_id=None,
+            current_preview_point_index=0,
             status="Raster G-code generated - calibrate before run",
             last_error=None,
         )
