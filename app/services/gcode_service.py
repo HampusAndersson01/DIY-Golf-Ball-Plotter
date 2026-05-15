@@ -13,6 +13,8 @@ class GcodeService:
             kwargs["draw_feed"],
             kwargs["travel_feed"],
             kwargs["sample_step_deg"],
+            kwargs["placement_offset_x"],
+            kwargs["placement_offset_y"],
             kwargs["pen_up_s"],
             kwargs["pen_down_s"],
             kwargs["servo_ramp_enabled"],

@@ -667,6 +667,10 @@ def mm_to_ball_degrees(mm: float) -> float:
     return (mm / circumference_mm) * 360.0
 
 
+def ball_radius_mm(ball_diameter_mm: float = BALL_DIAMETER_MM) -> float:
+    return ball_diameter_mm / 2.0
+
+
 # ============================================================
 # SVG parsing and flattening
 # ============================================================
@@ -1997,37 +2001,43 @@ def resample_segment(points: list[Point], max_step: float) -> list[Point]:
     return out
 
 
-def map_bundle_to_angles(
+def map_bundle_to_surface_mm(
     bundle: GeometryBundle,
     bounds: SvgBounds,
     fit_mode: str,
     invert_y: bool,
     margin_percent: float,
 ) -> GeometryBundle:
-    margin_x = (X_DRAW_MAX - X_DRAW_MIN) * (margin_percent / 100.0)
-    margin_y = (Y_DRAW_MAX - Y_DRAW_MIN) * (margin_percent / 100.0)
+    radius_mm = ball_radius_mm()
+    full_width_mm = radius_mm * math.radians(X_DRAW_MAX - X_DRAW_MIN)
+    full_height_mm = radius_mm * math.radians(Y_DRAW_MAX - Y_DRAW_MIN)
+    margin_x = full_width_mm * (margin_percent / 100.0)
+    margin_y = full_height_mm * (margin_percent / 100.0)
 
-    target_w = (X_DRAW_MAX - X_DRAW_MIN) - margin_x * 2
-    target_h = (Y_DRAW_MAX - Y_DRAW_MIN) - margin_y * 2
+    target_w = full_width_mm - margin_x * 2
+    target_h = full_height_mm - margin_y * 2
     if target_w <= 0 or target_h <= 0:
         raise ValueError("Margin is too large")
+
+    target_min_x = -(target_w / 2.0)
+    target_min_y = -(target_h / 2.0)
 
     if fit_mode == "stretch":
         scale_x = target_w / bounds.width
         scale_y = target_h / bounds.height
-        base_x = X_DRAW_MIN + margin_x - (bounds.min_x * scale_x)
+        base_x = target_min_x - (bounds.min_x * scale_x)
         if invert_y:
-            base_y = Y_DRAW_MIN + margin_y + (bounds.max_y * scale_y)
+            base_y = target_min_y + (bounds.max_y * scale_y)
             matrix = [scale_x, 0.0, 0.0, -scale_y, base_x, base_y]
         else:
-            base_y = Y_DRAW_MIN + margin_y - (bounds.min_y * scale_y)
+            base_y = target_min_y - (bounds.min_y * scale_y)
             matrix = [scale_x, 0.0, 0.0, scale_y, base_x, base_y]
     else:
         scale = min(target_w / bounds.width, target_h / bounds.height)
         used_w = bounds.width * scale
         used_h = bounds.height * scale
-        offset_x = X_DRAW_MIN + margin_x + (target_w - used_w) / 2.0
-        offset_y = Y_DRAW_MIN + margin_y + (target_h - used_h) / 2.0
+        offset_x = target_min_x + (target_w - used_w) / 2.0
+        offset_y = target_min_y + (target_h - used_h) / 2.0
         base_x = offset_x - (bounds.min_x * scale)
         if invert_y:
             base_y = offset_y + (bounds.max_y * scale)
@@ -2068,12 +2078,10 @@ def map_bundle_to_angles(
     )
 
 
-def apply_placement_transform(
+def apply_surface_placement_transform(
     bundle: GeometryBundle,
     scale_percent: float,
     rotation_deg: float,
-    offset_x: float,
-    offset_y: float,
 ) -> GeometryBundle:
     if scale_percent <= 0:
         raise ValueError("Placement scale must be greater than 0")
@@ -2082,21 +2090,17 @@ def apply_placement_transform(
         return GeometryBundle()
 
     scale = scale_percent / 100.0
-    bounds = bounds_from_bundle(bundle)
-    center_x = (bounds.min_x + bounds.max_x) / 2.0
-    center_y = (bounds.min_y + bounds.max_y) / 2.0
     angle = math.radians(rotation_deg)
     cos_a = math.cos(angle)
     sin_a = math.sin(angle)
 
     def place_point(point: Point) -> Point:
-        scaled_x = center_x + ((point.x - center_x) * scale)
-        scaled_y = center_y + ((point.y - center_y) * scale)
-        rel_x = scaled_x - center_x
-        rel_y = scaled_y - center_y
-        rotated_x = center_x + (rel_x * cos_a) - (rel_y * sin_a)
-        rotated_y = center_y + (rel_x * sin_a) + (rel_y * cos_a)
-        return Point(rotated_x + offset_x, rotated_y + offset_y)
+        scaled_x = point.x * scale
+        scaled_y = point.y * scale
+        return Point(
+            (scaled_x * cos_a) - (scaled_y * sin_a),
+            (scaled_x * sin_a) + (scaled_y * cos_a),
+        )
 
     outline_segments = [
         Segment([place_point(point) for point in seg.points], closed=seg.closed)
@@ -2113,20 +2117,17 @@ def apply_placement_transform(
 
     fill_shapes = []
     for fill_shape in bundle.fill_shapes:
-        geometry = affinity.scale(fill_shape.geometry, xfact=scale, yfact=scale, origin=(center_x, center_y))
-        geometry = affinity.rotate(geometry, rotation_deg, origin=(center_x, center_y))
-        geometry = affinity.translate(geometry, xoff=offset_x, yoff=offset_y)
+        geometry = affinity.scale(fill_shape.geometry, xfact=scale, yfact=scale, origin=(0.0, 0.0))
+        geometry = affinity.rotate(geometry, rotation_deg, origin=(0.0, 0.0))
         fill_shapes.append(SvgFillShape(geometry=geometry, fill_rule=fill_shape.fill_rule, source_tag=fill_shape.source_tag))
     printable_geometry = bundle.printable_geometry
     if printable_geometry is not None and not printable_geometry.is_empty:
-        printable_geometry = affinity.scale(printable_geometry, xfact=scale, yfact=scale, origin=(center_x, center_y))
-        printable_geometry = affinity.rotate(printable_geometry, rotation_deg, origin=(center_x, center_y))
-        printable_geometry = affinity.translate(printable_geometry, xoff=offset_x, yoff=offset_y)
+        printable_geometry = affinity.scale(printable_geometry, xfact=scale, yfact=scale, origin=(0.0, 0.0))
+        printable_geometry = affinity.rotate(printable_geometry, rotation_deg, origin=(0.0, 0.0))
     cutout_geometry = bundle.cutout_geometry
     if cutout_geometry is not None and not cutout_geometry.is_empty:
-        cutout_geometry = affinity.scale(cutout_geometry, xfact=scale, yfact=scale, origin=(center_x, center_y))
-        cutout_geometry = affinity.rotate(cutout_geometry, rotation_deg, origin=(center_x, center_y))
-        cutout_geometry = affinity.translate(cutout_geometry, xoff=offset_x, yoff=offset_y)
+        cutout_geometry = affinity.scale(cutout_geometry, xfact=scale, yfact=scale, origin=(0.0, 0.0))
+        cutout_geometry = affinity.rotate(cutout_geometry, rotation_deg, origin=(0.0, 0.0))
 
     return GeometryBundle(
         outline_segments=outline_segments,
@@ -2145,6 +2146,49 @@ def segment_length(points: list[Point]) -> float:
 def mm_area_to_ball_degree_area(area_mm2: float) -> float:
     scale = 360.0 / (math.pi * BALL_DIAMETER_MM)
     return area_mm2 * scale * scale
+
+
+def surface_mm_to_ball_angles(
+    point: Point,
+    *,
+    center_lon_deg: float,
+    center_lat_deg: float,
+    ball_diameter_mm: float = BALL_DIAMETER_MM,
+    min_cos_lat: float = 0.1,
+) -> Point:
+    radius = ball_radius_mm(ball_diameter_mm)
+    center_lon = math.radians(center_lon_deg)
+    center_lat = math.radians(center_lat_deg)
+    lat = center_lat + (point.y / radius)
+    cos_lat = math.cos(lat)
+    if abs(cos_lat) < min_cos_lat:
+        raise ValueError("Toolpath approaches the ball pole too closely for stable longitude mapping")
+    lon = center_lon + (point.x / (radius * cos_lat))
+    return Point(math.degrees(lon), math.degrees(lat))
+
+
+def project_toolpaths_to_ball_angles(
+    toolpaths: list[Toolpath],
+    *,
+    center_lon_deg: float,
+    center_lat_deg: float,
+    ball_diameter_mm: float = BALL_DIAMETER_MM,
+    min_cos_lat: float = 0.1,
+) -> list[Toolpath]:
+    projected: list[Toolpath] = []
+    for toolpath in toolpaths:
+        points = [
+            surface_mm_to_ball_angles(
+                point,
+                center_lon_deg=center_lon_deg,
+                center_lat_deg=center_lat_deg,
+                ball_diameter_mm=ball_diameter_mm,
+                min_cos_lat=min_cos_lat,
+            )
+            for point in toolpath.points
+        ]
+        projected.append(Toolpath(points=points, kind=toolpath.kind, closed=toolpath.closed))
+    return projected
 
 
 def simplify_segment_points(points: list[Point], tolerance: float, closed: bool) -> list[Point]:
@@ -2961,6 +3005,8 @@ def generate_gcode_from_toolpaths(
     draw_feed: float,
     travel_feed: float,
     sample_step_deg: float,
+    placement_offset_x: float,
+    placement_offset_y: float,
     pen_up_s: int,
     pen_down_s: int,
     servo_ramp_enabled: bool,
@@ -2979,6 +3025,7 @@ def generate_gcode_from_toolpaths(
     current_servo = pen_up_s
     current_position = Point(0.0, 0.0)
     current_pen_down = False
+    sample_step_mm = ball_radius_mm() * math.radians(max(0.05, sample_step_deg)) * 0.5
 
     def comment(text: str) -> None:
         if include_comments:
@@ -2997,9 +3044,23 @@ def generate_gcode_from_toolpaths(
     ))
 
     for index, toolpath in enumerate(toolpaths, start=1):
-        pts = resample_segment(toolpath.points, max_step=max(0.05, sample_step_deg))
+        sampled_surface_points = resample_segment(toolpath.points, max_step=sample_step_mm)
+        pts = [
+            surface_mm_to_ball_angles(
+                point,
+                center_lon_deg=placement_offset_x,
+                center_lat_deg=placement_offset_y,
+            )
+            for point in sampled_surface_points
+        ]
         if len(pts) < 2:
             continue
+
+        for point in pts:
+            if point.y < (Y_DRAW_MIN - 1e-6) or point.y > (Y_DRAW_MAX + 1e-6):
+                raise ValueError(f"Projected toolpath exceeds Y drawing limits at {point.y:.3f} degrees")
+            if point.x < (X_DRAW_MIN - 1e-6) or point.x > (X_DRAW_MAX + 1e-6):
+                raise ValueError(f"Projected toolpath exceeds X drawing limits at {point.x:.3f} degrees")
 
         start = pts[0]
         if not nearly_same_point(current_position, start):
@@ -3112,12 +3173,9 @@ def run_integrated_svg_pipeline_self_test() -> dict[str, Any]:
     hole_box = Polygon([(30, 30), (70, 30), (70, 70), (30, 70)])
     infill_points = [point for path in toolpaths if path.kind == "fill-infill" for point in path.points]
     expect(not any(hole_box.buffer(-0.01).contains(ShapelyPoint(point.x, point.y)) for point in infill_points), "infill lines do not cross cutout holes")
-    infill_rows = [path for path in toolpaths if path.kind == "fill-infill"]
-    if len(infill_rows) >= 2:
-        y_values = sorted({round(path.points[0].y, 4) for path in infill_rows if path.points})
-        if len(y_values) >= 2:
-            measured_spacing_deg = abs(y_values[1] - y_values[0])
-            expect(abs(measured_spacing_deg - mm_to_ball_degrees(0.75)) < 0.05, "100 percent infill spacing defaults to line width")
+    equator = surface_mm_to_ball_angles(Point(10.0, 0.0), center_lon_deg=0.0, center_lat_deg=0.0)
+    at_45 = surface_mm_to_ball_angles(Point(10.0, 0.0), center_lon_deg=0.0, center_lat_deg=45.0)
+    expect(abs(at_45.x) > abs(equator.x) * 1.39, "surface mapping expands longitude away from the equator to preserve physical width")
 
     stroke_only_svg = """
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">

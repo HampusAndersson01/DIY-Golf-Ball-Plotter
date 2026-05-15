@@ -95,7 +95,7 @@ def generate_image_gcode_route():
             raise ValueError("No printable regions were found for the selected colors")
 
         geometry = get_geometry_service()
-        mapped = geometry.map_bundle_to_angles(
+        mapped = geometry.map_bundle_to_surface_mm(
             region_result.bundle,
             region_result.bounds,
             options["fit_mode"],
@@ -103,12 +103,10 @@ def generate_image_gcode_route():
             options["margin_percent"],
         )
         geometry.debug_append_bundle(debug_data, "mapped_paths", mapped)
-        placed = geometry.apply_placement_transform(
+        placed = geometry.apply_surface_placement_transform(
             mapped,
             options["placement_scale"],
             options["rotation_deg"],
-            options["placement_offset_x"],
-            options["placement_offset_y"],
         )
         geometry.debug_append_bundle(debug_data, "placed_paths", placed)
 
