@@ -104,7 +104,7 @@ function DashboardApp() {
   const readySettings = settings
   const deferredPreview = useDeferredValue(preview)
   const progressPercent = getProgressPercent(machine)
-  const runReady = Boolean(machine?.connected && machine?.calibrated && gcode.length)
+  const runReady = Boolean(machine?.connected && machine?.calibrated && gcode.length && !machine?.y_loop_test?.enabled)
   const currentSettings = useMemo(() => readySettings, [readySettings])
   const currentPath = useMemo(
     () => preview.find((path) => path.id === machine?.current_path_id) ?? null,
@@ -314,6 +314,30 @@ function DashboardApp() {
     await callEndpoint(apiConfig.endpoints.clearCalibrated, {}, 'Calibration cleared.')
   }
 
+  async function handleTestStepperHoldPolicy() {
+    if (!machine?.connected) {
+      pushToast('Connect the controller first.', 'error')
+      return
+    }
+    try {
+      if (machine.calibrated) {
+        if (!window.confirm('Calibration is currently locked. Clear calibration first so the release test can actually release the motors?')) return
+        await handleClearCalibrated()
+      }
+      await callEndpoint(apiConfig.endpoints.applyStepperHoldPolicy, {}, 'Release policy applied.')
+      window.alert('Verify X and Y can be moved by hand.')
+      if (!window.confirm('Position the pen at origin and apply calibration now?')) return
+      await handleCalibrate()
+      window.alert('Verify X and Y resist manual movement.')
+      if (!window.confirm('Clear calibration and re-test release?')) return
+      await handleClearCalibrated()
+      window.alert('Verify X and Y can be moved by hand again.')
+    } catch (error) {
+      pushToast(String(error), 'error')
+      appendLog(`Stepper hold policy test failed: ${String(error)}`)
+    }
+  }
+
   async function handleRun() {
     if (!window.confirm('Start the generated job on the connected plotter?')) return
     await callEndpoint(apiConfig.endpoints.runGcode, {}, 'Job started.')
@@ -329,6 +353,30 @@ function DashboardApp() {
 
   async function handleStop() {
     await callEndpoint(apiConfig.endpoints.stop, {}, 'Stop requested.')
+  }
+
+  async function handleToggleYLoop() {
+    try {
+      const enabled = Boolean(machine?.y_loop_test?.enabled)
+      if (enabled) {
+        await callEndpoint(apiConfig.endpoints.yLoopStop, {}, 'Y loop test stopped.')
+        return
+      }
+      await callEndpoint(
+        apiConfig.endpoints.yLoopStart,
+        {
+          distance: settingsState.yLoopDistance,
+          feedrate: settingsState.yLoopFeedrate,
+          dwell_sec: settingsState.yLoopDwellSec,
+          pen_up_s: settingsState.penUpS,
+          pen_up_dwell_ms: settingsState.penUpDwellMs,
+        },
+        'Y loop test started.',
+      )
+    } catch (error) {
+      pushToast(String(error), 'error')
+      appendLog(`Y loop test failed: ${String(error)}`)
+    }
   }
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -353,7 +401,15 @@ function DashboardApp() {
             <div data-step-anchor="calibrate">
               <CalibrationCard machine={machine} onCalibrate={handleCalibrate} onClear={handleClearCalibrated} />
             </div>
-            <ManualControlCard onGoHome={handleGoHome} onJog={handleJog} onPenDown={handlePenDown} onPenUp={handlePenUp} />
+            <ManualControlCard
+              machine={machine}
+              onGoHome={handleGoHome}
+              onJog={handleJog}
+              onPenDown={handlePenDown}
+              onPenUp={handlePenUp}
+              onTestStepperHoldPolicy={handleTestStepperHoldPolicy}
+              onToggleYLoop={handleToggleYLoop}
+            />
             <div data-step-anchor="run">
               <RunControls machine={machine} onPause={() => void handlePause()} onResume={() => void handleResume()} onRun={handleRun} onStop={handleStop} runReady={runReady} />
             </div>

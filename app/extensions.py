@@ -25,7 +25,7 @@ def init_extensions(app: Flask) -> None:
     toolpath_service = ToolpathService()
     gcode_service = GcodeService()
     self_test_service = SelfTestService()
-    job_runner = JobRunner(state=state, serial_service=serial_service)
+    job_runner = JobRunner(state=state, serial_service=serial_service, config=app.config)
     machine_service = MachineService(
         config=app.config,
         state=state,
@@ -33,6 +33,8 @@ def init_extensions(app: Flask) -> None:
         validation_service=validation_service,
         job_runner=job_runner,
     )
+    job_runner.set_before_start(machine_service.prepare_for_job_start)
+    job_runner.set_lifecycle_callback(machine_service.handle_job_lifecycle_event)
 
     app.extensions["machine_state"] = state
     app.extensions["serial_service"] = serial_service

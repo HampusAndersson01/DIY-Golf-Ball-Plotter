@@ -51,6 +51,10 @@ def build_frontend_config(config) -> dict:
             "rasterRegionSimplifyPx": config["DEFAULT_RASTER_REGION_SIMPLIFY_PX"],
             "outlineAfterFill": config["DEFAULT_OUTLINE_AFTER_FILL"],
             "streamingMode": config["DEFAULT_STREAMING_MODE"],
+            "releaseIdleDelayMs": config["STEPPER_RELEASE_IDLE_DELAY_VALUE"],
+            "yLoopDistance": 10.0,
+            "yLoopFeedrate": config["DEFAULT_DRAW_FEED"],
+            "yLoopDwellSec": 0.25,
         },
     }
 

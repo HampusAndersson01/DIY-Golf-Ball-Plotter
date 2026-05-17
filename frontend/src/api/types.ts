@@ -47,6 +47,8 @@ export type JobSummary = {
 export type MachineState = {
   connected: boolean
   calibrated: boolean
+  machine_position_trusted?: boolean
+  emergency_stopped?: boolean
   running: boolean
   paused: boolean
   status: string
@@ -59,8 +61,48 @@ export type MachineState = {
   current_path_id: string | null
   current_path_kind?: string | null
   current_preview_point_index: number
+  current_position_x?: number
+  current_position_y?: number
+  motor_hold_enabled?: boolean
+  motors?: {
+    method: string
+    connected: boolean
+    calibration_locked: boolean
+    policy: string
+    hold_active: boolean
+    desired_dollar_1: number | null
+    applied_dollar_1: number | null
+    last_known_dollar_1: number | null
+    x_expected_holding: boolean
+    y_expected_holding: boolean
+    applying: boolean
+    queued_apply_reason: string | null
+    last_apply_reason: string | null
+    last_apply_ok: boolean | null
+    last_error: string | null
+  }
+  stepper_hold_debug?: Record<string, unknown> | null
   last_summary: JobSummary | null
+  last_job_finalization?: Record<string, unknown> | null
   last_timeout_debug?: Record<string, unknown> | null
+  y_loop_test?: {
+    enabled: boolean
+    center_y: number
+    distance: number
+    feedrate: number
+    dwell_sec: number
+    phase: string
+    cycles_completed: number
+  }
+  movement_test?: {
+    active: boolean
+    axis: string
+    x_motor_holding: boolean
+    y_motor_holding: boolean
+    amplitude_deg: number
+    feedrate: number
+    cycle_count: number
+  }
   streaming?: {
     mode: 'buffered' | 'sync'
     current_line: number
@@ -157,6 +199,9 @@ export type AppDefaults = {
   rasterRegionSimplifyPx: number
   outlineAfterFill: boolean
   streamingMode?: 'buffered' | 'sync'
+  yLoopDistance?: number
+  yLoopFeedrate?: number
+  yLoopDwellSec?: number
 }
 
 export type AppConfig = {

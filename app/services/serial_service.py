@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import threading
 from typing import Any
 
@@ -57,3 +58,14 @@ class SerialService:
 
     def get_serial(self):
         return self.connect()
+
+    def has_live_serial(self) -> bool:
+        ser = getattr(pipeline_core, "grbl", None)
+        return bool(ser and getattr(ser, "is_open", True))
+
+    def soft_reset(self, *, settle_seconds: float = 1.0) -> list[str]:
+        with self.lock:
+            ser = self.get_serial()
+            ser.write(b"\x18")
+            time.sleep(settle_seconds)
+            return self.read_available_lines(ser)

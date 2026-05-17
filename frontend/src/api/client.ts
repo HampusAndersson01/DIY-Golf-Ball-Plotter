@@ -10,7 +10,10 @@ const ENDPOINTS = {
   jog: '/jog',
   zeroAndMarkCalibrated: '/zero-and-mark-calibrated',
   clearCalibrated: '/clear-calibrated',
+  applyStepperHoldPolicy: '/stepper-hold/apply',
   goHome: '/go-home',
+  yLoopStart: '/y-loop/start',
+  yLoopStop: '/y-loop/stop',
   runGcode: '/run-gcode',
   pause: '/pause',
   resume: '/resume',
@@ -21,10 +24,23 @@ const ENDPOINTS = {
 } as const
 
 async function parseJson<T>(response: Response): Promise<T> {
-  const payload = await response.json()
+  const raw = await response.text()
+  let payload: Record<string, unknown> | null = null
+  if (raw.trim()) {
+    try {
+      payload = JSON.parse(raw) as Record<string, unknown>
+    } catch {
+      throw new Error(`Request failed with ${response.status}: ${raw.slice(0, 200)}`)
+    }
+  }
   if (!response.ok || payload?.ok === false) {
-    const message = payload?.error || `Request failed with ${response.status}`
+    const message =
+      (typeof payload?.error === 'string' && payload.error) ||
+      (raw.trim() ? `Request failed with ${response.status}: ${raw.slice(0, 200)}` : `Request failed with ${response.status}`)
     throw new Error(message)
+  }
+  if (!payload) {
+    throw new Error(`Request returned no JSON payload (${response.status})`)
   }
   return payload as T
 }

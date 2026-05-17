@@ -129,3 +129,30 @@ def mark_calibrated():
 def clear_calibrated():
     get_machine_service().clear_calibrated()
     return json_ok(command="CLEAR CALIBRATION", response="Runner locked")
+
+
+@machine_bp.post("/stepper-hold/apply")
+def apply_stepper_hold_policy():
+    try:
+        result = get_machine_service().apply_stepper_hold_policy_for_test()
+        return json_ok(command="APPLY STEPPER HOLD POLICY", response=f"$1={result['applied_dollar_1']}")
+    except Exception as exc:
+        return json_error(str(exc), status=500)
+
+
+@machine_bp.post("/y-loop/start")
+def start_y_loop():
+    try:
+        response = get_machine_service().start_y_loop_test(request.get_json(force=True), current_app.config)
+        return json_ok(command="START Y LOOP TEST", response=response)
+    except Exception as exc:
+        return json_error(str(exc), status=500)
+
+
+@machine_bp.post("/y-loop/stop")
+def stop_y_loop():
+    try:
+        response = get_machine_service().stop_y_loop_test()
+        return json_ok(command="STOP Y LOOP TEST", response=response)
+    except Exception as exc:
+        return json_error(str(exc), status=500)

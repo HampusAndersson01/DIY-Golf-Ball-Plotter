@@ -60,6 +60,9 @@ export type SettingsState = {
   servoRampStep: number
   servoRampDelayMs: number
   streamingMode: 'buffered' | 'sync'
+  yLoopDistance: number
+  yLoopFeedrate: number
+  yLoopDwellSec: number
   rawCommand: string
 }
 
@@ -174,6 +177,9 @@ function buildSettings(defaults: AppDefaults): SettingsState {
     servoRampStep: defaults.servoRampStep,
     servoRampDelayMs: defaults.servoRampDelayMs,
     streamingMode: defaults.streamingMode ?? 'buffered',
+    yLoopDistance: defaults.yLoopDistance ?? 10,
+    yLoopFeedrate: defaults.yLoopFeedrate ?? defaults.drawFeed,
+    yLoopDwellSec: defaults.yLoopDwellSec ?? 0.25,
     rawCommand: `M3 S${defaults.penUpS}`,
   }
 }

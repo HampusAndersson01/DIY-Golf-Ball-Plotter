@@ -1,15 +1,20 @@
 import { useAppStore } from '../../store/appStore'
+import type { MachineState } from '../../api/types'
 
 type Props = {
+  machine: MachineState | null
   onJog: (axis: 'X' | 'Y', degrees: number) => void
   onGoHome: () => void
   onPenUp: () => void
   onPenDown: () => void
+  onTestStepperHoldPolicy: () => void
+  onToggleYLoop: () => void
 }
 
-export function ManualControlCard({ onJog, onGoHome, onPenUp, onPenDown }: Props) {
+export function ManualControlCard({ machine, onJog, onGoHome, onPenUp, onPenDown, onTestStepperHoldPolicy, onToggleYLoop }: Props) {
   const settings = useAppStore((state) => state.settings)!
   const updateSetting = useAppStore((state) => state.updateSetting)
+  const yLoopEnabled = Boolean(machine?.y_loop_test?.enabled)
 
   return (
     <section className="panel inset manual-card">
@@ -71,6 +76,34 @@ export function ManualControlCard({ onJog, onGoHome, onPenUp, onPenDown }: Props
             <span>Servo down</span>
             <input onChange={(event) => updateSetting('penDownS', Number(event.target.value))} type="number" value={settings.penDownS} />
           </label>
+        </div>
+      </details>
+
+      <details className="details-panel">
+        <summary>Advanced motion test</summary>
+        <div className="stack-row">
+          <button className="button" disabled={!machine?.connected || machine?.running} onClick={onTestStepperHoldPolicy} type="button">
+            Test Stepper Hold Policy
+          </button>
+        </div>
+        <div className="field-grid compact three">
+          <label>
+            <span>Y loop distance</span>
+            <input onChange={(event) => updateSetting('yLoopDistance', Number(event.target.value))} step="0.1" type="number" value={settings.yLoopDistance} />
+          </label>
+          <label>
+            <span>Y loop feedrate</span>
+            <input onChange={(event) => updateSetting('yLoopFeedrate', Number(event.target.value))} step="1" type="number" value={settings.yLoopFeedrate} />
+          </label>
+          <label>
+            <span>Y loop dwell</span>
+            <input onChange={(event) => updateSetting('yLoopDwellSec', Number(event.target.value))} step="0.05" type="number" value={settings.yLoopDwellSec} />
+          </label>
+        </div>
+        <div className="stack-row">
+          <button className={`button ${yLoopEnabled ? 'danger ghost' : ''}`} disabled={!machine?.connected || machine?.running} onClick={onToggleYLoop} type="button">
+            {yLoopEnabled ? 'Stop Y Axis Current Test Loop' : 'Y Axis Current Test Loop'}
+          </button>
         </div>
       </details>
     </section>
