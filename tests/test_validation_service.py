@@ -87,3 +87,38 @@ def test_generate_raster_form_derives_fill_defaults_from_pen_thickness():
     assert options["infill_spacing_mm"] == pytest.approx(0.6)
     assert options["min_fill_width_mm"] == pytest.approx(0.6)
     assert options["min_fill_area_mm2"] == pytest.approx(0.36)
+
+
+def test_generate_raster_form_ignores_stale_infill_spacing_when_custom_spacing_is_disabled():
+    service = ValidationService()
+    options = service.parse_generate_raster_form(
+        {
+            "selected_colors": "[\"#000000\"]",
+            "line_thickness_mm": "0.3",
+            "infill_spacing_mm": "0.75",
+            "custom_infill_spacing": "0",
+        },
+        make_config(),
+    )
+
+    assert options["custom_infill_spacing"] is False
+    assert options["infill_spacing_mm"] == pytest.approx(0.3)
+    assert options["effective_infill_spacing_mm"] == pytest.approx(0.3)
+
+
+def test_generate_raster_form_supports_locale_decimals_and_custom_infill_spacing():
+    service = ValidationService()
+    options = service.parse_generate_raster_form(
+        {
+            "selected_colors": "[\"#000000\"]",
+            "line_thickness_mm": "0,5",
+            "infill_spacing_mm": "0,8",
+            "custom_infill_spacing": "1",
+        },
+        make_config(),
+    )
+
+    assert options["custom_infill_spacing"] is True
+    assert options["line_thickness_mm"] == pytest.approx(0.5)
+    assert options["infill_spacing_mm"] == pytest.approx(0.8)
+    assert options["effective_infill_spacing_mm"] == pytest.approx(0.8)

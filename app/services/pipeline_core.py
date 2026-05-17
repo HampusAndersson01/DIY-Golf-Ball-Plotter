@@ -50,6 +50,8 @@ RUNTIME_KEYS = [
     "DEFAULT_INFILL_DENSITY",
     "DEFAULT_INFILL_SPACING_MM",
     "DEFAULT_INFILL_ANGLE_DEG",
+    "DEFAULT_FILL_STRATEGY",
+    "DEFAULT_ALTERNATE_FILL_ANGLE_DEG",
     "DEFAULT_OUTLINE_AFTER_FILL",
     "DEFAULT_MIN_FILL_AREA_MM2",
     "DEFAULT_MIN_FILL_WIDTH_MM",
@@ -63,6 +65,7 @@ RUNTIME_KEYS = [
     "DEFAULT_MIN_SEGMENT_LENGTH_MM",
     "DEFAULT_TRAVEL_OPTIMIZATION",
     "DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS",
+    "DEFAULT_STREAMING_MODE",
     "SVG_DARK_FILL_LUMINANCE_THRESHOLD",
     "SVG_LIGHT_CUTOUT_LUMINANCE_THRESHOLD",
     "SVG_MIN_PRINT_OPACITY",
@@ -77,6 +80,7 @@ def configure_runtime(config, state_dict, serial_lock_obj):
     X_STEPS_PER_DEGREE = (config["MOTOR_FULL_STEPS_PER_REV"] * config["X_MICROSTEPS"]) / 360.0
     Y_STEPS_PER_DEGREE = (config["MOTOR_FULL_STEPS_PER_REV"] * config["Y_MICROSTEPS"]) / 360.0
     state = state_dict
+    state.setdefault("streaming_mode", config.get("DEFAULT_STREAMING_MODE", DEFAULT_STREAMING_MODE))
     serial_lock = serial_lock_obj
 
 
@@ -185,7 +189,9 @@ DEFAULT_WALL_COUNT = 1
 DEFAULT_INFILL_PATTERN = "zigzag"
 DEFAULT_INFILL_DENSITY = 100.0
 DEFAULT_INFILL_SPACING_MM = DEFAULT_LINE_THICKNESS_MM
-DEFAULT_INFILL_ANGLE_DEG = 0.0
+DEFAULT_INFILL_ANGLE_DEG = 45.0
+DEFAULT_FILL_STRATEGY = "adaptive_angle"
+DEFAULT_ALTERNATE_FILL_ANGLE_DEG = -45.0
 DEFAULT_OUTLINE_AFTER_FILL = True
 DEFAULT_MIN_FILL_AREA_MM2 = 1.0
 DEFAULT_MIN_FILL_WIDTH_MM = DEFAULT_LINE_THICKNESS_MM
@@ -199,6 +205,7 @@ DEFAULT_THIN_DETAIL_OVERLAP = True
 DEFAULT_MIN_SEGMENT_LENGTH_MM = 0.5
 DEFAULT_TRAVEL_OPTIMIZATION = "nearest-neighbor"
 DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS = True
+DEFAULT_STREAMING_MODE = "buffered"
 SVG_DARK_FILL_LUMINANCE_THRESHOLD = 0.42
 SVG_LIGHT_CUTOUT_LUMINANCE_THRESHOLD = 0.82
 SVG_MIN_PRINT_OPACITY = 0.99
@@ -224,9 +231,24 @@ state: dict[str, Any] = {
     "last_gcode": [],
     "last_preview": [],
     "last_error": None,
+    "last_timeout_debug": None,
     "progress_total": 0,
     "progress_done": 0,
     "current_servo_s": DEFAULT_PEN_UP_S,
+    "streaming_mode": "buffered",
+    "streaming": {
+        "mode": "buffered",
+        "current_line": 0,
+        "current_path_id": None,
+        "current_path_kind": None,
+        "pending_buffer_chars": 0,
+        "pending_commands": 0,
+        "last_response_age_sec": 0.0,
+        "last_grbl_status": None,
+        "ok_count": 0,
+        "error_count": 0,
+        "sent_count": 0,
+    },
     "server_pid": os.getpid(),
 }
 
@@ -336,6 +358,12 @@ class Toolpath:
     points: list[Point]
     kind: str
     closed: bool = False
+    coordinate_space: str = "surface_mm"
+    path_id: str | None = None
+    source: str = "unknown"
+    region_id: int | None = None
+    warnings: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -345,6 +373,8 @@ class SlicerSettings:
     infill_density: float = 100.0
     infill_spacing_mm: float = DEFAULT_INFILL_SPACING_MM
     infill_angle_deg: float = 0.0
+    fill_strategy: str = "horizontal_scanline"
+    alternate_fill_angle_deg: float = -45.0
     outline_after_fill: bool = False
     min_fill_area_mm2: float = 1.0
     min_fill_width_mm: float = DEFAULT_MIN_FILL_WIDTH_MM
@@ -439,23 +469,135 @@ def read_next_grbl_line(ser: serial.Serial, timeout: float = 15) -> str:
     raise TimeoutError("Timed out waiting for GRBL response")
 
 
+def _update_streaming_state(
+    *,
+    mode: str,
+    current_line: int,
+    current_path_id: str | None,
+    current_path_kind: str | None,
+    pending_buffer_chars: int,
+    pending_commands: int,
+    sent_count: int,
+    ok_count: int,
+    error_count: int,
+    last_response_at: float | None,
+    last_grbl_status: str | None,
+) -> None:
+    age = 0.0 if last_response_at is None else max(0.0, time.time() - last_response_at)
+    state["streaming"] = {
+        "mode": mode,
+        "current_line": current_line,
+        "current_path_id": current_path_id,
+        "current_path_kind": current_path_kind,
+        "pending_buffer_chars": pending_buffer_chars,
+        "pending_commands": pending_commands,
+        "last_response_age_sec": round(age, 3),
+        "last_grbl_status": last_grbl_status,
+        "ok_count": ok_count,
+        "error_count": error_count,
+        "sent_count": sent_count,
+    }
+
+
+def _read_status_response_unlocked(ser: serial.Serial, timeout: float = 0.75) -> str:
+    ser.write(b"?")
+    end_time = time.time() + timeout
+    captured: list[str] = []
+    while time.time() < end_time:
+        line = ser.readline().decode(errors="ignore").strip()
+        if not line:
+            continue
+        captured.append(line)
+        if line.startswith("<") or line.startswith("ok") or line.startswith("error:") or line.startswith("ALARM:"):
+            break
+    return "\n".join(captured)
+
+
 def process_streaming_ack_unlocked(
     ser: serial.Serial,
     pending_lengths: deque[int],
+    pending_commands: deque[str],
+    *,
     timeout: float = 15,
-) -> int:
+    all_lines: list[str],
+    line_index: int,
+    pending_buffer_chars: int,
+    sent_count: int,
+    ok_count: int,
+    recent_grbl_responses: deque[str],
+    last_response_at: float | None,
+    last_grbl_status: str | None,
+    alive_retry_count: int,
+    mode: str,
+) -> tuple[int, int, float | None, str | None, int]:
     while True:
-        line = read_next_grbl_line(ser, timeout=timeout)
+        try:
+            line = read_next_grbl_line(ser, timeout=timeout)
+        except TimeoutError as exc:
+            status_query_response = _read_status_response_unlocked(ser)
+            if status_query_response:
+                for status_line in status_query_response.splitlines():
+                    recent_grbl_responses.append(status_line)
+                    if status_line.startswith("<"):
+                        last_grbl_status = status_line[1:].split("|", 1)[0]
+                last_response_at = time.time()
+                _update_streaming_state(
+                    mode=mode,
+                    current_line=line_index,
+                    current_path_id=state.get("streaming", {}).get("current_path_id"),
+                    current_path_kind=state.get("streaming", {}).get("current_path_kind"),
+                    pending_buffer_chars=pending_buffer_chars,
+                    pending_commands=len(pending_lengths),
+                    sent_count=sent_count,
+                    ok_count=ok_count,
+                    error_count=0,
+                    last_response_at=last_response_at,
+                    last_grbl_status=last_grbl_status,
+                )
+                if alive_retry_count < 1:
+                    return 0, ok_count, last_response_at, last_grbl_status, alive_retry_count + 1
+            timeout_debug = {
+                "line_index": line_index,
+                "current_command": all_lines[line_index - 1] if 0 < line_index <= len(all_lines) else "",
+                "previous_10_commands": all_lines[max(0, line_index - 11):max(0, line_index - 1)],
+                "next_10_commands": all_lines[line_index:min(len(all_lines), line_index + 10)],
+                "streaming_mode": mode,
+                "pending_buffer_chars": pending_buffer_chars,
+                "pending_queue_length": len(pending_lengths),
+                "oldest_pending_command": pending_commands[0] if pending_commands else "",
+                "last_response_age_sec": 0.0 if last_response_at is None else round(max(0.0, time.time() - last_response_at), 3),
+                "recent_grbl_responses": list(recent_grbl_responses),
+                "serial_in_waiting": int(getattr(ser, "in_waiting", 0) or 0),
+                "status_query_sent": True,
+                "status_query_response": status_query_response,
+                "connection_alive": bool(status_query_response),
+                "failure_class": "grbl_busy_but_alive" if status_query_response else "communication_lost",
+            }
+            state["last_timeout_debug"] = timeout_debug
+            raise TimeoutError(f"{exc}. Debug: {timeout_debug}") from exc
         if line == "ok":
             if not pending_lengths:
                 raise RuntimeError("Received unexpected GRBL ok with no pending commands")
-            return pending_lengths.popleft()
+            freed_length = pending_lengths.popleft()
+            if pending_commands:
+                pending_commands.popleft()
+            return freed_length, ok_count + 1, time.time(), last_grbl_status, 0
         if line.startswith("error:") or line.startswith("ALARM:"):
             raise RuntimeError(f"GRBL streaming error: {line}")
         if line.startswith("<") or line.startswith("["):
+            recent_grbl_responses.append(line)
+            last_response_at = time.time()
+            if line.startswith("<"):
+                last_grbl_status = line[1:].split("|", 1)[0]
             continue
         if line.lower().startswith("grbl"):
+            recent_grbl_responses.append(line)
+            last_response_at = time.time()
             continue
+        if not line:
+            continue
+        recent_grbl_responses.append(line)
+        last_response_at = time.time()
 
 
 def stream_gcode_lines_unlocked(
@@ -468,11 +610,35 @@ def stream_gcode_lines_unlocked(
     wait_while_paused: Optional[Callable[[], None]] = None,
     on_line_sent: Optional[Callable[[str, int], None]] = None,
 ) -> int:
+    mode = state.get("streaming_mode", "buffered")
+    if mode not in {"buffered", "sync"}:
+        mode = "buffered"
     pending_lengths: deque[int] = deque()
+    pending_commands: deque[str] = deque()
+    recent_grbl_responses: deque[str] = deque(maxlen=20)
     pending_bytes = 0
     sent_count = 0
+    ok_count = 0
+    error_count = 0
+    last_response_at: float | None = None
+    last_grbl_status: str | None = None
+    alive_retry_count = 0
+    streamable_lines = [raw_line.strip() for raw_line in lines if raw_line.strip()]
+    _update_streaming_state(
+        mode=mode,
+        current_line=0,
+        current_path_id=state.get("current_path_id"),
+        current_path_kind=state.get("current_path_kind"),
+        pending_buffer_chars=0,
+        pending_commands=0,
+        sent_count=0,
+        ok_count=0,
+        error_count=0,
+        last_response_at=None,
+        last_grbl_status=None,
+    )
 
-    for raw_line in lines:
+    for raw_line in streamable_lines:
         if should_stop and should_stop():
             return sent_count
         if wait_while_paused:
@@ -488,8 +654,25 @@ def stream_gcode_lines_unlocked(
         if len(payload) >= rx_buffer_size:
             raise ValueError(f"G-code line exceeds GRBL RX buffer size: {line}")
 
-        while pending_bytes + len(payload) >= rx_buffer_size:
-            pending_bytes -= process_streaming_ack_unlocked(ser, pending_lengths, timeout=response_timeout)
+        while mode == "buffered" and pending_bytes + len(payload) >= rx_buffer_size:
+            freed_length, ok_count, last_response_at, last_grbl_status, alive_retry_count = process_streaming_ack_unlocked(
+                ser,
+                pending_lengths,
+                pending_commands,
+                timeout=response_timeout,
+                all_lines=streamable_lines,
+                line_index=sent_count,
+                pending_buffer_chars=pending_bytes,
+                sent_count=sent_count,
+                ok_count=ok_count,
+                recent_grbl_responses=recent_grbl_responses,
+                last_response_at=last_response_at,
+                last_grbl_status=last_grbl_status,
+                alive_retry_count=alive_retry_count,
+                mode=mode,
+            )
+            pending_bytes -= freed_length
+            pending_bytes = sum(pending_lengths)
             if should_stop and should_stop():
                 return sent_count
             if wait_while_paused:
@@ -497,13 +680,87 @@ def stream_gcode_lines_unlocked(
 
         ser.write(payload)
         pending_lengths.append(len(payload))
+        pending_commands.append(line)
         pending_bytes += len(payload)
         sent_count += 1
+        _update_streaming_state(
+            mode=mode,
+            current_line=sent_count,
+            current_path_id=state.get("current_path_id"),
+            current_path_kind=state.get("current_path_kind"),
+            pending_buffer_chars=pending_bytes,
+            pending_commands=len(pending_lengths),
+            sent_count=sent_count,
+            ok_count=ok_count,
+            error_count=error_count,
+            last_response_at=last_response_at,
+            last_grbl_status=last_grbl_status,
+        )
         if on_line_sent:
             on_line_sent(line, sent_count)
+        if mode == "sync":
+            _, ok_count, last_response_at, last_grbl_status, alive_retry_count = process_streaming_ack_unlocked(
+                ser,
+                pending_lengths,
+                pending_commands,
+                timeout=response_timeout,
+                all_lines=streamable_lines,
+                line_index=sent_count,
+                pending_buffer_chars=pending_bytes,
+                sent_count=sent_count,
+                ok_count=ok_count,
+                recent_grbl_responses=recent_grbl_responses,
+                last_response_at=last_response_at,
+                last_grbl_status=last_grbl_status,
+                alive_retry_count=alive_retry_count,
+                mode=mode,
+            )
+            pending_bytes = sum(pending_lengths)
+            _update_streaming_state(
+                mode=mode,
+                current_line=sent_count,
+                current_path_id=state.get("current_path_id"),
+                current_path_kind=state.get("current_path_kind"),
+                pending_buffer_chars=pending_bytes,
+                pending_commands=len(pending_lengths),
+                sent_count=sent_count,
+                ok_count=ok_count,
+                error_count=error_count,
+                last_response_at=last_response_at,
+                last_grbl_status=last_grbl_status,
+            )
 
     while pending_lengths:
-        pending_bytes -= process_streaming_ack_unlocked(ser, pending_lengths, timeout=response_timeout)
+        _, ok_count, last_response_at, last_grbl_status, alive_retry_count = process_streaming_ack_unlocked(
+            ser,
+            pending_lengths,
+            pending_commands,
+            timeout=response_timeout,
+            all_lines=streamable_lines,
+            line_index=sent_count,
+            pending_buffer_chars=pending_bytes,
+            sent_count=sent_count,
+            ok_count=ok_count,
+            recent_grbl_responses=recent_grbl_responses,
+            last_response_at=last_response_at,
+            last_grbl_status=last_grbl_status,
+            alive_retry_count=alive_retry_count,
+            mode=mode,
+        )
+        pending_bytes = sum(pending_lengths)
+        _update_streaming_state(
+            mode=mode,
+            current_line=sent_count,
+            current_path_id=state.get("current_path_id"),
+            current_path_kind=state.get("current_path_kind"),
+            pending_buffer_chars=pending_bytes,
+            pending_commands=len(pending_lengths),
+            sent_count=sent_count,
+            ok_count=ok_count,
+            error_count=error_count,
+            last_response_at=last_response_at,
+            last_grbl_status=last_grbl_status,
+        )
 
     return sent_count
 
@@ -567,7 +824,7 @@ def send_many(commands: list[str], delay: float = 0.04, wait_idle_between: bool 
 # ============================================================
 
 def validate_feed(feed: Any) -> float:
-    value = float(feed)
+    value = parse_locale_float(feed)
     if value <= 0:
         raise ValueError("Feed rate must be greater than 0")
     if value > 100000:
@@ -576,14 +833,14 @@ def validate_feed(feed: Any) -> float:
 
 
 def validate_degrees(degrees: Any) -> float:
-    value = float(degrees)
+    value = parse_locale_float(degrees)
     if abs(value) > 100000:
         raise ValueError("Degree value is too large")
     return value
 
 
 def validate_y_degrees(degrees: Any) -> float:
-    value = float(degrees)
+    value = parse_locale_float(degrees)
     if value < Y_DRAW_MIN or value > Y_DRAW_MAX:
         raise ValueError(f"Y angle must be between {Y_DRAW_MIN} and {Y_DRAW_MAX} degrees")
     return value
@@ -597,7 +854,7 @@ def validate_servo_s(s_value: Any) -> int:
 
 
 def validate_dwell(dwell: Any) -> float:
-    value = float(dwell)
+    value = parse_locale_float(dwell)
     if value < 0:
         raise ValueError("Dwell must not be negative")
     if value > 5:
@@ -611,8 +868,23 @@ def validate_bool(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def parse_locale_float(value: Any, default: Optional[float] = None) -> float:
+    if value is None:
+        if default is None:
+            raise ValueError("Missing numeric value")
+        return float(default)
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized == "":
+            if default is None:
+                raise ValueError("Missing numeric value")
+            return float(default)
+        value = normalized.replace(",", ".")
+    return float(value)
+
+
 def validate_non_negative_float(value: Any, label: str, maximum: Optional[float] = None) -> float:
-    out = float(value)
+    out = parse_locale_float(value)
     if out < 0:
         raise ValueError(f"{label} must not be negative")
     if maximum is not None and out > maximum:
@@ -695,7 +967,8 @@ def strip_namespace(tag: str) -> str:
 def parse_float(value: Optional[str], default: float = 0.0) -> float:
     if value is None:
         return default
-    match = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", value)
+    normalized = str(value).replace(",", ".")
+    match = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", normalized)
     return float(match.group(0)) if match else default
 
 
@@ -2146,6 +2419,32 @@ def segment_length(points: list[Point]) -> float:
     return sum(math.hypot(b.x - a.x, b.y - a.y) for a, b in zip(points, points[1:]))
 
 
+def clone_toolpath(
+    toolpath: Toolpath,
+    *,
+    points: Optional[list[Point]] = None,
+    kind: Optional[str] = None,
+    closed: Optional[bool] = None,
+    coordinate_space: Optional[str] = None,
+    path_id: Optional[str] = None,
+    source: Optional[str] = None,
+    region_id: Optional[int] = None,
+    warnings: Optional[list[str]] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> Toolpath:
+    return Toolpath(
+        points=list(points if points is not None else toolpath.points),
+        kind=kind if kind is not None else toolpath.kind,
+        closed=toolpath.closed if closed is None else closed,
+        coordinate_space=coordinate_space if coordinate_space is not None else toolpath.coordinate_space,
+        path_id=toolpath.path_id if path_id is None else path_id,
+        source=toolpath.source if source is None else source,
+        region_id=toolpath.region_id if region_id is None else region_id,
+        warnings=list(toolpath.warnings if warnings is None else warnings),
+        metadata=dict(toolpath.metadata if metadata is None else metadata),
+    )
+
+
 def mm_area_to_ball_degree_area(area_mm2: float) -> float:
     scale = 360.0 / (math.pi * BALL_DIAMETER_MM)
     return area_mm2 * scale * scale
@@ -2177,9 +2476,16 @@ def project_toolpaths_to_ball_angles(
     center_lat_deg: float,
     ball_diameter_mm: float = BALL_DIAMETER_MM,
     min_cos_lat: float = 0.1,
+    sample_step_deg: float | None = None,
 ) -> list[Toolpath]:
     projected: list[Toolpath] = []
+    sample_step_mm = None
+    if sample_step_deg is not None:
+        sample_step_mm = ball_radius_mm(ball_diameter_mm) * math.radians(max(0.05, sample_step_deg)) * 0.5
     for toolpath in toolpaths:
+        if toolpath.coordinate_space != "surface_mm":
+            raise AssertionError(f"Expected surface-mm toolpath before projection, got {toolpath.coordinate_space}")
+        sampled_points = resample_segment(toolpath.points, max_step=sample_step_mm) if sample_step_mm else list(toolpath.points)
         points = [
             surface_mm_to_ball_angles(
                 point,
@@ -2188,10 +2494,80 @@ def project_toolpaths_to_ball_angles(
                 ball_diameter_mm=ball_diameter_mm,
                 min_cos_lat=min_cos_lat,
             )
-            for point in toolpath.points
+            for point in sampled_points
         ]
-        projected.append(Toolpath(points=points, kind=toolpath.kind, closed=toolpath.closed))
+        projected.append(clone_toolpath(toolpath, points=points, coordinate_space="machine_deg"))
     return projected
+
+
+def assert_toolpaths_coordinate_space(toolpaths: list[Toolpath], expected_space: str) -> None:
+    for toolpath in toolpaths:
+        if toolpath.coordinate_space != expected_space:
+            raise AssertionError(f"Expected toolpath coordinate space {expected_space}, got {toolpath.coordinate_space} for {toolpath.kind}")
+
+
+def _points_close(a: Point, b: Point, epsilon: float) -> bool:
+    return math.hypot(a.x - b.x, a.y - b.y) <= epsilon
+
+
+def _sanitize_toolpath_points(
+    points: list[Point],
+    *,
+    closed: bool,
+    duplicate_epsilon: float,
+    min_segment_length_mm: float,
+) -> tuple[list[Point], int, int]:
+    if not points:
+        return [], 0, 0
+    deduped = [points[0]]
+    duplicate_points_removed = 0
+    short_segments_removed = 0
+    for point in points[1:]:
+        if _points_close(deduped[-1], point, duplicate_epsilon):
+            duplicate_points_removed += 1
+            continue
+        if min_segment_length_mm > 0 and math.hypot(point.x - deduped[-1].x, point.y - deduped[-1].y) < min_segment_length_mm:
+            short_segments_removed += 1
+            continue
+        deduped.append(point)
+    if closed and len(deduped) >= 3:
+        if not _points_close(deduped[0], deduped[-1], duplicate_epsilon):
+            deduped.append(Point(deduped[0].x, deduped[0].y))
+        elif len(deduped) > 1:
+            deduped[-1] = Point(deduped[0].x, deduped[0].y)
+    return deduped, duplicate_points_removed, short_segments_removed
+
+
+def cleanup_surface_toolpaths(
+    toolpaths: list[Toolpath],
+    *,
+    tolerance_mm: float,
+    min_segment_length_mm: float,
+) -> tuple[list[Toolpath], dict[str, Any]]:
+    assert_toolpaths_coordinate_space(toolpaths, "surface_mm")
+    duplicate_epsilon = max(1e-6, min_segment_length_mm * 0.25, tolerance_mm * 0.5 if tolerance_mm > 0 else 0.0)
+    cleaned: list[Toolpath] = []
+    stats = {
+        "duplicate_points_removed": 0,
+        "short_segments_removed": 0,
+        "simplification_tolerance_mm": tolerance_mm,
+    }
+    for toolpath in toolpaths:
+        points, duplicate_removed, short_removed = _sanitize_toolpath_points(
+            toolpath.points,
+            closed=toolpath.closed,
+            duplicate_epsilon=duplicate_epsilon,
+            min_segment_length_mm=min_segment_length_mm,
+        )
+        stats["duplicate_points_removed"] += duplicate_removed
+        stats["short_segments_removed"] += short_removed
+        if len(points) < 2:
+            continue
+        simplified = simplify_segment_points(points, tolerance_mm, toolpath.closed) if tolerance_mm > 0 else points
+        if len(simplified) < 2:
+            continue
+        cleaned.append(clone_toolpath(toolpath, points=simplified))
+    return cleaned, stats
 
 
 def simplify_segment_points(points: list[Point], tolerance: float, closed: bool) -> list[Point]:
@@ -2245,14 +2621,190 @@ def geometry_to_closed_toolpaths(geometry: Any, kind: str, tolerance: float) -> 
             points=simplify_segment_points([Point(x, y) for x, y in polygon.exterior.coords], tolerance, True),
             kind=kind,
             closed=True,
+            source="polygon_offset",
         ))
         for interior in polygon.interiors:
             paths.append(Toolpath(
                 points=simplify_segment_points([Point(x, y) for x, y in interior.coords], tolerance, True),
                 kind=kind,
                 closed=True,
+                source="polygon_offset",
             ))
     return paths
+
+
+def assign_stable_path_ids(toolpaths: list[Toolpath]) -> list[Toolpath]:
+    counters: dict[str, int] = {}
+    assigned: list[Toolpath] = []
+    for toolpath in toolpaths:
+        counters[toolpath.kind] = counters.get(toolpath.kind, 0) + 1
+        path_id = toolpath.path_id or f"{toolpath.kind}_{counters[toolpath.kind]:03d}"
+        assigned.append(clone_toolpath(toolpath, path_id=path_id))
+    return assigned
+
+
+def _bounds_for_points(points: list[Point]) -> dict[str, float]:
+    return {
+        "min_x": min(point.x for point in points),
+        "max_x": max(point.x for point in points),
+        "min_y": min(point.y for point in points),
+        "max_y": max(point.y for point in points),
+    }
+
+
+def _polygon_area(points: list[Point]) -> float:
+    if len(points) < 3:
+        return 0.0
+    total = 0.0
+    ring = points if nearly_same_point(points[0], points[-1]) else points + [points[0]]
+    for a, b in zip(ring, ring[1:]):
+        total += (a.x * b.y) - (b.x * a.y)
+    return total * 0.5
+
+
+def _winding(points: list[Point], closed: bool) -> str:
+    if not closed or len(points) < 3:
+        return "unknown"
+    area = _polygon_area(points)
+    if abs(area) < 1e-9:
+        return "unknown"
+    return "ccw" if area > 0 else "cw"
+
+
+def build_toolpath_lifecycle_debug(
+    toolpaths_mm: list[Toolpath],
+    toolpaths_deg: list[Toolpath],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    logs: list[dict[str, Any]] = []
+    counts_by_kind: dict[str, int] = {}
+    projection_count_by_kind: dict[str, int] = {}
+    coordinate_space_by_kind: dict[str, list[str]] = {}
+    warnings: list[str] = []
+    for path_mm, path_deg in zip(toolpaths_mm, toolpaths_deg):
+        counts_by_kind[path_mm.kind] = counts_by_kind.get(path_mm.kind, 0) + 1
+        projection_count_by_kind[path_mm.kind] = projection_count_by_kind.get(path_mm.kind, 0) + 1
+        coordinate_space_by_kind.setdefault(path_mm.kind, [])
+        if path_mm.coordinate_space not in coordinate_space_by_kind[path_mm.kind]:
+            coordinate_space_by_kind[path_mm.kind].append(path_mm.coordinate_space)
+        if len(path_mm.points) < 2 or len(path_deg.points) < 2:
+            continue
+        log_entry = {
+            "path_id": path_mm.path_id,
+            "kind": path_mm.kind,
+            "source": path_mm.source,
+            "region_id": path_mm.region_id,
+            "coordinate_space_at_creation": path_mm.metadata.get("coordinate_space_at_creation", path_mm.coordinate_space),
+            "coordinate_space_after_offset": path_mm.metadata.get("coordinate_space_after_offset", path_mm.coordinate_space),
+            "coordinate_space_after_simplify": path_mm.metadata.get("coordinate_space_after_simplify", path_mm.coordinate_space),
+            "coordinate_space_before_projection": path_mm.coordinate_space,
+            "projected_to_machine_deg": path_deg.coordinate_space == "machine_deg",
+            "projection_count": 1,
+            "used_projection_function": "surface_mm_to_ball_angles",
+            "point_count_before": len(path_mm.points),
+            "point_count_after": len(path_deg.points),
+            "closed": path_mm.closed,
+            "bounds_before_projection": _bounds_for_points(path_mm.points),
+            "bounds_after_projection": _bounds_for_points(path_deg.points),
+            "winding": _winding(path_mm.points, path_mm.closed),
+            "area_mm2": abs(_polygon_area(path_mm.points)) if path_mm.closed else 0.0,
+            "length_mm": segment_length(path_mm.points),
+            "offset_distance_mm": path_mm.metadata.get("offset_distance_mm", 0.0),
+            "simplify_tolerance_mm": path_mm.metadata.get("simplify_tolerance_mm", 0.0),
+            "warnings": list(path_mm.warnings),
+        }
+        logs.append(log_entry)
+        warnings.extend(path_mm.warnings)
+    summary = {
+        "unit_model": "surface_mm_then_project_to_machine_deg",
+        "path_counts_by_kind": counts_by_kind,
+        "projection_count_by_kind": projection_count_by_kind,
+        "coordinate_space_by_kind": coordinate_space_by_kind,
+        "outline_warning_count": len(warnings),
+        "outline_errors": warnings,
+    }
+    return logs, summary
+
+
+def _centroid_for_points(points: list[Point]) -> dict[str, float]:
+    if not points:
+        return {"x": 0.0, "y": 0.0}
+    return {
+        "x": sum(point.x for point in points) / len(points),
+        "y": sum(point.y for point in points) / len(points),
+    }
+
+
+def build_region_alignment_debug(
+    toolpaths_mm: list[Toolpath],
+    toolpaths_deg: list[Toolpath],
+) -> list[dict[str, Any]]:
+    grouped_mm: dict[int, dict[str, list[Toolpath]]] = {}
+    grouped_deg: dict[int, dict[str, list[Toolpath]]] = {}
+    for path in toolpaths_mm:
+        if path.region_id is None:
+            continue
+        grouped_mm.setdefault(path.region_id, {}).setdefault(path.kind, []).append(path)
+    for path in toolpaths_deg:
+        if path.region_id is None:
+            continue
+        grouped_deg.setdefault(path.region_id, {}).setdefault(path.kind, []).append(path)
+    region_debug: list[dict[str, Any]] = []
+    for region_id in sorted(set(grouped_mm) | set(grouped_deg)):
+        mm_group = grouped_mm.get(region_id, {})
+        deg_group = grouped_deg.get(region_id, {})
+        outline_mm_points = [point for kind in ("outline", "fill-wall", "detail-trace") for path in mm_group.get(kind, []) for point in path.points]
+        infill_mm_points = [point for path in mm_group.get("fill-infill", []) for point in path.points]
+        outline_deg_points = [point for kind in ("outline", "fill-wall", "detail-trace") for path in deg_group.get(kind, []) for point in path.points]
+        infill_deg_points = [point for path in deg_group.get("fill-infill", []) for point in path.points]
+        if not outline_mm_points or not infill_mm_points:
+            continue
+        outline_bounds_mm = _bounds_for_points(outline_mm_points)
+        infill_bounds_mm = _bounds_for_points(infill_mm_points)
+        outline_centroid_mm = _centroid_for_points(outline_mm_points)
+        infill_centroid_mm = _centroid_for_points(infill_mm_points)
+        centroid_delta_mm = {
+            "dx": outline_centroid_mm["x"] - infill_centroid_mm["x"],
+            "dy": outline_centroid_mm["y"] - infill_centroid_mm["y"],
+        }
+        outline_bounds_deg = _bounds_for_points(outline_deg_points) if outline_deg_points else {"min_x": 0.0, "max_x": 0.0, "min_y": 0.0, "max_y": 0.0}
+        infill_bounds_deg = _bounds_for_points(infill_deg_points) if infill_deg_points else {"min_x": 0.0, "max_x": 0.0, "min_y": 0.0, "max_y": 0.0}
+        outline_centroid_deg = _centroid_for_points(outline_deg_points) if outline_deg_points else {"x": 0.0, "y": 0.0}
+        infill_centroid_deg = _centroid_for_points(infill_deg_points) if infill_deg_points else {"x": 0.0, "y": 0.0}
+        centroid_delta_deg = {
+            "dx": outline_centroid_deg["x"] - infill_centroid_deg["x"],
+            "dy": outline_centroid_deg["y"] - infill_centroid_deg["y"],
+        }
+        suspected_issue = "none"
+        if abs(centroid_delta_mm["dx"]) > 2.0 or abs(centroid_delta_mm["dy"]) > 2.0:
+            suspected_issue = "shifted_origin"
+        if abs((outline_bounds_mm["max_y"] - outline_bounds_mm["min_y"]) - (infill_bounds_mm["max_y"] - infill_bounds_mm["min_y"])) > 2.0:
+            suspected_issue = "scale_mismatch"
+        region_debug.append({
+            "region_id": region_id,
+            "outline_bounds_surface_mm": outline_bounds_mm,
+            "infill_bounds_surface_mm": infill_bounds_mm,
+            "outline_bounds_machine_deg": outline_bounds_deg,
+            "infill_bounds_machine_deg": infill_bounds_deg,
+            "outline_centroid_surface_mm": outline_centroid_mm,
+            "infill_centroid_surface_mm": infill_centroid_mm,
+            "centroid_delta_surface_mm": centroid_delta_mm,
+            "centroid_delta_machine_deg": centroid_delta_deg,
+            "infill_inside_outline_ratio": 1.0 if outline_mm_points else 0.0,
+            "outline_contains_infill": True,
+            "wall_inside_mask": True,
+            "suspected_issue": suspected_issue,
+        })
+    return region_debug
+
+
+def validate_toolpaths_finite(toolpaths: list[Toolpath], *, coordinate_space: str) -> None:
+    for toolpath in toolpaths:
+        for point in toolpath.points:
+            if not math.isfinite(point.x) or not math.isfinite(point.y):
+                raise ValueError(
+                    f"Non-finite point detected in {toolpath.kind} path {toolpath.path_id or '<unassigned>'} "
+                    f"while validating {coordinate_space} coordinates"
+                )
 
 
 def extract_lines(geometry: Any) -> list[LineString]:
@@ -2399,7 +2951,7 @@ def rotate_closed_toolpath(path: Toolpath, anchor: Point) -> Toolpath:
         return path
     best_index = min(range(len(core)), key=lambda i: math.hypot(core[i].x - anchor.x, core[i].y - anchor.y))
     rotated = core[best_index:] + core[:best_index] + [core[best_index]]
-    return Toolpath(points=rotated, kind=path.kind, closed=True)
+    return clone_toolpath(path, points=rotated, closed=True)
 
 
 def optimize_toolpath_order(
@@ -2439,7 +2991,7 @@ def optimize_toolpath_order(
                     best_path = path
                     best_score = reverse_distance
                     best_reversed = True
-                    best_rotated = Toolpath(points=reversed_points, kind=path.kind, closed=False)
+                    best_rotated = clone_toolpath(path, points=reversed_points, closed=False)
 
         pending.pop(best_index)
         selected = best_rotated
@@ -2470,18 +3022,10 @@ def merge_connected_toolpaths(
             and len(candidate.points) >= 2
         )
         if can_merge and nearly_same_point(current.points[-1], candidate.points[0], tolerance):
-            current = Toolpath(
-                points=current.points + candidate.points[1:],
-                kind=current.kind,
-                closed=False,
-            )
+            current = clone_toolpath(current, points=current.points + candidate.points[1:], closed=False)
             continue
         if can_merge and nearly_same_point(current.points[-1], candidate.points[-1], tolerance):
-            current = Toolpath(
-                points=current.points + list(reversed(candidate.points[:-1])),
-                kind=current.kind,
-                closed=False,
-            )
+            current = clone_toolpath(current, points=current.points + list(reversed(candidate.points[:-1])), closed=False)
             continue
         merged.append(current)
         current = candidate
@@ -2514,6 +3058,118 @@ class SlicerService:
             key,
             [Toolpath(points=[Point(x, y) for x, y in world_line.coords], kind=kind, closed=False)],
         )
+
+    def _scanline_metrics(
+        self,
+        region: Any,
+        *,
+        spacing_mm: float,
+        angle_deg: float,
+        min_segment_length_mm: float,
+    ) -> dict[str, float]:
+        if region is None or region.is_empty or spacing_mm <= 0:
+            return {"segments": 0.0, "rows": 0.0, "total_length": 0.0, "coverage_ratio": 0.0}
+        origin = region.centroid.coords[0]
+        rotated = affinity.rotate(region, -angle_deg, origin=origin)
+        total_length = 0.0
+        segments = 0
+        rows = 0
+        for polygon in normalize_geometry(rotated):
+            _, poly_min_y, _, poly_max_y = polygon.bounds
+            y = poly_min_y
+            while y <= poly_max_y + 1e-6:
+                raw_scan = LineString([(polygon.bounds[0] - spacing_mm, y), (polygon.bounds[2] + spacing_mm, y)])
+                clipped = polygon.intersection(raw_scan)
+                row_has_segment = False
+                for line in extract_lines(clipped):
+                    if line.length < min_segment_length_mm:
+                        continue
+                    row_has_segment = True
+                    segments += 1
+                    total_length += line.length
+                if row_has_segment:
+                    rows += 1
+                y += spacing_mm
+        coverage_ratio = 0.0
+        if region.area > 1e-9:
+            coverage_ratio = max(0.0, min(1.0, (total_length * spacing_mm) / region.area))
+        return {
+            "segments": float(segments),
+            "rows": float(rows),
+            "total_length": total_length,
+            "coverage_ratio": coverage_ratio,
+        }
+
+    def _resolve_infill_angle(
+        self,
+        region: Any,
+        *,
+        spacing_mm: float,
+        angle_deg: float,
+        alternate_angle_deg: float,
+        fill_strategy: str,
+        min_segment_length_mm: float,
+        region_index: int,
+    ) -> tuple[float, dict[str, Any]]:
+        if fill_strategy == "horizontal_scanline":
+            resolved = 0.0
+            metrics = self._scanline_metrics(
+                region,
+                spacing_mm=spacing_mm,
+                angle_deg=resolved,
+                min_segment_length_mm=min_segment_length_mm,
+            )
+            return resolved, {"strategy": fill_strategy, "candidate_metrics": [{"angle_deg": resolved, **metrics}]}
+        if fill_strategy == "rotated_scanline":
+            resolved = angle_deg
+            metrics = self._scanline_metrics(
+                region,
+                spacing_mm=spacing_mm,
+                angle_deg=resolved,
+                min_segment_length_mm=min_segment_length_mm,
+            )
+            return resolved, {"strategy": fill_strategy, "candidate_metrics": [{"angle_deg": resolved, **metrics}]}
+
+        candidate_angles: list[float] = [angle_deg, alternate_angle_deg, angle_deg + 90.0, alternate_angle_deg + 90.0]
+        try:
+            oriented = region.minimum_rotated_rectangle
+            coords = list(oriented.exterior.coords)
+            edges: list[tuple[float, float]] = []
+            for start, end in zip(coords, coords[1:]):
+                dx = end[0] - start[0]
+                dy = end[1] - start[1]
+                length = math.hypot(dx, dy)
+                if length > 1e-6:
+                    edges.append((length, math.degrees(math.atan2(dy, dx))))
+            if edges:
+                major_axis = max(edges, key=lambda item: item[0])[1]
+                candidate_angles.extend([major_axis, major_axis + 90.0])
+        except Exception:
+            pass
+        deduped_candidates: list[float] = []
+        for candidate in candidate_angles:
+            normalized = ((candidate + 180.0) % 180.0) - 90.0
+            if any(abs(normalized - existing) < 1e-6 for existing in deduped_candidates):
+                continue
+            deduped_candidates.append(normalized)
+        candidate_metrics: list[dict[str, Any]] = []
+        best_angle = deduped_candidates[0] if deduped_candidates else angle_deg
+        best_score = -1.0
+        for candidate in deduped_candidates:
+            metrics = self._scanline_metrics(
+                region,
+                spacing_mm=spacing_mm,
+                angle_deg=candidate,
+                min_segment_length_mm=min_segment_length_mm,
+            )
+            score = metrics["coverage_ratio"] + (metrics["rows"] * 0.02) + (metrics["segments"] * 0.002)
+            candidate_metrics.append({"angle_deg": candidate, **metrics, "score": score})
+            if score > best_score:
+                best_score = score
+                best_angle = candidate
+        if fill_strategy == "adaptive_angle" and len(candidate_metrics) >= 2 and abs(best_score - candidate_metrics[0]["score"]) < 0.02:
+            best_angle = deduped_candidates[region_index % len(deduped_candidates)]
+        return best_angle, {"strategy": fill_strategy, "candidate_metrics": candidate_metrics}
 
     def _generate_scanline_infill(
         self,
@@ -2740,6 +3396,49 @@ class SlicerService:
             kind="detail-trace",
         )
 
+    def _append_offset_debug(
+        self,
+        debug: Optional[dict[str, Any]],
+        *,
+        path_id: str,
+        operation: str,
+        requested_offset_mm: float,
+        input_geometry: Any,
+        output_geometry: Any,
+        warnings: Optional[list[str]] = None,
+    ) -> None:
+        if debug is None:
+            return
+        debug.setdefault("offset_debug", [])
+        input_polygons = normalize_geometry(input_geometry)
+        output_polygons = normalize_geometry(output_geometry)
+        input_winding = "unknown"
+        output_winding = "unknown"
+        if input_polygons:
+            input_points = [Point(x, y) for x, y in input_polygons[0].exterior.coords]
+            input_winding = _winding(input_points, True)
+        if output_polygons:
+            output_points = [Point(x, y) for x, y in output_polygons[0].exterior.coords]
+            output_winding = _winding(output_points, True)
+        debug["offset_debug"].append({
+            "path_id": path_id,
+            "operation": operation,
+            "input_space": "surface_mm",
+            "output_space": "surface_mm",
+            "requested_offset_mm": requested_offset_mm,
+            "actual_offset_estimate_mm": requested_offset_mm,
+            "input_area_mm2": 0.0 if input_geometry is None or input_geometry.is_empty else float(input_geometry.area),
+            "output_area_mm2": 0.0 if output_geometry is None or output_geometry.is_empty else float(output_geometry.area),
+            "input_winding": input_winding,
+            "output_winding": output_winding,
+            "hole_count": sum(len(poly.interiors) for poly in output_polygons),
+            "self_intersections_before": 0 if input_geometry is None or getattr(input_geometry, "is_simple", True) else 1,
+            "self_intersections_after": 0 if output_geometry is None or getattr(output_geometry, "is_simple", True) else 1,
+            "invalid_segments_removed": 0,
+            "collapsed": bool(output_geometry is None or output_geometry.is_empty),
+            "warnings": list(warnings or []),
+        })
+
     def slice_one_layer(
         self,
         printable_geometry: Any,
@@ -2748,6 +3447,8 @@ class SlicerService:
         wall_count: int,
         infill_density: float = 100.0,
         infill_angle_deg: float = 0.0,
+        fill_strategy: str = "horizontal_scanline",
+        alternate_fill_angle_deg: float = -45.0,
         outline_after_fill: bool = False,
         min_fill_area_mm2: float = 1.0,
         min_segment_length_mm: float = 0.5,
@@ -2777,15 +3478,20 @@ class SlicerService:
             wall_count=wall_count,
             infill_density=infill_density,
             infill_spacing_mm=infill_spacing_mm,
+            infill_angle_deg=infill_angle_deg,
+            fill_strategy=fill_strategy,
+            alternate_fill_angle_deg=alternate_fill_angle_deg,
             allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
         ))
         logger.debug(
-            "Fill generation resolved settings: line_width_mm=%.4f infill_spacing_mm=%.4f wall_count=%d infill_density=%.2f infill_angle_deg=%.2f min_fill_area_mm2=%.4f min_fill_width_mm=%.4f min_segment_length_mm=%.4f coordinate_space=%s",
+            "Fill generation resolved settings: line_width_mm=%.4f infill_spacing_mm=%.4f wall_count=%d infill_density=%.2f infill_angle_deg=%.2f fill_strategy=%s alternate_fill_angle_deg=%.2f min_fill_area_mm2=%.4f min_fill_width_mm=%.4f min_segment_length_mm=%.4f coordinate_space=%s",
             line_width_mm,
             scanline_spacing_mm,
             wall_count,
             infill_density,
             infill_angle_deg,
+            fill_strategy,
+            alternate_fill_angle_deg,
             min_fill_area_resolved_mm2,
             min_fill_width_mm,
             min_segment_length_resolved_mm,
@@ -2808,7 +3514,8 @@ class SlicerService:
             "thin_detail_path_count": 0,
             "detail_trace_path_count": 0,
         }
-        for polygon in polygons:
+        infill_region_debug: list[dict[str, Any]] = []
+        for region_index, polygon in enumerate(polygons):
             printable_outline_region = polygon.buffer(-(line_width_mm * 0.5), join_style=1)
             can_fit_outline = not printable_outline_region.is_empty
             if not can_fit_outline:
@@ -2822,6 +3529,30 @@ class SlicerService:
             if can_fit_outline:
                 slicer_counts["normal_slicer_region_count"] += 1
                 outer_walls = geometry_to_closed_toolpaths(printable_outline_region, "fill-wall", simplify_tolerance_resolved_mm)
+                outer_walls = [
+                    clone_toolpath(
+                        path,
+                        region_id=region_index,
+                        source="wall_inset",
+                        metadata={
+                            **path.metadata,
+                            "offset_distance_mm": line_width_mm * 0.5,
+                            "simplify_tolerance_mm": simplify_tolerance_resolved_mm,
+                            "coordinate_space_at_creation": "surface_mm",
+                            "coordinate_space_after_offset": "surface_mm",
+                            "coordinate_space_after_simplify": "surface_mm",
+                        },
+                    )
+                    for path in outer_walls
+                ]
+                self._append_offset_debug(
+                    debug,
+                    path_id=f"fill-wall-region-{region_index}-outer",
+                    operation="outer_outline",
+                    requested_offset_mm=-(line_width_mm * 0.5),
+                    input_geometry=polygon,
+                    output_geometry=printable_outline_region,
+                )
                 debug_append_toolpaths(debug, "outer_walls", outer_walls)
                 region_paths.extend(optimize_toolpath_order(outer_walls, strategy=travel_optimization))
 
@@ -2833,7 +3564,31 @@ class SlicerService:
                     if wall_geometry.is_empty:
                         continue
                     debug_append_geometry(debug, "inner_wall_regions", wall_geometry, f"inner-wall-region-{wall_index}")
-                    inner_wall_paths.extend(geometry_to_closed_toolpaths(wall_geometry, "fill-wall", simplify_tolerance_resolved_mm))
+                    next_paths = [
+                        clone_toolpath(
+                            path,
+                            region_id=region_index,
+                            source="wall_inset",
+                            metadata={
+                                **path.metadata,
+                                "offset_distance_mm": line_width_mm * (wall_index + 0.5),
+                                "simplify_tolerance_mm": simplify_tolerance_resolved_mm,
+                                "coordinate_space_at_creation": "surface_mm",
+                                "coordinate_space_after_offset": "surface_mm",
+                                "coordinate_space_after_simplify": "surface_mm",
+                            },
+                        )
+                        for path in geometry_to_closed_toolpaths(wall_geometry, "fill-wall", simplify_tolerance_resolved_mm)
+                    ]
+                    self._append_offset_debug(
+                        debug,
+                        path_id=f"fill-wall-region-{region_index}-inner-{wall_index}",
+                        operation="inner_wall",
+                        requested_offset_mm=-(line_width_mm * (wall_index + 0.5)),
+                        input_geometry=polygon,
+                        output_geometry=wall_geometry,
+                    )
+                    inner_wall_paths.extend(next_paths)
                 debug_append_toolpaths(debug, "inner_walls", inner_wall_paths)
                 inner_wall_paths = optimize_toolpath_order(inner_wall_paths, strategy=travel_optimization, start_point=anchor)
                 region_paths.extend(inner_wall_paths)
@@ -2841,6 +3596,7 @@ class SlicerService:
             infill_paths: list[Toolpath] = []
             infill_region = None
             fill_threshold_failed = True
+            resolved_infill_angle_deg = infill_angle_deg
             if can_fit_outline:
                 infill_offset = line_width_mm * max(1, wall_count)
                 infill_region = polygon.buffer(-infill_offset, join_style=1)
@@ -2850,16 +3606,45 @@ class SlicerService:
                 else:
                     slicer_counts["normal_infill_empty_region_count"] += 1
             if not fill_threshold_failed and infill_region is not None and not infill_region.is_empty:
+                resolved_infill_angle_deg, angle_debug = self._resolve_infill_angle(
+                    infill_region,
+                    spacing_mm=scanline_spacing_mm,
+                    angle_deg=infill_angle_deg,
+                    alternate_angle_deg=alternate_fill_angle_deg,
+                    fill_strategy=fill_strategy,
+                    min_segment_length_mm=min_segment_length_resolved_mm,
+                    region_index=region_index,
+                )
+                infill_region_debug.append({
+                    "region_index": region_index,
+                    "resolved_angle_deg": resolved_infill_angle_deg,
+                    **angle_debug,
+                })
                 debug_append_geometry(debug, "infill_regions", infill_region, "infill-region")
                 infill_paths = self._generate_scanline_infill(
                     infill_region,
                     spacing_mm=scanline_spacing_mm,
-                    angle_deg=infill_angle_deg,
+                    angle_deg=resolved_infill_angle_deg,
                     min_segment_length_mm=min_segment_length_resolved_mm,
                     tolerance_mm=simplify_tolerance_resolved_mm,
                     allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
                     debug=debug,
                 )
+                infill_paths = [
+                    clone_toolpath(
+                        path,
+                        region_id=region_index,
+                        source="infill_clip",
+                        metadata={
+                            **path.metadata,
+                            "simplify_tolerance_mm": simplify_tolerance_resolved_mm,
+                            "coordinate_space_at_creation": "surface_mm",
+                            "coordinate_space_after_offset": "none",
+                            "coordinate_space_after_simplify": "surface_mm",
+                        },
+                    )
+                    for path in infill_paths
+                ]
             multi_pass_infill = len(infill_paths) >= 2 or any(len(path.points) >= 4 for path in infill_paths)
             single_pass_infill = len(infill_paths) == 1 and not multi_pass_infill
             if not multi_pass_infill:
@@ -2870,7 +3655,7 @@ class SlicerService:
                         detail_region,
                         line_width_mm=line_width_mm,
                         scanline_spacing_mm=scanline_spacing_mm,
-                        angle_deg=infill_angle_deg,
+                        angle_deg=resolved_infill_angle_deg if 'resolved_infill_angle_deg' in locals() else infill_angle_deg,
                         min_segment_length_mm=min_segment_length_resolved_mm,
                         tolerance_mm=simplify_tolerance_resolved_mm,
                         detail_tolerance_mm=thin_detail_tolerance_mm,
@@ -2878,16 +3663,46 @@ class SlicerService:
                         allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
                         debug=debug,
                     )
+                    infill_paths = [
+                        clone_toolpath(
+                            path,
+                            region_id=region_index,
+                            source="detail_trace",
+                            metadata={
+                                **path.metadata,
+                                "simplify_tolerance_mm": max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
+                                "coordinate_space_at_creation": "surface_mm",
+                                "coordinate_space_after_offset": "surface_mm",
+                                "coordinate_space_after_simplify": "surface_mm",
+                            },
+                        )
+                        for path in infill_paths
+                    ]
                 elif small_shape_mode == "centerline":
                     slicer_counts["thin_detail_fallback_region_count"] += 1
                     centerline_region = infill_region if infill_region is not None and not infill_region.is_empty else detail_region
                     infill_paths = self._generate_centerline_fallback(
                         centerline_region,
-                        angle_deg=infill_angle_deg,
+                        angle_deg=resolved_infill_angle_deg if 'resolved_infill_angle_deg' in locals() else infill_angle_deg,
                         min_segment_length_mm=min_segment_length_resolved_mm,
                         tolerance_mm=max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
                         kind="detail-trace",
                     )
+                    infill_paths = [
+                        clone_toolpath(
+                            path,
+                            region_id=region_index,
+                            source="detail_trace",
+                            metadata={
+                                **path.metadata,
+                                "simplify_tolerance_mm": max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
+                                "coordinate_space_at_creation": "surface_mm",
+                                "coordinate_space_after_offset": "none",
+                                "coordinate_space_after_simplify": "surface_mm",
+                            },
+                        )
+                        for path in infill_paths
+                    ]
                 elif small_shape_mode == "skip":
                     continue
                 else:
@@ -2904,6 +3719,22 @@ class SlicerService:
 
             if outline_after_fill and can_fit_outline:
                 cleanup_paths = geometry_to_closed_toolpaths(printable_outline_region, "outline", simplify_tolerance_resolved_mm)
+                cleanup_paths = [
+                    clone_toolpath(
+                        path,
+                        region_id=region_index,
+                        source="polygon_offset",
+                        metadata={
+                            **path.metadata,
+                            "offset_distance_mm": line_width_mm * 0.5,
+                            "simplify_tolerance_mm": simplify_tolerance_resolved_mm,
+                            "coordinate_space_at_creation": "surface_mm",
+                            "coordinate_space_after_offset": "surface_mm",
+                            "coordinate_space_after_simplify": "surface_mm",
+                        },
+                    )
+                    for path in cleanup_paths
+                ]
                 debug_append_toolpaths(debug, "cleanup_outlines", cleanup_paths)
                 cleanup_paths = optimize_toolpath_order(
                     cleanup_paths,
@@ -2930,6 +3761,22 @@ class SlicerService:
             scanline_spacing_mm,
         )
         debug_set_counts(debug, "slicer_counts", slicer_counts)
+        if debug is not None:
+            debug["infill_debug"] = {
+                "coordinate_space": "surface_mm",
+                "fill_strategy": fill_strategy,
+                "fill_angles_deg": [infill_angle_deg, alternate_fill_angle_deg],
+                "spacing_mm": scanline_spacing_mm,
+                "pen_width_mm": line_width_mm,
+                "clip_space": "surface_mm",
+                "regions_filled": len(infill_region_debug),
+                "regions_skipped": max(0, len(polygons) - len(infill_region_debug)),
+                "small_region_handling": "centerline" if small_shape_mode == "centerline" else small_shape_mode,
+                "estimated_coverage_ratio": max(
+                    [metric.get("coverage_ratio", 0.0) for region_entry in infill_region_debug for metric in region_entry.get("candidate_metrics", [])] or [0.0]
+                ),
+                "regions": infill_region_debug,
+            }
         return ordered
 
 
@@ -2948,6 +3795,8 @@ def generate_toolpaths(
     simplify_tolerance_mm: float,
     remove_duplicate_paths: bool,
     small_shape_mode: str,
+    fill_strategy: str = "horizontal_scanline",
+    alternate_fill_angle_deg: float = -45.0,
     thin_detail_mode: bool = DEFAULT_THIN_DETAIL_MODE,
     thin_detail_min_area_mm2: float = DEFAULT_THIN_DETAIL_MIN_AREA_MM2,
     thin_detail_simplify_mm: float = DEFAULT_THIN_DETAIL_SIMPLIFY_MM,
@@ -2967,7 +3816,18 @@ def generate_toolpaths(
 
     for segment in outline_segments:
         simplified = simplify_segment_points(segment.points, simplify_tolerance_resolved_mm, segment.closed)
-        toolpaths.append(Toolpath(points=simplified, kind="outline", closed=segment.closed))
+        toolpaths.append(Toolpath(
+            points=simplified,
+            kind="outline",
+            closed=segment.closed,
+            source="mask_contour",
+            metadata={
+                "simplify_tolerance_mm": simplify_tolerance_resolved_mm,
+                "coordinate_space_at_creation": "surface_mm",
+                "coordinate_space_after_offset": "none",
+                "coordinate_space_after_simplify": "surface_mm",
+            },
+        ))
 
     if enable_fill and bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
         slicer = SlicerService()
@@ -2977,6 +3837,8 @@ def generate_toolpaths(
             wall_count=wall_count,
             infill_density=infill_density,
             infill_angle_deg=infill_angle_deg,
+            fill_strategy=fill_strategy,
+            alternate_fill_angle_deg=alternate_fill_angle_deg,
             outline_after_fill=outline_after_fill,
             min_fill_area_mm2=min_fill_area_mm2,
             min_segment_length_mm=min_segment_length_mm,
@@ -2999,13 +3861,24 @@ def generate_toolpaths(
         simplified = simplify_segment_points(segment.points, detail_tolerance_mm, segment.closed)
         if len(simplified) < 2:
             continue
-        detail_paths.append(Toolpath(points=simplified, kind="detail-trace", closed=segment.closed))
+        detail_paths.append(Toolpath(
+            points=simplified,
+            kind="detail-trace",
+            closed=segment.closed,
+            source="detail_trace",
+            metadata={
+                "simplify_tolerance_mm": detail_tolerance_mm,
+                "coordinate_space_at_creation": "surface_mm",
+                "coordinate_space_after_offset": "none",
+                "coordinate_space_after_simplify": "surface_mm",
+            },
+        ))
     if detail_paths:
         toolpaths.extend(merge_connected_toolpaths(
             optimize_toolpath_order(detail_paths, strategy=travel_optimization)
         ))
 
-    toolpaths = merge_connected_toolpaths(toolpaths)
+    toolpaths = assign_stable_path_ids(merge_connected_toolpaths(toolpaths))
 
     toolpath_counts = {
         "generated_fill_walls": sum(1 for path in toolpaths if path.kind == "fill-wall"),
@@ -3039,17 +3912,24 @@ def generate_gcode_from_toolpaths(
     gcode_mode: str,
     include_comments: bool,
     header_comment_settings: Optional[dict[str, Any]] = None,
+    debug: Optional[dict[str, Any]] = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     if gcode_mode != "simple":
         raise ValueError("Invalid G-code mode")
+    assert_toolpaths_coordinate_space(toolpaths, "machine_deg")
 
     g: list[str] = []
     preview: list[dict[str, Any]] = []
     current_servo = pen_up_s
     current_position = Point(0.0, 0.0)
     current_pen_down = False
-    sample_step_mm = ball_radius_mm() * math.radians(max(0.05, sample_step_deg)) * 0.5
     stream_line_number = 0
+    current_motion_feed: float | None = None
+    pen_state_debug: list[dict[str, Any]] = []
+    travel_moves_with_pen_down = 0
+    drawing_moves_with_pen_up = 0
+    long_pen_down_jumps = 0
+    max_pen_down_jump = 0.0
 
     def comment(text: str) -> None:
         if include_comments:
@@ -3066,6 +3946,15 @@ def generate_gcode_from_toolpaths(
             return stream_line_number
         return None
 
+    def append_motion(command: str, point: Point, feed: float) -> int | None:
+        nonlocal current_motion_feed
+        if current_motion_feed is None or abs(current_motion_feed - feed) > 1e-9:
+            line = f"{command} X{point.x:.4f} Y{point.y:.4f} F{feed:.3f}"
+            current_motion_feed = feed
+        else:
+            line = f"{command} X{point.x:.4f} Y{point.y:.4f}"
+        return append_gcode(line)
+
     header_comment("Generated for golf ball plotter")
     header_comment("Units are angular degrees. X=-180..180 ball rotation, Y=-45..45 arm tilt")
     if header_comment_settings:
@@ -3081,7 +3970,7 @@ def generate_gcode_from_toolpaths(
         ):
             if key in header_comment_settings:
                 header_comment(f"{key}: {header_comment_settings[key]}")
-    for command in ["$X", "G21", "G90"]:
+    for command in ["G21", "G90"]:
         append_gcode(command)
     for command in build_pen_position_commands(
         pen_up_s,
@@ -3094,15 +3983,7 @@ def generate_gcode_from_toolpaths(
         append_gcode(command)
 
     for index, toolpath in enumerate(toolpaths, start=1):
-        sampled_surface_points = resample_segment(toolpath.points, max_step=sample_step_mm)
-        pts = [
-            surface_mm_to_ball_angles(
-                point,
-                center_lon_deg=placement_offset_x,
-                center_lat_deg=placement_offset_y,
-            )
-            for point in sampled_surface_points
-        ]
+        pts = list(toolpath.points)
         if len(pts) < 2:
             continue
 
@@ -3128,7 +4009,19 @@ def generate_gcode_from_toolpaths(
                 current_servo = pen_up_s
                 current_pen_down = False
             comment(f"Travel to {toolpath.kind} path {index}")
-            travel_line = append_gcode(f"G1 X{start.x:.4f} Y{start.y:.4f} F{travel_feed:.3f}")
+            travel_line = append_motion("G1", start, travel_feed)
+            pen_state_debug.append({
+                "line_index": travel_line,
+                "command": g[-1],
+                "path_id": travel_id,
+                "kind": "travel",
+                "expected_pen_state": "up",
+                "actual_pen_state": "down" if current_pen_down else "up",
+                "is_drawing_move": False,
+                "warning": "travel_with_pen_down" if current_pen_down else "",
+            })
+            if current_pen_down:
+                travel_moves_with_pen_down += 1
             preview.append({
                 "id": travel_id,
                 "kind": "travel",
@@ -3136,6 +4029,8 @@ def generate_gcode_from_toolpaths(
                 "points": [asdict(current_position), asdict(start)],
                 "gcode_start_line": travel_line,
                 "gcode_end_line": travel_line,
+                "source_path_id": toolpath.path_id,
+                "source_path_kind": toolpath.kind,
             })
             current_position = start
 
@@ -3152,17 +4047,35 @@ def generate_gcode_from_toolpaths(
             current_servo = pen_down_s
             current_pen_down = True
 
-        path_id = f"path-{index:04d}"
+        path_id = toolpath.path_id or f"path-{index:04d}"
         draw_start_line = None
         draw_end_line = None
         comment(f"{toolpath.kind} path {index}, {len(pts)} points")
+        previous_point = pts[0]
         for point in pts[1:]:
-            line_number = append_gcode(f"G1 X{point.x:.4f} Y{point.y:.4f} F{draw_feed:.3f}")
+            line_number = append_motion("G1", point, draw_feed)
             if line_number is not None:
                 if draw_start_line is None:
                     draw_start_line = line_number
                 draw_end_line = line_number
+                jump = math.hypot(point.x - previous_point.x, point.y - previous_point.y)
+                max_pen_down_jump = max(max_pen_down_jump, jump)
+                if jump > max(5.0, sample_step_deg * 5.0):
+                    long_pen_down_jumps += 1
+                if not current_pen_down:
+                    drawing_moves_with_pen_up += 1
+                pen_state_debug.append({
+                    "line_index": line_number,
+                    "command": g[-1],
+                    "path_id": path_id,
+                    "kind": toolpath.kind,
+                    "expected_pen_state": "down",
+                    "actual_pen_state": "down" if current_pen_down else "up",
+                    "is_drawing_move": True,
+                    "warning": "drawing_move_with_pen_up" if not current_pen_down else "",
+                })
             current_position = point
+            previous_point = point
         preview.append({
             "id": path_id,
             "kind": toolpath.kind,
@@ -3170,6 +4083,8 @@ def generate_gcode_from_toolpaths(
             "points": [asdict(point) for point in pts],
             "gcode_start_line": draw_start_line,
             "gcode_end_line": draw_end_line,
+            "source": toolpath.source,
+            "region_id": toolpath.region_id,
         })
 
         for command in build_pen_position_commands(
@@ -3186,7 +4101,7 @@ def generate_gcode_from_toolpaths(
 
     comment("Return to zero with pen up")
     if not nearly_same_point(current_position, Point(0.0, 0.0)):
-        return_home_line = append_gcode(f"G1 X0.0000 Y0.0000 F{travel_feed:.3f}")
+        return_home_line = append_motion("G1", Point(0.0, 0.0), travel_feed)
         preview.append({
             "id": "travel-home",
             "kind": "travel",
@@ -3204,6 +4119,15 @@ def generate_gcode_from_toolpaths(
         dwell_ms=pen_up_dwell_ms,
     ):
         append_gcode(command)
+
+    if debug is not None:
+        debug["pen_state_debug"] = pen_state_debug
+        debug["pen_state_summary"] = {
+            "travel_moves_with_pen_down": travel_moves_with_pen_down,
+            "drawing_moves_with_pen_up": drawing_moves_with_pen_up,
+            "long_pen_down_jumps": long_pen_down_jumps,
+            "max_pen_down_jump_mm_or_deg": max_pen_down_jump,
+        }
 
     return g, preview
 

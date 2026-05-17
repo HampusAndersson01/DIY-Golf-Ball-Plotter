@@ -66,6 +66,7 @@ export function derivePreviewBounds(paths: PreviewPath[]) {
 
   for (const path of paths) {
     for (const point of path.points) {
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue
       found = true
       minX = Math.min(minX, point.x)
       maxX = Math.max(maxX, point.x)

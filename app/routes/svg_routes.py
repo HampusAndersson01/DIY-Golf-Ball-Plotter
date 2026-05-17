@@ -19,16 +19,98 @@ svg_bp = Blueprint("svg", __name__)
 
 
 def build_fill_header_settings(options: dict, design_bounds) -> dict:
-    resolved_spacing = options["infill_spacing_mm"] if options["infill_spacing_mm"] > 0 else options["line_thickness_mm"]
     return {
         "lineWidthMm": f'{options["line_thickness_mm"]:.4f}',
-        "infillSpacingMm": f"{resolved_spacing:.4f}",
+        "infillSpacingMm": f'{options["effective_infill_spacing_mm"]:.4f}',
         "wallCount": options["wall_count"],
         "infillAngle": f'{options["infill_angle_deg"]:.4f}',
         "rotationDeg": f'{options["rotation_deg"]:.4f}',
         "designWidthMm": f"{design_bounds.width:.4f}",
         "designHeightMm": f"{design_bounds.height:.4f}",
         "coordinateSpaceUsedForFill": "surface-mm-on-ball",
+    }
+
+
+def build_effective_settings(options: dict) -> dict:
+    return {
+        "line_thickness_mm": options["line_thickness_mm"],
+        "infill_spacing_mm": options["effective_infill_spacing_mm"],
+        "custom_infill_spacing": options["custom_infill_spacing"],
+        "wall_count": options["wall_count"],
+        "fill_density": options["infill_density"],
+    }
+
+
+def build_setting_debug(error: Exception, config) -> dict | None:
+    message = str(error)
+    if "line_thickness_mm" not in message and "Line thickness" not in message:
+        return None
+    return {
+        "missing_path": "pen.line_thickness_mm",
+        "used_default": True,
+        "default_value": config["DEFAULT_LINE_THICKNESS_MM"],
+    }
+
+
+def project_surface_toolpaths(toolpaths, options: dict):
+    cleaned_toolpaths, cleanup_stats = pipeline_core.cleanup_surface_toolpaths(
+        toolpaths,
+        tolerance_mm=options["simplify_tolerance_mm"],
+        min_segment_length_mm=options["min_segment_length_mm"],
+    )
+    cleaned_toolpaths = pipeline_core.assign_stable_path_ids(cleaned_toolpaths)
+    pipeline_core.validate_toolpaths_finite(cleaned_toolpaths, coordinate_space="surface_mm")
+    projected_toolpaths = pipeline_core.project_toolpaths_to_ball_angles(
+        cleaned_toolpaths,
+        center_lon_deg=options["placement_offset_x"],
+        center_lat_deg=options["placement_offset_y"],
+        ball_diameter_mm=current_app.config["BALL_DIAMETER_MM"],
+        sample_step_deg=options["sample_step_deg"],
+    )
+    pipeline_core.validate_toolpaths_finite(projected_toolpaths, coordinate_space="machine_deg")
+    lifecycle_logs, outline_pipeline_debug = pipeline_core.build_toolpath_lifecycle_debug(cleaned_toolpaths, projected_toolpaths)
+    coordinate_debug = {
+        "unit_model": "surface_mm_then_project_to_machine_deg",
+        "toolpath_kinds": lifecycle_logs,
+        "projection_applied_to": {
+            kind: True for kind in ("outline", "fill-wall", "fill-infill", "detail-trace")
+        },
+        "projection_count_by_kind": {
+            kind: 1 for kind in ("outline", "fill-wall", "fill-infill", "detail-trace")
+        },
+    }
+    return cleaned_toolpaths, projected_toolpaths, cleanup_stats, coordinate_debug, outline_pipeline_debug, pipeline_core.build_region_alignment_debug(cleaned_toolpaths, projected_toolpaths)
+
+
+def build_gcode_stats(gcode: list[str], cleanup_stats: dict[str, object], *, preview_path_count: int = 0, debug: dict | None = None) -> dict[str, object]:
+    comment_lines = sum(1 for line in gcode if line.strip().startswith("(") and line.strip().endswith(")"))
+    blank_lines = sum(1 for line in gcode if not line.strip())
+    motion_lines = sum(1 for line in gcode if line.strip().startswith("G1"))
+    dwell_count = sum(1 for line in gcode if line.strip().startswith("G4"))
+    pen_up_count = sum(1 for line in gcode if line.strip().startswith("M3 S") and "S575" in line)
+    pen_down_count = sum(1 for line in gcode if line.strip().startswith("M3 S") and "S700" in line)
+    estimated_bytes_after = sum(len((line + "\n").encode("ascii", errors="ignore")) for line in gcode)
+    estimated_bytes_before = estimated_bytes_after
+    for line in gcode:
+        stripped = line.strip()
+        if stripped.startswith("G1 ") and " F" not in stripped:
+            estimated_bytes_before += len(" F1200.000")
+    return {
+        "total_lines": len(gcode),
+        "preview_path_count": preview_path_count,
+        "motion_lines": motion_lines,
+        "comment_lines": comment_lines,
+        "blank_lines": blank_lines,
+        "dwell_count": dwell_count,
+        "pen_up_count": pen_up_count,
+        "pen_down_count": pen_down_count,
+        "modal_feedrate_optimized": True,
+        "duplicate_points_removed": cleanup_stats["duplicate_points_removed"],
+        "short_segments_removed": cleanup_stats["short_segments_removed"],
+        "simplification_tolerance_mm": cleanup_stats["simplification_tolerance_mm"],
+        "estimated_serial_bytes_before": estimated_bytes_before,
+        "estimated_serial_bytes_after": estimated_bytes_after,
+        "pen_state_summary": (debug or {}).get("pen_state_summary"),
     }
 
 
@@ -77,13 +159,14 @@ def generate_gcode_route():
                 options["rotation_deg"],
             )
             geometry.debug_append_bundle(debug_data, "placed_paths", placed)
-            resolved_spacing = options["infill_spacing_mm"] if options["infill_spacing_mm"] > 0 else options["line_thickness_mm"]
+            effective_settings = build_effective_settings(options)
             design_bounds = geometry.bounds_from_bundle(placed)
             final_polygon_count = len(pipeline_core.normalize_geometry(placed.printable_geometry)) if placed.printable_geometry is not None and not placed.printable_geometry.is_empty else 0
             current_app.logger.debug(
-                "Received fill settings: line_width_mm=%.4f infill_spacing_mm=%.4f min_fill_width_mm=%.4f min_fill_area_mm2=%.4f min_segment_length_mm=%.4f wall_count=%d infill_angle_deg=%.4f rotation_deg=%.4f",
+                "Received fill settings: line_width_mm=%.4f infill_spacing_mm=%.4f custom_infill_spacing=%s min_fill_width_mm=%.4f min_fill_area_mm2=%.4f min_segment_length_mm=%.4f wall_count=%d infill_angle_deg=%.4f rotation_deg=%.4f",
                 options["line_thickness_mm"],
-                resolved_spacing,
+                options["effective_infill_spacing_mm"],
+                options["custom_infill_spacing"],
                 options["min_fill_width_mm"],
                 options["min_fill_area_mm2"],
                 options["min_segment_length_mm"],
@@ -107,9 +190,11 @@ def generate_gcode_route():
                 pen_width_mm=options["line_thickness_mm"],
                 wall_count=options["wall_count"],
                 infill_pattern=options["infill_pattern"],
-                infill_spacing_mm=options["infill_spacing_mm"] if options["infill_spacing_mm"] > 0 else options["line_thickness_mm"],
+                infill_spacing_mm=options["effective_infill_spacing_mm"],
                 infill_density=options["infill_density"],
                 infill_angle_deg=options["infill_angle_deg"],
+                fill_strategy=options["fill_strategy"],
+                alternate_fill_angle_deg=options["alternate_fill_angle_deg"],
                 outline_after_fill=options["outline_after_fill"],
                 min_region_area=options["min_fill_area_mm2"],
                 min_fill_width_mm=options["min_fill_width_mm"],
@@ -135,11 +220,30 @@ def generate_gcode_route():
                 sum(1 for path in toolpaths if path.kind == "fill-infill"),
                 sum(max(0, len(path.points) - 1) for path in toolpaths if path.kind == "fill-infill"),
             )
+            _, projected_toolpaths, cleanup_stats, coordinate_debug, outline_pipeline_debug, region_alignment_debug = project_surface_toolpaths(toolpaths, options)
             gcode, preview = get_gcode_service().generate_from_toolpaths(
-                toolpaths=toolpaths,
+                toolpaths=projected_toolpaths,
                 header_comment_settings=build_fill_header_settings(options, design_bounds),
-                **options,
+                draw_feed=options["draw_feed"],
+                travel_feed=options["travel_feed"],
+                sample_step_deg=options["sample_step_deg"],
+                placement_offset_x=options["placement_offset_x"],
+                placement_offset_y=options["placement_offset_y"],
+                pen_up_s=options["pen_up_s"],
+                pen_down_s=options["pen_down_s"],
+                servo_ramp_enabled=options["servo_ramp_enabled"],
+                servo_ramp_step=options["servo_ramp_step"],
+                servo_ramp_delay_ms=options["servo_ramp_delay_ms"],
+                pen_up_dwell_ms=options["pen_up_dwell_ms"],
+                pen_down_dwell_ms=options["pen_down_dwell_ms"],
+                gcode_mode=options["gcode_mode"],
+                include_comments=options["include_comments"],
+                debug=debug_data,
             )
+            if debug_data is not None:
+                debug_data["coordinate_debug"] = coordinate_debug
+                debug_data["outline_pipeline_debug"] = outline_pipeline_debug
+                debug_data["region_alignment_debug"] = region_alignment_debug
             state.update(
                 last_svg_name=raster_file.filename,
                 last_gcode=gcode,
@@ -148,6 +252,7 @@ def generate_gcode_route():
                 progress_done=0,
                 status="Raster G-code generated - calibrate before run",
                 last_error=None,
+                last_timeout_debug=None,
             )
             return json_ok(
                 gcode=gcode,
@@ -161,6 +266,12 @@ def generate_gcode_route():
                 mask_preview=mask_result.mask_preview_url,
                 regions=raster.serialize_regions(region_result),
                 selected_colors=options["selected_colors"],
+                effective_settings=effective_settings,
+                coordinate_debug=coordinate_debug,
+                outline_pipeline_debug=outline_pipeline_debug,
+                region_alignment_debug=region_alignment_debug,
+                infill_debug=(debug_data or {}).get("infill_debug"),
+                gcode_stats=build_gcode_stats(gcode, cleanup_stats, preview_path_count=len(preview), debug=debug_data),
                 debug=debug_data,
             )
 
@@ -195,13 +306,14 @@ def generate_gcode_route():
             options["rotation_deg"],
         )
         geometry.debug_append_bundle(debug_data, "placed_paths", placed)
-        resolved_spacing = options["infill_spacing_mm"] if options["infill_spacing_mm"] > 0 else options["line_thickness_mm"]
+        effective_settings = build_effective_settings(options)
         design_bounds = geometry.bounds_from_bundle(placed)
         final_polygon_count = len(pipeline_core.normalize_geometry(placed.printable_geometry)) if placed.printable_geometry is not None and not placed.printable_geometry.is_empty else 0
         current_app.logger.debug(
-            "Received fill settings: line_width_mm=%.4f infill_spacing_mm=%.4f min_fill_width_mm=%.4f min_fill_area_mm2=%.4f min_segment_length_mm=%.4f wall_count=%d infill_angle_deg=%.4f rotation_deg=%.4f",
+            "Received fill settings: line_width_mm=%.4f infill_spacing_mm=%.4f custom_infill_spacing=%s min_fill_width_mm=%.4f min_fill_area_mm2=%.4f min_segment_length_mm=%.4f wall_count=%d infill_angle_deg=%.4f rotation_deg=%.4f",
             options["line_thickness_mm"],
-            resolved_spacing,
+            options["effective_infill_spacing_mm"],
+            options["custom_infill_spacing"],
             options["min_fill_width_mm"],
             options["min_fill_area_mm2"],
             options["min_segment_length_mm"],
@@ -226,7 +338,7 @@ def generate_gcode_route():
             line_width_mm=options["line_thickness_mm"],
             wall_count=options["wall_count"],
             infill_density=options["infill_density"],
-            infill_spacing_mm=options["infill_spacing_mm"] if options["infill_spacing_mm"] > 0 else options["line_thickness_mm"],
+            infill_spacing_mm=options["effective_infill_spacing_mm"],
             infill_angle_deg=options["infill_angle_deg"],
             outline_after_fill=options["outline_after_fill"],
             min_fill_area_mm2=options["min_fill_area_mm2"],
@@ -234,6 +346,8 @@ def generate_gcode_route():
             simplify_tolerance_mm=options["simplify_tolerance_mm"],
             remove_duplicate_paths=options["remove_duplicate_paths"],
             small_shape_mode=options["small_shape_mode"],
+            fill_strategy=options["fill_strategy"],
+            alternate_fill_angle_deg=options["alternate_fill_angle_deg"],
             thin_detail_mode=options["thin_detail_mode"],
             thin_detail_min_area_mm2=options["thin_detail_min_area_mm2"],
             thin_detail_simplify_mm=options["thin_detail_simplify_mm"],
@@ -253,13 +367,31 @@ def generate_gcode_route():
             sum(1 for path in toolpaths if path.kind == "fill-infill"),
             sum(max(0, len(path.points) - 1) for path in toolpaths if path.kind == "fill-infill"),
         )
+        _, projected_toolpaths, cleanup_stats, coordinate_debug, outline_pipeline_debug, region_alignment_debug = project_surface_toolpaths(toolpaths, options)
         gcode, preview = get_gcode_service().generate_from_toolpaths(
-            toolpaths=toolpaths,
+            toolpaths=projected_toolpaths,
             header_comment_settings=build_fill_header_settings(options, design_bounds),
-            **options,
+            draw_feed=options["draw_feed"],
+            travel_feed=options["travel_feed"],
+            sample_step_deg=options["sample_step_deg"],
+            placement_offset_x=options["placement_offset_x"],
+            placement_offset_y=options["placement_offset_y"],
+            pen_up_s=options["pen_up_s"],
+            pen_down_s=options["pen_down_s"],
+            servo_ramp_enabled=options["servo_ramp_enabled"],
+            servo_ramp_step=options["servo_ramp_step"],
+            servo_ramp_delay_ms=options["servo_ramp_delay_ms"],
+            pen_up_dwell_ms=options["pen_up_dwell_ms"],
+            pen_down_dwell_ms=options["pen_down_dwell_ms"],
+            gcode_mode=options["gcode_mode"],
+            include_comments=options["include_comments"],
+            debug=debug_data,
         )
         if debug_data is not None:
             debug_data["gcode_preview"] = preview
+            debug_data["coordinate_debug"] = coordinate_debug
+            debug_data["outline_pipeline_debug"] = outline_pipeline_debug
+            debug_data["region_alignment_debug"] = region_alignment_debug
 
         point_count = sum(len(path["points"]) for path in preview if path["kind"] != "travel")
         state.update(
@@ -270,6 +402,7 @@ def generate_gcode_route():
             progress_done=0,
             status="G-code generated - calibrate before run",
             last_error=None,
+            last_timeout_debug=None,
         )
 
         return json_ok(
@@ -281,11 +414,17 @@ def generate_gcode_route():
             bounds=asdict(bounds),
             viewbox_bounds=asdict(viewbox_bounds) if viewbox_bounds else None,
             print_model=asdict(print_model),
+            effective_settings=effective_settings,
+            coordinate_debug=coordinate_debug,
+            outline_pipeline_debug=outline_pipeline_debug,
+            region_alignment_debug=region_alignment_debug,
+            infill_debug=(debug_data or {}).get("infill_debug"),
+            gcode_stats=build_gcode_stats(gcode, cleanup_stats, preview_path_count=len(preview), debug=debug_data),
             debug=debug_data,
         )
     except Exception as exc:
         state.update(last_error=str(exc), status=f"Generate error: {exc}")
-        return json_error(str(exc), status=500)
+        return json_error(str(exc), status=500, setting_debug=build_setting_debug(exc, config))
 
 
 @svg_bp.post("/analyze-svg")

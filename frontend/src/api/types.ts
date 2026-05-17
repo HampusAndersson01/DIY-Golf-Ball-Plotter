@@ -6,7 +6,7 @@ export type PreviewPoint = {
 }
 
 export type PreviewPath = {
-  id: string
+  id?: string
   kind: PreviewKind
   closed: boolean
   points: PreviewPoint[]
@@ -57,8 +57,23 @@ export type MachineState = {
   paused_duration_seconds: number
   current_gcode_line: number
   current_path_id: string | null
+  current_path_kind?: string | null
   current_preview_point_index: number
   last_summary: JobSummary | null
+  last_timeout_debug?: Record<string, unknown> | null
+  streaming?: {
+    mode: 'buffered' | 'sync'
+    current_line: number
+    current_path_id?: string | null
+    current_path_kind?: string | null
+    pending_buffer_chars: number
+    pending_commands: number
+    last_response_age_sec: number
+    last_grbl_status: string | null
+    ok_count: number
+    error_count?: number
+    sent_count: number
+  }
   defaults: {
     pen_up_s: number
     pen_down_s: number
@@ -78,6 +93,13 @@ export type GenerateResponse = {
   selected_colors: string[]
   summary: JobSummary
   stage_counts: Record<string, unknown>
+  effective_settings: {
+    line_thickness_mm: number
+    infill_spacing_mm: number
+    custom_infill_spacing: boolean
+    wall_count: number
+    fill_density: number
+  }
 }
 
 export type ApiSuccess<T> = T & {
@@ -112,7 +134,10 @@ export type AppDefaults = {
   wallCount: number
   infillDensity: number
   infillSpacingMm: number
+  customInfillSpacingEnabled?: boolean
   infillAngleDeg: number
+  fillStrategy?: 'horizontal_scanline' | 'rotated_scanline' | 'adaptive_angle' | 'crosshatch'
+  alternateFillAngleDeg?: number
   minFillAreaMm2: number
   minFillWidthMm: number
   simplifyToleranceMm: number
@@ -131,6 +156,7 @@ export type AppDefaults = {
   rasterMinRegionAreaPx: number
   rasterRegionSimplifyPx: number
   outlineAfterFill: boolean
+  streamingMode?: 'buffered' | 'sync'
 }
 
 export type AppConfig = {

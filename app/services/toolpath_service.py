@@ -19,6 +19,8 @@ class ToolpathService:
         infill_spacing_mm: float | None = None,
         infill_density: float = 100.0,
         infill_angle_deg: float = 0.0,
+        fill_strategy: str = "horizontal_scanline",
+        alternate_fill_angle_deg: float = -45.0,
         outline_after_fill: bool = False,
         min_region_area: float = 0.0,
         min_fill_width_mm: float = 0.0,
@@ -34,8 +36,8 @@ class ToolpathService:
         allow_pen_down_infill_connectors: bool = True,
         debug=None,
     ):
-        if infill_pattern != "zigzag":
-            raise ValueError("Only zigzag infill is currently implemented for raster regions")
+        if infill_pattern not in {"zigzag", "hatch"}:
+            raise ValueError("Invalid raster infill pattern")
         effective_regions = regions
         if (
             regions.printable_geometry is not None
@@ -59,6 +61,8 @@ class ToolpathService:
             simplify_tolerance_mm=simplify_tolerance_mm,
             remove_duplicate_paths=remove_duplicate_paths,
             small_shape_mode=small_shape_mode,
+            fill_strategy=fill_strategy,
+            alternate_fill_angle_deg=alternate_fill_angle_deg,
             thin_detail_mode=thin_detail_mode,
             thin_detail_min_area_mm2=thin_detail_min_area_mm2,
             thin_detail_simplify_mm=thin_detail_simplify_mm,

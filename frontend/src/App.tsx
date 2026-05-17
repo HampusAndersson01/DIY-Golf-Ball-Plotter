@@ -18,7 +18,7 @@ import { ManualControlCard } from './components/machine/ManualControlCard'
 import { RunControls } from './components/machine/RunControls'
 import { PreviewWorkspace } from './components/preview/PreviewWorkspace'
 import { getProgressPercent } from './components/preview/previewMath'
-import type { JobSummary, MachineState } from './api/types'
+import type { JobSummary, MachineState, PreviewPath } from './api/types'
 import type { SettingsState } from './store/appStore'
 import { useAppStore } from './store/appStore'
 
@@ -250,15 +250,21 @@ function DashboardApp() {
     setBusy('generating', true)
     const startedAt = performance.now()
     try {
-      const payload = await generateImageGcode(buildGenerateFormData(imageFile, settingsState, selectedColors))
+      const normalizedSettings = normalizeGenerateSettings(settingsState)
+      const payload = await generateImageGcode(buildGenerateFormData(imageFile, normalizedSettings, selectedColors))
+      const effectiveSettings = normalizeEffectiveSettings(payload.effective_settings, normalizedSettings)
+      const preview = sanitizePreviewPaths(payload.preview)
       setPreviewPayload({
-        preview: payload.preview,
+        preview,
         maskPreviewUrl: payload.mask_preview,
         gcode: payload.gcode,
         summary: payload.summary,
       })
       setGenerationDurationMs(performance.now() - startedAt)
-      appendLog(`Generated ${payload.gcode.length} G-code lines across ${payload.preview.length} preview paths.`)
+      appendLog(`Generated ${payload.gcode.length} G-code lines across ${preview.length} preview paths.`)
+      appendLog(
+        `Effective slicer settings: pen ${effectiveSettings.line_thickness_mm.toFixed(2)} mm, infill spacing ${effectiveSettings.infill_spacing_mm.toFixed(2)} mm, custom spacing ${effectiveSettings.custom_infill_spacing ? 'on' : 'off'}.`,
+      )
       pushToast('G-code generated.', 'success')
       await refreshMachine()
     } catch (error) {
@@ -451,8 +457,13 @@ function buildGenerateFormData(file: File, settings: SettingsState, selectedColo
   formData.append('line_thickness_mm', String(settings.lineThicknessMm))
   formData.append('wall_count', String(settings.wallCount))
   formData.append('infill_density', String(settings.infillDensity))
-  formData.append('infill_spacing_mm', String(settings.infillSpacingMm))
+  formData.append('custom_infill_spacing', settings.customInfillSpacingEnabled ? '1' : '0')
+  if (settings.customInfillSpacingEnabled) {
+    formData.append('infill_spacing_mm', String(settings.infillSpacingMm))
+  }
   formData.append('infill_angle_deg', String(settings.infillAngleDeg))
+  formData.append('fill_strategy', settings.fillStrategy)
+  formData.append('alternate_fill_angle_deg', String(settings.alternateFillAngleDeg))
   formData.append('sample_step_deg', String(settings.sampleStepDeg))
   formData.append('margin_percent', String(settings.marginPercent))
   formData.append('min_fill_area_mm2', String(settings.minFillAreaMm2))
@@ -483,6 +494,75 @@ function buildGenerateFormData(file: File, settings: SettingsState, selectedColo
   formData.append('servo_ramp_step', String(settings.servoRampStep))
   formData.append('servo_ramp_delay_ms', String(settings.servoRampDelayMs))
   return formData
+}
+
+function normalizeGenerateSettings(settings: SettingsState): SettingsState {
+  const lineThicknessMm = Number(settings.lineThicknessMm)
+  if (!Number.isFinite(lineThicknessMm)) {
+    throw new Error('Missing required slicer setting: pen.line_thickness_mm')
+  }
+  return {
+    ...settings,
+    lineThicknessMm,
+    infillSpacingMm: settings.customInfillSpacingEnabled ? Number(settings.infillSpacingMm) : lineThicknessMm,
+  }
+}
+
+function normalizeEffectiveSettings(
+  effectiveSettings: {
+    line_thickness_mm: number
+    infill_spacing_mm: number
+    custom_infill_spacing: boolean
+    wall_count: number
+    fill_density: number
+  } | undefined,
+  settings: SettingsState,
+) {
+  const lineThicknessMm = Number(settings.lineThicknessMm)
+  const infillSpacingMm = settings.customInfillSpacingEnabled ? Number(settings.infillSpacingMm) : lineThicknessMm
+  return {
+    line_thickness_mm:
+      effectiveSettings && Number.isFinite(effectiveSettings.line_thickness_mm)
+        ? effectiveSettings.line_thickness_mm
+        : lineThicknessMm,
+    infill_spacing_mm:
+      effectiveSettings && Number.isFinite(effectiveSettings.infill_spacing_mm)
+        ? effectiveSettings.infill_spacing_mm
+        : infillSpacingMm,
+    custom_infill_spacing:
+      effectiveSettings?.custom_infill_spacing ?? settings.customInfillSpacingEnabled,
+    wall_count:
+      effectiveSettings && Number.isFinite(effectiveSettings.wall_count)
+        ? effectiveSettings.wall_count
+        : settings.wallCount,
+    fill_density:
+      effectiveSettings && Number.isFinite(effectiveSettings.fill_density)
+        ? effectiveSettings.fill_density
+        : settings.infillDensity,
+  }
+}
+
+function sanitizePreviewPaths(paths: Array<Record<string, unknown>>): PreviewPath[] {
+  return (paths ?? [])
+    .map((path, index) => {
+      const rawPoints = Array.isArray(path.points) ? path.points : []
+      const points = rawPoints
+        .map((point) => ({
+          x: Number((point as { x?: unknown }).x),
+          y: Number((point as { y?: unknown }).y),
+        }))
+        .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+      return {
+        ...path,
+        id: typeof path.id === 'string' && path.id ? path.id : `preview-${index + 1}`,
+        kind: typeof path.kind === 'string' ? path.kind : 'unknown',
+        closed: Boolean(path.closed),
+        points,
+        gcode_start_line: typeof path.gcode_start_line === 'number' ? path.gcode_start_line : null,
+        gcode_end_line: typeof path.gcode_end_line === 'number' ? path.gcode_end_line : null,
+      }
+    })
+    .filter((path) => path.points.length >= 2)
 }
 
 function getElapsedSeconds(machine: MachineState | null, nowMs: number) {

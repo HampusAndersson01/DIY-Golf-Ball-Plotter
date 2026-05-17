@@ -24,7 +24,10 @@ export type SettingsState = {
   wallCount: number
   infillDensity: number
   infillSpacingMm: number
+  customInfillSpacingEnabled: boolean
   infillAngleDeg: number
+  fillStrategy: 'horizontal_scanline' | 'rotated_scanline' | 'adaptive_angle' | 'crosshatch'
+  alternateFillAngleDeg: number
   sampleStepDeg: number
   marginPercent: number
   minFillAreaMm2: number
@@ -56,6 +59,7 @@ export type SettingsState = {
   servoRampEnabled: boolean
   servoRampStep: number
   servoRampDelayMs: number
+  streamingMode: 'buffered' | 'sync'
   rawCommand: string
 }
 
@@ -116,6 +120,7 @@ type AppStore = {
 }
 
 function buildSettings(defaults: AppDefaults): SettingsState {
+  const lineThicknessMm = defaults.lineThicknessMm
   return {
     xMaxFeed: defaults.xMaxFeed,
     yMaxFeed: defaults.yMaxFeed,
@@ -129,11 +134,14 @@ function buildSettings(defaults: AppDefaults): SettingsState {
     placementOffsetX: 0,
     placementOffsetY: 0,
     rotationDeg: defaults.rotationDeg,
-    lineThicknessMm: defaults.lineThicknessMm,
+    lineThicknessMm,
     wallCount: defaults.wallCount,
     infillDensity: defaults.infillDensity,
-    infillSpacingMm: defaults.infillSpacingMm,
+    infillSpacingMm: lineThicknessMm,
+    customInfillSpacingEnabled: defaults.customInfillSpacingEnabled ?? false,
     infillAngleDeg: defaults.infillAngleDeg,
+    fillStrategy: defaults.fillStrategy ?? 'adaptive_angle',
+    alternateFillAngleDeg: defaults.alternateFillAngleDeg ?? -45,
     sampleStepDeg: defaults.sampleStepDeg,
     marginPercent: defaults.marginPercent,
     minFillAreaMm2: defaults.minFillAreaMm2,
@@ -165,6 +173,7 @@ function buildSettings(defaults: AppDefaults): SettingsState {
     servoRampEnabled: defaults.servoRampEnabled,
     servoRampStep: defaults.servoRampStep,
     servoRampDelayMs: defaults.servoRampDelayMs,
+    streamingMode: defaults.streamingMode ?? 'buffered',
     rawCommand: `M3 S${defaults.penUpS}`,
   }
 }
@@ -257,12 +266,24 @@ export const useAppStore = create<AppStore>((set) => ({
   dismissToast: (id) => set((state) => ({
     toasts: state.toasts.filter((toast) => toast.id !== id),
   })),
-  updateSetting: (key, value) => set((state) => ({
-    settings: state.settings
-      ? {
-          ...state.settings,
-          [key]: value,
-        }
-      : null,
-  })),
+  updateSetting: (key, value) => set((state) => {
+    if (!state.settings) return { settings: null }
+
+    const nextSettings: SettingsState = {
+      ...state.settings,
+      [key]: value,
+    }
+
+    if (key === 'lineThicknessMm' && typeof value === 'number') {
+      if (!nextSettings.customInfillSpacingEnabled) {
+        nextSettings.infillSpacingMm = value
+      }
+    }
+
+    if (key === 'customInfillSpacingEnabled' && value === false) {
+      nextSettings.infillSpacingMm = nextSettings.lineThicknessMm
+    }
+
+    return { settings: nextSettings }
+  }),
 }))

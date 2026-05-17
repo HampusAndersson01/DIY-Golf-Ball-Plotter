@@ -64,7 +64,7 @@ class JobRunner:
             self._pause_requested = False
 
     @staticmethod
-    def _resolve_preview_progress(preview_paths: list[dict], stream_line: int) -> tuple[str | None, int]:
+    def _resolve_preview_progress(preview_paths: list[dict], stream_line: int) -> tuple[str | None, str | None, int]:
         for entry in preview_paths:
             start_line = entry.get("gcode_start_line")
             end_line = entry.get("gcode_end_line")
@@ -73,10 +73,10 @@ class JobRunner:
             if int(start_line) <= stream_line <= int(end_line):
                 points = entry.get("points") or []
                 if len(points) < 2:
-                    return entry.get("id"), 0
+                    return entry.get("id"), entry.get("kind"), 0
                 segment_index = max(0, min(stream_line - int(start_line), len(points) - 2))
-                return entry.get("id"), segment_index + 1
-        return None, 0
+                return entry.get("id"), entry.get("kind"), segment_index + 1
+        return None, None, 0
 
     def _worker(self, gcode: list[str]) -> None:
         stream_lines = [line for line in gcode if self.gcode_service.is_streamable_line(line)]
@@ -96,9 +96,23 @@ class JobRunner:
                 current_gcode_line=0,
                 current_path_id=None,
                 current_preview_point_index=0,
+                streaming={
+                    "mode": self.state.snapshot().get("streaming_mode", "buffered"),
+                    "current_line": 0,
+                    "current_path_id": None,
+                    "current_path_kind": None,
+                    "pending_buffer_chars": 0,
+                    "pending_commands": 0,
+                    "last_response_age_sec": 0.0,
+                    "last_grbl_status": None,
+                    "ok_count": 0,
+                    "error_count": 0,
+                    "sent_count": 0,
+                },
             )
             with self.serial_service.lock:
                 ser = self.serial_service.get_serial()
+                self.serial_service.send_to_grbl_unlocked(ser, "$X", timeout=10)
                 def should_stop() -> bool:
                     with self._lock:
                         if self._stop_requested:
@@ -122,12 +136,13 @@ class JobRunner:
                     self.state.update(paused=False)
 
                 def on_line_sent(line: str, sent_count: int) -> None:
-                    current_path_id, current_preview_point_index = self._resolve_preview_progress(preview_paths, sent_count)
+                    current_path_id, current_path_kind, current_preview_point_index = self._resolve_preview_progress(preview_paths, sent_count)
                     self.state.update(
                         status=f"Running: {line}",
                         progress_done=sent_count,
                         current_gcode_line=sent_count,
                         current_path_id=current_path_id,
+                        current_path_kind=current_path_kind,
                         current_preview_point_index=current_preview_point_index,
                     )
 
@@ -143,6 +158,12 @@ class JobRunner:
             if self.state.snapshot()["status"] != "Stopped":
                 self.state.update(status="Finished")
         except Exception as exc:
+            timeout_debug = self.state.snapshot().get("last_timeout_debug")
+            if isinstance(timeout_debug, dict) and timeout_debug.get("line_index"):
+                current_path_id, current_path_kind, _ = self._resolve_preview_progress(preview_paths, int(timeout_debug["line_index"]))
+                timeout_debug["current_path_id"] = current_path_id or ""
+                timeout_debug["current_path_kind"] = current_path_kind or ""
+                self.state.update(last_timeout_debug=timeout_debug)
             self.state.update(last_error=str(exc), status=f"Error: {exc}")
         finally:
             snapshot = self.state.snapshot()
@@ -156,6 +177,20 @@ class JobRunner:
                 pause_started_at=None,
                 paused_duration_seconds=paused_duration_seconds,
                 current_path_id=None,
+                current_path_kind=None,
+                streaming={
+                    "mode": self.state.snapshot().get("streaming_mode", "buffered"),
+                    "current_line": 0 if not snapshot.get("running") else snapshot.get("current_gcode_line", 0),
+                    "current_path_id": None,
+                    "current_path_kind": None,
+                    "pending_buffer_chars": 0,
+                    "pending_commands": 0,
+                    "last_response_age_sec": 0.0,
+                    "last_grbl_status": None,
+                    "ok_count": 0,
+                    "error_count": 0,
+                    "sent_count": snapshot.get("current_gcode_line", 0),
+                },
             )
             with self._lock:
                 self._stop_requested = False

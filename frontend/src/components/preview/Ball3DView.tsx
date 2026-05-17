@@ -114,20 +114,22 @@ function ScenePaths({ paths, machine }: { paths: PreviewPath[]; machine: Machine
         <ringGeometry args={[1.001, 1.002, 128]} />
         <meshBasicMaterial color="#c7b8a0" side={THREE.DoubleSide} transparent opacity={0.22} />
       </mesh>
-      {paths.map((path) => {
+      {paths.map((path, index) => {
         const phase = classifyPath(path, machine)
         const color = phaseStroke(phase, path.kind)
         const opacity = phaseOpacity(phase, path.kind)
         const marker = getCurrentMarker(path, machine)
+        const points = path.points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+        if (points.length < 2) return null
         return (
-          <group key={path.id}>
+          <group key={path.id ?? `${path.kind}-${index}`}>
             <Line
               color={color}
               dashed={path.kind === 'travel'}
               dashScale={6}
               lineWidth={phase === 'current' ? 2.6 : 1.4}
               opacity={opacity}
-              points={path.points.map(toSphere)}
+              points={points.map(toSphere)}
               transparent
             />
             {marker ? (

@@ -311,3 +311,22 @@ def test_smaller_mm_infill_spacing_generates_many_more_rows():
     dense_segments = sum(max(0, len(path.points) - 1) for path in dense if path.kind == "fill-infill")
 
     assert dense_segments > sparse_segments * 4.5
+
+
+def test_pen_width_drives_dense_infill_spacing_when_spacing_matches_pen_width():
+    printable = _rect(10.0, 10.0)
+
+    toolpaths = _generate_fill_toolpaths(printable, line_width_mm=0.3, infill_spacing_mm=0.3)
+    infill_path = next(path for path in toolpaths if path.kind == "fill-infill")
+
+    row_positions = []
+    for point in infill_path.points:
+        y_value = round(point.y, 6)
+        if not row_positions or abs(row_positions[-1] - y_value) > 1e-6:
+            row_positions.append(y_value)
+
+    spacings = [row_positions[index] - row_positions[index - 1] for index in range(1, len(row_positions))]
+
+    assert len(row_positions) > 20
+    assert min(spacings) == pytest.approx(0.3, abs=1e-6)
+    assert max(spacings) == pytest.approx(0.3, abs=1e-6)

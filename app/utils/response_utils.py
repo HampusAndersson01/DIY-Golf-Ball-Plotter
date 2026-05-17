@@ -7,5 +7,5 @@ def json_ok(**payload):
     return jsonify({"ok": True, **payload})
 
 
-def json_error(message: str, status: int = 400):
-    return jsonify({"ok": False, "error": message}), status
+def json_error(message: str, status: int = 400, **payload):
+    return jsonify({"ok": False, "error": message, **payload}), status

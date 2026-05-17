@@ -13,6 +13,7 @@ class ValidationService:
     validate_servo_s = staticmethod(pipeline_core.validate_servo_s)
     validate_dwell = staticmethod(pipeline_core.validate_dwell)
     validate_bool = staticmethod(pipeline_core.validate_bool)
+    parse_locale_float = staticmethod(pipeline_core.parse_locale_float)
     validate_non_negative_float = staticmethod(pipeline_core.validate_non_negative_float)
     validate_non_negative_int = staticmethod(pipeline_core.validate_non_negative_int)
 
@@ -32,18 +33,22 @@ class ValidationService:
             "min_fill_area_mm2": line_thickness_mm * line_thickness_mm,
         }
 
+    def _parse_float(self, form, key: str, default: float) -> float:
+        return self.parse_locale_float(form.get(key, default), default)
+
     def parse_generate_gcode_form(self, form, config) -> dict[str, Any]:
-        line_thickness_mm = float(form.get("line_thickness_mm", config["DEFAULT_LINE_THICKNESS_MM"]))
+        line_thickness_mm = self._parse_float(form, "line_thickness_mm", config["DEFAULT_LINE_THICKNESS_MM"])
         derived_defaults = self._derived_pen_defaults(line_thickness_mm)
+        custom_infill_spacing = self.validate_bool(form.get("custom_infill_spacing", "0"))
         options = {
             "draw_feed": self.validate_feed(form.get("draw_feed", config["DEFAULT_DRAW_FEED"])),
             "travel_feed": self.validate_feed(form.get("travel_feed", config["DEFAULT_TRAVEL_FEED"])),
-            "sample_step_deg": float(form.get("sample_step_deg", config["DEFAULT_SAMPLE_STEP_DEG"])),
-            "margin_percent": float(form.get("margin_percent", config["DEFAULT_MARGIN_PERCENT"])),
-            "placement_scale": float(form.get("placement_scale", 100.0)),
-            "placement_offset_x": float(form.get("placement_offset_x", 0.0)),
-            "placement_offset_y": float(form.get("placement_offset_y", 0.0)),
-            "rotation_deg": float(form.get("rotation_deg", config["DEFAULT_ROTATION_DEG"])),
+            "sample_step_deg": self._parse_float(form, "sample_step_deg", config["DEFAULT_SAMPLE_STEP_DEG"]),
+            "margin_percent": self._parse_float(form, "margin_percent", config["DEFAULT_MARGIN_PERCENT"]),
+            "placement_scale": self._parse_float(form, "placement_scale", 100.0),
+            "placement_offset_x": self._parse_float(form, "placement_offset_x", 0.0),
+            "placement_offset_y": self._parse_float(form, "placement_offset_y", 0.0),
+            "rotation_deg": self._parse_float(form, "rotation_deg", config["DEFAULT_ROTATION_DEG"]),
             "parser_mode": form.get("parser_mode", config["DEFAULT_PARSER_MODE"]),
             "color_mapping_mode": self.validate_bool(form.get("color_mapping_mode", config["DEFAULT_COLOR_MAPPING_MODE"])),
             "line_thickness_mm": line_thickness_mm,
@@ -54,14 +59,19 @@ class ValidationService:
             ),
             "fill_mode": form.get("fill_mode", config["DEFAULT_FILL_MODE"]),
             "wall_count": self.validate_non_negative_int(form.get("wall_count", config["DEFAULT_WALL_COUNT"]), "Wall count", minimum=1, maximum=8),
+            "custom_infill_spacing": custom_infill_spacing,
             "infill_pattern": form.get("infill_pattern", config["DEFAULT_INFILL_PATTERN"]),
             "infill_density": self.validate_non_negative_float(form.get("infill_density", config["DEFAULT_INFILL_DENSITY"]), "Infill density", maximum=100),
             "infill_spacing_mm": self.validate_non_negative_float(
-                self._form_value(form, "infill_spacing_mm") if self._form_value(form, "infill_spacing_mm") is not None else derived_defaults["infill_spacing_mm"],
+                self._form_value(form, "infill_spacing_mm")
+                if custom_infill_spacing and self._form_value(form, "infill_spacing_mm") is not None
+                else derived_defaults["infill_spacing_mm"],
                 "Infill spacing",
                 maximum=10,
             ),
-            "infill_angle_deg": float(form.get("infill_angle_deg", config["DEFAULT_INFILL_ANGLE_DEG"])),
+            "infill_angle_deg": self._parse_float(form, "infill_angle_deg", config["DEFAULT_INFILL_ANGLE_DEG"]),
+            "fill_strategy": form.get("fill_strategy", config.get("DEFAULT_FILL_STRATEGY", "adaptive_angle")),
+            "alternate_fill_angle_deg": self._parse_float(form, "alternate_fill_angle_deg", config.get("DEFAULT_ALTERNATE_FILL_ANGLE_DEG", -45.0)),
             "outline_after_fill": self.validate_bool(form.get("outline_after_fill", config["DEFAULT_OUTLINE_AFTER_FILL"])),
             "min_fill_area_mm2": self.validate_non_negative_float(
                 self._form_value(form, "min_fill_area_mm2") if self._form_value(form, "min_fill_area_mm2") is not None else derived_defaults["min_fill_area_mm2"],
@@ -104,6 +114,7 @@ class ValidationService:
             "gcode_mode": form.get("gcode_mode", config["DEFAULT_GCODE_MODE"]),
             "debug_pipeline": self.validate_bool(form.get("debug_pipeline", "0")),
         }
+        options["effective_infill_spacing_mm"] = options["infill_spacing_mm"]
         if options["sample_step_deg"] <= 0:
             raise ValueError("Sample step must be greater than 0")
         if options["margin_percent"] < 0 or options["margin_percent"] > 25:
@@ -118,6 +129,8 @@ class ValidationService:
             raise ValueError("Only slicer fill mode is currently supported")
         if options["infill_pattern"] not in {"zigzag", "hatch"}:
             raise ValueError("Infill pattern must be zigzag or hatch")
+        if options["fill_strategy"] not in {"horizontal_scanline", "rotated_scanline", "adaptive_angle", "crosshatch"}:
+            raise ValueError("Invalid fill strategy")
         if options["infill_density"] <= 0 or options["infill_density"] > 100:
             raise ValueError("Infill density must be between 0 and 100")
         if options["small_shape_mode"] not in {"single-wall", "skip", "centerline"}:
@@ -157,27 +170,33 @@ class ValidationService:
         return options
 
     def parse_generate_raster_form(self, form, config) -> dict[str, Any]:
-        line_thickness_mm = float(form.get("line_thickness_mm", config["DEFAULT_LINE_THICKNESS_MM"]))
+        line_thickness_mm = self._parse_float(form, "line_thickness_mm", config["DEFAULT_LINE_THICKNESS_MM"])
         derived_defaults = self._derived_pen_defaults(line_thickness_mm)
+        custom_infill_spacing = self.validate_bool(form.get("custom_infill_spacing", "0"))
         options = {
             "draw_feed": self.validate_feed(form.get("draw_feed", config["DEFAULT_DRAW_FEED"])),
             "travel_feed": self.validate_feed(form.get("travel_feed", config["DEFAULT_TRAVEL_FEED"])),
-            "sample_step_deg": float(form.get("sample_step_deg", config["DEFAULT_SAMPLE_STEP_DEG"])),
-            "margin_percent": float(form.get("margin_percent", config["DEFAULT_MARGIN_PERCENT"])),
-            "placement_scale": float(form.get("placement_scale", 100.0)),
-            "placement_offset_x": float(form.get("placement_offset_x", 0.0)),
-            "placement_offset_y": float(form.get("placement_offset_y", 0.0)),
-            "rotation_deg": float(form.get("rotation_deg", config["DEFAULT_ROTATION_DEG"])),
+            "sample_step_deg": self._parse_float(form, "sample_step_deg", config["DEFAULT_SAMPLE_STEP_DEG"]),
+            "margin_percent": self._parse_float(form, "margin_percent", config["DEFAULT_MARGIN_PERCENT"]),
+            "placement_scale": self._parse_float(form, "placement_scale", 100.0),
+            "placement_offset_x": self._parse_float(form, "placement_offset_x", 0.0),
+            "placement_offset_y": self._parse_float(form, "placement_offset_y", 0.0),
+            "rotation_deg": self._parse_float(form, "rotation_deg", config["DEFAULT_ROTATION_DEG"]),
             "line_thickness_mm": line_thickness_mm,
             "wall_count": self.validate_non_negative_int(form.get("wall_count", config["DEFAULT_WALL_COUNT"]), "Wall count", minimum=1, maximum=8),
+            "custom_infill_spacing": custom_infill_spacing,
             "infill_pattern": form.get("infill_pattern", config["DEFAULT_INFILL_PATTERN"]),
             "infill_density": self.validate_non_negative_float(form.get("infill_density", config["DEFAULT_INFILL_DENSITY"]), "Infill density", maximum=100),
             "infill_spacing_mm": self.validate_non_negative_float(
-                self._form_value(form, "infill_spacing_mm") if self._form_value(form, "infill_spacing_mm") is not None else derived_defaults["infill_spacing_mm"],
+                self._form_value(form, "infill_spacing_mm")
+                if custom_infill_spacing and self._form_value(form, "infill_spacing_mm") is not None
+                else derived_defaults["infill_spacing_mm"],
                 "Infill spacing",
                 maximum=10,
             ),
-            "infill_angle_deg": float(form.get("infill_angle_deg", config["DEFAULT_INFILL_ANGLE_DEG"])),
+            "infill_angle_deg": self._parse_float(form, "infill_angle_deg", config["DEFAULT_INFILL_ANGLE_DEG"]),
+            "fill_strategy": form.get("fill_strategy", config.get("DEFAULT_FILL_STRATEGY", "adaptive_angle")),
+            "alternate_fill_angle_deg": self._parse_float(form, "alternate_fill_angle_deg", config.get("DEFAULT_ALTERNATE_FILL_ANGLE_DEG", -45.0)),
             "outline_after_fill": self.validate_bool(form.get("outline_after_fill", config["DEFAULT_OUTLINE_AFTER_FILL"])),
             "min_fill_area_mm2": self.validate_non_negative_float(
                 self._form_value(form, "min_fill_area_mm2") if self._form_value(form, "min_fill_area_mm2") is not None else derived_defaults["min_fill_area_mm2"],
@@ -226,6 +245,7 @@ class ValidationService:
             "region_simplify_px": self.validate_non_negative_float(form.get("region_simplify_px", config["DEFAULT_RASTER_REGION_SIMPLIFY_PX"]), "Region simplify", maximum=50),
             "debug_pipeline": self.validate_bool(form.get("debug_pipeline", "0")),
         }
+        options["effective_infill_spacing_mm"] = options["infill_spacing_mm"]
         options["selected_colors"] = RasterAnalysisService.parse_selected_colors(form.get("selected_colors"))
         if not options["selected_colors"]:
             raise ValueError("Select at least one color to print")
@@ -237,8 +257,10 @@ class ValidationService:
             raise ValueError("Line thickness must be between 0 and 10 mm")
         if options["fit_mode"] not in {"contain", "stretch"}:
             raise ValueError("Invalid fit mode")
-        if options["infill_pattern"] != "zigzag":
-            raise ValueError("Raster mode currently supports zigzag infill only")
+        if options["infill_pattern"] not in {"zigzag", "hatch"}:
+            raise ValueError("Invalid raster infill pattern")
+        if options["fill_strategy"] not in {"horizontal_scanline", "rotated_scanline", "adaptive_angle", "crosshatch"}:
+            raise ValueError("Invalid fill strategy")
         if options["infill_density"] <= 0 or options["infill_density"] > 100:
             raise ValueError("Infill density must be between 0 and 100")
         if options["small_shape_mode"] not in {"single-wall", "skip", "centerline"}:

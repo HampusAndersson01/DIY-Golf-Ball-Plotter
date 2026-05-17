@@ -38,7 +38,7 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
     drawGrid(ctx, engine)
     for (const path of visiblePaths) {
       const phase = classifyPath(path, machine)
-      const points = path.points
+      const points = path.points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
       if (points.length < 2) continue
       ctx.beginPath()
       ctx.moveTo(points[0].x, -points[0].y)

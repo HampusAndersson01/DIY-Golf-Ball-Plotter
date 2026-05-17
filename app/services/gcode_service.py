@@ -106,10 +106,19 @@ class GcodeService:
         return gcode, preview
 
     def generate_from_toolpaths(self, **kwargs):
-        if "placement_offset_x" not in kwargs and "placement_offset_y" not in kwargs:
+        toolpaths = kwargs["toolpaths"]
+        if "placement_offset_x" in kwargs or "placement_offset_y" in kwargs:
+            if toolpaths and getattr(toolpaths[0], "coordinate_space", "surface_mm") != "machine_deg":
+                toolpaths = pipeline_core.project_toolpaths_to_ball_angles(
+                    toolpaths,
+                    center_lon_deg=kwargs.get("placement_offset_x", 0.0),
+                    center_lat_deg=kwargs.get("placement_offset_y", 0.0),
+                    sample_step_deg=kwargs.get("sample_step_deg"),
+                )
+        elif "placement_offset_x" not in kwargs and "placement_offset_y" not in kwargs:
             return self._generate_from_angle_toolpaths_legacy(**kwargs)
         return pipeline_core.generate_gcode_from_toolpaths(
-            kwargs["toolpaths"],
+            toolpaths,
             kwargs["draw_feed"],
             kwargs["travel_feed"],
             kwargs["sample_step_deg"],
@@ -125,4 +134,5 @@ class GcodeService:
             kwargs["gcode_mode"],
             kwargs["include_comments"],
             kwargs.get("header_comment_settings"),
+            kwargs.get("debug"),
         )

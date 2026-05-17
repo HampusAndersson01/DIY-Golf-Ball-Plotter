@@ -1,5 +1,6 @@
 import { useAppStore } from '../../store/appStore'
 import type { DrawerTab } from '../../store/appStore'
+import { parseLocaleNumber } from '../../utils/numbers'
 
 const TABS: DrawerTab[] = ['advanced', 'gcode', 'logs']
 
@@ -11,6 +12,7 @@ type Props = {
 export function AdvancedDrawer({ activeTab, onTab }: Props) {
   const settings = useAppStore((state) => state.settings)!
   const updateSetting = useAppStore((state) => state.updateSetting)
+  const effectiveInfillSpacingMm = settings.customInfillSpacingEnabled ? settings.infillSpacingMm : settings.lineThicknessMm
   const labels: Record<DrawerTab, string> = {
     advanced: 'Advanced',
     gcode: 'G-code',
@@ -69,9 +71,31 @@ export function AdvancedDrawer({ activeTab, onTab }: Props) {
                 <input onChange={(event) => updateSetting('infillDensity', Number(event.target.value))} type="number" value={settings.infillDensity} />
               </label>
               <label>
-                <span>Infill spacing</span>
-                <input onChange={(event) => updateSetting('infillSpacingMm', Number(event.target.value))} step="0.01" type="number" value={settings.infillSpacingMm} />
+                <span>Infill spacing mode</span>
+                <select
+                  onChange={(event) => updateSetting('customInfillSpacingEnabled', event.target.value === 'custom')}
+                  value={settings.customInfillSpacingEnabled ? 'custom' : 'auto'}
+                >
+                  <option value="auto">Auto: match pen width</option>
+                  <option value="custom">Custom</option>
+                </select>
               </label>
+              {settings.customInfillSpacingEnabled ? (
+                <label>
+                  <span>Infill spacing mm</span>
+                  <input
+                    onChange={(event) => updateSetting('infillSpacingMm', parseLocaleNumber(event.target.value))}
+                    step="0.01"
+                    type="number"
+                    value={settings.infillSpacingMm}
+                  />
+                </label>
+              ) : (
+                <label>
+                  <span>Infill spacing</span>
+                  <input readOnly step="0.01" type="number" value={effectiveInfillSpacingMm} />
+                </label>
+              )}
               <label>
                 <span>Infill angle</span>
                 <input onChange={(event) => updateSetting('infillAngleDeg', Number(event.target.value))} type="number" value={settings.infillAngleDeg} />

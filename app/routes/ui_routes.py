@@ -28,7 +28,10 @@ def build_frontend_config(config) -> dict:
             "wallCount": config["DEFAULT_WALL_COUNT"],
             "infillDensity": config["DEFAULT_INFILL_DENSITY"],
             "infillSpacingMm": config["DEFAULT_INFILL_SPACING_MM"],
+            "customInfillSpacingEnabled": False,
             "infillAngleDeg": config["DEFAULT_INFILL_ANGLE_DEG"],
+            "fillStrategy": config["DEFAULT_FILL_STRATEGY"],
+            "alternateFillAngleDeg": config["DEFAULT_ALTERNATE_FILL_ANGLE_DEG"],
             "minFillAreaMm2": config["DEFAULT_MIN_FILL_AREA_MM2"],
             "minFillWidthMm": config["DEFAULT_MIN_FILL_WIDTH_MM"],
             "simplifyToleranceMm": config["DEFAULT_SIMPLIFY_TOLERANCE_MM"],
@@ -47,6 +50,7 @@ def build_frontend_config(config) -> dict:
             "rasterMinRegionAreaPx": config["DEFAULT_RASTER_MIN_REGION_AREA_PX"],
             "rasterRegionSimplifyPx": config["DEFAULT_RASTER_REGION_SIMPLIFY_PX"],
             "outlineAfterFill": config["DEFAULT_OUTLINE_AFTER_FILL"],
+            "streamingMode": config["DEFAULT_STREAMING_MODE"],
         },
     }
 
