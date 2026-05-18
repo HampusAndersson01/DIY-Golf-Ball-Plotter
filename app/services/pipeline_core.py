@@ -85,6 +85,7 @@ def configure_runtime(config, state_dict, serial_lock_obj):
 
 
 from collections import deque
+import hashlib
 import logging
 from flask import Flask, request, jsonify, render_template_string
 import serial
@@ -206,6 +207,7 @@ DEFAULT_MIN_SEGMENT_LENGTH_MM = 0.5
 DEFAULT_TRAVEL_OPTIMIZATION = "nearest-neighbor"
 DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS = True
 DEFAULT_STREAMING_MODE = "buffered"
+DEFAULT_OUTLINE_PLACEMENT_MODE = "inside_by_half_pen_width"
 SVG_DARK_FILL_LUMINANCE_THRESHOLD = 0.42
 SVG_LIGHT_CUTOUT_LUMINANCE_THRESHOLD = 0.82
 SVG_MIN_PRINT_OPACITY = 0.99
@@ -1235,6 +1237,9 @@ def debug_append_toolpaths(debug: Optional[dict[str, Any]], key: str, toolpaths:
         entries.append({
             "kind": toolpath.kind,
             "closed": toolpath.closed,
+            "id": toolpath.path_id,
+            "coordinate_space": toolpath.coordinate_space,
+            "source": toolpath.source,
             "points": [asdict(point) for point in toolpath.points],
         })
 
@@ -1260,6 +1265,25 @@ def summarize_toolpaths(toolpaths: list["Toolpath"]) -> dict[str, Any]:
         "paths_by_kind": paths_by_kind,
         "points_by_kind": points_by_kind,
     }
+
+
+def hash_toolpaths(toolpaths: list["Toolpath"]) -> str:
+    payload: list[dict[str, Any]] = []
+    for toolpath in toolpaths:
+        payload.append({
+            "id": toolpath.path_id,
+            "kind": toolpath.kind,
+            "closed": toolpath.closed,
+            "coordinate_space": toolpath.coordinate_space,
+            "source": toolpath.source,
+            "region_id": toolpath.region_id,
+            "points": [
+                [round(point.x, 6), round(point.y, 6)]
+                for point in toolpath.points
+            ],
+        })
+    encoded = repr(payload).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def debug_append_geometry(debug: Optional[dict[str, Any]], key: str, geometry: Any, kind: str) -> None:
@@ -2496,7 +2520,20 @@ def project_toolpaths_to_ball_angles(
             )
             for point in sampled_points
         ]
-        projected.append(clone_toolpath(toolpath, points=points, coordinate_space="machine_deg"))
+        projected.append(clone_toolpath(
+            toolpath,
+            points=points,
+            coordinate_space="machine_deg",
+            metadata={
+                **toolpath.metadata,
+                "coordinate_space_before_projection": toolpath.coordinate_space,
+                "coordinate_space_after_projection": "machine_deg",
+                "projection_function": "surface_mm_to_ball_angles",
+                "projection_count": int(toolpath.metadata.get("projection_count", 0)) + 1,
+                "point_count_before_projection": len(toolpath.points),
+                "point_count_after_projection": len(points),
+            },
+        ))
     return projected
 
 
@@ -2633,6 +2670,13 @@ def geometry_to_closed_toolpaths(geometry: Any, kind: str, tolerance: float) -> 
     return paths
 
 
+def path_is_inside_printable_area(path: Toolpath, printable_geometry: Any, tolerance_mm: float = 0.02) -> bool:
+    if printable_geometry is None or printable_geometry.is_empty or len(path.points) < 2:
+        return False
+    line = LineString([(point.x, point.y) for point in path.points])
+    return printable_geometry.buffer(max(0.0, tolerance_mm), join_style=1).covers(line)
+
+
 def assign_stable_path_ids(toolpaths: list[Toolpath]) -> list[Toolpath]:
     counters: dict[str, int] = {}
     assigned: list[Toolpath] = []
@@ -2678,51 +2722,136 @@ def build_toolpath_lifecycle_debug(
     logs: list[dict[str, Any]] = []
     counts_by_kind: dict[str, int] = {}
     projection_count_by_kind: dict[str, int] = {}
-    coordinate_space_by_kind: dict[str, list[str]] = {}
+    coordinate_space_before_projection_by_kind: dict[str, str] = {}
+    coordinate_space_after_projection_by_kind: dict[str, str] = {}
+    used_projection_function_by_kind: dict[str, str] = {}
     warnings: list[str] = []
     for path_mm, path_deg in zip(toolpaths_mm, toolpaths_deg):
         counts_by_kind[path_mm.kind] = counts_by_kind.get(path_mm.kind, 0) + 1
-        projection_count_by_kind[path_mm.kind] = projection_count_by_kind.get(path_mm.kind, 0) + 1
-        coordinate_space_by_kind.setdefault(path_mm.kind, [])
-        if path_mm.coordinate_space not in coordinate_space_by_kind[path_mm.kind]:
-            coordinate_space_by_kind[path_mm.kind].append(path_mm.coordinate_space)
+        projection_count_by_kind[path_mm.kind] = max(
+            projection_count_by_kind.get(path_mm.kind, 0),
+            int(path_deg.metadata.get("projection_count", 0)),
+        )
+        coordinate_space_before_projection_by_kind[path_mm.kind] = path_mm.coordinate_space
+        coordinate_space_after_projection_by_kind[path_mm.kind] = path_deg.coordinate_space
+        used_projection_function_by_kind[path_mm.kind] = path_deg.metadata.get("projection_function", "surface_mm_to_ball_angles")
         if len(path_mm.points) < 2 or len(path_deg.points) < 2:
             continue
+        coordinate_space_before_offset = path_mm.metadata.get("coordinate_space_before_offset", path_mm.metadata.get("coordinate_space_at_creation", path_mm.coordinate_space))
+        offset_distance_mm = float(path_mm.metadata.get("offset_distance_mm", 0.0))
+        simplify_tolerance_mm = float(path_mm.metadata.get("simplify_tolerance_mm", 0.0))
         log_entry = {
             "path_id": path_mm.path_id,
             "kind": path_mm.kind,
             "source": path_mm.source,
             "region_id": path_mm.region_id,
             "coordinate_space_at_creation": path_mm.metadata.get("coordinate_space_at_creation", path_mm.coordinate_space),
-            "coordinate_space_after_offset": path_mm.metadata.get("coordinate_space_after_offset", path_mm.coordinate_space),
-            "coordinate_space_after_simplify": path_mm.metadata.get("coordinate_space_after_simplify", path_mm.coordinate_space),
+            "coordinate_space_before_offset": coordinate_space_before_offset,
+            "offset_applied": abs(offset_distance_mm) > 1e-9,
+            "offset_distance_mm": offset_distance_mm,
+            "offset_space": path_mm.metadata.get("offset_space", path_mm.metadata.get("coordinate_space_after_offset", path_mm.coordinate_space)),
+            "coordinate_space_before_simplify": path_mm.metadata.get("coordinate_space_before_simplify", path_mm.coordinate_space),
+            "simplify_applied": simplify_tolerance_mm > 0.0,
+            "simplify_tolerance": simplify_tolerance_mm,
+            "simplify_space": path_mm.metadata.get("simplify_space", path_mm.metadata.get("coordinate_space_after_simplify", path_mm.coordinate_space)),
             "coordinate_space_before_projection": path_mm.coordinate_space,
-            "projected_to_machine_deg": path_deg.coordinate_space == "machine_deg",
-            "projection_count": 1,
-            "used_projection_function": "surface_mm_to_ball_angles",
-            "point_count_before": len(path_mm.points),
-            "point_count_after": len(path_deg.points),
+            "projection_function": path_deg.metadata.get("projection_function", "surface_mm_to_ball_angles"),
+            "projection_count": int(path_deg.metadata.get("projection_count", 0)),
+            "coordinate_space_after_projection": path_deg.coordinate_space,
+            "used_for_preview": True,
+            "used_for_gcode": True,
+            "point_count_before_projection": int(path_deg.metadata.get("point_count_before_projection", len(path_mm.points))),
+            "point_count_after_projection": int(path_deg.metadata.get("point_count_after_projection", len(path_deg.points))),
             "closed": path_mm.closed,
-            "bounds_before_projection": _bounds_for_points(path_mm.points),
-            "bounds_after_projection": _bounds_for_points(path_deg.points),
+            "bbox_surface_mm": _bounds_for_points(path_mm.points),
+            "bbox_machine_deg": _bounds_for_points(path_deg.points),
             "winding": _winding(path_mm.points, path_mm.closed),
             "area_mm2": abs(_polygon_area(path_mm.points)) if path_mm.closed else 0.0,
             "length_mm": segment_length(path_mm.points),
-            "offset_distance_mm": path_mm.metadata.get("offset_distance_mm", 0.0),
-            "simplify_tolerance_mm": path_mm.metadata.get("simplify_tolerance_mm", 0.0),
             "warnings": list(path_mm.warnings),
         }
         logs.append(log_entry)
         warnings.extend(path_mm.warnings)
     summary = {
-        "unit_model": "surface_mm_then_project_to_machine_deg",
+        "unit_model": "surface_mm_then_project_once_to_machine_deg",
         "path_counts_by_kind": counts_by_kind,
         "projection_count_by_kind": projection_count_by_kind,
-        "coordinate_space_by_kind": coordinate_space_by_kind,
+        "coordinate_space_before_projection_by_kind": coordinate_space_before_projection_by_kind,
+        "coordinate_space_after_projection_by_kind": coordinate_space_after_projection_by_kind,
+        "projection_function_by_kind": used_projection_function_by_kind,
         "outline_warning_count": len(warnings),
         "outline_errors": warnings,
     }
     return logs, summary
+
+
+def build_projected_path_debug(
+    toolpaths_mm: list[Toolpath],
+    toolpaths_deg: list[Toolpath],
+    preview: list[dict[str, Any]],
+) -> dict[str, Any]:
+    preview_toolpaths: list[Toolpath] = []
+    travel_preview_count = 0
+    for entry in preview or []:
+        points = [Point(float(point["x"]), float(point["y"])) for point in entry.get("points") or []]
+        if entry.get("kind") == "travel":
+            travel_preview_count += 1
+        elif len(points) >= 2:
+            preview_toolpaths.append(Toolpath(
+                points=points,
+                kind=str(entry.get("kind") or "outline"),
+                closed=bool(entry.get("closed")),
+                coordinate_space="machine_deg",
+                path_id=entry.get("id"),
+                source=str(entry.get("source") or "gcode_preview"),
+                region_id=entry.get("region_id"),
+            ))
+
+    preview_path_hash = hash_toolpaths(toolpaths_deg)
+    gcode_path_hash = hash_toolpaths(toolpaths_deg)
+    preview_draw_hash = hash_toolpaths(preview_toolpaths)
+    if preview_path_hash != gcode_path_hash:
+        raise AssertionError("Projected preview and G-code toolpath hashes diverged")
+    if preview_path_hash != preview_draw_hash:
+        raise AssertionError("Preview paths do not match projected toolpaths used for G-code")
+
+    projection_applied_to = {
+        kind: False for kind in ("outline", "fill-wall", "fill-infill", "detail-trace", "travel")
+    }
+    projection_count_by_kind = {
+        kind: 0 for kind in ("outline", "fill-wall", "fill-infill", "detail-trace", "travel")
+    }
+    coordinate_space_before_projection_by_kind = {
+        kind: "n/a" for kind in ("outline", "fill-wall", "fill-infill", "detail-trace", "travel")
+    }
+    coordinate_space_after_projection_by_kind = {
+        kind: "n/a" for kind in ("outline", "fill-wall", "fill-infill", "detail-trace", "travel")
+    }
+    for path_mm, path_deg in zip(toolpaths_mm, toolpaths_deg):
+        projection_applied_to[path_mm.kind] = True
+        projection_count_by_kind[path_mm.kind] = max(
+            projection_count_by_kind[path_mm.kind],
+            int(path_deg.metadata.get("projection_count", 0)),
+        )
+        coordinate_space_before_projection_by_kind[path_mm.kind] = path_mm.coordinate_space
+        coordinate_space_after_projection_by_kind[path_mm.kind] = path_deg.coordinate_space
+    if travel_preview_count > 0:
+        projection_applied_to["travel"] = True
+        projection_count_by_kind["travel"] = 1
+        coordinate_space_before_projection_by_kind["travel"] = "surface_mm"
+        coordinate_space_after_projection_by_kind["travel"] = "machine_deg"
+
+    return {
+        "unit_model": "surface_mm_then_project_once_to_machine_deg",
+        "preview_and_gcode_share_same_projected_paths": True,
+        "preview_path_hash": preview_path_hash,
+        "gcode_path_hash": gcode_path_hash,
+        "preview_draw_hash": preview_draw_hash,
+        "projection_applied_to": projection_applied_to,
+        "projection_count_by_kind": projection_count_by_kind,
+        "coordinate_space_before_projection_by_kind": coordinate_space_before_projection_by_kind,
+        "coordinate_space_after_projection_by_kind": coordinate_space_after_projection_by_kind,
+    }
 
 
 def _centroid_for_points(points: list[Point]) -> dict[str, float]:
@@ -3439,6 +3568,91 @@ class SlicerService:
             "warnings": list(warnings or []),
         })
 
+    def _resolve_outline_base_inset_mm(
+        self,
+        *,
+        pen_width_mm: float,
+        outline_placement_mode: str,
+        custom_offset_mm: float = 0.0,
+    ) -> float:
+        if outline_placement_mode == "center_on_boundary":
+            return 0.0
+        if outline_placement_mode == "inside_by_custom_offset":
+            return max(0.0, custom_offset_mm)
+        return max(0.0, pen_width_mm * 0.5)
+
+    def _offset_polygon_into_printable_area(
+        self,
+        polygon: Polygon,
+        *,
+        inset_mm: float,
+    ) -> Any:
+        if inset_mm <= 1e-9:
+            return polygon
+        return polygon.buffer(-inset_mm, join_style=1)
+
+    def generate_outline_cleanup_paths(
+        self,
+        polygon: Polygon,
+        *,
+        region_index: int,
+        pen_width_mm: float,
+        wall_count: int,
+        wall_spacing_mm: float,
+        outline_placement_mode: str = DEFAULT_OUTLINE_PLACEMENT_MODE,
+        custom_offset_mm: float = 0.0,
+        simplify_tolerance_mm: float,
+        source_polygon_id: str,
+        source_polygon_kind: str = "final_printable_polygon",
+    ) -> list[Toolpath]:
+        outline_paths: list[Toolpath] = []
+        base_inset_mm = self._resolve_outline_base_inset_mm(
+            pen_width_mm=pen_width_mm,
+            outline_placement_mode=outline_placement_mode,
+            custom_offset_mm=custom_offset_mm,
+        )
+        for wall_index in range(max(1, wall_count)):
+            inset_mm = base_inset_mm + (wall_index * wall_spacing_mm)
+            wall_polygon = self._offset_polygon_into_printable_area(
+                polygon,
+                inset_mm=inset_mm,
+            )
+            if wall_polygon is None or wall_polygon.is_empty:
+                continue
+            wall_kind = "outline" if wall_index == 0 else "fill-wall"
+            wall_role = "cleanup_edge_over_fill" if wall_index == 0 else "inner_cleanup_wall"
+            for path in geometry_to_closed_toolpaths(wall_polygon, wall_kind, simplify_tolerance_mm):
+                outline_path = clone_toolpath(
+                    path,
+                    region_id=region_index,
+                    source=source_polygon_kind,
+                    metadata={
+                        **path.metadata,
+                        "source_polygon_id": source_polygon_id,
+                        "source_polygon_matches_infill_clip_polygon": True,
+                        "offset_distance_mm": inset_mm,
+                        "offset_direction": "inward_to_printable_area",
+                        "pen_width_mm": pen_width_mm,
+                        "wall_spacing_mm": wall_spacing_mm,
+                        "wall_index": wall_index,
+                        "wall_role": "outer_boundary_cleanup" if wall_index == 0 else "inner_cleanup_wall",
+                        "outline_placement_mode": outline_placement_mode,
+                        "purpose": wall_role,
+                        "simplify_tolerance_mm": simplify_tolerance_mm,
+                        "coordinate_space_at_creation": "surface_mm",
+                        "coordinate_space_before_offset": "surface_mm",
+                        "offset_space": "surface_mm",
+                        "coordinate_space_before_simplify": "surface_mm",
+                        "simplify_space": "surface_mm",
+                    },
+                )
+                if not path_is_inside_printable_area(outline_path, polygon, tolerance_mm=max(0.02, pen_width_mm * 0.1)):
+                    raise AssertionError(
+                        f"{outline_path.kind} {source_polygon_id} escaped printable polygon after inward offset"
+                    )
+                outline_paths.append(outline_path)
+        return outline_paths
+
     def slice_one_layer(
         self,
         printable_geometry: Any,
@@ -3516,7 +3730,17 @@ class SlicerService:
         }
         infill_region_debug: list[dict[str, Any]] = []
         for region_index, polygon in enumerate(polygons):
-            printable_outline_region = polygon.buffer(-(line_width_mm * 0.5), join_style=1)
+            source_polygon_id = f"component_{region_index + 1:03d}"
+            outline_placement_mode = DEFAULT_OUTLINE_PLACEMENT_MODE
+            wall_spacing_mm = line_width_mm
+            expected_outline_inset_mm = self._resolve_outline_base_inset_mm(
+                pen_width_mm=line_width_mm,
+                outline_placement_mode=outline_placement_mode,
+            )
+            printable_outline_region = self._offset_polygon_into_printable_area(
+                polygon,
+                inset_mm=expected_outline_inset_mm,
+            )
             can_fit_outline = not printable_outline_region.is_empty
             if not can_fit_outline:
                 slicer_counts["outline_buffer_empty_region_count"] += 1
@@ -3525,80 +3749,50 @@ class SlicerService:
 
             debug_append_geometry(debug, "detected_printable_polygons", polygon, "detected-printable-polygon")
             region_paths: list[Toolpath] = []
+            outline_cleanup_paths: list[Toolpath] = []
+            cleanup_outline_only_paths: list[Toolpath] = []
 
             if can_fit_outline:
                 slicer_counts["normal_slicer_region_count"] += 1
-                outer_walls = geometry_to_closed_toolpaths(printable_outline_region, "fill-wall", simplify_tolerance_resolved_mm)
-                outer_walls = [
-                    clone_toolpath(
-                        path,
-                        region_id=region_index,
-                        source="wall_inset",
-                        metadata={
-                            **path.metadata,
-                            "offset_distance_mm": line_width_mm * 0.5,
-                            "simplify_tolerance_mm": simplify_tolerance_resolved_mm,
-                            "coordinate_space_at_creation": "surface_mm",
-                            "coordinate_space_after_offset": "surface_mm",
-                            "coordinate_space_after_simplify": "surface_mm",
-                        },
-                    )
-                    for path in outer_walls
-                ]
-                self._append_offset_debug(
-                    debug,
-                    path_id=f"fill-wall-region-{region_index}-outer",
-                    operation="outer_outline",
-                    requested_offset_mm=-(line_width_mm * 0.5),
-                    input_geometry=polygon,
-                    output_geometry=printable_outline_region,
+                outline_cleanup_paths = self.generate_outline_cleanup_paths(
+                    polygon,
+                    region_index=region_index,
+                    pen_width_mm=line_width_mm,
+                    wall_count=max(1, wall_count),
+                    wall_spacing_mm=wall_spacing_mm,
+                    outline_placement_mode=outline_placement_mode,
+                    simplify_tolerance_mm=simplify_tolerance_resolved_mm,
+                    source_polygon_id=source_polygon_id,
                 )
-                debug_append_toolpaths(debug, "outer_walls", outer_walls)
-                region_paths.extend(optimize_toolpath_order(outer_walls, strategy=travel_optimization))
-
-            anchor = region_paths[-1].points[-1] if region_paths and region_paths[-1].points else Point(0.0, 0.0)
-            inner_wall_paths: list[Toolpath] = []
-            if can_fit_outline:
-                for wall_index in range(1, max(1, wall_count)):
-                    wall_geometry = polygon.buffer(-(line_width_mm * (wall_index + 0.5)), join_style=1)
-                    if wall_geometry.is_empty:
-                        continue
-                    debug_append_geometry(debug, "inner_wall_regions", wall_geometry, f"inner-wall-region-{wall_index}")
-                    next_paths = [
-                        clone_toolpath(
-                            path,
-                            region_id=region_index,
-                            source="wall_inset",
-                            metadata={
-                                **path.metadata,
-                                "offset_distance_mm": line_width_mm * (wall_index + 0.5),
-                                "simplify_tolerance_mm": simplify_tolerance_resolved_mm,
-                                "coordinate_space_at_creation": "surface_mm",
-                                "coordinate_space_after_offset": "surface_mm",
-                                "coordinate_space_after_simplify": "surface_mm",
-                            },
-                        )
-                        for path in geometry_to_closed_toolpaths(wall_geometry, "fill-wall", simplify_tolerance_resolved_mm)
-                    ]
+                cleanup_outline_only_paths = [path for path in outline_cleanup_paths if path.kind == "outline"]
+                wall_paths = [path for path in outline_cleanup_paths if path.kind == "fill-wall"]
+                for wall_path in outline_cleanup_paths:
                     self._append_offset_debug(
                         debug,
-                        path_id=f"fill-wall-region-{region_index}-inner-{wall_index}",
-                        operation="inner_wall",
-                        requested_offset_mm=-(line_width_mm * (wall_index + 0.5)),
+                        path_id=wall_path.path_id or f"{wall_path.kind}-{source_polygon_id}-{wall_path.metadata.get('wall_index', 0)}",
+                        operation="outline_cleanup_inset",
+                        requested_offset_mm=-float(wall_path.metadata.get("offset_distance_mm", 0.0)),
                         input_geometry=polygon,
-                        output_geometry=wall_geometry,
+                        output_geometry=self._offset_polygon_into_printable_area(
+                            polygon,
+                            inset_mm=float(wall_path.metadata.get("offset_distance_mm", 0.0)),
+                        ),
                     )
-                    inner_wall_paths.extend(next_paths)
-                debug_append_toolpaths(debug, "inner_walls", inner_wall_paths)
-                inner_wall_paths = optimize_toolpath_order(inner_wall_paths, strategy=travel_optimization, start_point=anchor)
-                region_paths.extend(inner_wall_paths)
+                debug_append_toolpaths(debug, "outer_walls", wall_paths)
+                debug_append_toolpaths(debug, "deferred_cleanup_outlines", cleanup_outline_only_paths)
+                if outline_after_fill:
+                    region_paths.extend(optimize_toolpath_order(wall_paths, strategy=travel_optimization))
+                else:
+                    region_paths.extend(optimize_toolpath_order(outline_cleanup_paths, strategy=travel_optimization))
+
+            anchor = region_paths[-1].points[-1] if region_paths and region_paths[-1].points else Point(0.0, 0.0)
 
             infill_paths: list[Toolpath] = []
             infill_region = None
             fill_threshold_failed = True
             resolved_infill_angle_deg = infill_angle_deg
             if can_fit_outline:
-                infill_offset = line_width_mm * max(1, wall_count)
+                infill_offset = expected_outline_inset_mm + (wall_spacing_mm * max(0, wall_count - 1)) + (line_width_mm * 0.5)
                 infill_region = polygon.buffer(-infill_offset, join_style=1)
                 if not infill_region.is_empty:
                     fill_area = infill_region.area
@@ -3639,8 +3833,12 @@ class SlicerService:
                             **path.metadata,
                             "simplify_tolerance_mm": simplify_tolerance_resolved_mm,
                             "coordinate_space_at_creation": "surface_mm",
-                            "coordinate_space_after_offset": "none",
-                            "coordinate_space_after_simplify": "surface_mm",
+                            "coordinate_space_before_offset": "surface_mm",
+                            "offset_space": "none",
+                            "coordinate_space_before_simplify": "surface_mm",
+                            "simplify_space": "surface_mm",
+                            "source_polygon_id": source_polygon_id,
+                            "source_polygon_matches_infill_clip_polygon": True,
                         },
                     )
                     for path in infill_paths
@@ -3672,8 +3870,10 @@ class SlicerService:
                                 **path.metadata,
                                 "simplify_tolerance_mm": max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
                                 "coordinate_space_at_creation": "surface_mm",
-                                "coordinate_space_after_offset": "surface_mm",
-                                "coordinate_space_after_simplify": "surface_mm",
+                                "coordinate_space_before_offset": "surface_mm",
+                                "offset_space": "surface_mm",
+                                "coordinate_space_before_simplify": "surface_mm",
+                                "simplify_space": "surface_mm",
                             },
                         )
                         for path in infill_paths
@@ -3697,8 +3897,10 @@ class SlicerService:
                                 **path.metadata,
                                 "simplify_tolerance_mm": max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
                                 "coordinate_space_at_creation": "surface_mm",
-                                "coordinate_space_after_offset": "none",
-                                "coordinate_space_after_simplify": "surface_mm",
+                                "coordinate_space_before_offset": "surface_mm",
+                                "offset_space": "none",
+                                "coordinate_space_before_simplify": "surface_mm",
+                                "simplify_space": "surface_mm",
                             },
                         )
                         for path in infill_paths
@@ -3717,23 +3919,10 @@ class SlicerService:
             )
             region_paths.extend(infill_paths)
 
-            if outline_after_fill and can_fit_outline:
-                cleanup_paths = geometry_to_closed_toolpaths(printable_outline_region, "outline", simplify_tolerance_resolved_mm)
+            if outline_after_fill and cleanup_outline_only_paths:
                 cleanup_paths = [
-                    clone_toolpath(
-                        path,
-                        region_id=region_index,
-                        source="polygon_offset",
-                        metadata={
-                            **path.metadata,
-                            "offset_distance_mm": line_width_mm * 0.5,
-                            "simplify_tolerance_mm": simplify_tolerance_resolved_mm,
-                            "coordinate_space_at_creation": "surface_mm",
-                            "coordinate_space_after_offset": "surface_mm",
-                            "coordinate_space_after_simplify": "surface_mm",
-                        },
-                    )
-                    for path in cleanup_paths
+                    clone_toolpath(path, region_id=region_index)
+                    for path in cleanup_outline_only_paths
                 ]
                 debug_append_toolpaths(debug, "cleanup_outlines", cleanup_paths)
                 cleanup_paths = optimize_toolpath_order(
@@ -3742,6 +3931,41 @@ class SlicerService:
                     start_point=region_paths[-1].points[-1] if region_paths and region_paths[-1].points else anchor,
                 )
                 region_paths.extend(cleanup_paths)
+
+            if debug is not None and can_fit_outline:
+                debug.setdefault("wall_alignment_checks", [])
+                infill_boundary = infill_region.boundary if infill_region is not None and not infill_region.is_empty else printable_outline_region.boundary
+                wall_candidates = outline_cleanup_paths if outline_cleanup_paths else [path for path in region_paths if path.kind in {"fill-wall", "outline"}]
+                for wall_path in wall_candidates:
+                    wall_line = LineString([(point.x, point.y) for point in wall_path.points])
+                    wall_inside_mask = path_is_inside_printable_area(wall_path, polygon, tolerance_mm=max(0.02, line_width_mm * 0.1))
+                    debug["wall_alignment_checks"].append({
+                        "path_id": wall_path.path_id or f"{wall_path.kind}_region_{region_index}",
+                        "kind": wall_path.kind,
+                        "source_polygon_id": source_polygon_id,
+                        "source_polygon_matches_infill_clip_polygon": bool(wall_path.metadata.get("source_polygon_matches_infill_clip_polygon", False)),
+                        "coordinate_space": wall_path.coordinate_space,
+                        "offset_distance_mm": float(wall_path.metadata.get("offset_distance_mm", 0.0)),
+                        "offset_direction": wall_path.metadata.get("offset_direction", "unknown"),
+                        "wall_inside_mask_surface_mm": bool(wall_inside_mask),
+                        "wall_intersects_infill_bbox": bool(infill_region is not None and not infill_region.is_empty and wall_line.envelope.intersects(infill_region.envelope)),
+                        "min_distance_to_infill_boundary_mm": float(wall_line.distance(infill_boundary)) if infill_boundary is not None and not infill_boundary.is_empty else 0.0,
+                        "max_distance_to_infill_boundary_mm": float(wall_line.hausdorff_distance(infill_boundary)) if infill_boundary is not None and not infill_boundary.is_empty else 0.0,
+                        "self_intersections": 0 if wall_line.is_simple else 1,
+                        "closed": wall_path.closed,
+                        "offset_direction": "inward",
+                        "suspected_issue": None if wall_inside_mask else "wall_outside_mask",
+                    })
+                debug["outline_fill_alignment_debug"] = {
+                    "outline_role": "cleanup_stroke_over_filled_edge",
+                    "outline_not_external_border": True,
+                    "outline_centerline_policy": outline_placement_mode,
+                    "pen_width_mm": line_width_mm,
+                    "expected_outline_inset_mm": expected_outline_inset_mm,
+                    "outline_uses_same_source_polygon_as_infill": True,
+                    "outline_coordinate_space_before_projection": "surface_mm",
+                    "infill_coordinate_space_before_projection": "surface_mm",
+                }
 
             ordered.extend(region_paths)
 
@@ -3824,8 +4048,10 @@ def generate_toolpaths(
             metadata={
                 "simplify_tolerance_mm": simplify_tolerance_resolved_mm,
                 "coordinate_space_at_creation": "surface_mm",
-                "coordinate_space_after_offset": "none",
-                "coordinate_space_after_simplify": "surface_mm",
+                "coordinate_space_before_offset": "surface_mm",
+                "offset_space": "none",
+                "coordinate_space_before_simplify": "surface_mm",
+                "simplify_space": "surface_mm",
             },
         ))
 
@@ -3869,8 +4095,10 @@ def generate_toolpaths(
             metadata={
                 "simplify_tolerance_mm": detail_tolerance_mm,
                 "coordinate_space_at_creation": "surface_mm",
-                "coordinate_space_after_offset": "none",
-                "coordinate_space_after_simplify": "surface_mm",
+                "coordinate_space_before_offset": "surface_mm",
+                "offset_space": "none",
+                "coordinate_space_before_simplify": "surface_mm",
+                "simplify_space": "surface_mm",
             },
         ))
     if detail_paths:
@@ -3917,6 +4145,13 @@ def generate_gcode_from_toolpaths(
     if gcode_mode != "simple":
         raise ValueError("Invalid G-code mode")
     assert_toolpaths_coordinate_space(toolpaths, "machine_deg")
+    for toolpath in toolpaths:
+        if toolpath.coordinate_space != "machine_deg":
+            raise AssertionError(f"{toolpath.kind} {toolpath.path_id or '<unassigned>'} was not projected to machine_deg")
+        if int(toolpath.metadata.get("projection_count", 0)) != 1:
+            raise AssertionError(
+                f"{toolpath.kind} {toolpath.path_id or '<unassigned>'} was projected {toolpath.metadata.get('projection_count', 0)} times"
+            )
 
     g: list[str] = []
     preview: list[dict[str, Any]] = []
@@ -4128,6 +4363,7 @@ def generate_gcode_from_toolpaths(
             "long_pen_down_jumps": long_pen_down_jumps,
             "max_pen_down_jump_mm_or_deg": max_pen_down_jump,
         }
+        debug["projected_toolpath_hash"] = hash_toolpaths(toolpaths)
 
     return g, preview
 
@@ -4175,11 +4411,14 @@ def run_integrated_svg_pipeline_self_test() -> dict[str, Any]:
         travel_optimization="nearest-neighbor",
         debug={},
     )
-    expect(any(path.kind == "fill-wall" for path in toolpaths), "printable regions generate fill walls")
+    expect(any(path.kind in {"fill-wall", "outline"} for path in toolpaths), "printable regions generate inward cleanup edge strokes")
     expect(any(path.kind == "fill-infill" for path in toolpaths), "printable regions generate infill when geometry is large enough")
     hole_box = Polygon([(30, 30), (70, 30), (70, 70), (30, 70)])
     infill_points = [point for path in toolpaths if path.kind == "fill-infill" for point in path.points]
     expect(not any(hole_box.buffer(-0.01).contains(ShapelyPoint(point.x, point.y)) for point in infill_points), "infill lines do not cross cutout holes")
+    cleanup_paths = [path for path in toolpaths if path.kind in {"fill-wall", "outline"} and path.source == "final_printable_polygon"]
+    expect(all(path_is_inside_printable_area(path, result.bundle.printable_geometry) for path in cleanup_paths), "cleanup edge strokes stay inside printable geometry")
+    expect(all(path.metadata.get("offset_direction") == "inward_to_printable_area" for path in cleanup_paths), "cleanup edge strokes offset inward into printable material")
     equator = surface_mm_to_ball_angles(Point(10.0, 0.0), center_lon_deg=0.0, center_lat_deg=0.0)
     at_45 = surface_mm_to_ball_angles(Point(10.0, 0.0), center_lon_deg=0.0, center_lat_deg=45.0)
     expect(abs(at_45.x) > abs(equator.x) * 1.39, "surface mapping expands longitude away from the equator to preserve physical width")

@@ -70,7 +70,7 @@ def project_surface_toolpaths(toolpaths, options: dict):
     pipeline_core.validate_toolpaths_finite(projected_toolpaths, coordinate_space="machine_deg")
     lifecycle_logs, outline_pipeline_debug = pipeline_core.build_toolpath_lifecycle_debug(cleaned_toolpaths, projected_toolpaths)
     coordinate_debug = {
-        "unit_model": "surface_mm_then_project_to_machine_deg",
+        "unit_model": "surface_mm_then_project_once_to_machine_deg",
         "toolpath_kinds": lifecycle_logs,
         "projection_applied_to": {
             kind: True for kind in ("outline", "fill-wall", "fill-infill", "detail-trace")
@@ -220,7 +220,7 @@ def generate_gcode_route():
                 sum(1 for path in toolpaths if path.kind == "fill-infill"),
                 sum(max(0, len(path.points) - 1) for path in toolpaths if path.kind == "fill-infill"),
             )
-            _, projected_toolpaths, cleanup_stats, coordinate_debug, outline_pipeline_debug, region_alignment_debug = project_surface_toolpaths(toolpaths, options)
+            cleaned_toolpaths, projected_toolpaths, cleanup_stats, coordinate_debug, outline_pipeline_debug, region_alignment_debug = project_surface_toolpaths(toolpaths, options)
             gcode, preview = get_gcode_service().generate_from_toolpaths(
                 toolpaths=projected_toolpaths,
                 header_comment_settings=build_fill_header_settings(options, design_bounds),
@@ -241,9 +241,24 @@ def generate_gcode_route():
                 debug=debug_data,
             )
             if debug_data is not None:
+                pipeline_core.debug_append_toolpaths(debug_data, "surface_mm_toolpaths", cleaned_toolpaths)
+                pipeline_core.debug_append_toolpaths(debug_data, "projected_machine_deg_toolpaths", projected_toolpaths)
+                projected_path_debug = pipeline_core.build_projected_path_debug(cleaned_toolpaths, projected_toolpaths, preview)
+                outline_fill_alignment_debug = dict((debug_data.get("outline_fill_alignment_debug") or {}))
+                outline_fill_alignment_debug.update({
+                    "outline_projected_once": projected_path_debug["projection_count_by_kind"].get("outline", 0) == 1,
+                    "infill_projected_once": projected_path_debug["projection_count_by_kind"].get("fill-infill", 0) == 1,
+                    "preview_and_gcode_same_paths": projected_path_debug["preview_and_gcode_share_same_projected_paths"],
+                })
+                debug_data["gcode_preview"] = preview
                 debug_data["coordinate_debug"] = coordinate_debug
-                debug_data["outline_pipeline_debug"] = outline_pipeline_debug
+                debug_data["outline_pipeline_debug"] = {
+                    **outline_pipeline_debug,
+                    **projected_path_debug,
+                }
+                debug_data["outline_fill_alignment_debug"] = outline_fill_alignment_debug
                 debug_data["region_alignment_debug"] = region_alignment_debug
+                outline_pipeline_debug = debug_data["outline_pipeline_debug"]
             state.update(
                 last_svg_name=raster_file.filename,
                 last_gcode=gcode,
@@ -269,6 +284,7 @@ def generate_gcode_route():
                 effective_settings=effective_settings,
                 coordinate_debug=coordinate_debug,
                 outline_pipeline_debug=outline_pipeline_debug,
+                outline_fill_alignment_debug=(debug_data or {}).get("outline_fill_alignment_debug"),
                 region_alignment_debug=region_alignment_debug,
                 infill_debug=(debug_data or {}).get("infill_debug"),
                 gcode_stats=build_gcode_stats(gcode, cleanup_stats, preview_path_count=len(preview), debug=debug_data),
@@ -367,7 +383,7 @@ def generate_gcode_route():
             sum(1 for path in toolpaths if path.kind == "fill-infill"),
             sum(max(0, len(path.points) - 1) for path in toolpaths if path.kind == "fill-infill"),
         )
-        _, projected_toolpaths, cleanup_stats, coordinate_debug, outline_pipeline_debug, region_alignment_debug = project_surface_toolpaths(toolpaths, options)
+        cleaned_toolpaths, projected_toolpaths, cleanup_stats, coordinate_debug, outline_pipeline_debug, region_alignment_debug = project_surface_toolpaths(toolpaths, options)
         gcode, preview = get_gcode_service().generate_from_toolpaths(
             toolpaths=projected_toolpaths,
             header_comment_settings=build_fill_header_settings(options, design_bounds),
@@ -388,10 +404,24 @@ def generate_gcode_route():
             debug=debug_data,
         )
         if debug_data is not None:
+            pipeline_core.debug_append_toolpaths(debug_data, "surface_mm_toolpaths", cleaned_toolpaths)
+            pipeline_core.debug_append_toolpaths(debug_data, "projected_machine_deg_toolpaths", projected_toolpaths)
+            projected_path_debug = pipeline_core.build_projected_path_debug(cleaned_toolpaths, projected_toolpaths, preview)
+            outline_fill_alignment_debug = dict((debug_data.get("outline_fill_alignment_debug") or {}))
+            outline_fill_alignment_debug.update({
+                "outline_projected_once": projected_path_debug["projection_count_by_kind"].get("outline", 0) == 1,
+                "infill_projected_once": projected_path_debug["projection_count_by_kind"].get("fill-infill", 0) == 1,
+                "preview_and_gcode_same_paths": projected_path_debug["preview_and_gcode_share_same_projected_paths"],
+            })
             debug_data["gcode_preview"] = preview
             debug_data["coordinate_debug"] = coordinate_debug
-            debug_data["outline_pipeline_debug"] = outline_pipeline_debug
+            debug_data["outline_pipeline_debug"] = {
+                **outline_pipeline_debug,
+                **projected_path_debug,
+            }
+            debug_data["outline_fill_alignment_debug"] = outline_fill_alignment_debug
             debug_data["region_alignment_debug"] = region_alignment_debug
+            outline_pipeline_debug = debug_data["outline_pipeline_debug"]
 
         point_count = sum(len(path["points"]) for path in preview if path["kind"] != "travel")
         state.update(
@@ -417,6 +447,7 @@ def generate_gcode_route():
             effective_settings=effective_settings,
             coordinate_debug=coordinate_debug,
             outline_pipeline_debug=outline_pipeline_debug,
+            outline_fill_alignment_debug=(debug_data or {}).get("outline_fill_alignment_debug"),
             region_alignment_debug=region_alignment_debug,
             infill_debug=(debug_data or {}).get("infill_debug"),
             gcode_stats=build_gcode_stats(gcode, cleanup_stats, preview_path_count=len(preview), debug=debug_data),
