@@ -11,32 +11,39 @@ type Props = {
 
 export function AdvancedDrawer({ activeTab, onTab }: Props) {
   const settings = useAppStore((state) => state.settings)!
+  const advancedOpen = useAppStore((state) => state.advancedOpen)
+  const setAdvancedOpen = useAppStore((state) => state.setAdvancedOpen)
   const updateSetting = useAppStore((state) => state.updateSetting)
   const effectiveInfillSpacingMm = settings.customInfillSpacingEnabled ? settings.infillSpacingMm : settings.lineThicknessMm
   const labels: Record<DrawerTab, string> = {
-    advanced: 'Advanced',
+    advanced: 'Print tuning',
     gcode: 'G-code',
     logs: 'Logs',
   }
 
   return (
     <section className="panel drawer-panel">
-      <div className="panel-heading">
-        <div>
-          <div className="panel-kicker">Drawer</div>
-          <h2>Secondary Panels</h2>
-        </div>
-      </div>
-      <div className="tab-row">
-        {TABS.map((tab) => (
-          <button key={tab} className={tab === activeTab ? 'active' : ''} onClick={() => onTab(tab)} type="button">
-            {labels[tab]}
-          </button>
-        ))}
-      </div>
+      <details className="details-panel advanced-shell" onToggle={(event) => setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open)} open={advancedOpen}>
+        <summary>
+          <span>Advanced settings and tools</span>
+          <small>Optional. Normal printing should work without changing anything here.</small>
+        </summary>
 
-      {activeTab === 'advanced' ? (
-        <div className="drawer-pane form-pane">
+        <div className="drawer-stack">
+          <div className="tab-row">
+            {TABS.map((tab) => (
+              <button key={tab} className={tab === activeTab ? 'active' : ''} onClick={() => onTab(tab)} type="button">
+                {labels[tab]}
+              </button>
+            ))}
+          </div>
+
+          {activeTab === 'advanced' ? (
+            <div className="drawer-pane form-pane">
+              <p className="panel-copy muted">
+                Use these only for special cases: unusual artwork placement, non-default feeds, aggressive image cleanup, or slicer experiments.
+              </p>
+
           <details className="details-panel">
             <summary>Placement</summary>
             <div className="field-grid compact two">
@@ -109,6 +116,7 @@ export function AdvancedDrawer({ activeTab, onTab }: Props) {
                 <input onChange={(event) => updateSetting('minSegmentLengthMm', Number(event.target.value))} step="0.01" type="number" value={settings.minSegmentLengthMm} />
               </label>
             </div>
+            <p className="panel-note">Current infill spacing: {settings.customInfillSpacingEnabled ? `${effectiveInfillSpacingMm.toFixed(2)} mm (custom)` : `${effectiveInfillSpacingMm.toFixed(2)} mm (auto from pen width)`}</p>
           </details>
 
           <details className="details-panel">
@@ -188,8 +196,10 @@ export function AdvancedDrawer({ activeTab, onTab }: Props) {
               </label>
             </div>
           </details>
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      </details>
     </section>
   )
 }

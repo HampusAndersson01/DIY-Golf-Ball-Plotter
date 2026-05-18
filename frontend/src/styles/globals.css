@@ -162,6 +162,13 @@ select:focus {
   font-size: 0.78rem;
 }
 
+.panel-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
 .top-progress {
   display: grid;
   gap: 6px;
@@ -375,10 +382,14 @@ select:focus {
 
 .left-rail,
 .right-rail {
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
 .rail-stack {
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
   gap: 10px;
   overflow-y: auto;
@@ -809,6 +820,29 @@ select:focus {
   color: var(--text);
   font-size: 0.78rem;
   font-weight: 700;
+}
+
+.advanced-shell {
+  display: grid;
+  gap: 10px;
+}
+
+.advanced-shell summary {
+  display: grid;
+  gap: 4px;
+}
+
+.advanced-shell summary small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.drawer-stack {
+  display: grid;
+  gap: 10px;
 }
 
 .details-panel summary::-webkit-details-marker {

@@ -15,7 +15,7 @@ export function JobSummaryPanel({ summary, generationDurationMs }: Props) {
             <h2>Job Summary</h2>
           </div>
         </div>
-        <p className="panel-copy muted">Generate G-code to populate runtime and toolpath metrics.</p>
+        <p className="panel-copy muted">Generate G-code to review runtime, path counts, and print size before calibration and run.</p>
       </section>
     )
   }

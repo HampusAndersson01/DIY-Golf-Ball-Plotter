@@ -81,6 +81,7 @@ function DashboardApp() {
   const showTravel = useAppStore((state) => state.showTravel)
   const showCompare = useAppStore((state) => state.showCompare)
   const drawerTab = useAppStore((state) => state.drawerTab)
+  const advancedOpen = useAppStore((state) => state.advancedOpen)
   const viewPreset = useAppStore((state) => state.viewPreset)
   const busy = useAppStore((state) => state.busy)
   const setMachine = useAppStore((state) => state.setMachine)
@@ -427,11 +428,13 @@ function DashboardApp() {
               />
             </div>
             <ColorPickerPanel analysis={analysis} onToggle={toggleColor} selectedColors={selectedColors} />
-            <PenSettingsCard canGenerate={Boolean(imageFile && selectedColors.length) && !busy.generating} onGenerate={handleGenerate} />
+            <div data-step-anchor="generate">
+              <PenSettingsCard canGenerate={Boolean(imageFile && selectedColors.length) && !busy.generating} onGenerate={handleGenerate} />
+            </div>
             <JobSummaryPanel generationDurationMs={generationDurationMs} summary={summary} />
             <AdvancedDrawer activeTab={drawerTab} onTab={setDrawerTab} />
-            {drawerTab === 'gcode' ? <GcodePanel gcode={gcode} /> : null}
-            {drawerTab === 'logs' ? <LogsPanel logs={logs} /> : null}
+            {advancedOpen && drawerTab === 'gcode' ? <GcodePanel gcode={gcode} /> : null}
+            {advancedOpen && drawerTab === 'logs' ? <LogsPanel logs={logs} /> : null}
           </div>
         }
         stepNav={<StepNav hasImage={Boolean(imageFile)} hasPreview={Boolean(preview.length)} machine={machine} onSelect={jumpTo} />}
