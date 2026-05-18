@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import logging
 
 from . import pipeline_core
 
 
 class GcodeService:
+    logger = logging.getLogger(__name__)
     build_pen_position_commands = staticmethod(pipeline_core.build_pen_position_commands)
     is_streamable_line = staticmethod(pipeline_core.is_streamable_gcode_line)
 
@@ -107,6 +109,14 @@ class GcodeService:
 
     def generate_from_toolpaths(self, **kwargs):
         toolpaths = kwargs["toolpaths"]
+        self.logger.info(
+            "Generating G-code from %d toolpaths (mode=%s include_comments=%s placement=(%s,%s))",
+            len(toolpaths),
+            kwargs.get("gcode_mode"),
+            kwargs.get("include_comments"),
+            kwargs.get("placement_offset_x"),
+            kwargs.get("placement_offset_y"),
+        )
         if "placement_offset_x" in kwargs or "placement_offset_y" in kwargs:
             if toolpaths and getattr(toolpaths[0], "coordinate_space", "surface_mm") != "machine_deg":
                 toolpaths = pipeline_core.project_toolpaths_to_ball_angles(
@@ -116,8 +126,10 @@ class GcodeService:
                     sample_step_deg=kwargs.get("sample_step_deg"),
                 )
         elif "placement_offset_x" not in kwargs and "placement_offset_y" not in kwargs:
-            return self._generate_from_angle_toolpaths_legacy(**kwargs)
-        return pipeline_core.generate_gcode_from_toolpaths(
+            gcode, preview = self._generate_from_angle_toolpaths_legacy(**kwargs)
+            self.logger.info("Generated legacy angle G-code lines=%d preview_paths=%d", len(gcode), len(preview))
+            return gcode, preview
+        gcode, preview = pipeline_core.generate_gcode_from_toolpaths(
             toolpaths,
             kwargs["draw_feed"],
             kwargs["travel_feed"],
@@ -136,3 +148,5 @@ class GcodeService:
             kwargs.get("header_comment_settings"),
             kwargs.get("debug"),
         )
+        self.logger.info("Generated projected G-code lines=%d preview_paths=%d", len(gcode), len(preview))
+        return gcode, preview

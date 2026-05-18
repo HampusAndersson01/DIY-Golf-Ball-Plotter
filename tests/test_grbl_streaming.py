@@ -39,14 +39,17 @@ def test_stream_gcode_lines_unlocked_uses_buffered_streaming():
         "G1 X4 Y4 F1200",
     ]
 
-    sent = pipeline_core.stream_gcode_lines_unlocked(
+    result = pipeline_core.stream_gcode_lines_unlocked(
         serial,
         lines,
         rx_buffer_size=32,
         response_timeout=0.01,
     )
 
-    assert sent == len(lines)
+    assert result["sent_count"] == len(lines)
+    assert result["acked_count"] == len(lines)
+    assert result["pending_queue_length"] == 0
+    assert result["pending_buffer_chars"] == 0
     assert len(serial.writes) == len(lines)
 
 

@@ -13,7 +13,7 @@ from app.extensions import (
     get_validation_service,
 )
 from app.services import pipeline_core
-from app.utils.response_utils import json_error, json_ok
+from app.utils.response_utils import json_error, json_ok, log_exception
 
 svg_bp = Blueprint("svg", __name__)
 
@@ -120,6 +120,11 @@ def generate_gcode_route():
     validation = get_validation_service()
     config = current_app.config
     try:
+        current_app.logger.info(
+            "SVG G-code generation requested: files=%s form_keys=%s",
+            sorted(list(request.files.keys())),
+            sorted(list(request.form.keys())),
+        )
         raster_file = request.files.get("image") or request.files.get("raster")
         if raster_file is not None:
             image_bytes = raster_file.read()
@@ -268,6 +273,13 @@ def generate_gcode_route():
                 status="Raster G-code generated - calibrate before run",
                 last_error=None,
                 last_timeout_debug=None,
+            )
+            current_app.logger.info(
+                "Raster-in-SVG endpoint generated G-code: file=%s toolpaths=%d preview_paths=%d gcode_lines=%d",
+                raster_file.filename,
+                len(toolpaths),
+                len(preview),
+                len(gcode),
             )
             return json_ok(
                 gcode=gcode,
@@ -434,6 +446,13 @@ def generate_gcode_route():
             last_error=None,
             last_timeout_debug=None,
         )
+        current_app.logger.info(
+            "SVG G-code generated: file=%s toolpaths=%d preview_paths=%d gcode_lines=%d",
+            file.filename,
+            len(toolpaths),
+            len(preview),
+            len(gcode),
+        )
 
         return json_ok(
             gcode=gcode,
@@ -454,6 +473,7 @@ def generate_gcode_route():
             debug=debug_data,
         )
     except Exception as exc:
+        log_exception("Generate SVG G-code failed", exc)
         state.update(last_error=str(exc), status=f"Generate error: {exc}")
         return json_error(str(exc), status=500, setting_debug=build_setting_debug(exc, config))
 
@@ -474,6 +494,7 @@ def analyze_svg_route():
             debug=debug_data,
         )
     except Exception as exc:
+        log_exception("Analyze SVG failed", exc)
         return json_error(str(exc), status=500)
 
 
@@ -483,4 +504,5 @@ def self_test_svg_pipeline_route():
         summary = get_self_test_service().run()
         return json_ok(summary=summary)
     except Exception as exc:
+        log_exception("SVG pipeline self-test failed", exc)
         return json_error(str(exc), status=500)

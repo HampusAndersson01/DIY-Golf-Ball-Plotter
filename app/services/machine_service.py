@@ -600,7 +600,7 @@ class MachineService:
         self.apply_stepper_hold_policy("clear_calibration", force=True)
 
     def stop_active_job(self) -> str:
-        self.job_runner.request_stop(reason="abort")
+        self.job_runner.request_stop(reason="user_stop")
         self.state.update(status="Stop requested")
         return "Stop requested"
 

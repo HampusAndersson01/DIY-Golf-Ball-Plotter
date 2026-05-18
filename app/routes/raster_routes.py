@@ -13,7 +13,7 @@ from app.extensions import (
     get_validation_service,
 )
 from app.services import pipeline_core
-from app.utils.response_utils import json_error, json_ok
+from app.utils.response_utils import json_error, json_ok, log_exception
 
 raster_bp = Blueprint("raster", __name__)
 
@@ -157,6 +157,7 @@ def analyze_image_route():
         )
         return json_ok(analysis=get_raster_analysis_service().serialize_analysis(result))
     except Exception as exc:
+        log_exception("Analyze image failed", exc)
         return json_error(str(exc), status=500)
 
 
@@ -166,6 +167,11 @@ def generate_image_gcode_route():
     validation = get_validation_service()
     config = current_app.config
     try:
+        current_app.logger.info(
+            "Raster G-code generation requested: files=%s form_keys=%s",
+            sorted(list(request.files.keys())),
+            sorted(list(request.form.keys())),
+        )
         file = request.files.get("image")
         if file is None:
             raise ValueError("No PNG or JPG image uploaded")
@@ -344,6 +350,14 @@ def generate_image_gcode_route():
             stage_counts.update(debug_data.get("toolpath_counts", {}))
 
         gcode_stats = build_gcode_stats(gcode, cleanup_stats, preview_path_count=len(preview), debug=debug_data)
+        current_app.logger.info(
+            "Raster G-code generated: file=%s toolpaths=%d preview_paths=%d gcode_lines=%d selected_colors=%d",
+            file.filename,
+            len(toolpaths),
+            len(preview),
+            len(gcode),
+            len(options["selected_colors"]),
+        )
         point_count = sum(len(path["points"]) for path in preview if path["kind"] != "travel")
         estimated_runtime_seconds = estimate_runtime_seconds(
             preview,
@@ -405,6 +419,7 @@ def generate_image_gcode_route():
             debug=debug_data,
         )
     except Exception as exc:
+        log_exception("Generate raster G-code failed", exc)
         state.update(last_error=str(exc), status=f"Generate error: {exc}")
         selected_colors = []
         try:

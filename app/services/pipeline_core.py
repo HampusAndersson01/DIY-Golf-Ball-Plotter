@@ -417,22 +417,27 @@ def connect_grbl() -> serial.Serial:
     global grbl
 
     if grbl and grbl.is_open:
+        logger.debug("Reusing existing GRBL serial connection on %s", SERIAL_PORT)
         state["connected"] = True
         return grbl
 
+    logger.info("Opening GRBL serial connection on %s at %s baud", SERIAL_PORT, BAUD_RATE)
     grbl = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=3)
     time.sleep(2)
 
     grbl.write(b"\r\n\r\n")
     time.sleep(1)
 
+    startup_lines: list[str] = []
     while grbl.in_waiting:
         line = grbl.readline().decode(errors="ignore").strip()
         if line:
-            print(line)
+            startup_lines.append(line)
+            logger.info("GRBL startup: %s", line)
 
     state["connected"] = True
     state["status"] = "Connected"
+    logger.info("GRBL connection established; startup_lines=%d", len(startup_lines))
     return grbl
 
 
@@ -442,6 +447,8 @@ def read_available_lines(ser: serial.Serial) -> list[str]:
         line = ser.readline().decode(errors="ignore").strip()
         if line:
             lines.append(line)
+    if lines:
+        logger.debug("Read %d available GRBL lines: %s", len(lines), lines)
     return lines
 
 
@@ -457,7 +464,9 @@ def read_until_ok_or_error(ser: serial.Serial, timeout: float = 15) -> str:
         if line == "ok" or line.startswith("error:") or line.startswith("ALARM:"):
             break
 
-    return "\n".join(lines) if lines else "NO RESPONSE"
+    response = "\n".join(lines) if lines else "NO RESPONSE"
+    logger.debug("GRBL response read_until_ok_or_error(timeout=%.2f): %s", timeout, response)
+    return response
 
 
 def read_next_grbl_line(ser: serial.Serial, timeout: float = 15) -> str:
@@ -466,6 +475,7 @@ def read_next_grbl_line(ser: serial.Serial, timeout: float = 15) -> str:
     while time.time() < end_time:
         line = ser.readline().decode(errors="ignore").strip()
         if line:
+            logger.debug("GRBL line received: %s", line)
             return line
 
     raise TimeoutError("Timed out waiting for GRBL response")
@@ -482,8 +492,11 @@ def _update_streaming_state(
     sent_count: int,
     ok_count: int,
     error_count: int,
+    acked_count: int,
+    total_lines: int,
     last_response_at: float | None,
     last_grbl_status: str | None,
+    last_stream_event: str | None = None,
 ) -> None:
     age = 0.0 if last_response_at is None else max(0.0, time.time() - last_response_at)
     state["streaming"] = {
@@ -498,7 +511,12 @@ def _update_streaming_state(
         "ok_count": ok_count,
         "error_count": error_count,
         "sent_count": sent_count,
+        "acked_count": acked_count,
+        "total_lines": total_lines,
+        "streaming_active": bool(sent_count > acked_count or pending_commands > 0 or pending_buffer_chars > 0),
     }
+    if last_stream_event is not None:
+        state["last_stream_event"] = last_stream_event
 
 
 def _read_status_response_unlocked(ser: serial.Serial, timeout: float = 0.75) -> str:
@@ -512,7 +530,9 @@ def _read_status_response_unlocked(ser: serial.Serial, timeout: float = 0.75) ->
         captured.append(line)
         if line.startswith("<") or line.startswith("ok") or line.startswith("error:") or line.startswith("ALARM:"):
             break
-    return "\n".join(captured)
+    response = "\n".join(captured)
+    logger.debug("GRBL status query response: %s", response or "NO RESPONSE")
+    return response
 
 
 def process_streaming_ack_unlocked(
@@ -536,6 +556,13 @@ def process_streaming_ack_unlocked(
         try:
             line = read_next_grbl_line(ser, timeout=timeout)
         except TimeoutError as exc:
+            logger.warning(
+                "Timeout waiting for GRBL ack: line_index=%s sent_count=%s pending_queue=%s pending_buffer=%s",
+                line_index,
+                sent_count,
+                len(pending_lengths),
+                pending_buffer_chars,
+            )
             status_query_response = _read_status_response_unlocked(ser)
             if status_query_response:
                 for status_line in status_query_response.splitlines():
@@ -553,8 +580,11 @@ def process_streaming_ack_unlocked(
                     sent_count=sent_count,
                     ok_count=ok_count,
                     error_count=0,
+                    acked_count=ok_count,
+                    total_lines=len(all_lines),
                     last_response_at=last_response_at,
                     last_grbl_status=last_grbl_status,
+                    last_stream_event="status_query_alive_retry",
                 )
                 if alive_retry_count < 1:
                     return 0, ok_count, last_response_at, last_grbl_status, alive_retry_count + 1
@@ -576,6 +606,7 @@ def process_streaming_ack_unlocked(
                 "failure_class": "grbl_busy_but_alive" if status_query_response else "communication_lost",
             }
             state["last_timeout_debug"] = timeout_debug
+            logger.error("GRBL timeout debug: %s", timeout_debug)
             raise TimeoutError(f"{exc}. Debug: {timeout_debug}") from exc
         if line == "ok":
             if not pending_lengths:
@@ -583,8 +614,10 @@ def process_streaming_ack_unlocked(
             freed_length = pending_lengths.popleft()
             if pending_commands:
                 pending_commands.popleft()
+            logger.debug("GRBL ack received: ok_count=%d pending_queue=%d", ok_count + 1, len(pending_lengths))
             return freed_length, ok_count + 1, time.time(), last_grbl_status, 0
         if line.startswith("error:") or line.startswith("ALARM:"):
+            logger.error("GRBL streaming error line: %s", line)
             raise RuntimeError(f"GRBL streaming error: {line}")
         if line.startswith("<") or line.startswith("["):
             recent_grbl_responses.append(line)
@@ -611,10 +644,17 @@ def stream_gcode_lines_unlocked(
     should_stop: Optional[Callable[[], bool]] = None,
     wait_while_paused: Optional[Callable[[], None]] = None,
     on_line_sent: Optional[Callable[[str, int], None]] = None,
-) -> int:
+) -> dict[str, Any]:
     mode = state.get("streaming_mode", "buffered")
     if mode not in {"buffered", "sync"}:
         mode = "buffered"
+    logger.info(
+        "Starting GRBL stream: lines=%d mode=%s rx_buffer_size=%d response_timeout=%.2f",
+        len(lines),
+        mode,
+        rx_buffer_size,
+        response_timeout,
+    )
     pending_lengths: deque[int] = deque()
     pending_commands: deque[str] = deque()
     recent_grbl_responses: deque[str] = deque(maxlen=20)
@@ -636,17 +676,38 @@ def stream_gcode_lines_unlocked(
         sent_count=0,
         ok_count=0,
         error_count=0,
+        acked_count=0,
+        total_lines=len(streamable_lines),
         last_response_at=None,
         last_grbl_status=None,
+        last_stream_event="stream_start",
     )
 
     for raw_line in streamable_lines:
         if should_stop and should_stop():
-            return sent_count
+            return {
+                "sent_count": sent_count,
+                "acked_count": ok_count,
+                "total_lines": len(streamable_lines),
+                "pending_queue_length": len(pending_lengths),
+                "pending_buffer_chars": pending_bytes,
+                "last_grbl_status": last_grbl_status,
+                "last_stream_event": "stop_requested_before_send",
+                "streaming_active": bool(pending_lengths or pending_bytes),
+            }
         if wait_while_paused:
             wait_while_paused()
         if should_stop and should_stop():
-            return sent_count
+            return {
+                "sent_count": sent_count,
+                "acked_count": ok_count,
+                "total_lines": len(streamable_lines),
+                "pending_queue_length": len(pending_lengths),
+                "pending_buffer_chars": pending_bytes,
+                "last_grbl_status": last_grbl_status,
+                "last_stream_event": "stop_requested_after_pause",
+                "streaming_active": bool(pending_lengths or pending_bytes),
+            }
 
         line = raw_line.strip()
         if not line:
@@ -654,6 +715,7 @@ def stream_gcode_lines_unlocked(
 
         payload = (line + "\n").encode("ascii")
         if len(payload) >= rx_buffer_size:
+            logger.error("G-code line exceeds GRBL RX buffer size: %s", line)
             raise ValueError(f"G-code line exceeds GRBL RX buffer size: {line}")
 
         while mode == "buffered" and pending_bytes + len(payload) >= rx_buffer_size:
@@ -676,7 +738,16 @@ def stream_gcode_lines_unlocked(
             pending_bytes -= freed_length
             pending_bytes = sum(pending_lengths)
             if should_stop and should_stop():
-                return sent_count
+                return {
+                    "sent_count": sent_count,
+                    "acked_count": ok_count,
+                    "total_lines": len(streamable_lines),
+                    "pending_queue_length": len(pending_lengths),
+                    "pending_buffer_chars": pending_bytes,
+                    "last_grbl_status": last_grbl_status,
+                    "last_stream_event": "stop_requested_while_draining_buffer",
+                    "streaming_active": bool(pending_lengths or pending_bytes),
+                }
             if wait_while_paused:
                 wait_while_paused()
 
@@ -695,8 +766,11 @@ def stream_gcode_lines_unlocked(
             sent_count=sent_count,
             ok_count=ok_count,
             error_count=error_count,
+            acked_count=ok_count,
+            total_lines=len(streamable_lines),
             last_response_at=last_response_at,
             last_grbl_status=last_grbl_status,
+            last_stream_event="line_sent",
         )
         if on_line_sent:
             on_line_sent(line, sent_count)
@@ -728,8 +802,11 @@ def stream_gcode_lines_unlocked(
                 sent_count=sent_count,
                 ok_count=ok_count,
                 error_count=error_count,
+                acked_count=ok_count,
+                total_lines=len(streamable_lines),
                 last_response_at=last_response_at,
                 last_grbl_status=last_grbl_status,
+                last_stream_event="line_acked_sync",
             )
 
     while pending_lengths:
@@ -760,15 +837,50 @@ def stream_gcode_lines_unlocked(
             sent_count=sent_count,
             ok_count=ok_count,
             error_count=error_count,
+            acked_count=ok_count,
+            total_lines=len(streamable_lines),
             last_response_at=last_response_at,
             last_grbl_status=last_grbl_status,
+            last_stream_event="drain_acked",
         )
 
-    return sent_count
+    _update_streaming_state(
+        mode=mode,
+        current_line=sent_count,
+        current_path_id=state.get("current_path_id"),
+        current_path_kind=state.get("current_path_kind"),
+        pending_buffer_chars=0,
+        pending_commands=0,
+        sent_count=sent_count,
+        ok_count=ok_count,
+        error_count=error_count,
+        acked_count=ok_count,
+        total_lines=len(streamable_lines),
+        last_response_at=last_response_at,
+        last_grbl_status=last_grbl_status,
+        last_stream_event="stream_drained",
+    )
+    logger.info(
+        "GRBL stream drained successfully: sent=%d acked=%d last_status=%s",
+        sent_count,
+        ok_count,
+        last_grbl_status,
+    )
+    return {
+        "sent_count": sent_count,
+        "acked_count": ok_count,
+        "total_lines": len(streamable_lines),
+        "pending_queue_length": 0,
+        "pending_buffer_chars": 0,
+        "last_grbl_status": last_grbl_status,
+        "last_stream_event": "stream_drained",
+        "streaming_active": False,
+    }
 
 
 def wait_until_idle_unlocked(ser: serial.Serial, timeout: float = 60) -> bool:
     end_time = time.time() + timeout
+    logger.info("Waiting for GRBL idle state (timeout=%.2fs)", timeout)
 
     while time.time() < end_time:
         ser.write(b"?")
@@ -776,11 +888,14 @@ def wait_until_idle_unlocked(ser: serial.Serial, timeout: float = 60) -> bool:
         lines = read_available_lines(ser)
         for line in lines:
             if line.startswith("<Idle"):
+                logger.info("GRBL reported idle")
                 return True
             if line.startswith("<Alarm") or line.startswith("ALARM:"):
+                logger.warning("GRBL reported alarm while waiting for idle: %s", line)
                 return False
         time.sleep(0.05)
 
+    logger.warning("Timed out waiting for GRBL idle state")
     return False
 
 
@@ -790,15 +905,19 @@ def send_to_grbl_unlocked(ser: serial.Serial, command: str, timeout: float = 15)
         raise ValueError("Empty command")
 
     if command == "?":
+        logger.debug("Sending GRBL status query")
         ser.write(b"?")
         time.sleep(0.2)
         lines = read_available_lines(ser)
         return "\n".join(lines) if lines else "NO STATUS RESPONSE"
 
+    logger.info("Sending GRBL command: %s", command)
     ser.write((command + "\n").encode("utf-8"))
     response = read_until_ok_or_error(ser, timeout=timeout)
     if "error:" in response or "ALARM:" in response:
+        logger.error("GRBL rejected command %s with response: %s", command, response)
         raise RuntimeError(f"GRBL rejected command {command}: {response}")
+    logger.debug("GRBL command completed: %s -> %s", command, response)
     return response
 
 
@@ -810,6 +929,12 @@ def send_to_grbl(command: str, timeout: float = 15) -> str:
 
 def send_many(commands: list[str], delay: float = 0.04, wait_idle_between: bool = True) -> str:
     results: list[str] = []
+    logger.info(
+        "Sending GRBL command batch: count=%d delay=%.3fs wait_idle_between=%s",
+        len(commands),
+        delay,
+        wait_idle_between,
+    )
     with serial_lock:
         ser = connect_grbl()
         for cmd in commands:
