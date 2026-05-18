@@ -119,11 +119,11 @@ class GcodeService:
         )
         if "placement_offset_x" in kwargs or "placement_offset_y" in kwargs:
             if toolpaths and getattr(toolpaths[0], "coordinate_space", "surface_mm") != "machine_deg":
+                toolpaths = pipeline_core.prepare_toolpaths_for_projection(toolpaths)
                 toolpaths = pipeline_core.project_toolpaths_to_ball_angles(
                     toolpaths,
                     center_lon_deg=kwargs.get("placement_offset_x", 0.0),
                     center_lat_deg=kwargs.get("placement_offset_y", 0.0),
-                    sample_step_deg=kwargs.get("sample_step_deg"),
                 )
         elif "placement_offset_x" not in kwargs and "placement_offset_y" not in kwargs:
             gcode, preview = self._generate_from_angle_toolpaths_legacy(**kwargs)

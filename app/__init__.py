@@ -27,12 +27,16 @@ def create_app(config_object: type[Config] = Config) -> Flask:
     def _log_request_start() -> None:
         from flask import request
 
+        if request.path == "/state":
+            return
         app.logger.info("Request started: %s %s", request.method, request.path)
 
     @app.after_request
     def _log_request_end(response):
         from flask import request
 
+        if request.path == "/state":
+            return response
         app.logger.info("Request completed: %s %s -> %s", request.method, request.path, response.status_code)
         return response
 

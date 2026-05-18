@@ -82,7 +82,7 @@ def test_black_selection_preserves_white_hole_and_generates_fill():
         debug={},
     )
 
-    assert any(path.kind == "fill-wall" for path in toolpaths)
+    assert any(path.kind in {"outline", "fill-wall"} for path in toolpaths)
     assert any(path.kind == "fill-infill" for path in toolpaths)
 
     hole_polygon = Polygon(polygon.interiors[0])

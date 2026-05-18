@@ -13,6 +13,13 @@ _logging_initialized = False
 _shutdown_registered = False
 
 
+class _DropNoisyStatePolls(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name == "werkzeug" and "GET /state HTTP/1.1" in record.getMessage():
+            return False
+        return True
+
+
 def _install_exception_hooks() -> None:
     def handle_exception(exc_type, exc_value, exc_traceback) -> None:
         if issubclass(exc_type, KeyboardInterrupt):
@@ -63,10 +70,12 @@ def setup_logging(debug: bool = False) -> logging.Logger:
     file_handler = logging.FileHandler(LATEST_LOG, mode="w", encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
+    file_handler.addFilter(_DropNoisyStatePolls())
 
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.DEBUG if debug else logging.INFO)
     console_handler.setFormatter(formatter)
+    console_handler.addFilter(_DropNoisyStatePolls())
 
     root.addHandler(file_handler)
     root.addHandler(console_handler)

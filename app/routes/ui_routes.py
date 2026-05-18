@@ -1,8 +1,16 @@
+import logging
+import threading
+import time
+
 from flask import Blueprint, Response, current_app, jsonify
 
 from app.extensions import get_state
 
 ui_bp = Blueprint("ui", __name__)
+logger = logging.getLogger(__name__)
+_state_poll_lock = threading.Lock()
+_state_poll_started_at = time.monotonic()
+_state_poll_count = 0
 
 
 def build_frontend_config(config) -> dict:
@@ -79,6 +87,7 @@ def frontend_bootstrap():
 
 @ui_bp.get("/state")
 def get_machine_state():
+    global _state_poll_started_at, _state_poll_count
     snapshot = get_state().snapshot()
     config = current_app.config
     snapshot["defaults"] = {
@@ -90,6 +99,22 @@ def get_machine_state():
         "servo_ramp_step": config["DEFAULT_SERVO_RAMP_STEP"],
         "servo_ramp_delay_ms": config["DEFAULT_SERVO_RAMP_DELAY_MS"],
     }
+    with _state_poll_lock:
+        _state_poll_count += 1
+        elapsed = time.monotonic() - _state_poll_started_at
+        if elapsed >= 60.0:
+            logger.info(
+                "State polling summary: requests=%d duration_sec=%.1f connected=%s calibrated=%s running=%s paused=%s status=%s",
+                _state_poll_count,
+                elapsed,
+                snapshot.get("connected"),
+                snapshot.get("calibrated"),
+                snapshot.get("running"),
+                snapshot.get("paused"),
+                snapshot.get("status"),
+            )
+            _state_poll_started_at = time.monotonic()
+            _state_poll_count = 0
     return jsonify(snapshot)
 
 

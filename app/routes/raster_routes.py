@@ -87,15 +87,19 @@ def project_surface_toolpaths(toolpaths, options: dict):
     )
     cleaned_toolpaths = pipeline_core.assign_stable_path_ids(cleaned_toolpaths)
     pipeline_core.validate_toolpaths_finite(cleaned_toolpaths, coordinate_space="surface_mm")
+    cleaned_toolpaths = pipeline_core.prepare_toolpaths_for_projection(
+        cleaned_toolpaths,
+        default_pen_width_mm=options["line_thickness_mm"],
+    )
     projected_toolpaths = pipeline_core.project_toolpaths_to_ball_angles(
         cleaned_toolpaths,
         center_lon_deg=options["placement_offset_x"],
         center_lat_deg=options["placement_offset_y"],
         ball_diameter_mm=current_app.config["BALL_DIAMETER_MM"],
-        sample_step_deg=options["sample_step_deg"],
     )
     pipeline_core.validate_toolpaths_finite(projected_toolpaths, coordinate_space="machine_deg")
     lifecycle_logs, outline_pipeline_debug = pipeline_core.build_toolpath_lifecycle_debug(cleaned_toolpaths, projected_toolpaths)
+    pipeline_core.log_physical_outline_mismatch_check(cleaned_toolpaths, projected_toolpaths)
     coordinate_debug = {
         "unit_model": "surface_mm_then_project_once_to_machine_deg",
         "toolpath_kinds": lifecycle_logs,

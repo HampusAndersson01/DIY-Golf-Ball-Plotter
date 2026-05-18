@@ -1,7 +1,9 @@
 import pytest
 from shapely.geometry import LineString, MultiPolygon, Polygon
 
-from app.models.geometry import Point, Segment
+from app.models.geometry import Point, Segment, Toolpath
+from app.services import pipeline_core
+from app.services.gcode_service import GcodeService
 from app.services.pipeline_core import GeometryBundle, generate_toolpaths
 from app.services.toolpath_service import ToolpathService
 
@@ -41,6 +43,10 @@ def _infill_region(printable_geometry, line_width_mm=1.0, wall_count=1):
     return printable_geometry.buffer(-(line_width_mm * max(1, wall_count)), join_style=1)
 
 
+def _cleanup_outline_region(printable_geometry, line_width_mm=1.0):
+    return printable_geometry.buffer(-(line_width_mm * 0.5), join_style=1)
+
+
 def _assert_infill_segments_stay_inside_region(toolpaths, region, epsilon=1e-6):
     cover_region = region.buffer(epsilon, join_style=1)
     for path in toolpaths:
@@ -50,7 +56,7 @@ def _assert_infill_segments_stay_inside_region(toolpaths, region, epsilon=1e-6):
             assert cover_region.covers(LineString([(start.x, start.y), (end.x, end.y)]))
 
 
-def test_fill_wall_is_inset_by_half_pen_width():
+def test_fill_wall_is_inset_inside_outer_cleanup_outline():
     line_width_mm = 1.0
     printable = _rect(width_mm=10.0, height_mm=6.0)
 
@@ -58,7 +64,7 @@ def test_fill_wall_is_inset_by_half_pen_width():
         GeometryBundle(printable_geometry=printable),
         enable_fill=True,
         line_width_mm=line_width_mm,
-        wall_count=1,
+        wall_count=2,
         infill_density=100.0,
         infill_spacing_mm=line_width_mm,
         infill_angle_deg=0.0,
@@ -77,8 +83,41 @@ def test_fill_wall_is_inset_by_half_pen_width():
 
     min_x = min(point.x for point in wall_paths[0].points)
     max_x = max(point.x for point in wall_paths[0].points)
-    assert min_x == pytest.approx(line_width_mm * 0.5, abs=1e-6)
-    assert max_x == pytest.approx(10.0 - (line_width_mm * 0.5), abs=1e-6)
+    assert min_x == pytest.approx(line_width_mm * 1.5, abs=1e-6)
+    assert max_x == pytest.approx(10.0 - (line_width_mm * 1.5), abs=1e-6)
+
+
+@pytest.mark.parametrize("outline_after_fill", [False, True])
+def test_cleanup_outline_tracks_visible_fill_edge(outline_after_fill):
+    line_width_mm = 1.0
+    printable = _rect(width_mm=10.0, height_mm=10.0)
+
+    toolpaths = generate_toolpaths(
+        GeometryBundle(printable_geometry=printable),
+        enable_fill=True,
+        line_width_mm=line_width_mm,
+        wall_count=1,
+        infill_density=100.0,
+        infill_spacing_mm=line_width_mm,
+        infill_angle_deg=0.0,
+        outline_after_fill=outline_after_fill,
+        min_fill_area_mm2=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=False,
+        small_shape_mode="single-wall",
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+    )
+
+    outline_path = next(path for path in toolpaths if path.kind == "outline")
+    cleanup_region = _cleanup_outline_region(printable, line_width_mm=line_width_mm)
+    expected_min_x = min(point[0] for point in cleanup_region.exterior.coords)
+    expected_max_x = max(point[0] for point in cleanup_region.exterior.coords)
+
+    assert min(point.x for point in outline_path.points) == pytest.approx(expected_min_x, abs=1e-6)
+    assert max(point.x for point in outline_path.points) == pytest.approx(expected_max_x, abs=1e-6)
+    assert outline_path.metadata["source_polygon_matches_infill_clip_polygon"] is False
 
 
 def test_single_pass_regions_use_detail_fill_by_default():
@@ -301,6 +340,85 @@ def test_raster_area_fill_suppresses_injected_detail_segments():
     assert not any(path.kind == "detail-trace" for path in toolpaths)
 
 
+def test_area_fill_suppresses_direct_source_outline_segments():
+    printable = _rect(20.0, 20.0)
+    bundle = GeometryBundle(
+        printable_geometry=printable,
+        outline_segments=[
+            Segment(
+                points=[
+                    Point(-5.0, 10.0),
+                    Point(25.0, 10.0),
+                ],
+                closed=False,
+            )
+        ],
+    )
+
+    toolpaths = ToolpathService().generate_from_regions(
+        bundle,
+        pen_width_mm=1.0,
+        wall_count=1,
+        infill_pattern="zigzag",
+        infill_spacing_mm=1.0,
+        infill_density=100.0,
+        infill_angle_deg=0.0,
+        min_region_area=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=False,
+        small_shape_mode="single-wall",
+        thin_detail_mode=True,
+        thin_detail_min_area_mm2=0.0,
+        thin_detail_simplify_mm=0.0,
+        thin_detail_overlap=True,
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+    )
+
+    outline_paths = [path for path in toolpaths if path.kind == "outline"]
+    assert outline_paths
+    assert all(path.source != "mask_contour" for path in outline_paths)
+    assert all(path.metadata["source_polygon_matches_infill_clip_polygon"] is False for path in outline_paths)
+
+
+def test_standalone_outline_segments_are_preserved_without_fill_geometry():
+    bundle = GeometryBundle(
+        outline_segments=[
+            Segment(
+                points=[
+                    Point(0.0, 0.0),
+                    Point(10.0, 0.0),
+                    Point(10.0, 10.0),
+                ],
+                closed=False,
+            )
+        ],
+    )
+
+    toolpaths = generate_toolpaths(
+        bundle,
+        enable_fill=True,
+        line_width_mm=1.0,
+        wall_count=1,
+        infill_density=100.0,
+        infill_spacing_mm=1.0,
+        infill_angle_deg=0.0,
+        outline_after_fill=False,
+        min_fill_area_mm2=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=False,
+        small_shape_mode="single-wall",
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+    )
+
+    outline_paths = [path for path in toolpaths if path.kind == "outline"]
+    assert len(outline_paths) == 1
+    assert outline_paths[0].source == "mask_contour"
+
+
 def test_smaller_mm_infill_spacing_generates_many_more_rows():
     printable = _rect(30.0, 30.0)
 
@@ -330,3 +448,153 @@ def test_pen_width_drives_dense_infill_spacing_when_spacing_matches_pen_width():
     assert len(row_positions) > 20
     assert min(spacings) == pytest.approx(0.3, abs=1e-6)
     assert max(spacings) == pytest.approx(0.3, abs=1e-6)
+
+
+def test_projection_preparation_resamples_long_diagonal_outline_segments_before_projection():
+    printable = Polygon([
+        (0.0, 0.0),
+        (20.0, 2.0),
+        (18.0, 18.0),
+        (2.0, 16.0),
+    ])
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.3,
+        infill_spacing_mm=0.3,
+        simplify_tolerance_mm=0.6,
+    )
+
+    prepared = pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=0.3)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(
+        prepared,
+        center_lon_deg=0.0,
+        center_lat_deg=0.0,
+    )
+
+    limit_mm = min(0.3 * 0.5, pipeline_core.DEFAULT_PROJECTION_SAMPLING_MAX_SEGMENT_MM)
+    drawing_paths = [path for path in prepared if path.kind in {"outline", "fill-wall", "fill-infill", "detail-trace"}]
+    assert drawing_paths
+    assert all(float(path.metadata["max_surface_segment_mm_after_resampling"]) <= limit_mm + 1e-6 for path in drawing_paths)
+    assert all(int(path.metadata.get("projection_count", 0)) == 1 for path in projected)
+
+
+def test_outer_ring_and_hole_remain_separate_paths_with_pen_up_travel():
+    outer = _rect(12.0, 12.0)
+    hole = Polygon([(x + 4.0, y + 4.0) for x, y in _rect(4.0, 4.0).exterior.coords[:-1]])
+    printable = Polygon(outer.exterior.coords, [hole.exterior.coords])
+    toolpaths = _generate_fill_toolpaths(printable, line_width_mm=0.3, infill_spacing_mm=0.3)
+    prepared = pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=0.3)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(prepared, center_lon_deg=0.0, center_lat_deg=0.0)
+
+    service = GcodeService()
+    _, preview = service.generate_from_toolpaths(
+        toolpaths=projected,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=False,
+    )
+
+    outline_paths = [entry for entry in preview if entry["kind"] == "outline"]
+    travel_paths = [entry for entry in preview if entry["kind"] == "travel"]
+    assert len(outline_paths) >= 2
+    assert travel_paths
+    assert all(entry["closed"] is True for entry in outline_paths)
+
+
+def test_preview_and_gcode_share_same_projected_points_after_resampling():
+    printable = Polygon([
+        (0.0, 0.0),
+        (8.0, 0.0),
+        (10.0, 5.0),
+        (4.0, 10.0),
+        (0.0, 7.0),
+    ])
+    toolpaths = _generate_fill_toolpaths(printable, line_width_mm=0.3, infill_spacing_mm=0.3)
+    prepared = pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=0.3)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(prepared, center_lon_deg=0.0, center_lat_deg=0.0)
+
+    service = GcodeService()
+    _, preview = service.generate_from_toolpaths(
+        toolpaths=projected,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=False,
+    )
+
+    projected_debug = pipeline_core.build_projected_path_debug(prepared, projected, preview)
+    assert projected_debug["preview_and_gcode_share_same_projected_paths"] is True
+
+
+def test_vertical_horizontal_and_diagonal_outline_segments_project_with_bounded_step_size():
+    printable = Polygon([
+        (0.0, 0.0),
+        (16.0, 0.0),
+        (20.0, 12.0),
+        (12.0, 20.0),
+        (0.0, 20.0),
+    ])
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.3,
+        infill_spacing_mm=0.3,
+        simplify_tolerance_mm=0.8,
+    )
+    prepared = pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=0.3)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(prepared, center_lon_deg=0.0, center_lat_deg=12.0)
+
+    outline_paths = [path for path in prepared if path.kind in {"outline", "fill-wall"}]
+    assert outline_paths
+    assert all(float(path.metadata["max_surface_segment_mm_after_resampling"]) <= 0.15 + 1e-6 for path in outline_paths)
+    projected_outline_lengths = [
+        max(pipeline_core._segment_lengths_mm(path.points, closed=path.closed))
+        for path in projected
+        if path.kind in {"outline", "fill-wall"} and len(path.points) >= 2
+    ]
+    assert projected_outline_lengths
+    assert max(projected_outline_lengths) < 2.5
+
+
+def test_merge_motion_profiles_counts_axis_and_blended_segments_across_paths():
+    toolpaths = [
+        Toolpath(
+            points=[Point(0.0, 0.0), Point(1.0, 0.0), Point(1.0, 1.0)],
+            kind="outline",
+            closed=False,
+        ),
+        Toolpath(
+            points=[Point(1.0, 1.0), Point(2.0, 2.0), Point(3.0, 3.0)],
+            kind="outline",
+            closed=False,
+        ),
+    ]
+
+    profile = pipeline_core._merge_motion_profiles(toolpaths)
+
+    assert profile["horizontal_segments"] == 1
+    assert profile["vertical_segments"] == 1
+    assert profile["blended_xy_segments"] == 2
+    assert profile["total_segments"] == 4
+    assert profile["max_consecutive_blended_xy_segments"] == 2
+    assert abs(float(profile["blended_xy_ratio"]) - 0.5) < 1e-9

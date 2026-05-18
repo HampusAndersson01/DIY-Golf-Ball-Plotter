@@ -3,6 +3,33 @@ from app.services import pipeline_core
 from app.services.gcode_service import GcodeService
 
 
+class _FakeSerial:
+    def __init__(self, chunks):
+        self._chunks = [chunk.encode("ascii") for chunk in chunks]
+        self._buffer = b""
+
+    @property
+    def in_waiting(self):
+        if self._buffer:
+            return len(self._buffer)
+        if self._chunks:
+            self._buffer = self._chunks.pop(0)
+            return len(self._buffer)
+        return 0
+
+    def read(self, size=1):
+        if not self._buffer and self._chunks:
+            self._buffer = self._chunks.pop(0)
+        if not self._buffer:
+            return b""
+        data = self._buffer[:size]
+        self._buffer = self._buffer[size:]
+        return data
+
+    def write(self, _payload):
+        return 1
+
+
 def test_generate_gcode_from_simple_toolpath():
     service = GcodeService()
     toolpaths = [Toolpath(points=[Point(0.0, 0.0), Point(1.0, 1.0)], kind="outline", closed=False)]
@@ -91,3 +118,13 @@ def test_projected_gcode_includes_resolved_fill_header_comments():
     assert any("lineWidthMm: 0.1500" in line for line in header_lines)
     assert any("infillSpacingMm: 0.1500" in line for line in header_lines)
     assert any("coordinateSpaceUsedForFill: surface-mm-on-ball" in line for line in header_lines)
+
+
+def test_read_next_grbl_line_reassembles_fragmented_ok_response():
+    ser = _FakeSerial(["o", "k"])
+    assert pipeline_core.read_next_grbl_line(ser, timeout=0.2) == "ok"
+
+
+def test_read_next_grbl_line_reads_status_without_newline():
+    ser = _FakeSerial(["<Idle|WPos:1.000,2.000,0.000|FS:0,0>"])
+    assert pipeline_core.read_next_grbl_line(ser, timeout=0.2).startswith("<Idle|WPos:1.000,2.000,0.000")
