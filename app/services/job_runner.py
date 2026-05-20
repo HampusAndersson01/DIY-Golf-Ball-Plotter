@@ -177,6 +177,10 @@ class JobRunner:
         return None, None, 0
 
     def finalize_job(self, reason: JobFinalizationReason, *, machine_position_trusted: bool, not_in_alarm: bool = True) -> dict:
+        if reason == "complete":
+            reason = "completed_all_lines"
+        elif reason == "abort":
+            reason = "user_stop"
         self.logger.info(
             "Finalizing job: reason=%s machine_position_trusted=%s not_in_alarm=%s",
             reason,

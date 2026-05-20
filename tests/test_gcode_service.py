@@ -128,3 +128,21 @@ def test_read_next_grbl_line_reassembles_fragmented_ok_response():
 def test_read_next_grbl_line_reads_status_without_newline():
     ser = _FakeSerial(["<Idle|WPos:1.000,2.000,0.000|FS:0,0>"])
     assert pipeline_core.read_next_grbl_line(ser, timeout=0.2).startswith("<Idle|WPos:1.000,2.000,0.000")
+
+
+def test_read_next_grbl_line_does_not_use_readline_when_in_waiting_exists():
+    class _NonblockingSerial:
+        @property
+        def in_waiting(self):
+            return 0
+
+        def read(self, size=1):
+            return b""
+
+        def readline(self):
+            raise AssertionError("readline fallback should not be used for pyserial-like objects")
+
+        def write(self, _payload):
+            return 1
+
+    assert pipeline_core.read_next_grbl_line(_NonblockingSerial(), timeout=0.02, raise_on_timeout=False) == ""

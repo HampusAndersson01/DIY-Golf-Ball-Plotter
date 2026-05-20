@@ -110,7 +110,16 @@ def project_surface_toolpaths(toolpaths, options: dict):
             kind: 1 for kind in ("outline", "fill-wall", "fill-infill", "detail-trace")
         },
     }
-    return cleaned_toolpaths, projected_toolpaths, cleanup_stats, coordinate_debug, outline_pipeline_debug, pipeline_core.build_region_alignment_debug(cleaned_toolpaths, projected_toolpaths)
+    return (
+        cleaned_toolpaths,
+        projected_toolpaths,
+        cleanup_stats,
+        coordinate_debug,
+        outline_pipeline_debug,
+        pipeline_core.build_region_alignment_debug(cleaned_toolpaths, projected_toolpaths),
+        pipeline_core.build_sampling_debug(cleaned_toolpaths, projected_toolpaths),
+        pipeline_core.build_outline_vs_infill_alignment_audit(cleaned_toolpaths, projected_toolpaths),
+    )
 
 
 def build_gcode_stats(gcode: list[str], cleanup_stats: dict[str, object], *, preview_path_count: int = 0, debug: dict | None = None) -> dict[str, object]:
@@ -278,7 +287,7 @@ def generate_image_gcode_route():
             sum(1 for path in toolpaths if path.kind == "fill-infill"),
             sum(max(0, len(path.points) - 1) for path in toolpaths if path.kind == "fill-infill"),
         )
-        cleaned_toolpaths, projected_toolpaths, cleanup_stats, coordinate_debug, outline_pipeline_debug, region_alignment_debug = project_surface_toolpaths(toolpaths, options)
+        cleaned_toolpaths, projected_toolpaths, cleanup_stats, coordinate_debug, outline_pipeline_debug, region_alignment_debug, sampling_debug, outline_vs_infill_alignment_debug = project_surface_toolpaths(toolpaths, options)
         gcode, preview = get_gcode_service().generate_from_toolpaths(
             toolpaths=projected_toolpaths,
             header_comment_settings=build_fill_header_settings(options, design_bounds),
@@ -298,6 +307,14 @@ def generate_image_gcode_route():
             include_comments=options["include_comments"],
             debug=debug_data,
         )
+        machine_motion_debug = pipeline_core.build_machine_motion_debug(
+            cleaned_toolpaths,
+            projected_toolpaths,
+            preview,
+            gcode,
+            pen_up_s=options["pen_up_s"],
+            pen_down_s=options["pen_down_s"],
+        )
         if debug_data is not None:
             pipeline_core.debug_append_toolpaths(debug_data, "surface_mm_toolpaths", cleaned_toolpaths)
             pipeline_core.debug_append_toolpaths(debug_data, "projected_machine_deg_toolpaths", projected_toolpaths)
@@ -316,6 +333,9 @@ def generate_image_gcode_route():
             }
             debug_data["outline_fill_alignment_debug"] = outline_fill_alignment_debug
             debug_data["region_alignment_debug"] = region_alignment_debug
+            debug_data["sampling_debug"] = sampling_debug
+            debug_data["machine_motion_debug"] = machine_motion_debug
+            debug_data["outline_vs_infill_alignment"] = outline_vs_infill_alignment_debug
             debug_data["visual_debug_layers"] = [
                 {"key": "detected_printable_polygons", "label": "final printable polygon", "color": "gray"},
                 {"key": "outer_walls", "label": "outline centerline before projection", "color": "orange-dashed"},
@@ -418,6 +438,9 @@ def generate_image_gcode_route():
             outline_pipeline_debug=outline_pipeline_debug,
             outline_fill_alignment_debug=(debug_data or {}).get("outline_fill_alignment_debug"),
             region_alignment_debug=region_alignment_debug,
+            sampling_debug=sampling_debug,
+            machine_motion_debug=machine_motion_debug,
+            outline_vs_infill_alignment=outline_vs_infill_alignment_debug,
             infill_debug=(debug_data or {}).get("infill_debug"),
             gcode_stats=gcode_stats,
             debug=debug_data,
@@ -436,3 +459,90 @@ def generate_image_gcode_route():
             "setting_debug": build_setting_debug(exc, config),
             "debug": build_generate_debug_payload(selected_colors=selected_colors),
         }), 500
+
+
+@raster_bp.post("/generate-diagnostic-gcode")
+def generate_diagnostic_gcode_route():
+    config = current_app.config
+    pattern = str(request.form.get("pattern", "diagnostic_suite"))
+    mode = str(request.form.get("mode", "fill_then_cleanup"))
+    line_width_mm = float(request.form.get("line_thickness_mm", config["DEFAULT_LINE_THICKNESS_MM"]))
+    draw_feed = float(request.form.get("draw_feed", config["DEFAULT_DRAW_FEED"]))
+    travel_feed = float(request.form.get("travel_feed", config["DEFAULT_TRAVEL_FEED"]))
+    wall_count = int(request.form.get("wall_count", 1))
+    debug_data: dict[str, object] = {}
+    try:
+        bundle = pipeline_core.build_diagnostic_geometry_bundle(pattern)
+        toolpaths = pipeline_core.generate_toolpaths(
+            bundle,
+            enable_fill=True,
+            line_width_mm=line_width_mm,
+            wall_count=wall_count,
+            infill_density=100.0,
+            infill_spacing_mm=line_width_mm,
+            infill_angle_deg=0.0,
+            outline_after_fill=(mode != "outline_only"),
+            min_fill_area_mm2=0.0,
+            min_fill_width_mm=0.0,
+            simplify_tolerance_mm=0.0,
+            remove_duplicate_paths=False,
+            small_shape_mode="single-wall",
+            min_segment_length_mm=0.0,
+            travel_optimization="nearest-neighbor",
+            debug=debug_data,
+        )
+        if mode == "infill_only":
+            toolpaths = [path for path in toolpaths if path.kind == "fill-infill"]
+        elif mode == "outline_only":
+            toolpaths = [path for path in toolpaths if path.kind == "outline"]
+        options = {
+            "simplify_tolerance_mm": 0.0,
+            "min_segment_length_mm": 0.0,
+            "line_thickness_mm": line_width_mm,
+            "placement_offset_x": 0.0,
+            "placement_offset_y": 0.0,
+        }
+        cleaned_toolpaths, projected_toolpaths, cleanup_stats, coordinate_debug, outline_pipeline_debug, region_alignment_debug, sampling_debug, outline_vs_infill_alignment_debug = project_surface_toolpaths(toolpaths, options)
+        gcode, preview = get_gcode_service().generate_from_toolpaths(
+            toolpaths=projected_toolpaths,
+            draw_feed=draw_feed,
+            travel_feed=travel_feed,
+            sample_step_deg=config["DEFAULT_SAMPLE_STEP_DEG"],
+            placement_offset_x=0.0,
+            placement_offset_y=0.0,
+            pen_up_s=config["DEFAULT_PEN_UP_S"],
+            pen_down_s=config["DEFAULT_PEN_DOWN_S"],
+            servo_ramp_enabled=config["DEFAULT_SERVO_RAMP_ENABLED"],
+            servo_ramp_step=config["DEFAULT_SERVO_RAMP_STEP"],
+            servo_ramp_delay_ms=config["DEFAULT_SERVO_RAMP_DELAY_MS"],
+            pen_up_dwell_ms=config["DEFAULT_PEN_UP_DWELL_MS"],
+            pen_down_dwell_ms=config["DEFAULT_PEN_DOWN_DWELL_MS"],
+            gcode_mode=config["DEFAULT_GCODE_MODE"],
+            include_comments=True,
+            debug=debug_data,
+        )
+        machine_motion_debug = pipeline_core.build_machine_motion_debug(
+            cleaned_toolpaths,
+            projected_toolpaths,
+            preview,
+            gcode,
+            pen_up_s=config["DEFAULT_PEN_UP_S"],
+            pen_down_s=config["DEFAULT_PEN_DOWN_S"],
+        )
+        return json_ok(
+            pattern=pattern,
+            mode=mode,
+            gcode=gcode,
+            preview=preview,
+            coordinate_debug=coordinate_debug,
+            outline_pipeline_debug=outline_pipeline_debug,
+            region_alignment_debug=region_alignment_debug,
+            sampling_debug=sampling_debug,
+            machine_motion_debug=machine_motion_debug,
+            outline_vs_infill_alignment=outline_vs_infill_alignment_debug,
+            gcode_stats=build_gcode_stats(gcode, cleanup_stats, preview_path_count=len(preview), debug=debug_data),
+            debug=debug_data,
+        )
+    except Exception as exc:
+        log_exception("Generate diagnostic G-code failed", exc)
+        return json_error(str(exc), status=500)
