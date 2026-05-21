@@ -828,6 +828,59 @@ def test_preview_and_gcode_share_same_projected_points_after_resampling():
     assert projected_debug["preview_and_gcode_share_same_projected_paths"] is True
 
 
+def test_surface_artwork_scaling_happens_before_projection():
+    original = Toolpath(
+        points=[
+            Point(-12.0, -10.0),
+            Point(12.0, -10.0),
+            Point(12.0, 10.0),
+            Point(-12.0, 10.0),
+            Point(-12.0, -10.0),
+        ],
+        kind="outline",
+        closed=True,
+        coordinate_space="surface_mm",
+    )
+    original = pipeline_core.prepare_toolpaths_for_projection([original], default_pen_width_mm=0.75)[0]
+    bundle = GeometryBundle(
+        outline_segments=[Segment(points=original.points, closed=original.closed)],
+    )
+    scaled_bundle = pipeline_core.apply_surface_artwork_scale(bundle, 50.0)
+    scaled_toolpath = Toolpath(
+        points=scaled_bundle.outline_segments[0].points,
+        kind="outline",
+        closed=True,
+        coordinate_space="surface_mm",
+    )
+    scaled_toolpath = pipeline_core.prepare_toolpaths_for_projection([scaled_toolpath], default_pen_width_mm=0.75)[0]
+
+    original_projected = pipeline_core.project_toolpaths_to_ball_angles([original], center_lon_deg=0.0, center_lat_deg=35.0)[0]
+    scaled_projected = pipeline_core.project_toolpaths_to_ball_angles([scaled_toolpath], center_lon_deg=0.0, center_lat_deg=35.0)[0]
+
+    original_bounds = pipeline_core._bbox_or_none(original_projected.points)
+    scaled_bounds = pipeline_core._bbox_or_none(scaled_projected.points)
+    assert original_bounds is not None
+    assert scaled_bounds is not None
+    projected_center_x = (original_bounds["minX"] + original_bounds["maxX"]) / 2.0
+    projected_center_y = (original_bounds["minY"] + original_bounds["maxY"]) / 2.0
+    naive_projected_points = [
+        Point(
+            projected_center_x + ((point.x - projected_center_x) * 0.5),
+            projected_center_y + ((point.y - projected_center_y) * 0.5),
+        )
+        for point in original_projected.points
+    ]
+
+    assert int(scaled_projected.metadata.get("projection_count", 0)) == 1
+    assert scaled_bounds["width"] < original_bounds["width"]
+    assert scaled_bounds["height"] < original_bounds["height"]
+    max_delta = max(
+        abs(actual.x - naive.x) + abs(actual.y - naive.y)
+        for actual, naive in zip(scaled_projected.points, naive_projected_points)
+    )
+    assert max_delta > 1e-3
+
+
 def test_vertical_horizontal_and_diagonal_outline_segments_project_with_bounded_step_size():
     printable = Polygon([
         (0.0, 0.0),

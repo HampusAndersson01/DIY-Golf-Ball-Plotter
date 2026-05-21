@@ -22,6 +22,7 @@ def build_frontend_config(config) -> dict:
             "yAcceleration": config["DEFAULT_Y_ACCELERATION"],
             "drawFeed": config["DEFAULT_DRAW_FEED"],
             "travelFeed": config["DEFAULT_TRAVEL_FEED"],
+            "artworkScalePercent": 100,
             "lineThicknessMm": config["DEFAULT_LINE_THICKNESS_MM"],
             "penUpS": config["DEFAULT_PEN_UP_S"],
             "penDownS": config["DEFAULT_PEN_DOWN_S"],

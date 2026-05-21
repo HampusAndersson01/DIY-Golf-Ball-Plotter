@@ -16,6 +16,7 @@ export type SettingsState = {
   yJog: number
   drawFeed: number
   travelFeed: number
+  artworkScalePercent: number
   placementScale: number
   placementOffsetX: number
   placementOffsetY: number
@@ -177,6 +178,7 @@ function buildSettings(defaults: AppDefaults): SettingsState {
     yJog: 1,
     drawFeed: defaults.drawFeed,
     travelFeed: defaults.travelFeed,
+    artworkScalePercent: defaults.artworkScalePercent,
     placementScale: 100,
     placementOffsetX: 0,
     placementOffsetY: 0,

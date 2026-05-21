@@ -202,6 +202,7 @@ export type GenerateResponse = {
   summary: JobSummary
   stage_counts: Record<string, unknown>
   effective_settings: {
+    artwork_scale_percent?: number
     line_thickness_mm: number
     infill_spacing_mm: number
     custom_infill_spacing: boolean
@@ -230,6 +231,7 @@ export type AppDefaults = {
   yAcceleration: number
   drawFeed: number
   travelFeed: number
+  artworkScalePercent: number
   lineThicknessMm: number
   penUpS: number
   penDownS: number

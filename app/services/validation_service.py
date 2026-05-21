@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from . import pipeline_core
@@ -7,6 +8,8 @@ from .raster_analysis_service import RasterAnalysisService
 
 
 class ValidationService:
+    ARTWORK_SCALE_PERCENT_MIN = 10.0
+    ARTWORK_SCALE_PERCENT_MAX = 200.0
     validate_feed = staticmethod(pipeline_core.validate_feed)
     validate_degrees = staticmethod(pipeline_core.validate_degrees)
     validate_y_degrees = staticmethod(pipeline_core.validate_y_degrees)
@@ -36,6 +39,14 @@ class ValidationService:
     def _parse_float(self, form, key: str, default: float) -> float:
         return self.parse_locale_float(form.get(key, default), default)
 
+    def _parse_artwork_scale_percent(self, form) -> float:
+        artwork_scale_percent = self.parse_locale_float(form.get("artwork_scale_percent", 100.0), 100.0)
+        if not math.isfinite(artwork_scale_percent):
+            raise ValueError("Artwork scale percent must be a finite number")
+        if artwork_scale_percent <= 0:
+            raise ValueError("Artwork scale percent must be greater than 0")
+        return min(self.ARTWORK_SCALE_PERCENT_MAX, max(self.ARTWORK_SCALE_PERCENT_MIN, artwork_scale_percent))
+
     def parse_generate_gcode_form(self, form, config) -> dict[str, Any]:
         line_thickness_mm = self._parse_float(form, "line_thickness_mm", config["DEFAULT_LINE_THICKNESS_MM"])
         derived_defaults = self._derived_pen_defaults(line_thickness_mm)
@@ -43,6 +54,7 @@ class ValidationService:
         options = {
             "draw_feed": self.validate_feed(form.get("draw_feed", config["DEFAULT_DRAW_FEED"])),
             "travel_feed": self.validate_feed(form.get("travel_feed", config["DEFAULT_TRAVEL_FEED"])),
+            "artwork_scale_percent": self._parse_artwork_scale_percent(form),
             "sample_step_deg": self._parse_float(form, "sample_step_deg", config["DEFAULT_SAMPLE_STEP_DEG"]),
             "margin_percent": self._parse_float(form, "margin_percent", config["DEFAULT_MARGIN_PERCENT"]),
             "placement_scale": self._parse_float(form, "placement_scale", 100.0),
@@ -176,6 +188,7 @@ class ValidationService:
         options = {
             "draw_feed": self.validate_feed(form.get("draw_feed", config["DEFAULT_DRAW_FEED"])),
             "travel_feed": self.validate_feed(form.get("travel_feed", config["DEFAULT_TRAVEL_FEED"])),
+            "artwork_scale_percent": self._parse_artwork_scale_percent(form),
             "sample_step_deg": self._parse_float(form, "sample_step_deg", config["DEFAULT_SAMPLE_STEP_DEG"]),
             "margin_percent": self._parse_float(form, "margin_percent", config["DEFAULT_MARGIN_PERCENT"]),
             "placement_scale": self._parse_float(form, "placement_scale", 100.0),

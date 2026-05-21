@@ -40,6 +40,7 @@ def build_setting_debug(error: Exception, config) -> dict | None:
 
 def build_fill_header_settings(options: dict, design_bounds) -> dict:
     return {
+        "artworkScalePercent": f'{options["artwork_scale_percent"]:.4f}',
         "lineWidthMm": f'{options["line_thickness_mm"]:.4f}',
         "infillSpacingMm": f'{options["effective_infill_spacing_mm"]:.4f}',
         "wallCount": options["wall_count"],
@@ -71,6 +72,7 @@ def estimate_runtime_seconds(preview: list[dict], *, draw_feed: float, travel_fe
 
 def build_effective_settings(options: dict) -> dict:
     return {
+        "artwork_scale_percent": options["artwork_scale_percent"],
         "line_thickness_mm": options["line_thickness_mm"],
         "infill_spacing_mm": options["effective_infill_spacing_mm"],
         "custom_infill_spacing": options["custom_infill_spacing"],
@@ -220,8 +222,13 @@ def generate_image_gcode_route():
             options["margin_percent"],
         )
         geometry.debug_append_bundle(debug_data, "mapped_paths", mapped)
-        placed = geometry.apply_surface_placement_transform(
+        artwork_scaled = geometry.apply_surface_artwork_scale(
             mapped,
+            options["artwork_scale_percent"],
+        )
+        geometry.debug_append_bundle(debug_data, "artwork_scaled_paths", artwork_scaled)
+        placed = geometry.apply_surface_placement_transform(
+            artwork_scaled,
             options["placement_scale"],
             options["rotation_deg"],
         )

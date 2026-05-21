@@ -2980,6 +2980,69 @@ def apply_surface_placement_transform(
     )
 
 
+def apply_surface_artwork_scale(
+    bundle: GeometryBundle,
+    artwork_scale_percent: float,
+) -> GeometryBundle:
+    if not math.isfinite(artwork_scale_percent):
+        raise ValueError("Artwork scale percent must be finite")
+    if artwork_scale_percent <= 0:
+        raise ValueError("Artwork scale percent must be greater than 0")
+    if not bundle.outline_segments and not bundle.fill_boundary_segments and not bundle.detail_segments and not bundle.fill_shapes:
+        return GeometryBundle()
+
+    scale_factor = artwork_scale_percent / 100.0
+    if abs(scale_factor - 1.0) <= 1e-12:
+        return bundle
+
+    bounds = bounds_from_bundle(bundle)
+    center_x = (bounds.min_x + bounds.max_x) / 2.0
+    center_y = (bounds.min_y + bounds.max_y) / 2.0
+
+    def scale_point(point: Point) -> Point:
+        return Point(
+            center_x + ((point.x - center_x) * scale_factor),
+            center_y + ((point.y - center_y) * scale_factor),
+        )
+
+    outline_segments = [
+        Segment([scale_point(point) for point in seg.points], closed=seg.closed)
+        for seg in bundle.outline_segments
+    ]
+    fill_boundary_segments = [
+        Segment([scale_point(point) for point in seg.points], closed=seg.closed)
+        for seg in bundle.fill_boundary_segments
+    ]
+    detail_segments = [
+        Segment([scale_point(point) for point in seg.points], closed=seg.closed)
+        for seg in bundle.detail_segments
+    ]
+    fill_shapes = [
+        SvgFillShape(
+            geometry=affinity.scale(fill_shape.geometry, xfact=scale_factor, yfact=scale_factor, origin=(center_x, center_y)),
+            fill_rule=fill_shape.fill_rule,
+            source_tag=fill_shape.source_tag,
+        )
+        for fill_shape in bundle.fill_shapes
+    ]
+
+    printable_geometry = bundle.printable_geometry
+    if printable_geometry is not None and not printable_geometry.is_empty:
+        printable_geometry = affinity.scale(printable_geometry, xfact=scale_factor, yfact=scale_factor, origin=(center_x, center_y))
+    cutout_geometry = bundle.cutout_geometry
+    if cutout_geometry is not None and not cutout_geometry.is_empty:
+        cutout_geometry = affinity.scale(cutout_geometry, xfact=scale_factor, yfact=scale_factor, origin=(center_x, center_y))
+
+    return GeometryBundle(
+        outline_segments=outline_segments,
+        fill_boundary_segments=fill_boundary_segments,
+        detail_segments=detail_segments,
+        fill_shapes=fill_shapes,
+        printable_geometry=printable_geometry,
+        cutout_geometry=cutout_geometry,
+    )
+
+
 def segment_length(points: list[Point]) -> float:
     return sum(math.hypot(b.x - a.x, b.y - a.y) for a, b in zip(points, points[1:]))
 

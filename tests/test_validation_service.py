@@ -122,3 +122,28 @@ def test_generate_raster_form_supports_locale_decimals_and_custom_infill_spacing
     assert options["line_thickness_mm"] == pytest.approx(0.5)
     assert options["infill_spacing_mm"] == pytest.approx(0.8)
     assert options["effective_infill_spacing_mm"] == pytest.approx(0.8)
+
+
+def test_generate_raster_form_clamps_artwork_scale_percent():
+    service = ValidationService()
+    options = service.parse_generate_raster_form(
+        {
+            "selected_colors": "[\"#000000\"]",
+            "artwork_scale_percent": "250",
+        },
+        make_config(),
+    )
+
+    assert options["artwork_scale_percent"] == pytest.approx(200.0)
+
+
+def test_generate_raster_form_rejects_non_positive_artwork_scale_percent():
+    service = ValidationService()
+    with pytest.raises(ValueError, match="Artwork scale percent must be greater than 0"):
+        service.parse_generate_raster_form(
+            {
+                "selected_colors": "[\"#000000\"]",
+                "artwork_scale_percent": "0",
+            },
+            make_config(),
+        )

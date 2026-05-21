@@ -583,6 +583,7 @@ function buildGenerateFormData(file: File, settings: SettingsState, selectedColo
   formData.append('selected_colors', JSON.stringify(selectedColors))
   formData.append('draw_feed', String(settings.drawFeed))
   formData.append('travel_feed', String(settings.travelFeed))
+  formData.append('artwork_scale_percent', String(settings.artworkScalePercent))
   formData.append('placement_scale', String(settings.placementScale))
   formData.append('placement_offset_x', String(settings.placementOffsetX))
   formData.append('placement_offset_y', String(settings.placementOffsetY))
@@ -634,11 +635,18 @@ function normalizeGenerateSettings(settings: SettingsState): SettingsState {
   if (!Number.isFinite(lineThicknessMm)) {
     throw new Error('Missing required slicer setting: pen.line_thickness_mm')
   }
+  const artworkScalePercent = clampArtworkScalePercent(settings.artworkScalePercent)
   return {
     ...settings,
     lineThicknessMm,
+    artworkScalePercent,
     infillSpacingMm: settings.customInfillSpacingEnabled ? Number(settings.infillSpacingMm) : lineThicknessMm,
   }
+}
+
+function clampArtworkScalePercent(value: number) {
+  if (!Number.isFinite(value)) return 100
+  return Math.min(200, Math.max(10, Math.round(value)))
 }
 
 function normalizeEffectiveSettings(

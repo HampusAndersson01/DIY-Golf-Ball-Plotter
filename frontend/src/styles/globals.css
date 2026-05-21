@@ -189,6 +189,31 @@ select:focus {
   align-items: center;
 }
 
+.generate-row {
+  display: grid;
+  grid-template-columns: minmax(132px, 164px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: end;
+}
+
+.inline-number-field {
+  display: grid;
+  gap: 4px;
+}
+
+.inline-number-field__control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.inline-number-field__control small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 .progress-copy,
 .panel-heading,
 .canvas-meta,
@@ -975,6 +1000,10 @@ select:focus {
   .summary-grid,
   .toggle-grid,
   .current-line-overlay {
+    grid-template-columns: 1fr;
+  }
+
+  .generate-row {
     grid-template-columns: 1fr;
   }
 
