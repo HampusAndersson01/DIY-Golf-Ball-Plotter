@@ -1,4 +1,4 @@
-import { startTransition, useDeferredValue, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
+import { startTransition, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 
 import { analyzeImage, apiConfig, fetchBootstrap, fetchState, generateDiagnosticGcode, generateImageGcode, postJson } from './api/client'
@@ -105,7 +105,6 @@ function DashboardApp() {
   const restoredPersistedPreviewRef = useRef(false)
 
   const readySettings = settings
-  const deferredPreview = useDeferredValue(preview)
   const progressPercent = getProgressPercent(machine)
   const runReady = Boolean(machine?.connected && machine?.calibrated && gcode.length && !machine?.y_loop_test?.enabled && !busy.running)
   const currentSettings = useMemo(() => readySettings, [readySettings])
@@ -559,7 +558,7 @@ function DashboardApp() {
             onShowCompare={setShowCompare}
             onShowTravel={setShowTravel}
             onViewPreset={setViewPreset}
-            paths={deferredPreview}
+            paths={preview}
             previewMode={previewMode}
             progressFilter={progressFilter}
             showCompare={showCompare}

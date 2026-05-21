@@ -39,6 +39,7 @@ class MachineState:
             "job_estimated_remaining_seconds": 0.0,
             "job_state": "idle",
             "runtime_estimate_multiplier": 1.0,
+            "job_estimate_profile": None,
             "current_gcode_line": 0,
             "current_path_id": None,
             "current_path_kind": None,

@@ -162,7 +162,7 @@ DEFAULT_X_ACCELERATION = 100    # degrees/sec^2
 DEFAULT_Y_ACCELERATION = 100    # degrees/sec^2
 DEFAULT_DRAW_FEED = 1200        # degrees/min for drawing
 DEFAULT_TRAVEL_FEED = 3000      # degrees/min for pen-up travel
-DEFAULT_LINE_THICKNESS_MM = 0.3
+DEFAULT_LINE_THICKNESS_MM = 0.25
 
 # Servo via GRBL spindle PWM M3 S...
 DEFAULT_PEN_UP_S = 575

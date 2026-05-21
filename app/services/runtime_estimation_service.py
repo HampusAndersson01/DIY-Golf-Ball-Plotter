@@ -27,6 +27,7 @@ class RuntimeEstimateBreakdown:
     pen_lifts: int
     pen_lowers: int
     short_segment_count: int
+    cumulative_seconds_by_stream_line: list[float]
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -42,6 +43,7 @@ class RuntimeEstimateBreakdown:
             "penLifts": self.pen_lifts,
             "penLowers": self.pen_lowers,
             "shortSegmentCount": self.short_segment_count,
+            "cumulativeSecondsByStreamLine": self.cumulative_seconds_by_stream_line,
         }
 
 
@@ -62,10 +64,10 @@ def estimate_gcode_runtime(
     travel_feed: float,
     pen_up_s: int,
     pen_down_s: int,
-    serial_ack_overhead_seconds_per_line: float = 0.022,
-    short_segment_threshold: float = 0.75,
-    short_segment_overhead_seconds: float = 0.03,
-    finalization_overhead_seconds: float = 2.5,
+    serial_ack_overhead_seconds_per_line: float = 0.012,
+    short_segment_threshold: float = 0.2,
+    short_segment_overhead_seconds: float = 0.004,
+    finalization_overhead_seconds: float = 2.0,
 ) -> RuntimeEstimateBreakdown:
     gcode_service = GcodeService()
     raw_gcode_lines = len(gcode)
@@ -80,6 +82,13 @@ def estimate_gcode_runtime(
     pen_lifts = 0
     pen_lowers = 0
     pending_pen_servo = False
+    cumulative_seconds_by_stream_line: list[float] = []
+    cumulative_streamable_seconds = 0.0
+
+    def push_streamable_time(seconds: float) -> None:
+        nonlocal cumulative_streamable_seconds
+        cumulative_streamable_seconds += max(0.0, seconds)
+        cumulative_seconds_by_stream_line.append(cumulative_streamable_seconds)
 
     for raw_line in gcode:
         line = raw_line.strip().upper()
@@ -95,6 +104,7 @@ def estimate_gcode_runtime(
             elif servo_target == int(pen_down_s):
                 pen_lowers += 1
                 pending_pen_servo = True
+            push_streamable_time(serial_ack_overhead_seconds_per_line)
             continue
 
         if line.startswith("G4"):
@@ -104,6 +114,7 @@ def estimate_gcode_runtime(
                 pending_pen_servo = False
             else:
                 dwell_seconds += dwell
+            push_streamable_time(dwell + serial_ack_overhead_seconds_per_line)
             continue
 
         pending_pen_servo = False
@@ -117,10 +128,17 @@ def estimate_gcode_runtime(
             if line.startswith("G0") and "F" not in words:
                 feed = max(float(travel_feed or 0.0), 1e-6)
             motion_seconds += (distance / max(feed, 1e-6)) * 60.0
+            incremental_seconds = (distance / max(feed, 1e-6)) * 60.0 + serial_ack_overhead_seconds_per_line
             if 0.0 < distance <= short_segment_threshold:
                 short_segment_count += 1
+                incremental_seconds += short_segment_overhead_seconds
             current_x = x
             current_y = y
+            push_streamable_time(incremental_seconds)
+            continue
+
+        if gcode_service.is_streamable_line(raw_line):
+            push_streamable_time(serial_ack_overhead_seconds_per_line)
 
     streaming_seconds = streamable_gcode_lines * max(0.0, serial_ack_overhead_seconds_per_line)
     short_segment_seconds = short_segment_count * max(0.0, short_segment_overhead_seconds)
@@ -145,6 +163,7 @@ def estimate_gcode_runtime(
         pen_lifts=pen_lifts,
         pen_lowers=pen_lowers,
         short_segment_count=short_segment_count,
+        cumulative_seconds_by_stream_line=cumulative_seconds_by_stream_line,
     )
 
 
@@ -163,8 +182,14 @@ def compute_elapsed_seconds(snapshot: dict[str, Any], now_seconds: float | None 
 
 
 def compute_progress_fraction(snapshot: dict[str, Any]) -> float:
+    estimate_profile = snapshot.get("job_estimate_profile") or {}
+    cumulative = estimate_profile.get("cumulative_seconds_by_stream_line") or []
+    estimated_total_seconds = max(0.0, float(snapshot.get("job_estimated_total_seconds") or 0.0))
     total = max(0, int(snapshot.get("progress_total") or 0))
     done = max(0, min(total, int(snapshot.get("progress_done") or 0)))
+    if cumulative and estimated_total_seconds > 0.0 and done > 0:
+        weighted_done = float(cumulative[min(done - 1, len(cumulative) - 1)])
+        return max(0.0, min(1.0, weighted_done / estimated_total_seconds))
     if total <= 0:
         return 0.0
     return max(0.0, min(1.0, done / total))

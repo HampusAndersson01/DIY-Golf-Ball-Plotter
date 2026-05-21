@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useEffectEvent, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 
 import type { MachineState, PreviewPath } from '../../api/types'
 import { PanZoomCanvas } from './PanZoomCanvas'
@@ -22,6 +22,10 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const controllerRef = useRef<PanZoomCanvas | null>(null)
+  const renderStateRef = useRef<{ visiblePaths: PreviewPath[]; machine: MachineState | null }>({
+    visiblePaths: [],
+    machine: null,
+  })
   const [zoomLabel, setZoomLabel] = useState('100%')
 
   const visiblePaths = useMemo(
@@ -29,15 +33,18 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
     [filter, machine, paths, showTravel],
   )
 
-  const renderCanvas = useEffectEvent((ctx: CanvasRenderingContext2D, engine: PanZoomCanvas) => {
+  renderStateRef.current = { visiblePaths, machine }
+
+  const renderCanvas = (ctx: CanvasRenderingContext2D, engine: PanZoomCanvas) => {
+    const { visiblePaths: nextVisiblePaths, machine: nextMachine } = renderStateRef.current
     const { width, height } = engine.getViewState()
     ctx.fillStyle = '#f4efe6'
     ctx.fillRect(0, 0, width * window.devicePixelRatio, height * window.devicePixelRatio)
 
     engine.applyTransform(ctx)
     drawGrid(ctx, engine)
-    for (const path of visiblePaths) {
-      const phase = classifyPath(path, machine)
+    for (const path of nextVisiblePaths) {
+      const phase = classifyPath(path, nextMachine)
       const points = path.points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
       if (points.length < 2) continue
       ctx.beginPath()
@@ -52,7 +59,7 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
       ctx.strokeStyle = hexWithAlpha(phaseStroke(phase, path.kind), phaseOpacity(phase, path.kind))
       ctx.stroke()
 
-      const marker = getCurrentMarker(path, machine)
+      const marker = getCurrentMarker(path, nextMachine)
       if (marker) {
         ctx.fillStyle = '#fff5a8'
         ctx.beginPath()
@@ -64,7 +71,7 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
       }
     }
     ctx.setLineDash([])
-  })
+  }
 
   useImperativeHandle(ref, () => ({
     fit: () => controllerRef.current?.fitToView(),
@@ -80,7 +87,7 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
       onChange: (view) => setZoomLabel(`${Math.round(view.scale * 100)}%`),
     })
     controllerRef.current = controller
-    controller.setRenderer((ctx, engine) => renderCanvas(ctx, engine))
+    controller.setRenderer(renderCanvas)
     controller.setContentBounds(flipBoundsY(derivePreviewBounds(paths)))
     controller.fitToView()
 
@@ -91,21 +98,20 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
       controller.destroy()
       controllerRef.current = null
     }
-  }, [paths])
+  }, [])
 
   useEffect(() => {
     const controller = controllerRef.current
     if (!controller) return
     controller.setContentBounds(flipBoundsY(derivePreviewBounds(paths)))
-    controller.setRenderer((ctx, engine) => renderCanvas(ctx, engine))
-    controller.fitToView()
-  }, [paths, renderCanvas])
+    controller.requestDraw()
+  }, [paths])
 
   useEffect(() => {
     const controller = controllerRef.current
     if (!controller) return
-    controller.setRenderer((ctx, engine) => renderCanvas(ctx, engine))
-  }, [machine, filter, showTravel, visiblePaths, renderCanvas])
+    controller.requestDraw()
+  }, [machine, filter, showTravel, visiblePaths])
 
   return (
     <div className="toolpath-canvas-wrap">

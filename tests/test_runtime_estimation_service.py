@@ -85,6 +85,24 @@ def test_dynamic_eta_blends_to_observed_progress_after_threshold():
     assert remaining == 100.0
 
 
+def test_dynamic_eta_prefers_weighted_progress_over_raw_line_fraction():
+    snapshot = {
+        "job_started_at": 100.0,
+        "paused_duration_seconds": 0.0,
+        "job_estimated_total_seconds": 564.0,
+        "job_state": "running",
+        "progress_done": 5463,
+        "progress_total": 7680,
+        "job_estimate_profile": {
+            "cumulative_seconds_by_stream_line": [160.0] * 5463 + [564.0] * (7680 - 5463),
+        },
+    }
+
+    remaining = compute_remaining_seconds(snapshot, now_seconds=261.0)
+    assert remaining > 380.0
+    assert remaining < 430.0
+
+
 def test_dynamic_eta_does_not_divide_by_zero_at_start():
     snapshot = {
         "job_started_at": 100.0,

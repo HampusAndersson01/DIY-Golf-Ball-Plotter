@@ -423,6 +423,9 @@ def generate_image_gcode_route():
             job_estimated_remaining_seconds=0.0,
             job_state="idle",
             runtime_estimate_multiplier=1.0,
+            job_estimate_profile={
+                "cumulative_seconds_by_stream_line": runtime_estimate.get("cumulativeSecondsByStreamLine") or [],
+            },
             current_gcode_line=0,
             current_path_id=None,
             current_preview_point_index=0,
@@ -570,6 +573,9 @@ def generate_diagnostic_gcode_route():
                 job_estimated_remaining_seconds=0.0,
                 job_state="idle",
                 runtime_estimate_multiplier=1.0,
+                job_estimate_profile={
+                    "cumulative_seconds_by_stream_line": runtime_estimate.get("cumulativeSecondsByStreamLine") or [],
+                },
                 current_gcode_line=0,
                 current_path_id=None,
                 current_preview_point_index=0,
@@ -720,6 +726,9 @@ def generate_diagnostic_gcode_route():
             job_estimated_remaining_seconds=0.0,
             job_state="idle",
             runtime_estimate_multiplier=1.0,
+            job_estimate_profile={
+                "cumulative_seconds_by_stream_line": runtime_estimate.get("cumulativeSecondsByStreamLine") or [],
+            },
             current_gcode_line=0,
             current_path_id=None,
             current_preview_point_index=0,

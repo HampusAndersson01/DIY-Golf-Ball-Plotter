@@ -38,6 +38,7 @@ export function JobSummaryPanel({ summary, generationDurationMs }: Props) {
         <div><span>Estimated runtime</span><strong>{formatDuration(summary.estimated_runtime_seconds)}</strong></div>
         <div><span>Motion estimate</span><strong>{formatDuration(summary.estimated_runtime_breakdown?.estimatedMotionSeconds ?? 0)}</strong></div>
         <div><span>Streaming overhead</span><strong>{formatDuration(summary.estimated_runtime_breakdown?.estimatedStreamingOverheadSeconds ?? 0)}</strong></div>
+        <div><span>Short-segment overhead</span><strong>{formatDuration(summary.estimated_runtime_breakdown?.estimatedShortSegmentOverheadSeconds ?? 0)}</strong></div>
         <div><span>Pen lifts</span><strong>{summary.pen_lift_count}</strong></div>
         <div><span>Walls</span><strong>{summary.wall_path_count}</strong></div>
         <div><span>Infill</span><strong>{summary.infill_path_count}</strong></div>

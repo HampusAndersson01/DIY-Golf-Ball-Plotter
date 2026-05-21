@@ -517,8 +517,13 @@ class JobRunner:
                     self.state.update(paused=False)
 
                 def on_line_sent(line: str, sent_count: int) -> None:
+                    state_snapshot = self.state.snapshot()
                     current_path_id, current_path_kind, current_preview_point_index = self._resolve_preview_progress(preview_paths, sent_count)
-                    streaming_snapshot = self.state.snapshot().get("streaming", {})
+                    if current_path_id is None:
+                        current_path_id = state_snapshot.get("current_path_id")
+                        current_path_kind = state_snapshot.get("current_path_kind")
+                        current_preview_point_index = int(state_snapshot.get("current_preview_point_index") or 0)
+                    streaming_snapshot = state_snapshot.get("streaming", {})
                     self.state.update(
                         status=f"Running: {line}",
                         progress_done=sent_count,
