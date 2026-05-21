@@ -6,6 +6,7 @@ import time
 from typing import Any, Callable
 
 from .gcode_service import GcodeService
+from .runtime_estimation_service import build_runtime_snapshot
 
 JobFinalizationReason = str
 
@@ -54,6 +55,7 @@ class JobRunner:
                 running=True,
                 paused=False,
                 status="Starting",
+                job_state="starting",
                 progress_total=0,
                 progress_done=0,
                 current_gcode_line=0,
@@ -61,8 +63,15 @@ class JobRunner:
                 current_path_kind=None,
                 current_preview_point_index=0,
                 run_started_at=started_at,
+                run_finished_at=None,
+                job_started_at=started_at,
+                job_finished_at=None,
                 pause_started_at=None,
                 paused_duration_seconds=0.0,
+                job_elapsed_seconds=0.0,
+                job_estimated_remaining_seconds=max(0.0, float((snapshot.get("last_summary") or {}).get("estimated_runtime_seconds") or 0.0)),
+                job_estimated_total_seconds=max(0.0, float((snapshot.get("last_summary") or {}).get("estimated_runtime_seconds") or 0.0)),
+                runtime_estimate_multiplier=1.0,
                 last_error=None,
                 last_stream_event="job_start_requested",
             )
@@ -84,7 +93,8 @@ class JobRunner:
             ser.write(b"!")
         snapshot = self.state.snapshot()
         pause_started_at = snapshot.get("pause_started_at") or time.time()
-        self.state.update(paused=True, status="Feed hold requested", pause_started_at=pause_started_at)
+        timing = build_runtime_snapshot({**snapshot, "paused": True, "pause_started_at": pause_started_at, "job_state": "paused"}, now_seconds=pause_started_at)
+        self.state.update(paused=True, status="Feed hold requested", job_state="paused", pause_started_at=pause_started_at, **timing)
         self.logger.info("Job pause requested")
         self._emit_lifecycle("pause_job")
 
@@ -103,8 +113,10 @@ class JobRunner:
         self.state.update(
             paused=False,
             status="Resume requested",
+            job_state="running",
             pause_started_at=None,
             paused_duration_seconds=paused_duration_seconds,
+            **build_runtime_snapshot({**snapshot, "paused": False, "pause_started_at": None, "paused_duration_seconds": paused_duration_seconds, "job_state": "running"}),
         )
         self.logger.info("Job resume requested")
 
@@ -359,13 +371,36 @@ class JobRunner:
             finalization_debug=finalization_debug,
             premature_finalization_debug=premature_finalization_debug,
         )
+        final_job_state = "completed" if finalized_successfully else "stopped" if reason == "user_stop" else "failed" if reason == "fail" else "error"
+        finished_at = time.time()
+        timing_snapshot = {
+            **snapshot,
+            "paused": False,
+            "pause_started_at": None,
+            "run_finished_at": finished_at,
+            "job_finished_at": finished_at,
+            "job_state": final_job_state,
+        }
+        timing = build_runtime_snapshot(timing_snapshot, now_seconds=finished_at)
+        last_summary = snapshot.get("last_summary")
+        if isinstance(last_summary, dict):
+            updated_summary = dict(last_summary)
+            updated_summary["actual_runtime_seconds"] = timing["job_elapsed_seconds"]
+            if finalized_successfully and timing["job_estimated_total_seconds"] > 0:
+                updated_summary["actual_vs_estimated_ratio"] = timing["runtime_estimate_multiplier"]
+            last_summary = updated_summary
         self.state.update(
             motor_hold_enabled=motor_hold_enabled,
             job=updated_job,
             last_job_finalization=result["job_finalization"],
             machine_position_trusted=bool(machine_position_trusted if not home_ok else True),
             emergency_stopped=reason == "emergency_stop",
+            run_finished_at=finished_at,
+            job_finished_at=finished_at,
+            job_state=final_job_state,
+            last_summary=last_summary,
             status=message,
+            **timing,
         )
         self.logger.info(
             "Job finalization complete: status=%s cleanup_status=%s completed=%s acked=%s total=%s",
@@ -400,12 +435,20 @@ class JobRunner:
                 running=True,
                 paused=False,
                 status="Running",
+                job_state="running",
                 progress_total=len(stream_lines),
                 progress_done=0,
                 last_error=None,
                 run_started_at=started_at,
+                run_finished_at=None,
+                job_started_at=started_at,
+                job_finished_at=None,
                 pause_started_at=None,
                 paused_duration_seconds=0.0,
+                job_elapsed_seconds=0.0,
+                job_estimated_total_seconds=max(0.0, float((self.state.snapshot().get("last_summary") or {}).get("estimated_runtime_seconds") or 0.0)),
+                job_estimated_remaining_seconds=max(0.0, float((self.state.snapshot().get("last_summary") or {}).get("estimated_runtime_seconds") or 0.0)),
+                runtime_estimate_multiplier=1.0,
                 current_gcode_line=0,
                 current_path_id=None,
                 current_preview_point_index=0,
@@ -495,6 +538,7 @@ class JobRunner:
                             error=None,
                             completion_guard_passed=False,
                         ),
+                        **build_runtime_snapshot({**self.state.snapshot(), "progress_done": sent_count, "job_state": "running"}),
                     )
 
                 stream_result = self.serial_service.stream_gcode_lines_unlocked(
@@ -529,6 +573,7 @@ class JobRunner:
                         error=None,
                         completion_guard_passed=False,
                     ),
+                    **build_runtime_snapshot({**self.state.snapshot(), "progress_done": int(stream_result["acked_count"]), "job_state": "running"}),
                 )
                 with self._lock:
                     if self._stop_requested:
@@ -614,6 +659,13 @@ class JobRunner:
                 },
                 last_job_finalization=finalization["job_finalization"],
                 last_stream_event=stream_result.get("last_stream_event", snapshot.get("last_stream_event")),
+                **build_runtime_snapshot({
+                    **self.state.snapshot(),
+                    "running": False,
+                    "paused": False,
+                    "pause_started_at": None,
+                    "paused_duration_seconds": paused_duration_seconds,
+                }),
             )
             self._emit_lifecycle("finalize_job", reason=final_reason)
             finalization["job_finalization"]["motor_hold_enabled"] = bool(self.state.snapshot().get("motor_hold_enabled"))

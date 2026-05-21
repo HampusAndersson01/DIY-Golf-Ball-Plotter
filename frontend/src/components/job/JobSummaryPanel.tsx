@@ -33,14 +33,19 @@ export function JobSummaryPanel({ summary, generationDurationMs }: Props) {
         <div><span>Image size</span><strong>{summary.image_size}</strong></div>
         <div><span>Selected colors</span><strong>{summary.selected_colors.length}</strong></div>
         <div><span>Mask pixels</span><strong>{summary.mask_pixel_count}</strong></div>
-        <div><span>G-code lines</span><strong>{summary.gcode_line_count}</strong></div>
+        <div><span>Raw G-code lines</span><strong>{summary.gcode_line_count}</strong></div>
+        <div><span>Streamable lines</span><strong>{summary.streamable_gcode_line_count ?? summary.estimated_runtime_breakdown?.streamableGcodeLines ?? '--'}</strong></div>
         <div><span>Estimated runtime</span><strong>{formatDuration(summary.estimated_runtime_seconds)}</strong></div>
+        <div><span>Motion estimate</span><strong>{formatDuration(summary.estimated_runtime_breakdown?.estimatedMotionSeconds ?? 0)}</strong></div>
+        <div><span>Streaming overhead</span><strong>{formatDuration(summary.estimated_runtime_breakdown?.estimatedStreamingOverheadSeconds ?? 0)}</strong></div>
         <div><span>Pen lifts</span><strong>{summary.pen_lift_count}</strong></div>
         <div><span>Walls</span><strong>{summary.wall_path_count}</strong></div>
         <div><span>Infill</span><strong>{summary.infill_path_count}</strong></div>
         <div><span>Detail</span><strong>{summary.detail_trace_path_count}</strong></div>
         <div><span>Travel</span><strong>{summary.travel_path_count}</strong></div>
         <div><span>Components</span><strong>{summary.component_count}</strong></div>
+        <div><span>Actual runtime</span><strong>{summary.actual_runtime_seconds != null ? formatDuration(summary.actual_runtime_seconds) : '--'}</strong></div>
+        <div><span>Actual vs estimate</span><strong>{summary.actual_vs_estimated_ratio != null ? `${summary.actual_vs_estimated_ratio.toFixed(1)}x` : '--'}</strong></div>
         <div><span>Generate time</span><strong>{formatGeneration(generationDurationMs)}</strong></div>
       </div>
     </section>

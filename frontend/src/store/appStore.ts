@@ -277,7 +277,7 @@ export const useAppStore = create<AppStore>((set) => ({
   }),
   setMachine: (machine) => set((state) => ({
     machine,
-    summary: state.summary ?? machine.last_summary,
+    summary: machine.last_summary ?? state.summary,
   })),
   setImageFile: (file, previewUrl) => set({
     imageFile: file,

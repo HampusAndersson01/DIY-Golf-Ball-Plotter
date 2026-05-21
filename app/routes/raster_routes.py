@@ -13,6 +13,7 @@ from app.extensions import (
     get_validation_service,
 )
 from app.services import pipeline_core
+from app.services.runtime_estimation_service import estimate_gcode_runtime
 from app.utils.response_utils import json_error, json_ok, log_exception
 
 raster_bp = Blueprint("raster", __name__)
@@ -52,22 +53,14 @@ def build_fill_header_settings(options: dict, design_bounds) -> dict:
     }
 
 
-def estimate_runtime_seconds(preview: list[dict], *, draw_feed: float, travel_feed: float) -> float:
-    total_minutes = 0.0
-    draw_feed = max(float(draw_feed or 0.0), 1e-6)
-    travel_feed = max(float(travel_feed or 0.0), 1e-6)
-    for entry in preview or []:
-        points = entry.get("points") or []
-        if len(points) < 2:
-            continue
-        feed = travel_feed if entry.get("kind") == "travel" else draw_feed
-        path_distance = 0.0
-        for index in range(1, len(points)):
-            dx = float(points[index]["x"]) - float(points[index - 1]["x"])
-            dy = float(points[index]["y"]) - float(points[index - 1]["y"])
-            path_distance += (dx * dx + dy * dy) ** 0.5
-        total_minutes += path_distance / feed
-    return max(0.0, total_minutes * 60.0)
+def estimate_runtime_seconds(gcode: list[str], *, draw_feed: float, travel_feed: float, pen_up_s: int, pen_down_s: int) -> dict[str, object]:
+    return estimate_gcode_runtime(
+        gcode,
+        draw_feed=draw_feed,
+        travel_feed=travel_feed,
+        pen_up_s=pen_up_s,
+        pen_down_s=pen_down_s,
+    ).as_dict()
 
 
 def build_effective_settings(options: dict) -> dict:
@@ -390,10 +383,12 @@ def generate_image_gcode_route():
             len(options["selected_colors"]),
         )
         point_count = sum(len(path["points"]) for path in preview if path["kind"] != "travel")
-        estimated_runtime_seconds = estimate_runtime_seconds(
-            preview,
+        runtime_estimate = estimate_runtime_seconds(
+            gcode,
             draw_feed=options["draw_feed"],
             travel_feed=options["travel_feed"],
+            pen_up_s=options["pen_up_s"],
+            pen_down_s=options["pen_down_s"],
         )
         summary = {
             "image_size": f"{mask_result.width}x{mask_result.height}",
@@ -405,10 +400,12 @@ def generate_image_gcode_route():
             "infill_path_count": stage_counts["generated_infill_paths"],
             "detail_trace_path_count": stage_counts["generated_detail_trace_paths"],
             "travel_path_count": stage_counts["final_toolpaths_by_kind"]["travel"],
-            "gcode_line_count": len(gcode),
+            "gcode_line_count": runtime_estimate["rawGcodeLines"],
+            "streamable_gcode_line_count": runtime_estimate["streamableGcodeLines"],
             "point_count": point_count,
-            "estimated_runtime_seconds": estimated_runtime_seconds,
-            "pen_lift_count": len(toolpaths),
+            "estimated_runtime_seconds": runtime_estimate["estimatedRuntimeSeconds"],
+            "estimated_runtime_breakdown": runtime_estimate,
+            "pen_lift_count": runtime_estimate["penLifts"],
         }
         state.update(
             last_svg_name=file.filename,
@@ -417,6 +414,15 @@ def generate_image_gcode_route():
             last_summary=summary,
             progress_total=0,
             progress_done=0,
+            run_started_at=None,
+            run_finished_at=None,
+            job_started_at=None,
+            job_finished_at=None,
+            job_elapsed_seconds=0.0,
+            job_estimated_total_seconds=float(runtime_estimate["estimatedRuntimeSeconds"]),
+            job_estimated_remaining_seconds=0.0,
+            job_state="idle",
+            runtime_estimate_multiplier=1.0,
             current_gcode_line=0,
             current_path_id=None,
             current_preview_point_index=0,
@@ -517,7 +523,13 @@ def generate_diagnostic_gcode_route():
                 pen_down_s=config["DEFAULT_PEN_DOWN_S"],
             )
             point_count = sum(len(path["points"]) for path in preview if path["kind"] != "travel")
-            estimated_runtime_seconds = estimate_runtime_seconds(preview, draw_feed=draw_feed, travel_feed=travel_feed)
+            runtime_estimate = estimate_runtime_seconds(
+                gcode,
+                draw_feed=draw_feed,
+                travel_feed=travel_feed,
+                pen_up_s=config["DEFAULT_PEN_UP_S"],
+                pen_down_s=config["DEFAULT_PEN_DOWN_S"],
+            )
             toolpath_counts = {
                 "fill-wall": 0,
                 "fill-infill": 0,
@@ -535,10 +547,12 @@ def generate_diagnostic_gcode_route():
                 "infill_path_count": 0,
                 "detail_trace_path_count": 0,
                 "travel_path_count": toolpath_counts["travel"],
-                "gcode_line_count": len(gcode),
+                "gcode_line_count": runtime_estimate["rawGcodeLines"],
+                "streamable_gcode_line_count": runtime_estimate["streamableGcodeLines"],
                 "point_count": point_count,
-                "estimated_runtime_seconds": estimated_runtime_seconds,
-                "pen_lift_count": len(machine_toolpaths),
+                "estimated_runtime_seconds": runtime_estimate["estimatedRuntimeSeconds"],
+                "estimated_runtime_breakdown": runtime_estimate,
+                "pen_lift_count": runtime_estimate["penLifts"],
             }
             state.update(
                 last_svg_name=f"diagnostic:{pattern}",
@@ -547,6 +561,15 @@ def generate_diagnostic_gcode_route():
                 last_summary=summary,
                 progress_total=0,
                 progress_done=0,
+                run_started_at=None,
+                run_finished_at=None,
+                job_started_at=None,
+                job_finished_at=None,
+                job_elapsed_seconds=0.0,
+                job_estimated_total_seconds=float(runtime_estimate["estimatedRuntimeSeconds"]),
+                job_estimated_remaining_seconds=0.0,
+                job_state="idle",
+                runtime_estimate_multiplier=1.0,
                 current_gcode_line=0,
                 current_path_id=None,
                 current_preview_point_index=0,
@@ -650,10 +673,12 @@ def generate_diagnostic_gcode_route():
             pen_down_s=config["DEFAULT_PEN_DOWN_S"],
         )
         point_count = sum(len(path["points"]) for path in preview if path["kind"] != "travel")
-        estimated_runtime_seconds = estimate_runtime_seconds(
-            preview,
+        runtime_estimate = estimate_runtime_seconds(
+            gcode,
             draw_feed=draw_feed,
             travel_feed=travel_feed,
+            pen_up_s=config["DEFAULT_PEN_UP_S"],
+            pen_down_s=config["DEFAULT_PEN_DOWN_S"],
         )
         toolpath_counts = {
             "fill-wall": sum(1 for path in toolpaths if path.kind == "fill-wall"),
@@ -672,10 +697,12 @@ def generate_diagnostic_gcode_route():
             "infill_path_count": toolpath_counts["fill-infill"],
             "detail_trace_path_count": toolpath_counts["detail-trace"],
             "travel_path_count": sum(1 for path in preview if path["kind"] == "travel"),
-            "gcode_line_count": len(gcode),
+            "gcode_line_count": runtime_estimate["rawGcodeLines"],
+            "streamable_gcode_line_count": runtime_estimate["streamableGcodeLines"],
             "point_count": point_count,
-            "estimated_runtime_seconds": estimated_runtime_seconds,
-            "pen_lift_count": len([path for path in toolpaths if len(path.points) >= 2]),
+            "estimated_runtime_seconds": runtime_estimate["estimatedRuntimeSeconds"],
+            "estimated_runtime_breakdown": runtime_estimate,
+            "pen_lift_count": runtime_estimate["penLifts"],
         }
         state.update(
             last_svg_name=f"diagnostic:{pattern}",
@@ -684,6 +711,15 @@ def generate_diagnostic_gcode_route():
             last_summary=summary,
             progress_total=0,
             progress_done=0,
+            run_started_at=None,
+            run_finished_at=None,
+            job_started_at=None,
+            job_finished_at=None,
+            job_elapsed_seconds=0.0,
+            job_estimated_total_seconds=float(runtime_estimate["estimatedRuntimeSeconds"]),
+            job_estimated_remaining_seconds=0.0,
+            job_state="idle",
+            runtime_estimate_multiplier=1.0,
             current_gcode_line=0,
             current_path_id=None,
             current_preview_point_index=0,

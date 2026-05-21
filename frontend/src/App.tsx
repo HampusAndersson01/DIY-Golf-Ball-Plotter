@@ -102,7 +102,6 @@ function DashboardApp() {
   const pushToast = useAppStore((state) => state.pushToast)
   const dismissToast = useAppStore((state) => state.dismissToast)
   const [generationDurationMs, setGenerationDurationMs] = useState<number | null>(null)
-  const [nowMs, setNowMs] = useState(() => Date.now())
   const restoredPersistedPreviewRef = useRef(false)
 
   const readySettings = settings
@@ -115,7 +114,7 @@ function DashboardApp() {
     [machine?.current_path_id, preview],
   )
   const currentKind = currentPath ? formatKind(currentPath.kind) : 'Idle'
-  const elapsedSeconds = getElapsedSeconds(machine, nowMs)
+  const elapsedSeconds = getElapsedSeconds(machine)
   const remainingSeconds = getRemainingSeconds(machine, summary, progressPercent, elapsedSeconds)
 
   const onKeyboardPause = useEffectEvent(async () => {
@@ -151,11 +150,6 @@ function DashboardApp() {
     const timers = toasts.map((toast) => window.setTimeout(() => dismissToast(toast.id), 2800))
     return () => timers.forEach((timer) => window.clearTimeout(timer))
   }, [dismissToast, toasts])
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -738,13 +732,8 @@ function sanitizePreviewPaths(paths: Array<Record<string, unknown>>): PreviewPat
     .filter((path) => path.points.length >= 2)
 }
 
-function getElapsedSeconds(machine: MachineState | null, nowMs: number) {
-  if (!machine?.run_started_at) return 0
-  const total = Math.max(0, nowMs / 1000 - machine.run_started_at - machine.paused_duration_seconds)
-  if (machine.paused && machine.pause_started_at) {
-    return Math.max(0, machine.pause_started_at - machine.run_started_at - machine.paused_duration_seconds)
-  }
-  return total
+function getElapsedSeconds(machine: MachineState | null) {
+  return Math.max(0, machine?.job_elapsed_seconds ?? 0)
 }
 
 function getRemainingSeconds(
@@ -753,11 +742,22 @@ function getRemainingSeconds(
   progressPercent: number,
   elapsedSeconds: number,
 ) {
+  if (!machine) return 0
+  if (machine.job_estimated_remaining_seconds != null) {
+    return Math.max(0, machine.job_estimated_remaining_seconds)
+  }
+  if (isTerminalJobState(machine)) return 0
   if (!summary?.estimated_runtime_seconds) return 0
-  if (!machine?.running && !machine?.paused) return summary.estimated_runtime_seconds
+  if (!machine.running && !machine.paused) return 0
+  if (progressPercent >= 100) return 0
   if (!progressPercent) return Math.max(0, summary.estimated_runtime_seconds - elapsedSeconds)
   const estimatedByProgress = elapsedSeconds * ((100 - progressPercent) / progressPercent)
   return Math.max(0, estimatedByProgress)
+}
+
+function isTerminalJobState(machine: MachineState | null) {
+  const jobState = machine?.job_state?.toLowerCase()
+  return jobState === 'completed' || jobState === 'stopped' || jobState === 'aborted' || jobState === 'error' || jobState === 'failed'
 }
 
 function formatClock(totalSeconds: number) {

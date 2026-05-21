@@ -105,9 +105,26 @@ export type JobSummary = {
   detail_trace_path_count: number
   travel_path_count: number
   gcode_line_count: number
+  streamable_gcode_line_count?: number
   point_count: number
   estimated_runtime_seconds: number
+  estimated_runtime_breakdown?: {
+    estimatedRuntimeSeconds: number
+    estimatedMotionSeconds: number
+    estimatedPenSeconds: number
+    estimatedDwellSeconds: number
+    estimatedStreamingOverheadSeconds: number
+    estimatedShortSegmentOverheadSeconds: number
+    estimatedFinalizationOverheadSeconds?: number
+    rawGcodeLines: number
+    streamableGcodeLines: number
+    penLifts: number
+    penLowers?: number
+    shortSegmentCount?: number
+  }
   pen_lift_count: number
+  actual_runtime_seconds?: number
+  actual_vs_estimated_ratio?: number
 }
 
 export type MachineState = {
@@ -121,8 +138,16 @@ export type MachineState = {
   progress_done: number
   progress_total: number
   run_started_at: number | null
+  run_finished_at?: number | null
+  job_started_at?: number | null
+  job_finished_at?: number | null
   pause_started_at: number | null
   paused_duration_seconds: number
+  job_elapsed_seconds?: number
+  job_estimated_total_seconds?: number
+  job_estimated_remaining_seconds?: number
+  job_state?: string
+  runtime_estimate_multiplier?: number
   current_gcode_line: number
   current_path_id: string | null
   current_path_kind?: string | null

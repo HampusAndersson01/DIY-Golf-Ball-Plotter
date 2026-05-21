@@ -5,6 +5,7 @@ import time
 from flask import Blueprint, Response, current_app, jsonify
 
 from app.extensions import get_state
+from app.services.runtime_estimation_service import build_runtime_snapshot
 
 ui_bp = Blueprint("ui", __name__)
 logger = logging.getLogger(__name__)
@@ -90,6 +91,7 @@ def frontend_bootstrap():
 def get_machine_state():
     global _state_poll_started_at, _state_poll_count
     snapshot = get_state().snapshot()
+    snapshot.update(build_runtime_snapshot(snapshot))
     config = current_app.config
     snapshot["defaults"] = {
         "pen_up_s": config["DEFAULT_PEN_UP_S"],

@@ -16,6 +16,10 @@ function statusTone(active: boolean, pending = false) {
 }
 
 export function TopStatusBar({ machine, progressPercent, canStop, onStop, currentKind, elapsedLabel, remainingLabel }: Props) {
+  const terminal = isTerminal(machine?.job_state)
+  const lineLabel = machine?.progress_total ? 'Streamed lines' : 'Lines'
+  const remainingCopy = terminal ? `${remainingLabel} remaining` : `${remainingLabel} left`
+
   return (
     <header className="top-status-bar">
       <div className="title-block">
@@ -27,7 +31,7 @@ export function TopStatusBar({ machine, progressPercent, canStop, onStop, curren
         <div className="progress-copy">
           <span>Progress</span>
           <strong>
-            Line {machine?.current_gcode_line ?? 0} / {machine?.progress_total ?? 0}
+            {lineLabel} {machine?.current_gcode_line ?? 0} / {machine?.progress_total ?? 0}
           </strong>
           <em>{currentKind}</em>
         </div>
@@ -37,7 +41,7 @@ export function TopStatusBar({ machine, progressPercent, canStop, onStop, curren
         <div className="progress-meta">
           <strong>{progressPercent}%</strong>
           <span>{elapsedLabel} elapsed</span>
-          <span>{remainingLabel} left</span>
+          <span>{remainingCopy}</span>
         </div>
       </div>
 
@@ -62,4 +66,9 @@ export function TopStatusBar({ machine, progressPercent, canStop, onStop, curren
       </div>
     </header>
   )
+}
+
+function isTerminal(jobState?: string | null) {
+  const value = jobState?.toLowerCase()
+  return value === 'completed' || value === 'stopped' || value === 'aborted' || value === 'error' || value === 'failed'
 }
