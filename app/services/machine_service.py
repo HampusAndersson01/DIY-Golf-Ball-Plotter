@@ -579,7 +579,7 @@ class MachineService:
                 dwell_ms=pen_up_dwell_ms,
             )
         )
-        commands.extend(["G21", "G90", f"G0 X0.0000 Y0.0000 F{travel_feed:.3f}"])
+        commands.extend(["G21", "G90", "G0 X0.0000 Y0.0000"])
         response = self.serial_service.send_many(commands, wait_idle_between=True)
         self.state.set_servo(pen_up_s)
         self.state.update(

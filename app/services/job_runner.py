@@ -251,7 +251,7 @@ class JobRunner:
                         self.serial_service.send_to_grbl_unlocked(ser, "G90", timeout=10)
                         self.serial_service.send_to_grbl_unlocked(
                             ser,
-                            f"G0 X0 Y0 F{float(self.config['DEFAULT_TRAVEL_FEED']):.3f}",
+                            "G0 X0 Y0",
                             timeout=20,
                         )
                         home_ok = True

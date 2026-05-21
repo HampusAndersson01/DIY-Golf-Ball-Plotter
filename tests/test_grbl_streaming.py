@@ -70,3 +70,22 @@ def test_stream_gcode_lines_unlocked_raises_on_grbl_error():
             rx_buffer_size=64,
             response_timeout=0.01,
         )
+
+
+def test_stream_gcode_lines_unlocked_reports_failed_command_on_grbl_error():
+    class ErrorSerial(FakeSerial):
+        def write(self, payload: bytes) -> int:
+            self.writes.append(payload)
+            self.pending_lengths.append(len(payload))
+            self.responses.append(b"error:24\n")
+            return len(payload)
+
+    serial = ErrorSerial(rx_buffer_size=64)
+
+    with pytest.raises(RuntimeError, match=r"error:24 while executing: G1 X1 Y1 F1200"):
+        pipeline_core.stream_gcode_lines_unlocked(
+            serial,
+            ["G1 X1 Y1 F1200"],
+            rx_buffer_size=64,
+            response_timeout=0.01,
+        )

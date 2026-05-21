@@ -771,7 +771,10 @@ def process_streaming_ack_unlocked(
             logger.debug("GRBL ack received: ok_count=%d pending_queue=%d", ok_count + 1, len(pending_lengths))
             return freed_length, ok_count + 1, time.time(), last_grbl_status, 0
         if line.startswith("error:") or line.startswith("ALARM:"):
-            logger.error("GRBL streaming error line: %s", line)
+            failed_command = pending_commands[0] if pending_commands else ""
+            logger.error("GRBL streaming error line: %s command=%s", line, failed_command)
+            if failed_command:
+                raise RuntimeError(f"GRBL streaming error: {line} while executing: {failed_command}")
             raise RuntimeError(f"GRBL streaming error: {line}")
         if line.startswith("<") or line.startswith("["):
             recent_grbl_responses.append(line)

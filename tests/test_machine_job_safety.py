@@ -227,7 +227,7 @@ def test_normal_job_completion_finalizes_pen_up_before_home_and_keeps_hold():
     assert result["job_finalization"]["pen_up_ok"] is True
     assert result["job_finalization"]["home_ok"] is True
     assert serial_service.unlocked_calls[:5] == ["$X", "M3 S575", "G4 P0.030", "G21", "G90"]
-    assert serial_service.unlocked_calls[5].startswith("G0 X0 Y0 F3000.000")
+    assert serial_service.unlocked_calls[5] == "G0 X0 Y0"
     assert serial_service.command_calls[-2:] == ["$1=255", "$$"]
     assert state.snapshot()["motors"]["x_expected_holding"] is True
     assert state.snapshot()["motors"]["y_expected_holding"] is True
