@@ -198,6 +198,10 @@ Stabilization and internal documentation phase.
 **What happened:**
 The project added diagnostic calibration pattern generation, analysis for 3x3 printed squares, a dedicated X rotary test, artwork scaling controls, and more sophisticated infill scoring and normalization. The frontend also surfaced these tools in a more operator-friendly way.
 
+Representative photo from this development phase:
+
+![Ball being printed on the plotter](images/readme/ball-being-printed-2026-05-21.jpg)
+
 **Why it mattered:**
 This is the strongest Git-backed sign that the project had moved from basic function toward measurement-driven refinement. It is also the closest thing in the repo to explicit support for investigating physical print error, including X rotary under/over-travel, slip, backlash, eccentricity, and preview-versus-physical mismatch.
 

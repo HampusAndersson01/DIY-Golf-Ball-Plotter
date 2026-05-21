@@ -1,6 +1,6 @@
 # DIY Golf Ball Plotter
 
-![Carolin permanent marker print](docs/images/20260521_125916.jpg)
+![Golf ball plotter timelapse](docs/assets/golf-ball-plotter-timelapse.gif)
 
 A custom rotary CNC-style plotter for drawing directly onto golf balls.
 
@@ -511,7 +511,8 @@ This repository controls real motors and a real pen.
 | Calibration-driven debugging | ![Calibration print example](docs/images/readme/calibration-print-example.jpg) |
 | Mounted ball in the machine | ![Mounted ball test](docs/images/readme/mounted-ball-ha-test.jpg) |
 | Improved HA logo test | ![Improved HA logo test](docs/images/readme/improved-ha-logo-mounted-test.jpg) |
-| Later branded test print | ![Later branded test print](docs/images/readme/permanent-ink-branded-test-print.jpg) |
+| branded test print | ![Later branded test print](docs/images/readme/permanent-ink-branded-test-print.jpg) |
+| HA Webbyrå logo | ![Ball being printed on the plotter](docs/images/readme/ball-being-printed-2026-05-21.jpg) |
 
 Captions:
 
@@ -519,15 +520,9 @@ Captions:
 - HA logo mismatch test: useful because the outline and infill behavior made alignment problems obvious.
 - Calibration print example: part of the shift from guessing to measurement-driven debugging.
 - Mounted ball test: the machine holding the ball during an HA print iteration.
+- Ball being printed: a later in-process machine photo showing the pen actively drawing on the mounted ball.
 - Improved HA logo test: later non-branded result showing a much more convincing fill and outline pass.
 - Later branded test print: a later test print included as development documentation rather than a product example.
-
-Future media placeholders:
-
-- Clean hero photo of the full robot
-- GIF of the robot drawing in action
-- Short demo video or link
-- Better photo of the first permanent-ink result if I add it later
 
 ## Credits And Inspiration
 
