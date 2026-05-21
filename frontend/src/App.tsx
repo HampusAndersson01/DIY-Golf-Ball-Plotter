@@ -1,7 +1,9 @@
 import { startTransition, useDeferredValue, useEffect, useEffectEvent, useMemo, useState } from 'react'
 import type { ChangeEvent } from 'react'
 
-import { analyzeImage, apiConfig, fetchBootstrap, fetchState, generateImageGcode, postJson } from './api/client'
+import { analyzeImage, apiConfig, fetchBootstrap, fetchState, generateDiagnosticGcode, generateImageGcode, postJson } from './api/client'
+import { CalibrationPatternPanel } from './components/calibration/CalibrationPatternPanel'
+import { XAxisCalibrationPanel } from './components/calibration/XAxisCalibrationPanel'
 import { AppShell } from './components/layout/AppShell'
 import { StepNav } from './components/layout/StepNav'
 import { TopStatusBar } from './components/layout/TopStatusBar'
@@ -105,7 +107,7 @@ function DashboardApp() {
   const readySettings = settings
   const deferredPreview = useDeferredValue(preview)
   const progressPercent = getProgressPercent(machine)
-  const runReady = Boolean(machine?.connected && machine?.calibrated && gcode.length && !machine?.y_loop_test?.enabled)
+  const runReady = Boolean(machine?.connected && machine?.calibrated && gcode.length && !machine?.y_loop_test?.enabled && !busy.running)
   const currentSettings = useMemo(() => readySettings, [readySettings])
   const currentPath = useMemo(
     () => preview.find((path) => path.id === machine?.current_path_id) ?? null,
@@ -260,6 +262,8 @@ function DashboardApp() {
         maskPreviewUrl: payload.mask_preview,
         gcode: payload.gcode,
         summary: payload.summary,
+        calibrationPattern: payload.calibrationPattern ?? null,
+        xAxisCalibrationPattern: payload.xAxisCalibrationPattern ?? null,
       })
       setGenerationDurationMs(performance.now() - startedAt)
       appendLog(`Generated ${payload.gcode.length} G-code lines across ${preview.length} preview paths.`)
@@ -282,6 +286,66 @@ function DashboardApp() {
 
   async function handlePenDown() {
     await callEndpoint(apiConfig.endpoints.penDown, servoPayload(settingsState, settingsState.penDownS), 'Pen down.')
+  }
+
+  async function handleGenerateCalibrationPattern() {
+    setBusy('generating', true)
+    const formData = new FormData()
+    formData.append('pattern', '3x3_squares')
+    formData.append('mode', 'fill_then_cleanup')
+    formData.append('line_thickness_mm', String(settingsState.lineThicknessMm))
+    formData.append('draw_feed', String(settingsState.drawFeed))
+    formData.append('travel_feed', String(settingsState.travelFeed))
+    formData.append('wall_count', String(settingsState.wallCount))
+    try {
+      const payload = await generateDiagnosticGcode(formData)
+      const preview = sanitizePreviewPaths(payload.preview)
+      setPreviewPayload({
+        preview,
+        maskPreviewUrl: null,
+        gcode: payload.gcode,
+        summary: payload.summary,
+        calibrationPattern: payload.calibrationPattern ?? null,
+        xAxisCalibrationPattern: payload.xAxisCalibrationPattern ?? null,
+      })
+      appendLog(`Generated diagnostic pattern ${payload.calibrationPattern?.pattern ?? '3x3_squares'} with ${preview.length} preview paths.`)
+      pushToast('Calibration test pattern generated.', 'success')
+      await refreshMachine()
+    } catch (error) {
+      pushToast(String(error), 'error')
+      appendLog(`Calibration pattern generation failed: ${String(error)}`)
+    } finally {
+      setBusy('generating', false)
+    }
+  }
+
+  async function handleGenerateXAxisCalibrationPattern() {
+    setBusy('generating', true)
+    const formData = new FormData()
+    formData.append('pattern', 'x_axis_rotation_ticks')
+    formData.append('draw_feed', String(settingsState.drawFeed))
+    formData.append('travel_feed', String(settingsState.travelFeed))
+    formData.append('line_thickness_mm', String(settingsState.lineThicknessMm))
+    try {
+      const payload = await generateDiagnosticGcode(formData)
+      const preview = sanitizePreviewPaths(payload.preview)
+      setPreviewPayload({
+        preview,
+        maskPreviewUrl: null,
+        gcode: payload.gcode,
+        summary: payload.summary,
+        calibrationPattern: payload.calibrationPattern ?? null,
+        xAxisCalibrationPattern: payload.xAxisCalibrationPattern ?? null,
+      })
+      appendLog(`Generated X rotary calibration pattern with ${preview.length} preview paths.`)
+      pushToast('X rotary calibration pattern generated.', 'success')
+      await refreshMachine()
+    } catch (error) {
+      pushToast(String(error), 'error')
+      appendLog(`X rotary calibration generation failed: ${String(error)}`)
+    } finally {
+      setBusy('generating', false)
+    }
   }
 
   async function handleGoHome() {
@@ -341,7 +405,15 @@ function DashboardApp() {
 
   async function handleRun() {
     if (!window.confirm('Start the generated job on the connected plotter?')) return
-    await callEndpoint(apiConfig.endpoints.runGcode, {}, 'Job started.')
+    setBusy('running', true)
+    try {
+      await callEndpoint(apiConfig.endpoints.runGcode, {}, 'Job started.')
+    } catch (error) {
+      pushToast(String(error), 'error')
+      appendLog(`Run failed: ${String(error)}`)
+    } finally {
+      setBusy('running', false)
+    }
   }
 
   async function handlePause() {
@@ -412,7 +484,7 @@ function DashboardApp() {
               onToggleYLoop={handleToggleYLoop}
             />
             <div data-step-anchor="run">
-              <RunControls machine={machine} onPause={() => void handlePause()} onResume={() => void handleResume()} onRun={handleRun} onStop={handleStop} runReady={runReady} />
+              <RunControls machine={machine} onPause={() => void handlePause()} onResume={() => void handleResume()} onRun={handleRun} onStop={handleStop} runReady={runReady} runStarting={busy.running} />
             </div>
           </div>
         }
@@ -432,6 +504,8 @@ function DashboardApp() {
               <PenSettingsCard canGenerate={Boolean(imageFile && selectedColors.length) && !busy.generating} onGenerate={handleGenerate} />
             </div>
             <JobSummaryPanel generationDurationMs={generationDurationMs} summary={summary} />
+            <CalibrationPatternPanel generating={busy.generating} onGenerate={() => void handleGenerateCalibrationPattern()} />
+            <XAxisCalibrationPanel generating={busy.generating} onGenerate={() => void handleGenerateXAxisCalibrationPattern()} />
             <AdvancedDrawer activeTab={drawerTab} onTab={setDrawerTab} />
             {advancedOpen && drawerTab === 'gcode' ? <GcodePanel gcode={gcode} /> : null}
             {advancedOpen && drawerTab === 'logs' ? <LogsPanel logs={logs} /> : null}

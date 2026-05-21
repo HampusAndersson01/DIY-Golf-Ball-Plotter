@@ -814,6 +814,45 @@ select:focus {
   padding: 8px 10px;
 }
 
+.calibration-table-wrap {
+  margin-top: 10px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+}
+
+.calibration-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 1040px;
+  background: var(--surface);
+}
+
+.calibration-table th,
+.calibration-table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+  vertical-align: middle;
+  font-size: 0.74rem;
+}
+
+.calibration-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  z-index: 1;
+}
+
+.calibration-table tbody tr.is-skipped {
+  opacity: 0.55;
+}
+
 .details-panel summary {
   cursor: pointer;
   list-style: none;

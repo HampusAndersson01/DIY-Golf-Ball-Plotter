@@ -1,3 +1,5 @@
+import math
+
 import pytest
 from shapely.geometry import LineString, MultiPolygon, Polygon
 
@@ -546,6 +548,110 @@ def test_diagnostic_geometry_bundle_contains_expected_printable_geometry():
     assert len(pipeline_core.normalize_geometry(bundle.printable_geometry)) >= 4
 
 
+def test_3x3_square_calibration_metadata_contains_nine_equal_squares():
+    bundle = pipeline_core.build_diagnostic_geometry_bundle("3x3_squares")
+    toolpaths = _generate_fill_toolpaths(bundle.printable_geometry, line_width_mm=0.75, infill_spacing_mm=0.75)
+    cleaned = pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=0.75)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(cleaned, center_lon_deg=0.0, center_lat_deg=0.0)
+    service = GcodeService()
+    gcode, _preview = service.generate_from_toolpaths(
+        toolpaths=projected,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=True,
+    )
+
+    metadata = pipeline_core.build_calibration_pattern_metadata(
+        "3x3_squares",
+        bundle,
+        cleaned,
+        projected,
+        gcode,
+        ball_diameter_mm=42.67,
+        pen_up_s=575,
+        pen_down_s=700,
+    )
+
+    assert metadata is not None
+    assert len(metadata["squares"]) == 9
+    expected_labels = {
+        "top-left",
+        "top-center",
+        "top-right",
+        "middle-left",
+        "middle-center",
+        "middle-right",
+        "bottom-left",
+        "bottom-center",
+        "bottom-right",
+    }
+    assert {square["id"] for square in metadata["squares"]} == expected_labels
+    widths = {round(square["expectedSurfaceWidthMm"], 6) for square in metadata["squares"]}
+    heights = {round(square["expectedSurfaceHeightMm"], 6) for square in metadata["squares"]}
+    assert widths == {4.5}
+    assert heights == {4.5}
+    assert all(square["surfaceMmBbox"]["width"] == pytest.approx(4.5, abs=1e-6) for square in metadata["squares"])
+    assert all(square["surfaceMmBbox"]["height"] == pytest.approx(4.5, abs=1e-6) for square in metadata["squares"])
+    assert all(square["machineDegreeBbox"] is not None for square in metadata["squares"])
+    assert all(square["gcodeBbox"] is not None for square in metadata["squares"])
+    assert metadata["previewAndGcodeShareSameProjectedPaths"] is True
+    assert metadata["projectedVsGcodeMismatchSquareIds"] == []
+
+
+def test_3x3_square_gcode_bbox_matches_projected_bbox_within_rounding_tolerance():
+    bundle = pipeline_core.build_diagnostic_geometry_bundle("3x3_squares")
+    toolpaths = _generate_fill_toolpaths(bundle.printable_geometry, line_width_mm=0.75, infill_spacing_mm=0.75)
+    prepared = pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=0.75)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(prepared, center_lon_deg=0.0, center_lat_deg=0.0)
+    service = GcodeService()
+    gcode, preview = service.generate_from_toolpaths(
+        toolpaths=projected,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=True,
+    )
+    metadata = pipeline_core.build_calibration_pattern_metadata(
+        "3x3_squares",
+        bundle,
+        prepared,
+        projected,
+        gcode,
+        ball_diameter_mm=42.67,
+        pen_up_s=575,
+        pen_down_s=700,
+    )
+    projected_debug = pipeline_core.build_projected_path_debug(prepared, projected, preview)
+
+    assert metadata is not None
+    assert projected_debug["preview_and_gcode_share_same_projected_paths"] is True
+    for square in metadata["squares"]:
+        assert square["gcodeMatchesMachineDegreeBbox"] is True
+        assert square["gcodeBbox"]["width"] == pytest.approx(square["machineDegreeBbox"]["width"], abs=1e-4)
+        assert square["gcodeBbox"]["height"] == pytest.approx(square["machineDegreeBbox"]["height"], abs=1e-4)
+
+
 def test_smaller_mm_infill_spacing_generates_many_more_rows():
     printable = _rect(30.0, 30.0)
 
@@ -603,6 +709,54 @@ def test_projection_preparation_resamples_long_diagonal_outline_segments_before_
     assert drawing_paths
     assert all(float(path.metadata["max_surface_segment_mm_after_resampling"]) <= limit_mm + 1e-6 for path in drawing_paths)
     assert all(int(path.metadata.get("projection_count", 0)) == 1 for path in projected)
+
+
+def test_cleanup_preserves_short_outline_segments_before_projection():
+    outline = Toolpath(
+        points=[
+            Point(0.0, 0.0),
+            Point(0.3, 0.0),
+            Point(0.6, 0.2),
+            Point(0.9, 0.2),
+            Point(1.2, 0.4),
+        ],
+        kind="outline",
+        closed=False,
+        coordinate_space="surface_mm",
+    )
+
+    cleaned, stats = pipeline_core.cleanup_surface_toolpaths(
+        [outline],
+        tolerance_mm=0.0,
+        min_segment_length_mm=0.5,
+    )
+
+    assert stats["short_segments_removed"] == 0
+    assert len(cleaned) == 1
+    assert cleaned[0].points == outline.points
+
+
+def test_cleanup_can_still_prune_short_infill_segments_when_requested():
+    infill = Toolpath(
+        points=[
+            Point(0.0, 0.0),
+            Point(0.3, 0.0),
+            Point(1.0, 0.0),
+        ],
+        kind="fill-infill",
+        closed=False,
+        coordinate_space="surface_mm",
+    )
+
+    cleaned, stats = pipeline_core.cleanup_surface_toolpaths(
+        [infill],
+        tolerance_mm=0.0,
+        min_segment_length_mm=0.5,
+    )
+
+    assert stats["short_segments_removed"] == 1
+    assert len(cleaned) == 1
+    assert cleaned[0].points == [Point(0.0, 0.0), Point(1.0, 0.0)]
 
 
 def test_outer_ring_and_hole_remain_separate_paths_with_pen_up_travel():
@@ -701,6 +855,43 @@ def test_vertical_horizontal_and_diagonal_outline_segments_project_with_bounded_
     ]
     assert projected_outline_lengths
     assert max(projected_outline_lengths) < 2.5
+
+
+def test_machine_projection_keeps_x_independent_from_surface_y():
+    left_low = pipeline_core.surface_mm_to_ball_angles(Point(-10.0, -20.0), center_lon_deg=0.0, center_lat_deg=0.0)
+    left_mid = pipeline_core.surface_mm_to_ball_angles(Point(-10.0, 0.0), center_lon_deg=0.0, center_lat_deg=0.0)
+    left_high = pipeline_core.surface_mm_to_ball_angles(Point(-10.0, 20.0), center_lon_deg=0.0, center_lat_deg=0.0)
+    right_low = pipeline_core.surface_mm_to_ball_angles(Point(10.0, -20.0), center_lon_deg=0.0, center_lat_deg=0.0)
+    right_mid = pipeline_core.surface_mm_to_ball_angles(Point(10.0, 0.0), center_lon_deg=0.0, center_lat_deg=0.0)
+    right_high = pipeline_core.surface_mm_to_ball_angles(Point(10.0, 20.0), center_lon_deg=0.0, center_lat_deg=0.0)
+
+    assert abs(left_low.x) > abs(left_mid.x)
+    assert abs(left_high.x) > abs(left_mid.x)
+    assert abs(right_low.x) > abs(right_mid.x)
+    assert abs(right_high.x) > abs(right_mid.x)
+
+
+def test_machine_projection_keeps_y_independent_from_surface_x():
+    low_left = pipeline_core.surface_mm_to_ball_angles(Point(-20.0, -10.0), center_lon_deg=0.0, center_lat_deg=0.0)
+    low_mid = pipeline_core.surface_mm_to_ball_angles(Point(0.0, -10.0), center_lon_deg=0.0, center_lat_deg=0.0)
+    low_right = pipeline_core.surface_mm_to_ball_angles(Point(20.0, -10.0), center_lon_deg=0.0, center_lat_deg=0.0)
+    high_left = pipeline_core.surface_mm_to_ball_angles(Point(-20.0, 10.0), center_lon_deg=0.0, center_lat_deg=0.0)
+    high_mid = pipeline_core.surface_mm_to_ball_angles(Point(0.0, 10.0), center_lon_deg=0.0, center_lat_deg=0.0)
+    high_right = pipeline_core.surface_mm_to_ball_angles(Point(20.0, 10.0), center_lon_deg=0.0, center_lat_deg=0.0)
+
+    assert low_left.y == pytest.approx(low_mid.y, abs=1e-9)
+    assert low_mid.y == pytest.approx(low_right.y, abs=1e-9)
+    assert high_left.y == pytest.approx(high_mid.y, abs=1e-9)
+    assert high_mid.y == pytest.approx(high_right.y, abs=1e-9)
+
+
+def test_machine_projection_uses_fixed_ball_circumference_for_x():
+    radius = pipeline_core.ball_radius_mm()
+    projected = pipeline_core.surface_mm_to_ball_angles(Point(10.0, 20.0), center_lon_deg=0.0, center_lat_deg=0.0)
+    lat = 20.0 / radius
+    expected_x_deg = math.degrees(10.0 / (radius * math.cos(lat)))
+
+    assert projected.x == pytest.approx(expected_x_deg, abs=1e-9)
 
 
 def test_merge_motion_profiles_counts_axis_and_blended_segments_across_paths():

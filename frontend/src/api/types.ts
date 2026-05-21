@@ -14,6 +14,72 @@ export type PreviewPath = {
   gcode_end_line: number | null
 }
 
+export type CalibrationBbox = {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+  width: number
+  height: number
+  centerX: number
+  centerY: number
+}
+
+export type CalibrationSquare = {
+  id: string
+  label: string
+  row: number
+  col: number
+  surfaceMmBbox: CalibrationBbox
+  surfaceMmToolpathBbox: CalibrationBbox | null
+  machineDegreeBbox: CalibrationBbox | null
+  gcodeBbox: CalibrationBbox | null
+  expectedSurfaceWidthMm: number
+  expectedSurfaceHeightMm: number
+  expectedSurfaceCenterMm: {
+    x: number
+    y: number
+  }
+  expectedMachineSpanXDeg: number | null
+  expectedMachineSpanYDeg: number | null
+  gcodeSpanXDeg: number | null
+  gcodeSpanYDeg: number | null
+  sourceRegionId: string
+  gcodeMatchesMachineDegreeBbox: boolean
+}
+
+export type CalibrationPattern = {
+  pattern: string
+  ballDiameterMm: number
+  coordinateModel: string
+  previewAndGcodeShareSameProjectedPaths: boolean
+  projectedVsGcodeMismatchSquareIds: string[]
+  gcodeComparisonToleranceDeg: number
+  squares: CalibrationSquare[]
+}
+
+export type XAxisCalibrationTick = {
+  id: string
+  label: string
+  commandedXDeg: number
+  emittedMachineXDeg: number
+  machineDegreeBbox: CalibrationBbox | null
+  gcodeBbox: CalibrationBbox | null
+  expectedSurfaceArcFromPreviousMm: number | null
+  gcodeMatchesMachineDegreeBbox: boolean
+}
+
+export type XAxisCalibrationPattern = {
+  pattern: string
+  ballDiameterMm: number
+  ballCircumferenceMm: number
+  expectedQuadrantArcMm: number
+  previewAndGcodeShareSameProjectedPaths: boolean
+  projectedVsGcodeMismatchTickIds: string[]
+  gcodeComparisonToleranceDeg: number
+  ticks: XAxisCalibrationTick[]
+}
+
 export type AnalyzeColor = {
   hex: string
   rgb: [number, number, number]
@@ -142,6 +208,8 @@ export type GenerateResponse = {
     wall_count: number
     fill_density: number
   }
+  calibrationPattern?: CalibrationPattern | null
+  xAxisCalibrationPattern?: XAxisCalibrationPattern | null
 }
 
 export type ApiSuccess<T> = T & {

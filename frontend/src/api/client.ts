@@ -20,6 +20,7 @@ const ENDPOINTS = {
   stop: '/stop',
   command: '/command',
   generateImageGcode: '/generate-image-gcode',
+  generateDiagnosticGcode: '/generate-diagnostic-gcode',
   analyzeImageColors: '/analyze-image-colors',
 } as const
 
@@ -83,4 +84,8 @@ export async function analyzeImage(body: FormData) {
 
 export async function generateImageGcode(body: FormData) {
   return postForm<GenerateResponse>(ENDPOINTS.generateImageGcode, body)
+}
+
+export async function generateDiagnosticGcode(body: FormData) {
+  return postForm<GenerateResponse>(ENDPOINTS.generateDiagnosticGcode, body)
 }

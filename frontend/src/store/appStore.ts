@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-import type { AppConfig, AppDefaults, ImageAnalysis, JobSummary, MachineState, PreviewPath } from '../api/types'
+import type { AppConfig, AppDefaults, CalibrationPattern, ImageAnalysis, JobSummary, MachineState, PreviewPath, XAxisCalibrationPattern } from '../api/types'
 
 export type DrawerTab = 'advanced' | 'gcode' | 'logs'
 export type PreviewMode = '2d' | '3d'
@@ -78,6 +78,17 @@ type BusyState = {
   analyzing: boolean
   generating: boolean
   calibrating: boolean
+  running: boolean
+}
+
+export type CalibrationMeasurement = {
+  actualWidthMm: string
+  actualHeightMm: string
+  skipped: boolean
+}
+
+export type XAxisCalibrationMeasurement = {
+  actualArcMm: string
 }
 
 type AppStore = {
@@ -92,6 +103,10 @@ type AppStore = {
   maskPreviewUrl: string | null
   gcode: string[]
   summary: JobSummary | null
+  calibrationPattern: CalibrationPattern | null
+  calibrationMeasurements: Record<string, CalibrationMeasurement>
+  xAxisCalibrationPattern: XAxisCalibrationPattern | null
+  xAxisCalibrationMeasurements: Record<string, XAxisCalibrationMeasurement>
   logs: string[]
   toasts: Toast[]
   previewMode: PreviewMode
@@ -107,7 +122,7 @@ type AppStore = {
   setImageFile: (file: File | null, previewUrl: string | null) => void
   setAnalysis: (analysis: ImageAnalysis | null) => void
   toggleColor: (hex: string) => void
-  setPreviewPayload: (payload: { preview: PreviewPath[]; maskPreviewUrl: string | null; gcode: string[]; summary: JobSummary | null }) => void
+  setPreviewPayload: (payload: { preview: PreviewPath[]; maskPreviewUrl: string | null; gcode: string[]; summary: JobSummary | null; calibrationPattern?: CalibrationPattern | null; xAxisCalibrationPattern?: XAxisCalibrationPattern | null }) => void
   setPreviewMode: (mode: PreviewMode) => void
   setProgressFilter: (filter: ProgressFilter) => void
   setShowTravel: (show: boolean) => void
@@ -120,6 +135,35 @@ type AppStore = {
   pushToast: (message: string, tone?: Toast['tone']) => void
   dismissToast: (id: number) => void
   updateSetting: <K extends keyof SettingsState>(key: K, value: SettingsState[K]) => void
+  updateCalibrationMeasurement: (squareId: string, key: 'actualWidthMm' | 'actualHeightMm', value: string) => void
+  setCalibrationSkipped: (squareId: string, skipped: boolean) => void
+  updateXAxisCalibrationMeasurement: (measurementId: string, value: string) => void
+}
+
+function buildCalibrationMeasurements(pattern: CalibrationPattern | null): Record<string, CalibrationMeasurement> {
+  if (!pattern) return {}
+  return Object.fromEntries(
+    pattern.squares.map((square) => [
+      square.id,
+      {
+        actualWidthMm: '',
+        actualHeightMm: '',
+        skipped: false,
+      },
+    ]),
+  )
+}
+
+function buildXAxisCalibrationMeasurements(pattern: XAxisCalibrationPattern | null): Record<string, XAxisCalibrationMeasurement> {
+  if (!pattern) return {}
+  const measurements: Record<string, XAxisCalibrationMeasurement> = {}
+  for (let index = 1; index < pattern.ticks.length; index += 1) {
+    const previousTick = pattern.ticks[index - 1]
+    const currentTick = pattern.ticks[index]
+    measurements[`${previousTick.id}_to_${currentTick.id}`] = { actualArcMm: '' }
+  }
+  measurements.overlap_error = { actualArcMm: '' }
+  return measurements
 }
 
 function buildSettings(defaults: AppDefaults): SettingsState {
@@ -196,6 +240,10 @@ export const useAppStore = create<AppStore>((set) => ({
   maskPreviewUrl: null,
   gcode: [],
   summary: null,
+  calibrationPattern: null,
+  calibrationMeasurements: {},
+  xAxisCalibrationPattern: null,
+  xAxisCalibrationMeasurements: {},
   logs: [],
   toasts: [],
   previewMode: '2d',
@@ -211,6 +259,7 @@ export const useAppStore = create<AppStore>((set) => ({
     analyzing: false,
     generating: false,
     calibrating: false,
+    running: false,
   },
   initialize: (config) => set({
     config,
@@ -221,6 +270,7 @@ export const useAppStore = create<AppStore>((set) => ({
       analyzing: false,
       generating: false,
       calibrating: false,
+      running: false,
     },
   }),
   setMachine: (machine) => set((state) => ({
@@ -236,6 +286,10 @@ export const useAppStore = create<AppStore>((set) => ({
     maskPreviewUrl: null,
     gcode: [],
     summary: null,
+    calibrationPattern: null,
+    calibrationMeasurements: {},
+    xAxisCalibrationPattern: null,
+    xAxisCalibrationMeasurements: {},
   }),
   setAnalysis: (analysis) => set({ analysis, selectedColors: [] }),
   toggleColor: (hex) => set((state) => ({
@@ -243,11 +297,15 @@ export const useAppStore = create<AppStore>((set) => ({
       ? state.selectedColors.filter((entry) => entry !== hex)
       : [...state.selectedColors, hex],
   })),
-  setPreviewPayload: ({ preview, maskPreviewUrl, gcode, summary }) => set({
+  setPreviewPayload: ({ preview, maskPreviewUrl, gcode, summary, calibrationPattern = null, xAxisCalibrationPattern = null }) => set({
     preview,
     maskPreviewUrl,
     gcode,
     summary,
+    calibrationPattern,
+    calibrationMeasurements: buildCalibrationMeasurements(calibrationPattern),
+    xAxisCalibrationPattern,
+    xAxisCalibrationMeasurements: buildXAxisCalibrationMeasurements(xAxisCalibrationPattern),
     drawerTab: 'advanced',
   }),
   setPreviewMode: (previewMode) => set({ previewMode }),
@@ -292,4 +350,33 @@ export const useAppStore = create<AppStore>((set) => ({
 
     return { settings: nextSettings }
   }),
+  updateCalibrationMeasurement: (squareId, key, value) => set((state) => ({
+    calibrationMeasurements: {
+      ...state.calibrationMeasurements,
+      [squareId]: {
+        ...state.calibrationMeasurements[squareId],
+        actualWidthMm: state.calibrationMeasurements[squareId]?.actualWidthMm ?? '',
+        actualHeightMm: state.calibrationMeasurements[squareId]?.actualHeightMm ?? '',
+        skipped: state.calibrationMeasurements[squareId]?.skipped ?? false,
+        [key]: value,
+      },
+    },
+  })),
+  setCalibrationSkipped: (squareId, skipped) => set((state) => ({
+    calibrationMeasurements: {
+      ...state.calibrationMeasurements,
+      [squareId]: {
+        ...state.calibrationMeasurements[squareId],
+        actualWidthMm: state.calibrationMeasurements[squareId]?.actualWidthMm ?? '',
+        actualHeightMm: state.calibrationMeasurements[squareId]?.actualHeightMm ?? '',
+        skipped,
+      },
+    },
+  })),
+  updateXAxisCalibrationMeasurement: (measurementId, value) => set((state) => ({
+    xAxisCalibrationMeasurements: {
+      ...state.xAxisCalibrationMeasurements,
+      [measurementId]: { actualArcMm: value },
+    },
+  })),
 }))

@@ -288,6 +288,17 @@ class GeometryBundle:
     fill_shapes: list[SvgFillShape] = field(default_factory=list)
     printable_geometry: Any = None
     cutout_geometry: Any = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class XAxisCalibrationTick:
+    id: str
+    label: str
+    commanded_x_deg: float
+    emitted_x_deg: float
+    y_start_deg: float
+    y_end_deg: float
 
 
 @dataclass
@@ -3108,6 +3119,12 @@ def _sanitize_toolpath_points(
     return deduped, duplicate_points_removed, short_segments_removed
 
 
+def _effective_cleanup_min_segment_length_mm(toolpath: Toolpath, requested_min_segment_length_mm: float) -> float:
+    if toolpath.kind in {"outline", "fill-wall", "detail-trace"}:
+        return 0.0
+    return requested_min_segment_length_mm
+
+
 def cleanup_surface_toolpaths(
     toolpaths: list[Toolpath],
     *,
@@ -3123,11 +3140,12 @@ def cleanup_surface_toolpaths(
         "simplification_tolerance_mm": tolerance_mm,
     }
     for toolpath in toolpaths:
+        effective_min_segment_length_mm = _effective_cleanup_min_segment_length_mm(toolpath, min_segment_length_mm)
         points, duplicate_removed, short_removed = _sanitize_toolpath_points(
             toolpath.points,
             closed=toolpath.closed,
             duplicate_epsilon=duplicate_epsilon,
-            min_segment_length_mm=min_segment_length_mm,
+            min_segment_length_mm=effective_min_segment_length_mm,
         )
         stats["duplicate_points_removed"] += duplicate_removed
         stats["short_segments_removed"] += short_removed
@@ -3227,6 +3245,82 @@ def _translate_polygon(polygon: Polygon, *, dx: float, dy: float) -> Polygon:
     return affinity.translate(polygon, xoff=dx, yoff=dy)
 
 
+def _diagnostic_square_specs(
+    *,
+    square_size_mm: float = 4.5,
+    gap_mm: float = 0.5,
+) -> list[dict[str, Any]]:
+    labels = [
+        ["top-left", "Top-left"],
+        ["top-center", "Top-center"],
+        ["top-right", "Top-right"],
+        ["middle-left", "Middle-left"],
+        ["middle-center", "Middle-center"],
+        ["middle-right", "Middle-right"],
+        ["bottom-left", "Bottom-left"],
+        ["bottom-center", "Bottom-center"],
+        ["bottom-right", "Bottom-right"],
+    ]
+    specs: list[dict[str, Any]] = []
+    for index, (square_id, label) in enumerate(labels):
+        row = index // 3
+        col = index % 3
+        pitch_mm = square_size_mm + gap_mm
+        square = _translate_polygon(
+            Polygon([(0.0, 0.0), (square_size_mm, 0.0), (square_size_mm, square_size_mm), (0.0, square_size_mm)]),
+            dx=((col - 1) * pitch_mm) - (square_size_mm / 2.0),
+            dy=((1 - row) * pitch_mm) - (square_size_mm / 2.0),
+        )
+        specs.append({
+            "id": square_id,
+            "label": label,
+            "row": row,
+            "col": col,
+            "geometry": square,
+        })
+    return specs
+
+
+def build_x_axis_rotation_calibration_toolpaths(
+    *,
+    tick_height_deg: float = 8.0,
+) -> tuple[list[Toolpath], list[XAxisCalibrationTick]]:
+    half_height = tick_height_deg / 2.0
+    tick_specs = [
+        XAxisCalibrationTick(id="tick_000", label="0 deg", commanded_x_deg=0.0, emitted_x_deg=0.0, y_start_deg=-half_height, y_end_deg=half_height),
+        XAxisCalibrationTick(id="tick_090", label="90 deg", commanded_x_deg=90.0, emitted_x_deg=90.0, y_start_deg=-half_height, y_end_deg=half_height),
+        XAxisCalibrationTick(id="tick_180", label="180 deg", commanded_x_deg=180.0, emitted_x_deg=180.0, y_start_deg=-half_height, y_end_deg=half_height),
+        XAxisCalibrationTick(id="tick_270", label="270 deg", commanded_x_deg=270.0, emitted_x_deg=-90.0, y_start_deg=-half_height, y_end_deg=half_height),
+        XAxisCalibrationTick(id="tick_360", label="360 deg", commanded_x_deg=360.0, emitted_x_deg=0.0, y_start_deg=-half_height, y_end_deg=half_height),
+    ]
+    toolpaths = [
+        Toolpath(
+            points=[
+                Point(spec.emitted_x_deg, spec.y_start_deg),
+                Point(spec.emitted_x_deg, spec.y_end_deg),
+            ],
+            kind="outline",
+            closed=False,
+            coordinate_space="machine_deg",
+            path_id=spec.id,
+            source="x_axis_rotation_calibration",
+            metadata={
+                "coordinate_space_before_projection": "generated_in_machine_deg",
+                "coordinate_space_after_projection": "machine_deg",
+                "projection_function": "machine_deg_direct_calibration",
+                "projection_count": 1,
+                "point_count_before_projection": 2,
+                "point_count_after_projection": 2,
+                "commanded_x_deg": spec.commanded_x_deg,
+                "emitted_x_deg": spec.emitted_x_deg,
+                "tick_label": spec.label,
+            },
+        )
+        for spec in tick_specs
+    ]
+    return toolpaths, tick_specs
+
+
 def build_diagnostic_geometry_bundle(pattern: str) -> GeometryBundle:
     if Polygon is None or affinity is None:
         raise RuntimeError("Diagnostic geometry requires shapely")
@@ -3235,16 +3329,25 @@ def build_diagnostic_geometry_bundle(pattern: str) -> GeometryBundle:
     vertical_rect = _translate_polygon(Polygon([(0.0, 0.0), (4.0, 0.0), (4.0, 12.0), (0.0, 12.0)]), dx=14.0, dy=0.0)
     horizontal_rect = _translate_polygon(Polygon([(0.0, 0.0), (12.0, 0.0), (12.0, 4.0), (0.0, 4.0)]), dx=0.0, dy=14.0)
     parallelogram = _translate_polygon(Polygon([(0.0, 0.0), (8.0, 0.0), (12.0, 8.0), (4.0, 8.0)]), dx=18.0, dy=16.0)
+    square_specs = _diagnostic_square_specs()
+    square_union = unary_union([spec["geometry"] for spec in square_specs])
     fill_shapes = {
         "filled_square": base_square,
         "filled_vertical_rectangle": vertical_rect,
         "filled_horizontal_rectangle": horizontal_rect,
         "filled_45_parallelogram": parallelogram,
         "diagnostic_suite": unary_union([base_square, vertical_rect, horizontal_rect, parallelogram]),
+        "3x3_squares": square_union,
     }
     if pattern not in fill_shapes:
         raise ValueError(f"Unknown diagnostic pattern: {pattern}")
-    return GeometryBundle(printable_geometry=fill_shapes[pattern])
+    metadata: dict[str, Any] = {}
+    if pattern == "3x3_squares":
+        metadata = {
+            "diagnostic_pattern": pattern,
+            "diagnostic_squares": square_specs,
+        }
+    return GeometryBundle(printable_geometry=fill_shapes[pattern], metadata=metadata)
 
 
 def path_is_inside_printable_area(path: Toolpath, printable_geometry: Any, tolerance_mm: float = 0.02) -> bool:
@@ -3748,6 +3851,198 @@ def preview_entries_to_toolpaths(preview: list[dict[str, Any]]) -> list[Toolpath
     return toolpaths
 
 
+def _bbox_or_none(points: list[Point]) -> dict[str, float] | None:
+    if not points:
+        return None
+    min_x = min(point.x for point in points)
+    max_x = max(point.x for point in points)
+    min_y = min(point.y for point in points)
+    max_y = max(point.y for point in points)
+    return {
+        "minX": min_x,
+        "minY": min_y,
+        "maxX": max_x,
+        "maxY": max_y,
+        "width": max_x - min_x,
+        "height": max_y - min_y,
+        "centerX": (min_x + max_x) / 2.0,
+        "centerY": (min_y + max_y) / 2.0,
+    }
+
+
+def _polygon_bbox_dict(polygon: Any) -> dict[str, float]:
+    min_x, min_y, max_x, max_y = polygon.bounds
+    return {
+        "minX": float(min_x),
+        "minY": float(min_y),
+        "maxX": float(max_x),
+        "maxY": float(max_y),
+        "width": float(max_x - min_x),
+        "height": float(max_y - min_y),
+        "centerX": float((min_x + max_x) / 2.0),
+        "centerY": float((min_y + max_y) / 2.0),
+    }
+
+
+def _collect_points_for_toolpaths(toolpaths: list[Toolpath]) -> list[Point]:
+    points: list[Point] = []
+    for path in toolpaths:
+        points.extend(path.points)
+    return points
+
+
+def build_calibration_pattern_metadata(
+    pattern: str,
+    bundle: GeometryBundle,
+    surface_toolpaths: list[Toolpath],
+    machine_toolpaths: list[Toolpath],
+    gcode: list[str],
+    *,
+    ball_diameter_mm: float,
+    pen_up_s: int,
+    pen_down_s: int,
+    gcode_tolerance_deg: float = 1e-4,
+) -> dict[str, Any] | None:
+    diagnostic_squares = list(bundle.metadata.get("diagnostic_squares") or [])
+    if pattern != "3x3_squares" or not diagnostic_squares:
+        return None
+
+    machine_paths_by_region: dict[str, list[Toolpath]] = {}
+    surface_paths_by_region: dict[str, list[Toolpath]] = {}
+    machine_region_by_path_id: dict[str, str] = {}
+    for path in surface_toolpaths:
+        region_id = str(path.metadata.get("source_region_id") or "")
+        if region_id:
+            surface_paths_by_region.setdefault(region_id, []).append(path)
+    for path in machine_toolpaths:
+        region_id = str(path.metadata.get("source_region_id") or "")
+        if region_id:
+            machine_paths_by_region.setdefault(region_id, []).append(path)
+            if path.path_id:
+                machine_region_by_path_id[path.path_id] = region_id
+
+    parsed_gcode_paths = parse_gcode_machine_motion_paths(gcode, pen_up_s=pen_up_s, pen_down_s=pen_down_s)
+    gcode_paths_by_region: dict[str, list[Toolpath]] = {}
+    for path in parsed_gcode_paths:
+        if path.kind == "travel":
+            continue
+        region_id = machine_region_by_path_id.get(path.path_id or "")
+        if region_id:
+            gcode_paths_by_region.setdefault(region_id, []).append(path)
+
+    squares: list[dict[str, Any]] = []
+    projected_vs_gcode_mismatches: list[str] = []
+    preview_and_gcode_same_geometry = True
+
+    for index, square_spec in enumerate(diagnostic_squares, start=1):
+        region_id = f"component_{index:03d}"
+        surface_geometry_bbox = _polygon_bbox_dict(square_spec["geometry"])
+        surface_toolpath_bbox = _bbox_or_none(_collect_points_for_toolpaths(surface_paths_by_region.get(region_id, [])))
+        machine_bbox = _bbox_or_none(_collect_points_for_toolpaths(machine_paths_by_region.get(region_id, [])))
+        gcode_bbox = _bbox_or_none(_collect_points_for_toolpaths(gcode_paths_by_region.get(region_id, [])))
+
+        gcode_matches_machine = gcode_bbox is not None and machine_bbox is not None
+        if gcode_matches_machine:
+            for key in ("minX", "minY", "maxX", "maxY", "width", "height"):
+                if abs(float(gcode_bbox[key]) - float(machine_bbox[key])) > gcode_tolerance_deg:
+                    gcode_matches_machine = False
+                    break
+        if not gcode_matches_machine:
+            projected_vs_gcode_mismatches.append(square_spec["id"])
+            preview_and_gcode_same_geometry = False
+
+        squares.append({
+            "id": square_spec["id"],
+            "label": square_spec["label"],
+            "row": square_spec["row"],
+            "col": square_spec["col"],
+            "surfaceMmBbox": surface_geometry_bbox,
+            "surfaceMmToolpathBbox": surface_toolpath_bbox,
+            "machineDegreeBbox": machine_bbox,
+            "gcodeBbox": gcode_bbox,
+            "expectedSurfaceWidthMm": surface_geometry_bbox["width"],
+            "expectedSurfaceHeightMm": surface_geometry_bbox["height"],
+            "expectedSurfaceCenterMm": {
+                "x": surface_geometry_bbox["centerX"],
+                "y": surface_geometry_bbox["centerY"],
+            },
+            "expectedMachineSpanXDeg": None if machine_bbox is None else machine_bbox["width"],
+            "expectedMachineSpanYDeg": None if machine_bbox is None else machine_bbox["height"],
+            "gcodeSpanXDeg": None if gcode_bbox is None else gcode_bbox["width"],
+            "gcodeSpanYDeg": None if gcode_bbox is None else gcode_bbox["height"],
+            "sourceRegionId": region_id,
+            "gcodeMatchesMachineDegreeBbox": gcode_matches_machine,
+        })
+
+    return {
+        "pattern": pattern,
+        "ballDiameterMm": float(ball_diameter_mm),
+        "coordinateModel": "surface_mm_then_project_once_to_machine_deg",
+        "previewAndGcodeShareSameProjectedPaths": preview_and_gcode_same_geometry,
+        "projectedVsGcodeMismatchSquareIds": projected_vs_gcode_mismatches,
+        "gcodeComparisonToleranceDeg": gcode_tolerance_deg,
+        "squares": squares,
+    }
+
+
+def build_x_axis_rotation_calibration_metadata(
+    tick_specs: list[XAxisCalibrationTick],
+    machine_toolpaths: list[Toolpath],
+    gcode: list[str],
+    *,
+    ball_diameter_mm: float,
+    pen_up_s: int,
+    pen_down_s: int,
+    gcode_tolerance_deg: float = 1e-4,
+) -> dict[str, Any]:
+    parsed_gcode_paths = parse_gcode_machine_motion_paths(gcode, pen_up_s=pen_up_s, pen_down_s=pen_down_s)
+    machine_paths_by_id = {str(path.path_id or ""): path for path in machine_toolpaths if path.path_id}
+    gcode_paths_by_id = {str(path.path_id or ""): path for path in parsed_gcode_paths if path.path_id and path.kind != "travel"}
+    circumference_mm = math.pi * float(ball_diameter_mm)
+    expected_quadrant_arc_mm = circumference_mm / 4.0
+
+    ticks: list[dict[str, Any]] = []
+    mismatch_tick_ids: list[str] = []
+    preview_and_gcode_same_geometry = True
+
+    for spec in tick_specs:
+        machine_path = machine_paths_by_id.get(spec.id)
+        gcode_path = gcode_paths_by_id.get(spec.id)
+        machine_bbox = None if machine_path is None else _bbox_or_none(machine_path.points)
+        gcode_bbox = None if gcode_path is None else _bbox_or_none(gcode_path.points)
+        gcode_matches_machine = machine_bbox is not None and gcode_bbox is not None
+        if gcode_matches_machine:
+            for key in ("minX", "minY", "maxX", "maxY", "width", "height"):
+                if abs(float(gcode_bbox[key]) - float(machine_bbox[key])) > gcode_tolerance_deg:
+                    gcode_matches_machine = False
+                    break
+        if not gcode_matches_machine:
+            mismatch_tick_ids.append(spec.id)
+            preview_and_gcode_same_geometry = False
+
+        ticks.append({
+            "id": spec.id,
+            "label": spec.label,
+            "commandedXDeg": spec.commanded_x_deg,
+            "emittedMachineXDeg": spec.emitted_x_deg,
+            "machineDegreeBbox": machine_bbox,
+            "gcodeBbox": gcode_bbox,
+            "expectedSurfaceArcFromPreviousMm": None if spec.commanded_x_deg == 0.0 else expected_quadrant_arc_mm,
+            "gcodeMatchesMachineDegreeBbox": gcode_matches_machine,
+        })
+
+    return {
+        "pattern": "x_axis_rotation_ticks",
+        "ballDiameterMm": float(ball_diameter_mm),
+        "ballCircumferenceMm": circumference_mm,
+        "expectedQuadrantArcMm": expected_quadrant_arc_mm,
+        "previewAndGcodeShareSameProjectedPaths": preview_and_gcode_same_geometry,
+        "projectedVsGcodeMismatchTickIds": mismatch_tick_ids,
+        "gcodeComparisonToleranceDeg": gcode_tolerance_deg,
+        "ticks": ticks,
+    }
+
+
 def parse_gcode_machine_motion_paths(
     gcode: list[str],
     *,
@@ -3801,6 +4096,8 @@ def parse_gcode_machine_motion_paths(
             except ValueError:
                 continue
             if servo == pen_down_s:
+                if current_points and not current_pen_down:
+                    flush_current()
                 current_pen_down = True
                 if not current_path_id:
                     current_kind = "outline"

@@ -38,19 +38,41 @@ class JobRunner:
     def start(self) -> None:
         if self._before_start is not None:
             self._before_start()
-        snapshot = self.state.snapshot()
-        if snapshot["running"]:
-            raise ValueError("A job is already running")
-        if not snapshot["calibrated"]:
-            raise ValueError("Machine is not calibrated. Jog to the ball center, then use 'Set Origin & Calibrate'.")
-        if not snapshot["last_gcode"]:
-            raise ValueError("No G-code generated yet")
         with self._lock:
+            snapshot = self.state.snapshot()
+            if snapshot["running"] or (self._thread is not None and self._thread.is_alive()):
+                raise ValueError("A job is already running")
+            if not snapshot["calibrated"]:
+                raise ValueError("Machine is not calibrated. Jog to the ball center, then use 'Set Origin & Calibrate'.")
+            if not snapshot["last_gcode"]:
+                raise ValueError("No G-code generated yet")
             self._stop_requested = False
             self._stop_reason = "user_stop"
             self._pause_requested = False
-            self._thread = threading.Thread(target=self._worker, args=(list(snapshot["last_gcode"]),), daemon=True)
-            self._thread.start()
+            started_at = time.time()
+            self.state.update(
+                running=True,
+                paused=False,
+                status="Starting",
+                progress_total=0,
+                progress_done=0,
+                current_gcode_line=0,
+                current_path_id=None,
+                current_path_kind=None,
+                current_preview_point_index=0,
+                run_started_at=started_at,
+                pause_started_at=None,
+                paused_duration_seconds=0.0,
+                last_error=None,
+                last_stream_event="job_start_requested",
+            )
+            try:
+                self._thread = threading.Thread(target=self._worker, args=(list(snapshot["last_gcode"]),), daemon=True)
+                self._thread.start()
+            except Exception:
+                self.state.update(running=False, status=snapshot.get("status") or "Idle")
+                self._thread = None
+                raise
         self.logger.info("Job start requested with %d total G-code lines", len(snapshot["last_gcode"]))
         self._emit_lifecycle("job_start")
 

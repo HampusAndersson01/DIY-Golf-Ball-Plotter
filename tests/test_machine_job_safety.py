@@ -233,6 +233,28 @@ def test_normal_job_completion_finalizes_pen_up_before_home_and_keeps_hold():
     assert state.snapshot()["motors"]["y_expected_holding"] is True
 
 
+def test_start_marks_running_before_worker_thread_begins_and_rejects_second_start(monkeypatch: pytest.MonkeyPatch):
+    runner, _, state, _ = build_job_runner_with_machine_service()
+    state.update(connected=True, calibrated=True, last_gcode=["G1 X1 Y1"])
+
+    started_threads: list[threading.Thread] = []
+
+    def fake_start(thread: threading.Thread) -> None:
+        started_threads.append(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", fake_start)
+
+    runner.start()
+
+    snapshot = state.snapshot()
+    assert snapshot["running"] is True
+    assert snapshot["status"] == "Starting"
+    assert started_threads
+
+    with pytest.raises(ValueError, match="already running"):
+        runner.start()
+
+
 def test_abort_and_fail_finalization_follow_home_safety_rules():
     runner, service, state, serial_service = build_job_runner_with_machine_service()
     state.update(connected=True, calibrated=True, machine_position_trusted=True, motor_hold_enabled=True)

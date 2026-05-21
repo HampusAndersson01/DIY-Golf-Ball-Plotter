@@ -463,6 +463,7 @@ def generate_image_gcode_route():
 
 @raster_bp.post("/generate-diagnostic-gcode")
 def generate_diagnostic_gcode_route():
+    state = get_state()
     config = current_app.config
     pattern = str(request.form.get("pattern", "diagnostic_suite"))
     mode = str(request.form.get("mode", "fill_then_cleanup"))
@@ -472,6 +473,108 @@ def generate_diagnostic_gcode_route():
     wall_count = int(request.form.get("wall_count", 1))
     debug_data: dict[str, object] = {}
     try:
+        if pattern == "x_axis_rotation_ticks":
+            machine_toolpaths, tick_specs = pipeline_core.build_x_axis_rotation_calibration_toolpaths()
+            gcode, preview = get_gcode_service().generate_from_toolpaths(
+                toolpaths=machine_toolpaths,
+                draw_feed=draw_feed,
+                travel_feed=travel_feed,
+                sample_step_deg=config["DEFAULT_SAMPLE_STEP_DEG"],
+                placement_offset_x=0.0,
+                placement_offset_y=0.0,
+                pen_up_s=config["DEFAULT_PEN_UP_S"],
+                pen_down_s=config["DEFAULT_PEN_DOWN_S"],
+                servo_ramp_enabled=config["DEFAULT_SERVO_RAMP_ENABLED"],
+                servo_ramp_step=config["DEFAULT_SERVO_RAMP_STEP"],
+                servo_ramp_delay_ms=config["DEFAULT_SERVO_RAMP_DELAY_MS"],
+                pen_up_dwell_ms=config["DEFAULT_PEN_UP_DWELL_MS"],
+                pen_down_dwell_ms=config["DEFAULT_PEN_DOWN_DWELL_MS"],
+                gcode_mode=config["DEFAULT_GCODE_MODE"],
+                include_comments=True,
+                debug=debug_data,
+            )
+            machine_motion_debug = pipeline_core.build_machine_motion_debug(
+                [],
+                machine_toolpaths,
+                preview,
+                gcode,
+                pen_up_s=config["DEFAULT_PEN_UP_S"],
+                pen_down_s=config["DEFAULT_PEN_DOWN_S"],
+            )
+            x_axis_calibration_pattern = pipeline_core.build_x_axis_rotation_calibration_metadata(
+                tick_specs,
+                machine_toolpaths,
+                gcode,
+                ball_diameter_mm=config["BALL_DIAMETER_MM"],
+                pen_up_s=config["DEFAULT_PEN_UP_S"],
+                pen_down_s=config["DEFAULT_PEN_DOWN_S"],
+            )
+            point_count = sum(len(path["points"]) for path in preview if path["kind"] != "travel")
+            estimated_runtime_seconds = estimate_runtime_seconds(preview, draw_feed=draw_feed, travel_feed=travel_feed)
+            toolpath_counts = {
+                "fill-wall": 0,
+                "fill-infill": 0,
+                "detail-trace": 0,
+                "outline": len(machine_toolpaths),
+                "travel": sum(1 for path in preview if path["kind"] == "travel"),
+            }
+            summary = {
+                "image_size": f"diagnostic:{pattern}",
+                "selected_colors": [],
+                "mask_pixel_count": 0,
+                "component_count": len(machine_toolpaths),
+                "toolpath_counts": toolpath_counts,
+                "wall_path_count": 0,
+                "infill_path_count": 0,
+                "detail_trace_path_count": 0,
+                "travel_path_count": toolpath_counts["travel"],
+                "gcode_line_count": len(gcode),
+                "point_count": point_count,
+                "estimated_runtime_seconds": estimated_runtime_seconds,
+                "pen_lift_count": len(machine_toolpaths),
+            }
+            state.update(
+                last_svg_name=f"diagnostic:{pattern}",
+                last_gcode=gcode,
+                last_preview=preview,
+                last_summary=summary,
+                progress_total=0,
+                progress_done=0,
+                current_gcode_line=0,
+                current_path_id=None,
+                current_preview_point_index=0,
+                status="X rotary calibration G-code generated - calibrate before run",
+                last_error=None,
+                last_timeout_debug=None,
+            )
+            return json_ok(
+                pattern=pattern,
+                mode=mode,
+                gcode=gcode,
+                preview=preview,
+                mask_preview=None,
+                selected_colors=[],
+                summary=summary,
+                stage_counts={},
+                effective_settings={
+                    "line_thickness_mm": line_width_mm,
+                    "infill_spacing_mm": line_width_mm,
+                    "custom_infill_spacing": False,
+                    "wall_count": wall_count,
+                    "fill_density": 0.0,
+                },
+                calibrationPattern=None,
+                xAxisCalibrationPattern=x_axis_calibration_pattern,
+                coordinate_debug={"unit_model": "machine_deg_direct_calibration"},
+                outline_pipeline_debug={"preview_and_gcode_share_same_projected_paths": True},
+                region_alignment_debug={},
+                sampling_debug={},
+                machine_motion_debug=machine_motion_debug,
+                outline_vs_infill_alignment={},
+                gcode_stats=build_gcode_stats(gcode, {"duplicate_points_removed": 0, "short_segments_removed": 0, "simplification_tolerance_mm": 0.0}, preview_path_count=len(preview), debug=debug_data),
+                debug=debug_data,
+            )
+
         bundle = pipeline_core.build_diagnostic_geometry_bundle(pattern)
         toolpaths = pipeline_core.generate_toolpaths(
             bundle,
@@ -529,11 +632,75 @@ def generate_diagnostic_gcode_route():
             pen_up_s=config["DEFAULT_PEN_UP_S"],
             pen_down_s=config["DEFAULT_PEN_DOWN_S"],
         )
+        calibration_pattern = pipeline_core.build_calibration_pattern_metadata(
+            pattern,
+            bundle,
+            cleaned_toolpaths,
+            projected_toolpaths,
+            gcode,
+            ball_diameter_mm=config["BALL_DIAMETER_MM"],
+            pen_up_s=config["DEFAULT_PEN_UP_S"],
+            pen_down_s=config["DEFAULT_PEN_DOWN_S"],
+        )
+        point_count = sum(len(path["points"]) for path in preview if path["kind"] != "travel")
+        estimated_runtime_seconds = estimate_runtime_seconds(
+            preview,
+            draw_feed=draw_feed,
+            travel_feed=travel_feed,
+        )
+        toolpath_counts = {
+            "fill-wall": sum(1 for path in toolpaths if path.kind == "fill-wall"),
+            "fill-infill": sum(1 for path in toolpaths if path.kind == "fill-infill"),
+            "detail-trace": sum(1 for path in toolpaths if path.kind == "detail-trace"),
+            "outline": sum(1 for path in toolpaths if path.kind == "outline"),
+            "travel": 0,
+        }
+        summary = {
+            "image_size": f"diagnostic:{pattern}",
+            "selected_colors": [],
+            "mask_pixel_count": 0,
+            "component_count": len(pipeline_core.normalize_geometry(bundle.printable_geometry)),
+            "toolpath_counts": toolpath_counts,
+            "wall_path_count": toolpath_counts["fill-wall"],
+            "infill_path_count": toolpath_counts["fill-infill"],
+            "detail_trace_path_count": toolpath_counts["detail-trace"],
+            "travel_path_count": sum(1 for path in preview if path["kind"] == "travel"),
+            "gcode_line_count": len(gcode),
+            "point_count": point_count,
+            "estimated_runtime_seconds": estimated_runtime_seconds,
+            "pen_lift_count": len([path for path in toolpaths if len(path.points) >= 2]),
+        }
+        state.update(
+            last_svg_name=f"diagnostic:{pattern}",
+            last_gcode=gcode,
+            last_preview=preview,
+            last_summary=summary,
+            progress_total=0,
+            progress_done=0,
+            current_gcode_line=0,
+            current_path_id=None,
+            current_preview_point_index=0,
+            status="Diagnostic G-code generated - calibrate before run",
+            last_error=None,
+            last_timeout_debug=None,
+        )
         return json_ok(
             pattern=pattern,
             mode=mode,
             gcode=gcode,
             preview=preview,
+            mask_preview=None,
+            selected_colors=[],
+            summary=summary,
+            stage_counts={},
+            effective_settings={
+                "line_thickness_mm": line_width_mm,
+                "infill_spacing_mm": line_width_mm,
+                "custom_infill_spacing": False,
+                "wall_count": wall_count,
+                "fill_density": 100.0,
+            },
+            calibrationPattern=calibration_pattern,
             coordinate_debug=coordinate_debug,
             outline_pipeline_debug=outline_pipeline_debug,
             region_alignment_debug=region_alignment_debug,

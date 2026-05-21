@@ -3,13 +3,14 @@ import type { MachineState } from '../../api/types'
 type Props = {
   machine: MachineState | null
   runReady: boolean
+  runStarting: boolean
   onRun: () => void
   onPause: () => void
   onResume: () => void
   onStop: () => void
 }
 
-export function RunControls({ machine, runReady, onRun, onPause, onResume, onStop }: Props) {
+export function RunControls({ machine, runReady, runStarting, onRun, onPause, onResume, onStop }: Props) {
   return (
     <section className="panel">
       <div className="panel-heading">
@@ -20,8 +21,8 @@ export function RunControls({ machine, runReady, onRun, onPause, onResume, onSto
         <span className={`badge ${runReady ? 'good' : 'muted'}`}>{runReady ? 'Ready' : 'Locked'}</span>
       </div>
       <div className="stack-col">
-        <button className="button primary" disabled={!runReady || machine?.running} onClick={onRun} type="button">
-          Run G-code
+        <button className="button primary" disabled={!runReady || machine?.running || runStarting} onClick={onRun} type="button">
+          {runStarting ? 'Starting…' : 'Run G-code'}
         </button>
         <div className="stack-row three-up">
           <button className="button" disabled={!machine?.running || machine?.paused} onClick={onPause} type="button">
