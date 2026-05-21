@@ -98,7 +98,14 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
     if (!controller) return
     controller.setContentBounds(flipBoundsY(derivePreviewBounds(paths)))
     controller.setRenderer((ctx, engine) => renderCanvas(ctx, engine))
-  }, [machine, paths, showTravel, filter, visiblePaths])
+    controller.fitToView()
+  }, [paths, renderCanvas])
+
+  useEffect(() => {
+    const controller = controllerRef.current
+    if (!controller) return
+    controller.setRenderer((ctx, engine) => renderCanvas(ctx, engine))
+  }, [machine, filter, showTravel, visiblePaths, renderCanvas])
 
   return (
     <div className="toolpath-canvas-wrap">

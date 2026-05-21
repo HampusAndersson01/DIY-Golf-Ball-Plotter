@@ -148,6 +148,8 @@ export type MachineState = {
     last_error: string | null
   }
   stepper_hold_debug?: Record<string, unknown> | null
+  last_gcode?: string[]
+  last_preview?: PreviewPath[]
   last_summary: JobSummary | null
   last_job_finalization?: Record<string, unknown> | null
   last_timeout_debug?: Record<string, unknown> | null

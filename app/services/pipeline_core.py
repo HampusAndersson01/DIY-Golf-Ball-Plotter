@@ -95,6 +95,7 @@ import threading
 import math
 import os
 import re
+import statistics
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, asdict, field
@@ -207,6 +208,9 @@ DEFAULT_THIN_DETAIL_OVERLAP = True
 DEFAULT_MIN_SEGMENT_LENGTH_MM = 0.5
 DEFAULT_TRAVEL_OPTIMIZATION = "nearest-neighbor"
 DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS = True
+DEFAULT_LONG_THIN_INFILL_ASPECT_RATIO = 3.0
+DEFAULT_SHORT_INFILL_SEGMENT_FACTOR = 1.5
+DEFAULT_MAX_PEN_DOWN_CONNECTOR_SPACING_FACTOR = 2.5
 DEFAULT_STREAMING_MODE = "buffered"
 DEFAULT_OUTLINE_PLACEMENT_MODE = "inside_edge_default"
 DEFAULT_PROJECTION_SAMPLING_MAX_SEGMENT_MM = 0.25
@@ -4669,11 +4673,221 @@ def merge_connected_toolpaths(
     return merged
 
 
+def _normalize_infill_angle_deg(angle_deg: float) -> float:
+    normalized = math.fmod(angle_deg, 180.0)
+    if normalized < 0.0:
+        normalized += 180.0
+    if normalized >= 179.999999:
+        normalized = 0.0
+    return normalized
+
+
+def _dedupe_infill_candidate_angles(candidate_angles: list[float]) -> list[float]:
+    deduped: list[float] = []
+    for candidate in candidate_angles:
+        normalized = _normalize_infill_angle_deg(candidate)
+        if any(abs(normalized - existing) < 1e-6 for existing in deduped):
+            continue
+        deduped.append(normalized)
+    return deduped
+
+
 class SlicerService:
     def _scanline_spacing_mm(self, settings: SlicerSettings) -> float:
         base_spacing_mm = settings.infill_spacing_mm if settings.infill_spacing_mm > 0 else settings.line_width_mm
         density_scale = max(0.01, settings.infill_density / 100.0)
         return base_spacing_mm / density_scale
+
+    def _max_pen_down_connector_length_mm(self, spacing_mm: float) -> float:
+        return max(
+            spacing_mm * DEFAULT_MAX_PEN_DOWN_CONNECTOR_SPACING_FACTOR,
+            spacing_mm + 0.25,
+        )
+
+    def _recommended_infill_min_segment_length_mm(self, line_width_mm: float, minimum_length_mm: float) -> float:
+        return max(minimum_length_mm, max(0.2, line_width_mm * 0.75))
+
+    def _polygon_axis_metrics(self, region: Any) -> dict[str, float]:
+        if region is None or region.is_empty:
+            return {
+                "dominant_axis_angle_deg": 0.0,
+                "long_side_mm": 0.0,
+                "short_side_mm": 0.0,
+                "aspect_ratio": 0.0,
+                "used_oriented_bbox": False,
+            }
+
+        try:
+            oriented = region.minimum_rotated_rectangle
+            coords = list(oriented.exterior.coords)
+            edges: list[tuple[float, float]] = []
+            for start, end in zip(coords, coords[1:]):
+                dx = end[0] - start[0]
+                dy = end[1] - start[1]
+                length = math.hypot(dx, dy)
+                if length > 1e-6:
+                    edges.append((length, math.degrees(math.atan2(dy, dx))))
+            if edges:
+                edges.sort(key=lambda item: item[0], reverse=True)
+                long_side = edges[0][0]
+                short_side = edges[-1][0]
+                aspect_ratio = long_side / max(short_side, 1e-6)
+                return {
+                    "dominant_axis_angle_deg": _normalize_infill_angle_deg(edges[0][1]),
+                    "long_side_mm": long_side,
+                    "short_side_mm": short_side,
+                    "aspect_ratio": aspect_ratio,
+                    "used_oriented_bbox": True,
+                }
+        except Exception:
+            pass
+
+        min_x, min_y, max_x, max_y = region.bounds
+        width = max(0.0, max_x - min_x)
+        height = max(0.0, max_y - min_y)
+        long_side = max(width, height)
+        short_side = min(width, height)
+        return {
+            "dominant_axis_angle_deg": 0.0 if width >= height else 90.0,
+            "long_side_mm": long_side,
+            "short_side_mm": short_side,
+            "aspect_ratio": long_side / max(short_side, 1e-6),
+            "used_oriented_bbox": False,
+        }
+
+    def _collect_scanline_rows(
+        self,
+        region: Any,
+        *,
+        spacing_mm: float,
+        angle_deg: float,
+        min_segment_length_mm: float,
+    ) -> dict[str, Any]:
+        if region is None or region.is_empty or spacing_mm <= 0:
+            return {"origin": None, "rows": [], "cover_region": None, "region_area": 0.0, "short_segment_threshold_mm": 0.0}
+
+        origin = region.centroid.coords[0]
+        rotated = affinity.rotate(region, -angle_deg, origin=origin)
+        epsilon = max(1e-6, spacing_mm * 0.01)
+        short_segment_threshold_mm = max(min_segment_length_mm, spacing_mm * DEFAULT_SHORT_INFILL_SEGMENT_FACTOR)
+        rows: list[list[list[tuple[float, float]]]] = []
+
+        for polygon in normalize_geometry(rotated):
+            poly_min_x, poly_min_y, poly_max_x, poly_max_y = polygon.bounds
+            polygon_rows: list[list[list[tuple[float, float]]]] = []
+            row_index = 0
+            y = poly_min_y
+            while y <= poly_max_y + 1e-6:
+                raw_scan = LineString([(poly_min_x - spacing_mm, y), (poly_max_x + spacing_mm, y)])
+                clipped_segments: list[list[tuple[float, float]]] = []
+                for line in extract_lines(polygon.intersection(raw_scan)):
+                    if line.length < min_segment_length_mm:
+                        continue
+                    coords = list(line.coords)
+                    if row_index % 2 == 0:
+                        if coords[0][0] > coords[-1][0]:
+                            coords.reverse()
+                    else:
+                        if coords[0][0] < coords[-1][0]:
+                            coords.reverse()
+                    clipped_segments.append(coords)
+                clipped_segments.sort(
+                    key=lambda coords: coords[0][0],
+                    reverse=bool(row_index % 2 == 1),
+                )
+                polygon_rows.append(clipped_segments)
+                y += spacing_mm
+                row_index += 1
+            rows.append(polygon_rows)
+
+        return {
+            "origin": origin,
+            "rows": rows,
+            "cover_region": rotated.buffer(epsilon, join_style=1),
+            "region_area": float(region.area),
+            "short_segment_threshold_mm": short_segment_threshold_mm,
+        }
+
+    def _score_infill_candidate(
+        self,
+        row_data: dict[str, Any],
+        *,
+        spacing_mm: float,
+        angle_deg: float,
+    ) -> dict[str, Any]:
+        rows = row_data.get("rows") or []
+        cover_region = row_data.get("cover_region")
+        region_area = float(row_data.get("region_area", 0.0))
+        short_segment_threshold_mm = float(row_data.get("short_segment_threshold_mm", 0.0))
+        max_connector_length_mm = self._max_pen_down_connector_length_mm(spacing_mm)
+
+        segment_lengths: list[float] = []
+        ordered_segments: list[list[tuple[float, float]]] = []
+        short_segment_count = 0
+        row_count = 0
+
+        for polygon_rows in rows:
+            for row_segments in polygon_rows:
+                if row_segments:
+                    row_count += 1
+                for coords in row_segments:
+                    line = LineString(coords)
+                    segment_lengths.append(float(line.length))
+                    if line.length < short_segment_threshold_mm:
+                        short_segment_count += 1
+                    ordered_segments.append(coords)
+
+        segment_count = len(segment_lengths)
+        total_draw_length_mm = sum(segment_lengths)
+        average_segment_length_mm = total_draw_length_mm / segment_count if segment_count else 0.0
+        median_segment_length_mm = statistics.median(segment_lengths) if segment_lengths else 0.0
+        longest_segment_length_mm = max(segment_lengths) if segment_lengths else 0.0
+        pen_lifts = 0
+        estimated_travel_length_mm = 0.0
+        pen_down_connector_count = 0
+        turnaround_penalty = max(0, row_count - 1)
+
+        for current_coords, next_coords in zip(ordered_segments, ordered_segments[1:]):
+            connector = LineString([current_coords[-1], next_coords[0]])
+            connector_is_short = connector.length <= max_connector_length_mm + 1e-6
+            connector_inside = bool(cover_region is not None and cover_region.covers(connector))
+            if connector_inside and connector_is_short:
+                pen_down_connector_count += 1
+                continue
+            pen_lifts += 1
+            estimated_travel_length_mm += float(connector.length)
+
+        coverage_ratio = 0.0
+        if region_area > 1e-9:
+            coverage_ratio = max(0.0, min(1.0, (total_draw_length_mm * spacing_mm) / region_area))
+
+        score = (
+            (average_segment_length_mm * 5.0)
+            + (median_segment_length_mm * 4.0)
+            + (longest_segment_length_mm * 1.5)
+            - (segment_count * spacing_mm * 0.7)
+            - (short_segment_count * spacing_mm * 2.5)
+            - (estimated_travel_length_mm * 1.35)
+            - (pen_lifts * spacing_mm * 1.1)
+            - (turnaround_penalty * spacing_mm * 0.4)
+            + (coverage_ratio * spacing_mm)
+        )
+        return {
+            "angle_deg": _normalize_infill_angle_deg(angle_deg),
+            "score": score,
+            "segments": float(segment_count),
+            "rows": float(row_count),
+            "total_length": total_draw_length_mm,
+            "coverage_ratio": coverage_ratio,
+            "average_segment_length_mm": average_segment_length_mm,
+            "median_segment_length_mm": median_segment_length_mm,
+            "longest_segment_length_mm": longest_segment_length_mm,
+            "short_segment_count": float(short_segment_count),
+            "number_of_pen_lifts": float(pen_lifts),
+            "estimated_travel_length_mm": estimated_travel_length_mm,
+            "turnaround_penalty": float(turnaround_penalty),
+            "pen_down_connector_count": float(pen_down_connector_count),
+        }
 
     def _emit_debug_connector(
         self,
@@ -4702,37 +4916,18 @@ class SlicerService:
         angle_deg: float,
         min_segment_length_mm: float,
     ) -> dict[str, float]:
-        if region is None or region.is_empty or spacing_mm <= 0:
-            return {"segments": 0.0, "rows": 0.0, "total_length": 0.0, "coverage_ratio": 0.0}
-        origin = region.centroid.coords[0]
-        rotated = affinity.rotate(region, -angle_deg, origin=origin)
-        total_length = 0.0
-        segments = 0
-        rows = 0
-        for polygon in normalize_geometry(rotated):
-            _, poly_min_y, _, poly_max_y = polygon.bounds
-            y = poly_min_y
-            while y <= poly_max_y + 1e-6:
-                raw_scan = LineString([(polygon.bounds[0] - spacing_mm, y), (polygon.bounds[2] + spacing_mm, y)])
-                clipped = polygon.intersection(raw_scan)
-                row_has_segment = False
-                for line in extract_lines(clipped):
-                    if line.length < min_segment_length_mm:
-                        continue
-                    row_has_segment = True
-                    segments += 1
-                    total_length += line.length
-                if row_has_segment:
-                    rows += 1
-                y += spacing_mm
-        coverage_ratio = 0.0
-        if region.area > 1e-9:
-            coverage_ratio = max(0.0, min(1.0, (total_length * spacing_mm) / region.area))
+        row_data = self._collect_scanline_rows(
+            region,
+            spacing_mm=spacing_mm,
+            angle_deg=angle_deg,
+            min_segment_length_mm=min_segment_length_mm,
+        )
+        metrics = self._score_infill_candidate(row_data, spacing_mm=spacing_mm, angle_deg=angle_deg)
         return {
-            "segments": float(segments),
-            "rows": float(rows),
-            "total_length": total_length,
-            "coverage_ratio": coverage_ratio,
+            "segments": metrics["segments"],
+            "rows": metrics["rows"],
+            "total_length": metrics["total_length"],
+            "coverage_ratio": metrics["coverage_ratio"],
         }
 
     def _resolve_infill_angle(
@@ -4744,6 +4939,7 @@ class SlicerService:
         alternate_angle_deg: float,
         fill_strategy: str,
         min_segment_length_mm: float,
+        line_width_mm: float,
         region_index: int,
     ) -> tuple[float, dict[str, Any]]:
         if fill_strategy == "horizontal_scanline":
@@ -4765,46 +4961,74 @@ class SlicerService:
             )
             return resolved, {"strategy": fill_strategy, "candidate_metrics": [{"angle_deg": resolved, **metrics}]}
 
-        candidate_angles: list[float] = [angle_deg, alternate_angle_deg, angle_deg + 90.0, alternate_angle_deg + 90.0]
-        try:
-            oriented = region.minimum_rotated_rectangle
-            coords = list(oriented.exterior.coords)
-            edges: list[tuple[float, float]] = []
-            for start, end in zip(coords, coords[1:]):
-                dx = end[0] - start[0]
-                dy = end[1] - start[1]
-                length = math.hypot(dx, dy)
-                if length > 1e-6:
-                    edges.append((length, math.degrees(math.atan2(dy, dx))))
-            if edges:
-                major_axis = max(edges, key=lambda item: item[0])[1]
-                candidate_angles.extend([major_axis, major_axis + 90.0])
-        except Exception:
-            pass
-        deduped_candidates: list[float] = []
-        for candidate in candidate_angles:
-            normalized = ((candidate + 180.0) % 180.0) - 90.0
-            if any(abs(normalized - existing) < 1e-6 for existing in deduped_candidates):
-                continue
-            deduped_candidates.append(normalized)
+        min_segment_length_mm = self._recommended_infill_min_segment_length_mm(line_width_mm, min_segment_length_mm)
+        axis_metrics = self._polygon_axis_metrics(region)
+        candidate_angles = _dedupe_infill_candidate_angles([
+            angle_deg,
+            0.0,
+            45.0,
+            90.0,
+            135.0,
+            alternate_angle_deg,
+            angle_deg + 90.0,
+            alternate_angle_deg + 90.0,
+            axis_metrics["dominant_axis_angle_deg"],
+            axis_metrics["dominant_axis_angle_deg"] + 90.0,
+        ])
         candidate_metrics: list[dict[str, Any]] = []
-        best_angle = deduped_candidates[0] if deduped_candidates else angle_deg
-        best_score = -1.0
-        for candidate in deduped_candidates:
-            metrics = self._scanline_metrics(
+        best_angle = candidate_angles[0] if candidate_angles else _normalize_infill_angle_deg(angle_deg)
+        best_score = float("-inf")
+
+        if axis_metrics["aspect_ratio"] >= DEFAULT_LONG_THIN_INFILL_ASPECT_RATIO:
+            major_axis_angle = axis_metrics["dominant_axis_angle_deg"]
+            row_data = self._collect_scanline_rows(
+                region,
+                spacing_mm=spacing_mm,
+                angle_deg=major_axis_angle,
+                min_segment_length_mm=min_segment_length_mm,
+            )
+            major_axis_metrics = self._score_infill_candidate(row_data, spacing_mm=spacing_mm, angle_deg=major_axis_angle)
+            major_axis_metrics["selection_reason"] = "long_thin_fast_path"
+            candidate_metrics.append(major_axis_metrics)
+            return major_axis_angle, {
+                "strategy": fill_strategy,
+                "candidate_metrics": candidate_metrics,
+                "long_thin_fast_path_used": True,
+                "dominant_axis_angle_deg": axis_metrics["dominant_axis_angle_deg"],
+                "aspect_ratio": axis_metrics["aspect_ratio"],
+                "long_side_mm": axis_metrics["long_side_mm"],
+                "short_side_mm": axis_metrics["short_side_mm"],
+                "used_oriented_bbox": axis_metrics["used_oriented_bbox"],
+            }
+
+        for candidate in candidate_angles:
+            row_data = self._collect_scanline_rows(
                 region,
                 spacing_mm=spacing_mm,
                 angle_deg=candidate,
                 min_segment_length_mm=min_segment_length_mm,
             )
-            score = metrics["coverage_ratio"] + (metrics["rows"] * 0.02) + (metrics["segments"] * 0.002)
-            candidate_metrics.append({"angle_deg": candidate, **metrics, "score": score})
-            if score > best_score:
-                best_score = score
-                best_angle = candidate
-        if fill_strategy == "adaptive_angle" and len(candidate_metrics) >= 2 and abs(best_score - candidate_metrics[0]["score"]) < 0.02:
-            best_angle = deduped_candidates[region_index % len(deduped_candidates)]
-        return best_angle, {"strategy": fill_strategy, "candidate_metrics": candidate_metrics}
+            metrics = self._score_infill_candidate(row_data, spacing_mm=spacing_mm, angle_deg=candidate)
+            candidate_metrics.append(metrics)
+            if metrics["score"] > best_score:
+                best_score = metrics["score"]
+                best_angle = metrics["angle_deg"]
+
+        if fill_strategy == "adaptive_angle" and candidate_metrics:
+            global_candidate_score = candidate_metrics[0]["score"]
+            if abs(best_score - global_candidate_score) < 0.02:
+                best_angle = candidate_metrics[0]["angle_deg"]
+
+        return best_angle, {
+            "strategy": fill_strategy,
+            "candidate_metrics": candidate_metrics,
+            "long_thin_fast_path_used": False,
+            "dominant_axis_angle_deg": axis_metrics["dominant_axis_angle_deg"],
+            "aspect_ratio": axis_metrics["aspect_ratio"],
+            "long_side_mm": axis_metrics["long_side_mm"],
+            "short_side_mm": axis_metrics["short_side_mm"],
+            "used_oriented_bbox": axis_metrics["used_oriented_bbox"],
+        }
 
     def _generate_scanline_infill(
         self,
@@ -4821,52 +5045,46 @@ class SlicerService:
         if region is None or region.is_empty or spacing_mm <= 0:
             return []
 
-        origin = region.centroid.coords[0]
+        toolpaths: list[Toolpath] = []
+        row_data = self._collect_scanline_rows(
+            region,
+            spacing_mm=spacing_mm,
+            angle_deg=angle_deg,
+            min_segment_length_mm=min_segment_length_mm,
+        )
+        origin = row_data.get("origin")
+        if origin is None:
+            return []
+
         rotated = affinity.rotate(region, -angle_deg, origin=origin)
         min_x, min_y, max_x, max_y = rotated.bounds
         if not all(math.isfinite(value) for value in [min_x, min_y, max_x, max_y]):
             return []
 
-        toolpaths: list[Toolpath] = []
-        epsilon = max(tolerance_mm, 1e-6)
-        for polygon in normalize_geometry(rotated):
-            cover_region = polygon.buffer(epsilon, join_style=1)
+        max_connector_length_mm = self._max_pen_down_connector_length_mm(spacing_mm)
+        for polygon, rows in zip(normalize_geometry(rotated), row_data["rows"]):
+            cover_region = polygon.buffer(max(tolerance_mm, 1e-6), join_style=1)
             poly_min_x, poly_min_y, poly_max_x, poly_max_y = polygon.bounds
-            rows: list[list[list[tuple[float, float]]]] = []
-            row = 0
-            y = poly_min_y
-            while y <= poly_max_y + 1e-6:
-                raw_scan = LineString([(poly_min_x - spacing_mm, y), (poly_max_x + spacing_mm, y)])
-                if debug is not None:
+
+            if debug is not None:
+                row = 0
+                y = poly_min_y
+                while y <= poly_max_y + 1e-6:
+                    raw_scan = LineString([(poly_min_x - spacing_mm, y), (poly_max_x + spacing_mm, y)])
                     raw_scan_world = affinity.rotate(raw_scan, angle_deg, origin=origin)
                     debug_append_toolpaths(debug, "raw_scanlines", [
                         Toolpath(points=[Point(x, y2) for x, y2 in raw_scan_world.coords], kind="debug-raw-scanline", closed=False)
                     ])
-
-                clipped = polygon.intersection(raw_scan)
-                clipped_segments: list[list[tuple[float, float]]] = []
-                for line in extract_lines(clipped):
-                    if line.length < min_segment_length_mm:
-                        continue
-                    coords = list(line.coords)
-                    clipped_segments.append(coords)
-                clipped_segments.sort(
-                    key=lambda coords: min(point[0] for point in coords),
-                )
-                if row % 2 == 1:
-                    clipped_segments = [list(reversed(coords)) for coords in reversed(clipped_segments)]
-
-                rows.append(clipped_segments)
-
-                row_paths: list[Toolpath] = []
-                for coords in clipped_segments:
-                    world_line = affinity.rotate(LineString(coords), angle_deg, origin=origin)
-                    points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_mm, False)
-                    if len(points) >= 2:
-                        row_paths.append(Toolpath(points=points, kind=kind, closed=False))
-                debug_append_toolpaths(debug, "clipped_infill_lines", row_paths)
-                y += spacing_mm
-                row += 1
+                    row_paths: list[Toolpath] = []
+                    if row < len(rows):
+                        for coords in rows[row]:
+                            world_line = affinity.rotate(LineString(coords), angle_deg, origin=origin)
+                            points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_mm, False)
+                            if len(points) >= 2:
+                                row_paths.append(Toolpath(points=points, kind=kind, closed=False))
+                    debug_append_toolpaths(debug, "clipped_infill_lines", row_paths)
+                    y += spacing_mm
+                    row += 1
 
             if not allow_pen_down_infill_connectors:
                 for row_segments in rows:
@@ -4898,7 +5116,8 @@ class SlicerService:
                             if used[next_row][next_index]:
                                 continue
                             connector = LineString([current_coords[-1], next_coords[0]])
-                            if cover_region.covers(connector):
+                            connector_is_short = connector.length <= max_connector_length_mm + 1e-6
+                            if cover_region.covers(connector) and connector_is_short:
                                 candidates.append((connector.length, next_index, next_coords))
                             else:
                                 self._emit_debug_connector(
@@ -5206,7 +5425,7 @@ class SlicerService:
 
         simplify_tolerance_resolved_mm = simplify_tolerance_mm
         thin_detail_tolerance_mm = thin_detail_simplify_mm
-        min_segment_length_resolved_mm = min_segment_length_mm
+        min_segment_length_resolved_mm = self._recommended_infill_min_segment_length_mm(line_width_mm, min_segment_length_mm)
         min_fill_area_resolved_mm2 = min_fill_area_mm2
         thin_detail_min_area_resolved_mm2 = thin_detail_min_area_mm2
         scanline_spacing_mm = self._scanline_spacing_mm(SlicerSettings(
@@ -5322,6 +5541,7 @@ class SlicerService:
                     alternate_angle_deg=alternate_fill_angle_deg,
                     fill_strategy=fill_strategy,
                     min_segment_length_mm=min_segment_length_resolved_mm,
+                    line_width_mm=line_width_mm,
                     region_index=region_index,
                 )
                 infill_region_debug.append({
@@ -5361,6 +5581,9 @@ class SlicerService:
                             "source_component_id": region_index + 1,
                             "source_contour_id": 1,
                             "expected_relation_to_fill": "fill_interior",
+                            "resolved_infill_angle_deg": resolved_infill_angle_deg,
+                            "long_thin_fast_path_used": bool(angle_debug.get("long_thin_fast_path_used", False)),
+                            "infill_aspect_ratio": float(angle_debug.get("aspect_ratio", 0.0)),
                         },
                     )
                     for path in infill_paths

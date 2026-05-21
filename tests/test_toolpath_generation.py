@@ -53,6 +53,18 @@ def _line_for_path(path: Toolpath) -> LineString:
     return LineString([(point.x, point.y) for point in path.points])
 
 
+def _path_lengths(paths: list[Toolpath]) -> list[float]:
+    return [pipeline_core.segment_length(path.points) for path in paths if len(path.points) >= 2]
+
+
+def _path_segments(paths: list[Toolpath]) -> list[tuple[Point, Point]]:
+    segments: list[tuple[Point, Point]] = []
+    for path in paths:
+        for start, end in zip(path.points, path.points[1:]):
+            segments.append((start, end))
+    return segments
+
+
 def _assert_infill_segments_stay_inside_region(toolpaths, region, epsilon=1e-6):
     cover_region = region.buffer(epsilon, join_style=1)
     for path in toolpaths:
@@ -230,6 +242,95 @@ def test_simple_rectangle_infill_becomes_single_zigzag_path():
     assert max(y_values) > min(y_values)
 
 
+def test_long_horizontal_rectangle_prefers_horizontal_long_axis_infill():
+    printable = _rect(width_mm=50.0, height_mm=2.0)
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.5,
+        infill_spacing_mm=0.5,
+        infill_angle_deg=45.0,
+        fill_strategy="adaptive_angle",
+        simplify_tolerance_mm=0.0,
+    )
+
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    assert infill_paths
+    assert all(path.metadata["resolved_infill_angle_deg"] == pytest.approx(0.0, abs=1e-6) for path in infill_paths)
+    assert all(path.metadata["long_thin_fast_path_used"] is True for path in infill_paths)
+
+    lengths = _path_lengths(infill_paths)
+    assert lengths
+    assert sum(lengths) / len(lengths) > 30.0
+
+    horizontal_motion = sum(abs(end.x - start.x) for start, end in _path_segments(infill_paths))
+    vertical_motion = sum(abs(end.y - start.y) for start, end in _path_segments(infill_paths))
+    assert horizontal_motion > vertical_motion * 8.0
+
+
+def test_long_vertical_rectangle_prefers_vertical_long_axis_infill():
+    printable = _rect(width_mm=2.0, height_mm=50.0)
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.5,
+        infill_spacing_mm=0.5,
+        infill_angle_deg=45.0,
+        fill_strategy="adaptive_angle",
+        simplify_tolerance_mm=0.0,
+    )
+
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    assert infill_paths
+    assert all(path.metadata["resolved_infill_angle_deg"] == pytest.approx(90.0, abs=1e-6) for path in infill_paths)
+    assert all(path.metadata["long_thin_fast_path_used"] is True for path in infill_paths)
+
+    horizontal_motion = sum(abs(end.x - start.x) for start, end in _path_segments(infill_paths))
+    vertical_motion = sum(abs(end.y - start.y) for start, end in _path_segments(infill_paths))
+    assert vertical_motion > horizontal_motion * 8.0
+
+
+def test_near_square_shape_uses_candidate_scoring_without_long_thin_fast_path():
+    slicer = pipeline_core.SlicerService()
+    region = _infill_region(_rect(12.0, 12.0), line_width_mm=0.5)
+
+    resolved_angle, debug = slicer._resolve_infill_angle(
+        region,
+        spacing_mm=0.5,
+        angle_deg=45.0,
+        alternate_angle_deg=-45.0,
+        fill_strategy="adaptive_angle",
+        min_segment_length_mm=0.0,
+        line_width_mm=0.5,
+        region_index=0,
+    )
+
+    assert debug["long_thin_fast_path_used"] is False
+    scored_angles = {round(metric["angle_deg"], 6) for metric in debug["candidate_metrics"]}
+    assert round(resolved_angle, 6) in scored_angles
+    assert round(debug["dominant_axis_angle_deg"], 6) in scored_angles
+
+
+def test_candidate_angle_scoring_prefers_fewer_long_segments():
+    slicer = pipeline_core.SlicerService()
+    region = _infill_region(_rect(50.0, 2.0), line_width_mm=0.5)
+
+    horizontal = slicer._score_infill_candidate(
+        slicer._collect_scanline_rows(region, spacing_mm=0.5, angle_deg=0.0, min_segment_length_mm=0.0),
+        spacing_mm=0.5,
+        angle_deg=0.0,
+    )
+    vertical = slicer._score_infill_candidate(
+        slicer._collect_scanline_rows(region, spacing_mm=0.5, angle_deg=90.0, min_segment_length_mm=0.0),
+        spacing_mm=0.5,
+        angle_deg=90.0,
+    )
+
+    assert horizontal["score"] > vertical["score"]
+    assert horizontal["average_segment_length_mm"] > vertical["average_segment_length_mm"] * 8.0
+    assert horizontal["segments"] < vertical["segments"]
+
+
 def test_trapezoid_infill_follows_angled_walls_without_fragmenting():
     line_width_mm = 1.0
     printable = Polygon([
@@ -308,6 +409,52 @@ def test_disabling_pen_down_infill_connectors_outputs_separate_spans():
     infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
     assert len(infill_paths) > 1
     _assert_infill_segments_stay_inside_region(infill_paths, _infill_region(printable))
+
+
+def test_short_clipped_infill_fragments_are_skipped():
+    slicer = pipeline_core.SlicerService()
+    triangle = Polygon([
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (0.0, 10.0),
+    ])
+
+    paths = slicer._generate_scanline_infill(
+        triangle,
+        spacing_mm=1.0,
+        angle_deg=0.0,
+        min_segment_length_mm=2.0,
+        tolerance_mm=0.0,
+        allow_pen_down_infill_connectors=False,
+    )
+
+    assert paths
+    assert all(pipeline_core.segment_length(path.points) >= 2.0 for path in paths)
+
+
+def test_long_thin_infill_ordering_is_deterministic():
+    printable = _rect(width_mm=50.0, height_mm=2.0)
+
+    first = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.5,
+        infill_spacing_mm=0.5,
+        infill_angle_deg=45.0,
+        fill_strategy="adaptive_angle",
+        simplify_tolerance_mm=0.0,
+    )
+    second = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.5,
+        infill_spacing_mm=0.5,
+        infill_angle_deg=45.0,
+        fill_strategy="adaptive_angle",
+        simplify_tolerance_mm=0.0,
+    )
+
+    first_infill = [path.points for path in first if path.kind == "fill-infill"]
+    second_infill = [path.points for path in second if path.kind == "fill-infill"]
+    assert first_infill == second_infill
 
 
 def test_raster_area_fill_suppresses_injected_detail_segments():
@@ -791,6 +938,48 @@ def test_outer_ring_and_hole_remain_separate_paths_with_pen_up_travel():
     assert len(outline_paths) >= 2
     assert travel_paths
     assert all(entry["closed"] is True for entry in outline_paths)
+
+
+def test_long_thin_preview_and_gcode_use_same_canonical_paths_with_outline_last():
+    printable = _rect(50.0, 2.0)
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.5,
+        infill_spacing_mm=0.5,
+        infill_angle_deg=45.0,
+        fill_strategy="adaptive_angle",
+        outline_after_fill=True,
+        simplify_tolerance_mm=0.0,
+    )
+    prepared = pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=0.5)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(prepared, center_lon_deg=0.0, center_lat_deg=0.0)
+
+    service = GcodeService()
+    gcode, preview = service.generate_from_toolpaths(
+        toolpaths=projected,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=False,
+    )
+
+    projected_debug = pipeline_core.build_projected_path_debug(prepared, projected, preview)
+    non_travel_preview_kinds = [entry["kind"] for entry in preview if entry["kind"] != "travel"]
+
+    assert gcode
+    assert projected_debug["preview_and_gcode_share_same_projected_paths"] is True
+    assert "fill-infill" in non_travel_preview_kinds
+    assert non_travel_preview_kinds[-1] == "outline"
 
 
 def test_preview_and_gcode_share_same_projected_points_after_resampling():

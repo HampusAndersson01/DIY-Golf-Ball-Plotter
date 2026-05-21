@@ -1,4 +1,4 @@
-import { startTransition, useDeferredValue, useEffect, useEffectEvent, useMemo, useState } from 'react'
+import { startTransition, useDeferredValue, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 
 import { analyzeImage, apiConfig, fetchBootstrap, fetchState, generateDiagnosticGcode, generateImageGcode, postJson } from './api/client'
@@ -103,6 +103,7 @@ function DashboardApp() {
   const dismissToast = useAppStore((state) => state.dismissToast)
   const [generationDurationMs, setGenerationDurationMs] = useState<number | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
+  const restoredPersistedPreviewRef = useRef(false)
 
   const readySettings = settings
   const deferredPreview = useDeferredValue(preview)
@@ -129,7 +130,10 @@ function DashboardApp() {
       try {
         const nextState = await fetchState()
         if (!active) return
-        startTransition(() => setMachine(nextState))
+        startTransition(() => {
+          setMachine(nextState)
+          hydrateGeneratedPreviewFromMachineOnce(nextState)
+        })
       } catch (error) {
         if (!active) return
         appendLog(`State poll failed: ${String(error)}`)
@@ -184,6 +188,34 @@ function DashboardApp() {
   async function refreshMachine() {
     const nextState = await fetchState()
     setMachine(nextState)
+  }
+
+  function hydrateGeneratedPreviewFromMachineOnce(nextState: MachineState) {
+    if (restoredPersistedPreviewRef.current) {
+      return
+    }
+
+    const hydratedPreview = sanitizePreviewPaths(
+      Array.isArray(nextState.last_preview) ? (nextState.last_preview as Array<Record<string, unknown>>) : [],
+    )
+    const hydratedGcode = Array.isArray(nextState.last_gcode)
+      ? nextState.last_gcode.filter((line): line is string => typeof line === 'string')
+      : []
+    const hydratedSummary = nextState.last_summary ?? null
+
+    if (!hydratedPreview.length && !hydratedGcode.length && !hydratedSummary) {
+      return
+    }
+
+    restoredPersistedPreviewRef.current = true
+    setPreviewPayload({
+      preview: hydratedPreview,
+      maskPreviewUrl: null,
+      gcode: hydratedGcode,
+      summary: hydratedSummary,
+      calibrationPattern: null,
+      xAxisCalibrationPattern: null,
+    })
   }
 
   async function callEndpoint(endpoint: string, body: unknown, successMessage?: string) {

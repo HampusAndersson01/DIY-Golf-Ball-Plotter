@@ -1,4 +1,5 @@
 import { useAppStore } from '../../store/appStore'
+import { MdRotate90DegreesCcw } from 'react-icons/md'
 import { parseLocaleNumber } from '../../utils/numbers'
 
 type Props = {
@@ -13,6 +14,7 @@ export function PenSettingsCard({ canGenerate, onGenerate }: Props) {
   const updateSetting = useAppStore((state) => state.updateSetting)
   const effectiveInfillSpacingMm = settings.customInfillSpacingEnabled ? settings.infillSpacingMm : settings.lineThicknessMm
   const readyToGenerate = Boolean(imageFile && selectedColors.length)
+  const rotate90Enabled = Math.abs(settings.rotationDeg - 90) < 1e-9
 
   return (
     <section className="panel">
@@ -36,11 +38,7 @@ export function PenSettingsCard({ canGenerate, onGenerate }: Props) {
       </div>
 
       <p className="panel-note">
-        Normal printing uses safe defaults automatically. Infill spacing: {settings.customInfillSpacingEnabled ? `${effectiveInfillSpacingMm.toFixed(2)} mm` : `Auto = ${effectiveInfillSpacingMm.toFixed(2)} mm`}.
-      </p>
-
-      <p className="panel-copy muted">
-        Workflow: import image, analyze colors, pick the printable color, then generate G-code. Placement, infill tuning, cleanup, and other slicer controls are in Advanced only.
+        Infill spacing: {settings.customInfillSpacingEnabled ? `${effectiveInfillSpacingMm.toFixed(2)} mm` : `Auto ${effectiveInfillSpacingMm.toFixed(2)} mm`}.
       </p>
 
       <div className="generate-row">
@@ -64,6 +62,17 @@ export function PenSettingsCard({ canGenerate, onGenerate }: Props) {
             <small>%</small>
           </div>
         </label>
+
+        <button
+          aria-label="Rotate artwork 90 degrees"
+          aria-pressed={rotate90Enabled}
+          className={`icon-toggle ${rotate90Enabled ? 'is-active' : ''}`}
+          onClick={() => updateSetting('rotationDeg', rotate90Enabled ? 0 : 90)}
+          title={rotate90Enabled ? 'Rotation 90° on' : 'Rotation 90° off'}
+          type="button"
+        >
+          <MdRotate90DegreesCcw aria-hidden="true" />
+        </button>
 
         <button className="button primary" disabled={!canGenerate} onClick={onGenerate} type="button">
           {readyToGenerate ? 'Generate G-code' : 'Select a color to generate'}
