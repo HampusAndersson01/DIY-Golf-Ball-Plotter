@@ -293,6 +293,7 @@ export type AppDefaults = {
   servoRampStep: number
   servoRampDelayMs: number
   sampleStepDeg: number
+  maxPrintXSpanDeg: number
   marginPercent: number
   rotationDeg: number
   wallCount: number

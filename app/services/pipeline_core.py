@@ -36,6 +36,7 @@ RUNTIME_KEYS = [
     "MIN_SERVO_S",
     "MAX_SERVO_S",
     "DEFAULT_SAMPLE_STEP_DEG",
+    "DEFAULT_MAX_PRINT_X_SPAN_DEG",
     "DEFAULT_CURVE_SAMPLES",
     "DEFAULT_MARGIN_PERCENT",
     "DEFAULT_ROTATION_DEG",
@@ -179,6 +180,7 @@ MAX_SERVO_S = 1000
 
 # SVG flattening defaults
 DEFAULT_SAMPLE_STEP_DEG = 1.0       # max angular spacing between sampled points
+DEFAULT_MAX_PRINT_X_SPAN_DEG = 120.0
 DEFAULT_CURVE_SAMPLES = 80          # fallback per curve/path segment
 DEFAULT_MARGIN_PERCENT = 4.0        # keep SVG away from extreme edges
 DEFAULT_ROTATION_DEG = 0.0
@@ -1243,6 +1245,11 @@ def mm_to_ball_degrees(mm: float) -> float:
         raise ValueError("Line thickness must not be negative")
     circumference_mm = math.pi * BALL_DIAMETER_MM
     return (mm / circumference_mm) * 360.0
+
+
+def ball_degrees_to_mm(degrees_value: float, *, ball_diameter_mm: float = BALL_DIAMETER_MM) -> float:
+    circumference_mm = math.pi * ball_diameter_mm
+    return (degrees_value / 360.0) * circumference_mm
 
 
 def ball_radius_mm(ball_diameter_mm: float = BALL_DIAMETER_MM) -> float:
@@ -2892,7 +2899,7 @@ def map_bundle_to_surface_mm(
     margin_percent: float,
 ) -> GeometryBundle:
     radius_mm = ball_radius_mm()
-    full_width_mm = radius_mm * math.radians(X_DRAW_MAX - X_DRAW_MIN)
+    full_width_mm = ball_degrees_to_mm(DEFAULT_MAX_PRINT_X_SPAN_DEG)
     full_height_mm = radius_mm * math.radians(Y_DRAW_MAX - Y_DRAW_MIN)
     margin_x = full_width_mm * (margin_percent / 100.0)
     margin_y = full_height_mm * (margin_percent / 100.0)
@@ -3108,6 +3115,31 @@ def _bundle_is_empty(bundle: GeometryBundle) -> bool:
 
 def compute_artwork_bbox(bundle: GeometryBundle) -> SvgBounds:
     return bounds_from_bundle(bundle)
+
+
+def validate_bundle_x_span(
+    bundle: GeometryBundle,
+    *,
+    max_x_span_deg: float = DEFAULT_MAX_PRINT_X_SPAN_DEG,
+    ball_diameter_mm: float = BALL_DIAMETER_MM,
+) -> dict[str, float]:
+    if max_x_span_deg <= 0:
+        raise ValueError("Maximum printable X span must be greater than 0 degrees")
+    bounds = bounds_from_bundle(bundle)
+    width_mm = max(0.0, bounds.width)
+    width_deg = mm_to_ball_degrees(width_mm)
+    max_width_mm = ball_degrees_to_mm(max_x_span_deg, ball_diameter_mm=ball_diameter_mm)
+    if width_deg > (max_x_span_deg + 1e-6):
+        raise ValueError(
+            f"Artwork exceeds the printable X span limit: {width_deg:.2f} degrees "
+            f"({width_mm:.2f} mm) > {max_x_span_deg:.2f} degrees ({max_width_mm:.2f} mm)"
+        )
+    return {
+        "width_mm": width_mm,
+        "width_deg": width_deg,
+        "max_width_mm": max_width_mm,
+        "max_width_deg": max_x_span_deg,
+    }
 
 
 def resolve_origin_anchor_point(bounds: SvgBounds, origin_anchor: str) -> Point:

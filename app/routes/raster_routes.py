@@ -238,6 +238,11 @@ def generate_image_gcode_route():
             origin_offset_y_mm=options["origin_offset_y_mm"],
         )
         geometry.debug_append_bundle(debug_data, "placed_paths", placed)
+        x_span_debug = pipeline_core.validate_bundle_x_span(
+            placed,
+            max_x_span_deg=current_app.config["DEFAULT_MAX_PRINT_X_SPAN_DEG"],
+            ball_diameter_mm=current_app.config["BALL_DIAMETER_MM"],
+        )
         effective_settings = build_effective_settings(options)
         design_bounds = geometry.bounds_from_bundle(placed)
         final_polygon_count = len(pipeline_core.normalize_geometry(placed.printable_geometry)) if placed.printable_geometry is not None and not placed.printable_geometry.is_empty else 0
@@ -339,6 +344,7 @@ def generate_image_gcode_route():
             })
             debug_data["gcode_preview"] = preview
             debug_data["coordinate_debug"] = coordinate_debug
+            debug_data["printable_x_span_debug"] = x_span_debug
             debug_data["outline_pipeline_debug"] = {
                 **outline_pipeline_debug,
                 **projected_path_debug,
@@ -463,6 +469,7 @@ def generate_image_gcode_route():
             stage_counts=stage_counts,
             effective_settings=effective_settings,
             coordinate_debug=coordinate_debug,
+            printable_x_span_debug=x_span_debug,
             outline_pipeline_debug=outline_pipeline_debug,
             outline_fill_alignment_debug=(debug_data or {}).get("outline_fill_alignment_debug"),
             region_alignment_debug=region_alignment_debug,

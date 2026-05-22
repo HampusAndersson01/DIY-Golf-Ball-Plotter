@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState }
 
 import type { MachineState, PreviewPath } from '../../api/types'
 import { PanZoomCanvas } from './PanZoomCanvas'
-import { WORLD_BOUNDS, classifyPath, derivePreviewBounds, getCurrentMarker, pathColor, phaseOpacity, phaseStroke, shouldRenderPath } from './previewMath'
+import { WORLD_BOUNDS, classifyPath, derivePreviewBounds, getCurrentMarker, pathColor, phaseOpacity, phaseStroke, printableXBounds, shouldRenderPath } from './previewMath'
 
 export type Toolpath2DHandle = {
   fit: () => void
@@ -14,10 +14,11 @@ type Props = {
   machine: MachineState | null
   filter: 'all' | 'progress'
   showTravel: boolean
+  maxPrintXSpanDeg: number
 }
 
 export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolpath2DView(
-  { paths, machine, filter, showTravel },
+  { paths, machine, filter, showTravel, maxPrintXSpanDeg },
   ref,
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -42,7 +43,7 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
     ctx.fillRect(0, 0, width * window.devicePixelRatio, height * window.devicePixelRatio)
 
     engine.applyTransform(ctx)
-    drawGrid(ctx, engine)
+    drawGrid(ctx, engine, maxPrintXSpanDeg)
     for (const path of nextVisiblePaths) {
       const phase = classifyPath(path, nextMachine)
       const points = path.points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
@@ -88,7 +89,7 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
     })
     controllerRef.current = controller
     controller.setRenderer(renderCanvas)
-    controller.setContentBounds(flipBoundsY(derivePreviewBounds(paths)))
+    controller.setContentBounds(flipBoundsY(derivePreviewBounds(paths, maxPrintXSpanDeg)))
     controller.fitToView()
 
     const observer = new ResizeObserver(() => controller.resize(true))
@@ -98,14 +99,14 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
       controller.destroy()
       controllerRef.current = null
     }
-  }, [])
+  }, [maxPrintXSpanDeg, paths])
 
   useEffect(() => {
     const controller = controllerRef.current
     if (!controller) return
-    controller.setContentBounds(flipBoundsY(derivePreviewBounds(paths)))
+    controller.setContentBounds(flipBoundsY(derivePreviewBounds(paths, maxPrintXSpanDeg)))
     controller.requestDraw()
-  }, [paths])
+  }, [maxPrintXSpanDeg, paths])
 
   useEffect(() => {
     const controller = controllerRef.current
@@ -124,9 +125,12 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
   )
 })
 
-function drawGrid(ctx: CanvasRenderingContext2D, engine: PanZoomCanvas) {
+function drawGrid(ctx: CanvasRenderingContext2D, engine: PanZoomCanvas, maxPrintXSpanDeg: number) {
   const stepX = 45
   const stepY = 15
+  const printableBounds = printableXBounds(maxPrintXSpanDeg)
+  ctx.fillStyle = 'rgba(56, 189, 248, 0.08)'
+  ctx.fillRect(printableBounds.minX, -WORLD_BOUNDS.maxY, printableBounds.maxX - printableBounds.minX, WORLD_BOUNDS.maxY - WORLD_BOUNDS.minY)
   ctx.strokeStyle = 'rgba(100, 116, 139, 0.35)'
   ctx.lineWidth = 1 / engine.getScale()
   for (let x = WORLD_BOUNDS.minX; x <= WORLD_BOUNDS.maxX; x += stepX) {
@@ -145,6 +149,10 @@ function drawGrid(ctx: CanvasRenderingContext2D, engine: PanZoomCanvas) {
   ctx.strokeStyle = '#254660'
   ctx.lineWidth = 1.2 / engine.getScale()
   ctx.strokeRect(WORLD_BOUNDS.minX, -WORLD_BOUNDS.maxY, WORLD_BOUNDS.maxX - WORLD_BOUNDS.minX, WORLD_BOUNDS.maxY - WORLD_BOUNDS.minY)
+  ctx.strokeStyle = '#0ea5e9'
+  ctx.setLineDash([4 / engine.getScale(), 3 / engine.getScale()])
+  ctx.strokeRect(printableBounds.minX, -WORLD_BOUNDS.maxY, printableBounds.maxX - printableBounds.minX, WORLD_BOUNDS.maxY - WORLD_BOUNDS.minY)
+  ctx.setLineDash([])
   ctx.strokeStyle = '#1d6a86'
   ctx.beginPath()
   ctx.moveTo(0, -WORLD_BOUNDS.maxY)
@@ -157,6 +165,7 @@ function drawGrid(ctx: CanvasRenderingContext2D, engine: PanZoomCanvas) {
   ctx.font = `${11 / engine.getScale()}px ui-sans-serif`
   ctx.fillText('X rotation -180', WORLD_BOUNDS.minX + 4, -WORLD_BOUNDS.minY + 6)
   ctx.fillText('X +180', WORLD_BOUNDS.maxX - 24, -WORLD_BOUNDS.minY + 6)
+  ctx.fillText(`Default fit span ${Math.round(maxPrintXSpanDeg)} deg`, printableBounds.minX + 4, -WORLD_BOUNDS.maxY + 5)
   ctx.fillText('Y +45', WORLD_BOUNDS.minX + 4, -WORLD_BOUNDS.maxY + 5)
   ctx.fillText('Y -45', WORLD_BOUNDS.minX + 4, -WORLD_BOUNDS.minY - 3)
   ctx.fillStyle = pathColor('outline')

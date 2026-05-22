@@ -7,7 +7,7 @@ import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
 
 import type { MachineState, PreviewPath } from '../../api/types'
 import type { ViewPreset } from '../../store/appStore'
-import { classifyPath, getCurrentMarker, phaseOpacity, phaseStroke, shouldRenderPath } from './previewMath'
+import { classifyPath, getCurrentMarker, phaseOpacity, phaseStroke, printableXBounds, shouldRenderPath } from './previewMath'
 
 export type Ball3DHandle = {
   fit: () => void
@@ -20,10 +20,11 @@ type Props = {
   filter: 'all' | 'progress'
   showTravel: boolean
   preset: ViewPreset
+  maxPrintXSpanDeg: number
 }
 
 export const Ball3DView = forwardRef<Ball3DHandle, Props>(function Ball3DView(
-  { paths, machine, filter, showTravel, preset },
+  { paths, machine, filter, showTravel, preset, maxPrintXSpanDeg },
   ref,
 ) {
   const controlsRef = useRef<{ reset: () => void } | null>(null)
@@ -59,7 +60,7 @@ export const Ball3DView = forwardRef<Ball3DHandle, Props>(function Ball3DView(
   return (
     <div ref={hostRef} className="ball-view">
       <Canvas camera={{ position: preset === 'front' ? [0, 0, 2.8] : [1.7, 0.95, 2.45], fov: 38 }} style={{ width: size.width || '100%', height: size.height || '100%' }}>
-        <ScenePaths machine={machine} paths={visiblePaths} />
+        <ScenePaths machine={machine} paths={visiblePaths} maxPrintXSpanDeg={maxPrintXSpanDeg} />
         <SceneCamera controlsRef={controlsRef} preset={preset} />
       </Canvas>
     </div>
@@ -103,13 +104,23 @@ function SceneCamera({
   )
 }
 
-function ScenePaths({ paths, machine }: { paths: PreviewPath[]; machine: MachineState | null }) {
+function ScenePaths({ paths, machine, maxPrintXSpanDeg }: { paths: PreviewPath[]; machine: MachineState | null; maxPrintXSpanDeg: number }) {
+  const printableBounds = printableXBounds(maxPrintXSpanDeg)
+  const startAngle = THREE.MathUtils.degToRad(printableBounds.minX)
+  const endAngle = THREE.MathUtils.degToRad(printableBounds.maxX)
+  const guidePoints = Array.from({ length: 97 }, (_, index) => {
+    const t = index / 96
+    const lon = startAngle + ((endAngle - startAngle) * t)
+    const radius = 1.005
+    return new THREE.Vector3(radius * Math.sin(lon), 0, radius * Math.cos(lon))
+  })
   return (
     <>
       <mesh>
         <sphereGeometry args={[1, 96, 96]} />
         <meshStandardMaterial color="#f7f3eb" metalness={0.04} roughness={0.82} />
       </mesh>
+      <Line color="#0ea5e9" lineWidth={1.2} opacity={0.5} points={guidePoints} transparent />
       <mesh rotation={[0, Math.PI / 2, 0]}>
         <ringGeometry args={[1.001, 1.002, 128]} />
         <meshBasicMaterial color="#c7b8a0" side={THREE.DoubleSide} transparent opacity={0.22} />

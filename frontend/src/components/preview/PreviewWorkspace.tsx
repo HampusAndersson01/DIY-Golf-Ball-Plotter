@@ -13,6 +13,7 @@ import { ToolpathLegend } from './ToolpathLegend'
 type Props = {
   paths: PreviewPath[]
   machine: MachineState | null
+  maxPrintXSpanDeg: number
   previewMode: PreviewMode
   progressFilter: 'all' | 'progress'
   showTravel: boolean
@@ -86,11 +87,19 @@ export function PreviewWorkspace(props: Props) {
           <div className="preview-surface">
             <CurrentLineOverlay currentPath={currentPath} machine={props.machine} />
             {props.previewMode === '2d' ? (
-              <Toolpath2DView ref={twoDRef} filter={props.progressFilter} machine={props.machine} paths={props.paths} showTravel={props.showTravel} />
+              <Toolpath2DView
+                ref={twoDRef}
+                filter={props.progressFilter}
+                machine={props.machine}
+                maxPrintXSpanDeg={props.maxPrintXSpanDeg}
+                paths={props.paths}
+                showTravel={props.showTravel}
+              />
             ) : (
               <Ball3DView
                 ref={threeDRef}
                 filter={props.progressFilter}
+                maxPrintXSpanDeg={props.maxPrintXSpanDeg}
                 machine={props.machine}
                 paths={props.paths}
                 preset={props.viewPreset}

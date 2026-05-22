@@ -36,6 +36,7 @@ def build_frontend_config(config) -> dict:
             "servoRampStep": config["DEFAULT_SERVO_RAMP_STEP"],
             "servoRampDelayMs": config["DEFAULT_SERVO_RAMP_DELAY_MS"],
             "sampleStepDeg": config["DEFAULT_SAMPLE_STEP_DEG"],
+            "maxPrintXSpanDeg": config["DEFAULT_MAX_PRINT_X_SPAN_DEG"],
             "marginPercent": config["DEFAULT_MARGIN_PERCENT"],
             "rotationDeg": config["DEFAULT_ROTATION_DEG"],
             "wallCount": config["DEFAULT_WALL_COUNT"],

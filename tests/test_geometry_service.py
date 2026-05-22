@@ -3,6 +3,7 @@ import pytest
 from app.models.geometry import Point, Segment
 from app.models.machine_state import MachineState
 from app.services.geometry_service import GeometryService
+from app.services import pipeline_core
 from app.services.pipeline_core import GeometryBundle
 from app.services.svg_parser import SvgParser
 
@@ -168,3 +169,71 @@ def test_origin_anchor_is_applied_after_artwork_scale():
     assert bounds.min_y == pytest.approx(0.0, abs=1e-6)
     assert bounds.max_x == pytest.approx(10.0, abs=1e-6)
     assert bounds.max_y == pytest.approx(4.0, abs=1e-6)
+
+
+def test_validate_bundle_x_span_accepts_geometry_within_120_degree_limit():
+    width_mm = pipeline_core.ball_degrees_to_mm(120.0) - 0.1
+    bundle = GeometryBundle(
+        outline_segments=[
+            Segment(
+                points=[
+                    Point(0.0, 0.0),
+                    Point(width_mm, 0.0),
+                ],
+                closed=False,
+            ),
+        ],
+    )
+
+    result = pipeline_core.validate_bundle_x_span(bundle, max_x_span_deg=120.0)
+
+    assert result["width_deg"] < 120.0
+    assert result["max_width_deg"] == pytest.approx(120.0, abs=1e-9)
+
+
+def test_validate_bundle_x_span_rejects_geometry_wider_than_120_degrees():
+    width_mm = pipeline_core.ball_degrees_to_mm(120.0) + 0.1
+    bundle = GeometryBundle(
+        outline_segments=[
+            Segment(
+                points=[
+                    Point(0.0, 0.0),
+                    Point(width_mm, 0.0),
+                ],
+                closed=False,
+            ),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="printable X span limit"):
+        pipeline_core.validate_bundle_x_span(bundle, max_x_span_deg=120.0)
+
+
+def test_map_bundle_to_surface_mm_uses_120_degree_default_fit_width():
+    geometry = GeometryService()
+    bundle = GeometryBundle(
+        outline_segments=[
+            Segment(
+                points=[
+                    Point(0.0, 0.0),
+                    Point(100.0, 0.0),
+                    Point(100.0, 20.0),
+                    Point(0.0, 20.0),
+                    Point(0.0, 0.0),
+                ],
+                closed=True,
+            ),
+        ],
+    )
+    bounds = geometry.bounds_from_bundle(bundle)
+
+    mapped = pipeline_core.map_bundle_to_surface_mm(
+        bundle,
+        bounds,
+        "contain",
+        True,
+        0.0,
+    )
+    mapped_bounds = geometry.bounds_from_bundle(mapped)
+
+    assert mapped_bounds.width == pytest.approx(pipeline_core.ball_degrees_to_mm(120.0), abs=1e-6)

@@ -8,6 +8,7 @@ def make_config():
         "DEFAULT_DRAW_FEED": 1200.0,
         "DEFAULT_TRAVEL_FEED": 3000.0,
         "DEFAULT_SAMPLE_STEP_DEG": 1.0,
+        "DEFAULT_MAX_PRINT_X_SPAN_DEG": 120.0,
         "DEFAULT_MARGIN_PERCENT": 4.0,
         "DEFAULT_ROTATION_DEG": 0.0,
         "DEFAULT_PARSER_MODE": "visible_geometry",

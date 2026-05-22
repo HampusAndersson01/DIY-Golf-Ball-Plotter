@@ -66,6 +66,7 @@ function App() {
 }
 
 function DashboardApp() {
+  const config = useAppStore((state) => state.config)
   const machine = useAppStore((state) => state.machine)
   const settings = useAppStore((state) => state.settings)
   const imageFile = useAppStore((state) => state.imageFile)
@@ -176,6 +177,9 @@ function DashboardApp() {
 
   if (!readySettings) {
     return <BootMessage title="Loading dashboard" detail="Preparing local operator state." />
+  }
+  if (!config) {
+    return <BootMessage title="Dashboard bootstrap failed" detail="Missing frontend config." />
   }
 
   const settingsState = readySettings
@@ -583,6 +587,7 @@ function DashboardApp() {
             imagePreviewUrl={imagePreviewUrl}
             machine={machine}
             maskPreviewUrl={maskPreviewUrl}
+            maxPrintXSpanDeg={config.defaults.maxPrintXSpanDeg}
             onPreviewMode={setPreviewMode}
             onProgressFilter={setProgressFilter}
             onShowCompare={setShowCompare}

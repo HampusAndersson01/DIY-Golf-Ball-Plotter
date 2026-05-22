@@ -7,6 +7,14 @@ export const WORLD_BOUNDS = {
   maxY: 45,
 }
 
+export function printableXBounds(maxPrintXSpanDeg: number) {
+  const halfSpan = maxPrintXSpanDeg * 0.5
+  return {
+    minX: -halfSpan,
+    maxX: halfSpan,
+  }
+}
+
 export type PathPhase = 'completed' | 'current' | 'remaining'
 
 export function getProgressPercent(machine: MachineState | null) {
@@ -57,7 +65,8 @@ export function phaseStroke(phase: PathPhase, kind: string) {
   return pathColor(kind)
 }
 
-export function derivePreviewBounds(paths: PreviewPath[]) {
+export function derivePreviewBounds(paths: PreviewPath[], maxPrintXSpanDeg: number) {
+  const printableBounds = printableXBounds(maxPrintXSpanDeg)
   let minX = WORLD_BOUNDS.minX
   let maxX = WORLD_BOUNDS.maxX
   let minY = WORLD_BOUNDS.minY
@@ -76,7 +85,12 @@ export function derivePreviewBounds(paths: PreviewPath[]) {
   }
 
   if (!found) {
-    return { ...WORLD_BOUNDS }
+    return {
+      minX: printableBounds.minX,
+      maxX: printableBounds.maxX,
+      minY: WORLD_BOUNDS.minY,
+      maxY: WORLD_BOUNDS.maxY,
+    }
   }
 
   return {
