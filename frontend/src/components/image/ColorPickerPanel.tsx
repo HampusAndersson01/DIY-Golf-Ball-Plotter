@@ -5,16 +5,17 @@ import type { ImageAnalysis } from '../../api/types'
 type Props = {
   analysis: ImageAnalysis | null
   selectedColors: string[]
-  onToggle: (hex: string) => void
+  onToggle: (colorId: string) => void
 }
 
 export function ColorPickerPanel({ analysis, selectedColors, onToggle }: Props) {
   const [expanded, setExpanded] = useState(false)
   const colors = analysis?.colors ?? []
   const selectedSet = useMemo(() => new Set(selectedColors), [selectedColors])
-  const selected = colors.filter((color) => selectedSet.has(color.hex))
-  const remaining = colors.filter((color) => !selectedSet.has(color.hex))
+  const selected = colors.filter((color) => selectedSet.has(color.id))
+  const remaining = colors.filter((color) => !selectedSet.has(color.id))
   const compactRemaining = expanded ? remaining : remaining.slice(0, 12)
+  const hasAnalysis = analysis !== null
 
   return (
     <section className="panel">
@@ -26,7 +27,11 @@ export function ColorPickerPanel({ analysis, selectedColors, onToggle }: Props) 
         <span className="badge muted">{selectedColors.length} selected</span>
       </div>
 
-      {!colors.length ? <div className="panel-copy muted">Analyze the image to populate selectable color swatches.</div> : null}
+      {!colors.length ? (
+        <div className="panel-copy muted">
+          {hasAnalysis ? 'No printable colors detected. Transparent or nearly transparent pixels were ignored.' : 'Analyze the image to populate selectable color swatches.'}
+        </div>
+      ) : null}
 
       {selected.length ? (
         <div className="compact-color-section">
@@ -34,14 +39,14 @@ export function ColorPickerPanel({ analysis, selectedColors, onToggle }: Props) 
           <div className="selected-swatch-list">
             {selected.map((color) => (
               <button
-                key={color.hex}
+                key={color.id}
                 className="selected-swatch"
-                onClick={() => onToggle(color.hex)}
+                onClick={() => onToggle(color.id)}
                 type="button"
               >
                 <i style={{ background: color.hex }} />
                 <strong>{color.hex}</strong>
-                <small>{(color.coverage * 100).toFixed(1)}%</small>
+                <small>{color.coverage_percent.toFixed(1)}%</small>
               </button>
             ))}
           </div>
@@ -61,11 +66,11 @@ export function ColorPickerPanel({ analysis, selectedColors, onToggle }: Props) 
           <div className="swatch-dot-grid">
             {compactRemaining.map((color) => (
               <button
-                key={color.hex}
+                key={color.id}
                 className="swatch-dot"
-                onClick={() => onToggle(color.hex)}
+                onClick={() => onToggle(color.id)}
                 style={{ background: color.hex }}
-                title={`${color.hex} ${(color.coverage * 100).toFixed(1)}%`}
+                title={`${color.hex} ${color.coverage_percent.toFixed(1)}%`}
                 type="button"
               />
             ))}

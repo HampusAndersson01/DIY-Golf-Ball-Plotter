@@ -636,6 +636,8 @@ function buildGenerateFormData(file: File, settings: SettingsState, selectedColo
   const formData = new FormData()
   formData.append('image', file)
   formData.append('selected_colors', JSON.stringify(selectedColors))
+  formData.append('simplify_colors', settings.simplifyColors ? '1' : '0')
+  formData.append('max_colors', String(settings.maxColors))
   formData.append('draw_feed', String(settings.drawFeed))
   formData.append('travel_feed', String(settings.travelFeed))
   formData.append('artwork_scale_percent', String(settings.artworkScalePercent))

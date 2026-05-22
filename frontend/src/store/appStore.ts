@@ -140,7 +140,7 @@ type AppStore = {
   setMachine: (machine: MachineState) => void
   setImageFile: (file: File | null, previewUrl: string | null) => void
   setAnalysis: (analysis: ImageAnalysis | null) => void
-  toggleColor: (hex: string) => void
+  toggleColor: (colorId: string) => void
   setPreviewPayload: (payload: { preview: PreviewPath[]; maskPreviewUrl: string | null; gcode: string[]; summary: JobSummary | null; calibrationPattern?: CalibrationPattern | null; xAxisCalibrationPattern?: XAxisCalibrationPattern | null }) => void
   setPreviewMode: (mode: PreviewMode) => void
   setProgressFilter: (filter: ProgressFilter) => void
@@ -315,10 +315,10 @@ export const useAppStore = create<AppStore>((set) => ({
     xAxisCalibrationMeasurements: {},
   }),
   setAnalysis: (analysis) => set({ analysis, selectedColors: [] }),
-  toggleColor: (hex) => set((state) => ({
-    selectedColors: state.selectedColors.includes(hex)
-      ? state.selectedColors.filter((entry) => entry !== hex)
-      : [...state.selectedColors, hex],
+  toggleColor: (colorId) => set((state) => ({
+    selectedColors: state.selectedColors.includes(colorId)
+      ? state.selectedColors.filter((entry) => entry !== colorId)
+      : [...state.selectedColors, colorId],
   })),
   setPreviewPayload: ({ preview, maskPreviewUrl, gcode, summary, calibrationPattern = null, xAxisCalibrationPattern = null }) => set({
     preview,

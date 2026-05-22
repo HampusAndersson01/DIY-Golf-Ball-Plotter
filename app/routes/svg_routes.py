@@ -152,6 +152,8 @@ def generate_gcode_route():
             mask_result = raster.build_mask(
                 image_bytes,
                 options["selected_colors"],
+                simplify_colors=options["simplify_colors"],
+                max_colors=options["max_colors"],
                 tolerance=options["color_tolerance"],
                 min_component_area_px=options["min_component_area_px"],
                 open_radius_px=options["mask_open_radius_px"],

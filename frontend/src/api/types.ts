@@ -81,17 +81,25 @@ export type XAxisCalibrationPattern = {
 }
 
 export type AnalyzeColor = {
+  id: string
   hex: string
   rgb: [number, number, number]
   pixel_count: number
   coverage: number
+  coverage_percent: number
   luminance: number
+  is_transparent: boolean
 }
 
 export type ImageAnalysis = {
   width: number
   height: number
   colors: AnalyzeColor[]
+  ignored_transparent_pixels?: number
+  total_opaque_pixels?: number
+  color_count?: number
+  original_preview_url?: string
+  quantized_preview_url?: string
 }
 
 export type JobSummary = {

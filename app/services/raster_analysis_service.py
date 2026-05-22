@@ -17,11 +17,14 @@ from . import pipeline_core
 
 @dataclass
 class RasterColorSwatch:
+    id: str
     hex: str
     rgb: list[int]
     pixel_count: int
     coverage: float
+    coverage_percent: float
     luminance: float
+    is_transparent: bool = False
 
 
 @dataclass
@@ -31,6 +34,9 @@ class RasterAnalysisResult:
     colors: list[RasterColorSwatch]
     original_preview_url: str
     quantized_preview_url: str
+    ignored_transparent_pixels: int
+    total_opaque_pixels: int
+    color_count: int
 
 
 @dataclass
@@ -63,9 +69,37 @@ class RegionGeometryResult:
 
 @dataclass
 class _LoadedImage:
+    rgba: np.ndarray
     rgb: np.ndarray
+    opaque_mask: np.ndarray
     width: int
     height: int
+
+
+@dataclass
+class _GroupedColorAnalysis:
+    colors: list[RasterColorSwatch]
+    labels: np.ndarray
+    quantized_rgb: np.ndarray
+    ignored_transparent_pixels: int
+    total_opaque_pixels: int
+
+
+@dataclass
+class _WorkingColorGroup:
+    sum_rgb: np.ndarray
+    pixel_count: int
+    centroid: np.ndarray
+    representative_rgb: np.ndarray
+    representative_count: int
+
+    def absorb(self, color: np.ndarray, count: int) -> None:
+        self.sum_rgb += color.astype(np.int64) * count
+        self.pixel_count += int(count)
+        self.centroid = self.sum_rgb.astype(np.float64) / float(self.pixel_count)
+        if int(count) > self.representative_count:
+            self.representative_rgb = color.astype(np.uint8)
+            self.representative_count = int(count)
 
 
 def _rgb_to_hex(rgb: np.ndarray | list[int] | tuple[int, int, int]) -> str:
@@ -93,6 +127,9 @@ def _image_to_data_url(image: np.ndarray) -> str:
 
 
 class RasterAnalysisService:
+    ALPHA_THRESHOLD = 16
+    COLOR_MERGE_THRESHOLD = 36.0
+
     def __init__(self, config, state) -> None:
         self._config = config
         self._state = state
@@ -103,17 +140,23 @@ class RasterAnalysisService:
         image_bytes: bytes,
         *,
         simplify_colors: bool = True,
-        max_colors: int = 8,
+        max_colors: int = 32,
     ) -> RasterAnalysisResult:
         image = self._load_image(image_bytes)
-        quantized_rgb, labels = self._quantize(image.rgb, max_colors=max(2, max_colors), simplify_colors=simplify_colors)
-        colors = self._summarize_colors(image.rgb, labels)
+        grouped = self._analyze_grouped_colors(
+            image,
+            simplify_colors=simplify_colors,
+            max_colors=max(1, max_colors),
+        )
         return RasterAnalysisResult(
             width=image.width,
             height=image.height,
-            colors=colors,
+            colors=grouped.colors,
             original_preview_url=_image_to_data_url(image.rgb),
-            quantized_preview_url=_image_to_data_url(quantized_rgb),
+            quantized_preview_url=_image_to_data_url(grouped.quantized_rgb),
+            ignored_transparent_pixels=grouped.ignored_transparent_pixels,
+            total_opaque_pixels=grouped.total_opaque_pixels,
+            color_count=len(grouped.colors),
         )
 
     def build_mask(
@@ -121,6 +164,8 @@ class RasterAnalysisService:
         image_bytes: bytes,
         selected_colors: list[str],
         *,
+        simplify_colors: bool = True,
+        max_colors: int | None = None,
         tolerance: int = 24,
         min_component_area_px: int = 0,
         open_radius_px: int = 0,
@@ -130,13 +175,35 @@ class RasterAnalysisService:
             raise ValueError("Select at least one color to print")
 
         image = self._load_image(image_bytes)
-        rgb = image.rgb.astype(np.int16)
-        selected = [_hex_to_rgb(color) for color in selected_colors]
+        grouped = self._analyze_grouped_colors(
+            image,
+            simplify_colors=simplify_colors,
+            max_colors=max_colors,
+        )
+        labels = grouped.labels
+        swatches_by_id = {color.id: index for index, color in enumerate(grouped.colors)}
+        swatches_by_hex = {color.hex.upper(): index for index, color in enumerate(grouped.colors)}
 
         mask = np.zeros((image.height, image.width), dtype=bool)
-        for color in selected:
-            distance = np.max(np.abs(rgb - color.reshape(1, 1, 3)), axis=2)
-            mask |= distance <= max(0, tolerance)
+        unresolved: list[str] = []
+        for value in selected_colors:
+            normalized = value.strip()
+            label_index = swatches_by_id.get(normalized)
+            if label_index is None:
+                label_index = swatches_by_hex.get(normalized.upper())
+            if label_index is None:
+                unresolved.append(normalized)
+                continue
+            mask |= labels == label_index
+
+        if unresolved:
+            rgb = image.rgba[:, :, :3].astype(np.int16)
+            legacy_mask = np.zeros((image.height, image.width), dtype=bool)
+            for color in unresolved:
+                target = _hex_to_rgb(color)
+                distance = np.max(np.abs(rgb - target.reshape(1, 1, 3)), axis=2)
+                legacy_mask |= distance <= max(0, tolerance)
+            mask |= legacy_mask & image.opaque_mask
 
         mask_uint8 = self._clean_mask(
             mask.astype(np.uint8) * 255,
@@ -155,7 +222,7 @@ class RasterAnalysisService:
         return MaskResult(
             width=image.width,
             height=image.height,
-            selected_colors=[color.upper() for color in selected_colors],
+            selected_colors=[color.strip() for color in selected_colors if color.strip()],
             tolerance=int(tolerance),
             printable_pixel_count=printable_pixels,
             connected_component_count=connected_component_count,
@@ -297,6 +364,9 @@ class RasterAnalysisService:
             "colors": [asdict(color) for color in result.colors],
             "original_preview_url": result.original_preview_url,
             "quantized_preview_url": result.quantized_preview_url,
+            "ignored_transparent_pixels": result.ignored_transparent_pixels,
+            "total_opaque_pixels": result.total_opaque_pixels,
+            "color_count": result.color_count,
         }
 
     @staticmethod
@@ -345,53 +415,137 @@ class RasterAnalysisService:
             rgba = image.convert("RGBA")
             background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
             composited = Image.alpha_composite(background, rgba).convert("RGB")
+            rgba_array = np.array(rgba, dtype=np.uint8)
             rgb = np.array(composited, dtype=np.uint8)
-        return _LoadedImage(rgb=rgb, width=int(rgb.shape[1]), height=int(rgb.shape[0]))
-
-    def _quantize(self, rgb: np.ndarray, *, max_colors: int, simplify_colors: bool) -> tuple[np.ndarray, np.ndarray]:
-        source = Image.fromarray(rgb, mode="RGB")
-        if simplify_colors:
-            quantized = source.quantize(colors=max_colors, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
-            return np.array(quantized.convert("RGB"), dtype=np.uint8), np.array(quantized, dtype=np.uint8)
-
-        flat = rgb.reshape((-1, 3)).astype(np.float32)
-        unique_colors, inverse = np.unique(flat.astype(np.uint8), axis=0, return_inverse=True)
-        if len(unique_colors) <= max_colors:
-            labels = inverse.reshape((rgb.shape[0], rgb.shape[1]))
-            return rgb.copy(), labels.astype(np.uint8)
-        quantized = source.quantize(colors=max_colors, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
-        return np.array(quantized.convert("RGB"), dtype=np.uint8), np.array(quantized, dtype=np.uint8)
-
-    def _summarize_colors(self, rgb: np.ndarray, labels: np.ndarray) -> list[RasterColorSwatch]:
-        flat_rgb = rgb.reshape((-1, 3))
-        flat_labels = labels.reshape((-1,))
-        counts = np.bincount(flat_labels)
-        total_pixels = max(1, flat_labels.size)
-
-        merged: dict[str, RasterColorSwatch] = {}
-        for label, pixel_count in enumerate(counts):
-            if pixel_count <= 0:
-                continue
-            pixels = flat_rgb[flat_labels == label]
-            mean_rgb = np.rint(pixels.mean(axis=0)).astype(np.uint8)
-            hex_value = _rgb_to_hex(mean_rgb)
-            existing = merged.get(hex_value)
-            if existing is None:
-                merged[hex_value] = RasterColorSwatch(
-                    hex=hex_value,
-                    rgb=[int(value) for value in mean_rgb.tolist()],
-                    pixel_count=int(pixel_count),
-                    coverage=float(pixel_count) / float(total_pixels),
-                    luminance=float(_luminance(mean_rgb)),
-                )
-                continue
-            existing.pixel_count += int(pixel_count)
-            existing.coverage = float(existing.pixel_count) / float(total_pixels)
-
-        return sorted(
-            merged.values(),
-            key=lambda swatch: (-swatch.pixel_count, swatch.luminance, swatch.hex),
+            opaque_mask = rgba_array[:, :, 3] > self.ALPHA_THRESHOLD
+        return _LoadedImage(
+            rgba=rgba_array,
+            rgb=rgb,
+            opaque_mask=opaque_mask,
+            width=int(rgb.shape[1]),
+            height=int(rgb.shape[0]),
         )
+
+    def _analyze_grouped_colors(
+        self,
+        image: _LoadedImage,
+        *,
+        simplify_colors: bool,
+        max_colors: int | None,
+    ) -> _GroupedColorAnalysis:
+        height, width = image.height, image.width
+        labels = np.full((height, width), -1, dtype=np.int32)
+        total_pixels = height * width
+        opaque_pixels = image.rgba[:, :, :3][image.opaque_mask]
+        total_opaque_pixels = int(opaque_pixels.shape[0])
+        ignored_transparent_pixels = int(total_pixels - total_opaque_pixels)
+        quantized_rgb = image.rgb.copy()
+
+        if total_opaque_pixels == 0:
+            return _GroupedColorAnalysis(
+                colors=[],
+                labels=labels,
+                quantized_rgb=quantized_rgb,
+                ignored_transparent_pixels=ignored_transparent_pixels,
+                total_opaque_pixels=0,
+            )
+
+        group_assignments, groups = self._group_opaque_pixels(opaque_pixels, simplify_colors=simplify_colors)
+        ranking = sorted(
+            range(len(groups)),
+            key=lambda index: (
+                -groups[index].pixel_count,
+                _luminance(groups[index].representative_rgb),
+                _rgb_to_hex(groups[index].representative_rgb),
+            ),
+        )
+        if max_colors is not None and max_colors > 0:
+            ranking = ranking[:max_colors]
+
+        order_lookup = {group_index: order for order, group_index in enumerate(ranking)}
+        visible_mask = np.array([group_index in order_lookup for group_index in group_assignments], dtype=bool)
+        opaque_positions = np.argwhere(image.opaque_mask)
+        if np.any(visible_mask):
+            visible_positions = opaque_positions[visible_mask]
+            visible_assignments = np.array([order_lookup[group_index] for group_index in group_assignments[visible_mask]], dtype=np.int32)
+            labels[visible_positions[:, 0], visible_positions[:, 1]] = visible_assignments
+
+        colors: list[RasterColorSwatch] = []
+        representative_colors: dict[int, np.ndarray] = {}
+        for order, group_index in enumerate(ranking):
+            group = groups[group_index]
+            representative_rgb = group.representative_rgb
+            representative_colors[order] = representative_rgb
+            coverage = float(group.pixel_count) / float(max(1, total_opaque_pixels))
+            colors.append(
+                RasterColorSwatch(
+                    id=f"color-group-{order}",
+                    hex=_rgb_to_hex(representative_rgb),
+                    rgb=[int(value) for value in representative_rgb.tolist()],
+                    pixel_count=int(group.pixel_count),
+                    coverage=coverage,
+                    coverage_percent=coverage * 100.0,
+                    luminance=float(_luminance(representative_rgb)),
+                    is_transparent=False,
+                )
+            )
+
+        for order, mean_rgb in representative_colors.items():
+            quantized_rgb[labels == order] = mean_rgb
+
+        return _GroupedColorAnalysis(
+            colors=colors,
+            labels=labels,
+            quantized_rgb=quantized_rgb,
+            ignored_transparent_pixels=ignored_transparent_pixels,
+            total_opaque_pixels=total_opaque_pixels,
+        )
+
+    def _group_opaque_pixels(self, opaque_pixels: np.ndarray, *, simplify_colors: bool) -> tuple[np.ndarray, list[_WorkingColorGroup]]:
+        unique_colors, inverse, counts = np.unique(opaque_pixels, axis=0, return_inverse=True, return_counts=True)
+        ordering = sorted(
+            range(len(unique_colors)),
+            key=lambda index: (
+                -int(counts[index]),
+                float(_luminance(unique_colors[index])),
+                _rgb_to_hex(unique_colors[index]),
+            ),
+        )
+
+        unique_to_group = np.full(len(unique_colors), -1, dtype=np.int32)
+        groups: list[_WorkingColorGroup] = []
+        merge_threshold = self.COLOR_MERGE_THRESHOLD if simplify_colors else 0.0
+
+        for color_index in ordering:
+            color = unique_colors[color_index].astype(np.float64)
+            count = int(counts[color_index])
+            best_group_index: int | None = None
+            best_distance = float("inf")
+
+            for group_index, group in enumerate(groups):
+                distance = float(np.max(np.abs(group.centroid - color)))
+                if distance > merge_threshold or distance >= best_distance:
+                    continue
+                best_group_index = group_index
+                best_distance = distance
+
+            if best_group_index is None:
+                groups.append(
+                    _WorkingColorGroup(
+                        sum_rgb=unique_colors[color_index].astype(np.int64) * count,
+                        pixel_count=count,
+                        centroid=color.copy(),
+                        representative_rgb=unique_colors[color_index].astype(np.uint8),
+                        representative_count=count,
+                    )
+                )
+                unique_to_group[color_index] = len(groups) - 1
+                continue
+
+            groups[best_group_index].absorb(unique_colors[color_index], count)
+            unique_to_group[color_index] = best_group_index
+
+        return unique_to_group[inverse], groups
 
     def _clean_mask(
         self,

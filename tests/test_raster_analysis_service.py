@@ -36,11 +36,153 @@ def make_text_logo_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def make_rgba_bytes(array: np.ndarray) -> bytes:
+    buffer = io.BytesIO()
+    Image.fromarray(array.astype(np.uint8), mode="RGBA").save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def make_black_transparent_bytes() -> bytes:
+    canvas = np.zeros((24, 24, 4), dtype=np.uint8)
+    canvas[4:20, 6:18, :3] = 0
+    canvas[4:20, 6:18, 3] = 255
+    return make_rgba_bytes(canvas)
+
+
+def make_transparent_only_bytes() -> bytes:
+    return make_rgba_bytes(np.zeros((12, 12, 4), dtype=np.uint8))
+
+
+def make_antialiased_dark_bytes() -> bytes:
+    canvas = np.zeros((1, 5, 4), dtype=np.uint8)
+    shades = [0, 8, 17, 34, 0]
+    for index, shade in enumerate(shades):
+        canvas[0, index, :3] = shade
+        canvas[0, index, 3] = 255
+    return make_rgba_bytes(canvas)
+
+
+def make_two_color_bytes() -> bytes:
+    canvas = np.zeros((8, 8, 4), dtype=np.uint8)
+    canvas[:, :4, :3] = np.array([255, 0, 0], dtype=np.uint8)
+    canvas[:, 4:, :3] = np.array([0, 0, 255], dtype=np.uint8)
+    canvas[:, :, 3] = 255
+    return make_rgba_bytes(canvas)
+
+
+def make_multi_color_bytes(colors: list[tuple[int, int, int]]) -> bytes:
+    width = len(colors) * 4
+    canvas = np.zeros((4, width, 4), dtype=np.uint8)
+    for index, color in enumerate(colors):
+        start = index * 4
+        canvas[:, start:start + 4, :3] = np.array(color, dtype=np.uint8)
+        canvas[:, start:start + 4, 3] = 255
+    return make_rgba_bytes(canvas)
+
+
 def test_detects_black_and_white_logo_colors():
     result = make_service().analyze_image(make_logo_bytes(), max_colors=4)
     colors = {entry.hex for entry in result.colors}
     assert "#000000" in colors
     assert "#FFFFFF" in colors
+
+
+def test_black_and_transparent_png_returns_one_printable_color():
+    result = make_service().analyze_image(make_black_transparent_bytes(), max_colors=32)
+    assert result.color_count == 1
+    assert [color.hex for color in result.colors] == ["#000000"]
+    assert result.total_opaque_pixels == 192
+    assert result.ignored_transparent_pixels == 384
+    assert result.colors[0].coverage_percent == 100.0
+
+
+def test_fully_transparent_png_returns_zero_printable_colors():
+    result = make_service().analyze_image(make_transparent_only_bytes(), max_colors=32)
+    assert result.color_count == 0
+    assert result.colors == []
+    assert result.total_opaque_pixels == 0
+    assert result.ignored_transparent_pixels == 144
+
+
+def test_antialiased_dark_pixels_group_into_single_black_swatch():
+    result = make_service().analyze_image(make_antialiased_dark_bytes(), max_colors=32)
+    assert result.color_count == 1
+    assert result.colors[0].hex == "#000000"
+    assert result.colors[0].pixel_count == 5
+
+
+def test_transparent_pixels_do_not_affect_detected_color_count():
+    canvas = np.zeros((1, 2, 4), dtype=np.uint8)
+    canvas[0, 0] = np.array([255, 0, 0, 0], dtype=np.uint8)
+    canvas[0, 1] = np.array([0, 0, 255, 255], dtype=np.uint8)
+    result = make_service().analyze_image(make_rgba_bytes(canvas), max_colors=32)
+    assert result.color_count == 1
+    assert result.colors[0].hex == "#0000FF"
+    assert result.colors[0].coverage_percent == 100.0
+
+
+def test_exactly_two_real_colors_return_two_swatch_groups():
+    result = make_service().analyze_image(make_two_color_bytes(), max_colors=32)
+    assert {color.hex for color in result.colors} == {"#FF0000", "#0000FF"}
+
+
+def test_exactly_eight_real_colors_return_eight_swatch_groups():
+    colors = [
+        (255, 0, 0),
+        (0, 255, 0),
+        (0, 0, 255),
+        (255, 255, 0),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 128, 0),
+        (128, 0, 255),
+    ]
+    result = make_service().analyze_image(make_multi_color_bytes(colors), max_colors=32)
+    assert result.color_count == 8
+
+
+def test_ten_real_colors_are_not_capped_to_eight():
+    colors = [
+        (255, 0, 0),
+        (0, 255, 0),
+        (0, 0, 255),
+        (255, 255, 0),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 128, 0),
+        (128, 0, 255),
+        (120, 60, 0),
+        (0, 120, 60),
+    ]
+    result = make_service().analyze_image(make_multi_color_bytes(colors), max_colors=32)
+    assert result.color_count == 10
+
+
+def test_selected_color_mask_uses_group_membership_not_exact_hex_only():
+    service = make_service()
+    analysis = service.analyze_image(make_antialiased_dark_bytes(), max_colors=32)
+    mask = service.build_mask(
+        make_antialiased_dark_bytes(),
+        [analysis.colors[0].id],
+        simplify_colors=True,
+        max_colors=32,
+        tolerance=0,
+        min_component_area_px=0,
+        open_radius_px=0,
+        close_radius_px=0,
+    )
+    assert mask.printable_pixel_count == 5
+
+
+def test_distinct_colors_are_not_over_merged():
+    colors = [(255, 0, 0), (255, 128, 0)]
+    result = make_service().analyze_image(make_multi_color_bytes(colors), max_colors=32)
+    assert result.color_count == 2
+
+
+def test_no_fake_placeholder_colors_are_returned():
+    result = make_service().analyze_image(make_transparent_only_bytes(), max_colors=32)
+    assert len(result.colors) == 0
 
 
 def test_black_selection_preserves_white_hole_and_generates_fill():
