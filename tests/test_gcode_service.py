@@ -1,3 +1,5 @@
+import pytest
+
 from app.models.geometry import Point, Toolpath
 from app.services import pipeline_core
 from app.services.gcode_service import GcodeService
@@ -118,6 +120,82 @@ def test_projected_gcode_includes_resolved_fill_header_comments():
     assert any("lineWidthMm: 0.1500" in line for line in header_lines)
     assert any("infillSpacingMm: 0.1500" in line for line in header_lines)
     assert any("coordinateSpaceUsedForFill: surface-mm-on-ball" in line for line in header_lines)
+
+
+def test_preview_and_gcode_share_same_projected_paths_after_surface_anchor_placement():
+    bundle = pipeline_core.GeometryBundle(
+        outline_segments=[
+            pipeline_core.Segment(
+                points=[
+                    Point(-10.0, -4.0),
+                    Point(10.0, -4.0),
+                    Point(10.0, 4.0),
+                    Point(-10.0, 4.0),
+                    Point(-10.0, -4.0),
+                ],
+                closed=True,
+            )
+        ],
+    )
+    placed = pipeline_core.apply_origin_anchor_placement(
+        bundle,
+        origin_anchor="bottom-left",
+        origin_offset_x_mm=5.0,
+        origin_offset_y_mm=2.0,
+    )
+    toolpaths = pipeline_core.generate_toolpaths(
+        placed,
+        enable_fill=False,
+        line_width_mm=0.75,
+        wall_count=1,
+        infill_density=100.0,
+        infill_spacing_mm=0.75,
+        infill_angle_deg=0.0,
+        outline_after_fill=False,
+        min_fill_area_mm2=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=False,
+        small_shape_mode="single-wall",
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+    )
+    cleaned, _stats = pipeline_core.cleanup_surface_toolpaths(toolpaths, tolerance_mm=0.0, min_segment_length_mm=0.0)
+    prepared = pipeline_core.prepare_toolpaths_for_projection(cleaned, default_pen_width_mm=0.75)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(prepared, center_lon_deg=0.0, center_lat_deg=0.0)
+
+    assert all(path.coordinate_space == "machine_deg" for path in projected)
+    assert all(int(path.metadata.get("projection_count", 0)) == 1 for path in projected)
+
+    gcode, preview = GcodeService().generate_from_toolpaths(
+        toolpaths=projected,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=True,
+    )
+
+    projected_debug = pipeline_core.build_projected_path_debug(prepared, projected, preview)
+    assert projected_debug["preview_and_gcode_share_same_projected_paths"] is True
+
+    preview_toolpaths = [path for path in pipeline_core.preview_entries_to_toolpaths(preview) if path.kind != "travel"]
+    gcode_toolpaths = [path for path in pipeline_core.parse_gcode_machine_motion_paths(gcode, pen_up_s=575, pen_down_s=700) if path.kind != "travel"]
+    assert len(preview_toolpaths) == len(projected)
+    assert len(gcode_toolpaths) == len(projected)
+    assert preview_toolpaths[0].points[0].x == pytest.approx(projected[0].points[0].x, abs=1e-4)
+    assert preview_toolpaths[0].points[0].y == pytest.approx(projected[0].points[0].y, abs=1e-4)
+    assert gcode_toolpaths[0].points[0].x == pytest.approx(projected[0].points[0].x, abs=1e-4)
+    assert gcode_toolpaths[0].points[0].y == pytest.approx(projected[0].points[0].y, abs=1e-4)
 
 
 def test_read_next_grbl_line_reassembles_fragmented_ok_response():

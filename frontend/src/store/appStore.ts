@@ -6,6 +6,21 @@ export type DrawerTab = 'advanced' | 'gcode' | 'logs'
 export type PreviewMode = '2d' | '3d'
 export type ProgressFilter = 'all' | 'progress'
 export type ViewPreset = 'printer' | 'front'
+export type OriginAnchor =
+  | 'center'
+  | 'min-x'
+  | 'max-x'
+  | 'min-y'
+  | 'max-y'
+  | 'top-left'
+  | 'top-center'
+  | 'top-right'
+  | 'center-left'
+  | 'center-right'
+  | 'bottom-left'
+  | 'bottom-center'
+  | 'bottom-right'
+  | 'custom'
 
 export type SettingsState = {
   xMaxFeed: number
@@ -17,6 +32,9 @@ export type SettingsState = {
   drawFeed: number
   travelFeed: number
   artworkScalePercent: number
+  originAnchor: OriginAnchor
+  originOffsetXmm: number
+  originOffsetYmm: number
   placementScale: number
   placementOffsetX: number
   placementOffsetY: number
@@ -179,6 +197,9 @@ function buildSettings(defaults: AppDefaults): SettingsState {
     drawFeed: defaults.drawFeed,
     travelFeed: defaults.travelFeed,
     artworkScalePercent: defaults.artworkScalePercent,
+    originAnchor: defaults.originAnchor,
+    originOffsetXmm: defaults.originOffsetXmm,
+    originOffsetYmm: defaults.originOffsetYmm,
     placementScale: 100,
     placementOffsetX: 0,
     placementOffsetY: 0,

@@ -191,9 +191,14 @@ select:focus {
 
 .generate-row {
   display: grid;
-  grid-template-columns: minmax(132px, 164px) 48px minmax(0, 1fr);
+  grid-template-columns: minmax(132px, 164px) minmax(180px, 240px) 48px minmax(0, 1fr);
   gap: 10px;
   align-items: end;
+}
+
+.origin-offset-grid {
+  margin-top: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .inline-number-field {
@@ -1044,6 +1049,10 @@ select:focus {
   }
 
   .generate-row {
+    grid-template-columns: 1fr;
+  }
+
+  .origin-offset-grid {
     grid-template-columns: 1fr;
   }
 

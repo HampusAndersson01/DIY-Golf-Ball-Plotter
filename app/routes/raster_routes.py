@@ -42,6 +42,9 @@ def build_setting_debug(error: Exception, config) -> dict | None:
 def build_fill_header_settings(options: dict, design_bounds) -> dict:
     return {
         "artworkScalePercent": f'{options["artwork_scale_percent"]:.4f}',
+        "originAnchor": options["origin_anchor"],
+        "originOffsetXmm": f'{options["origin_offset_x_mm"]:.4f}',
+        "originOffsetYmm": f'{options["origin_offset_y_mm"]:.4f}',
         "lineWidthMm": f'{options["line_thickness_mm"]:.4f}',
         "infillSpacingMm": f'{options["effective_infill_spacing_mm"]:.4f}',
         "wallCount": options["wall_count"],
@@ -220,10 +223,17 @@ def generate_image_gcode_route():
             options["artwork_scale_percent"],
         )
         geometry.debug_append_bundle(debug_data, "artwork_scaled_paths", artwork_scaled)
-        placed = geometry.apply_surface_placement_transform(
+        transformed = geometry.apply_surface_placement_transform(
             artwork_scaled,
             options["placement_scale"],
             options["rotation_deg"],
+        )
+        geometry.debug_append_bundle(debug_data, "transformed_paths", transformed)
+        placed = geometry.apply_origin_anchor_placement(
+            transformed,
+            origin_anchor=options["origin_anchor"],
+            origin_offset_x_mm=options["origin_offset_x_mm"],
+            origin_offset_y_mm=options["origin_offset_y_mm"],
         )
         geometry.debug_append_bundle(debug_data, "placed_paths", placed)
         effective_settings = build_effective_settings(options)

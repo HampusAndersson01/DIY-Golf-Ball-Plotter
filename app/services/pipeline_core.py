@@ -217,6 +217,22 @@ DEFAULT_MAX_PEN_DOWN_CONNECTOR_SPACING_FACTOR = 2.5
 DEFAULT_STREAMING_MODE = "buffered"
 DEFAULT_OUTLINE_PLACEMENT_MODE = "inside_edge_default"
 DEFAULT_PROJECTION_SAMPLING_MAX_SEGMENT_MM = 0.25
+ORIGIN_ANCHORS = {
+    "center",
+    "min-x",
+    "max-x",
+    "min-y",
+    "max-y",
+    "top-left",
+    "top-center",
+    "top-right",
+    "center-left",
+    "center-right",
+    "bottom-left",
+    "bottom-center",
+    "bottom-right",
+    "custom",
+}
 SVG_DARK_FILL_LUMINANCE_THRESHOLD = 0.42
 SVG_LIGHT_CUTOUT_LUMINANCE_THRESHOLD = 0.82
 SVG_MIN_PRINT_OPACITY = 0.99
@@ -2565,6 +2581,15 @@ def bounds_from_bundle(bundle: GeometryBundle) -> SvgBounds:
         max_x = max(max_x, gx2)
         max_y = max(max_y, gy2)
 
+    for geometry in (bundle.printable_geometry, bundle.cutout_geometry):
+        if geometry is None or geometry.is_empty:
+            continue
+        gx1, gy1, gx2, gy2 = geometry.bounds
+        min_x = min(min_x, gx1)
+        min_y = min(min_y, gy1)
+        max_x = max(max_x, gx2)
+        max_y = max(max_y, gy2)
+
     if not math.isfinite(min_x):
         raise ValueError("SVG contains no drawable paths/shapes")
     return SvgBounds(min_x=min_x, min_y=min_y, max_x=max_x, max_y=max_y)
@@ -2944,8 +2969,8 @@ def apply_surface_placement_transform(
     if scale_percent <= 0:
         raise ValueError("Placement scale must be greater than 0")
 
-    if not bundle.outline_segments and not bundle.fill_boundary_segments and not bundle.detail_segments and not bundle.fill_shapes:
-        return GeometryBundle()
+    if _bundle_is_empty(bundle):
+        return GeometryBundle(metadata=dict(bundle.metadata))
 
     scale = scale_percent / 100.0
     angle = math.radians(rotation_deg)
@@ -2994,6 +3019,7 @@ def apply_surface_placement_transform(
         fill_shapes=fill_shapes,
         printable_geometry=printable_geometry,
         cutout_geometry=cutout_geometry,
+        metadata=dict(bundle.metadata),
     )
 
 
@@ -3005,8 +3031,8 @@ def apply_surface_artwork_scale(
         raise ValueError("Artwork scale percent must be finite")
     if artwork_scale_percent <= 0:
         raise ValueError("Artwork scale percent must be greater than 0")
-    if not bundle.outline_segments and not bundle.fill_boundary_segments and not bundle.detail_segments and not bundle.fill_shapes:
-        return GeometryBundle()
+    if _bundle_is_empty(bundle):
+        return GeometryBundle(metadata=dict(bundle.metadata))
 
     scale_factor = artwork_scale_percent / 100.0
     if abs(scale_factor - 1.0) <= 1e-12:
@@ -3057,6 +3083,141 @@ def apply_surface_artwork_scale(
         fill_shapes=fill_shapes,
         printable_geometry=printable_geometry,
         cutout_geometry=cutout_geometry,
+        metadata=dict(bundle.metadata),
+    )
+
+
+def validate_origin_anchor(anchor: str) -> str:
+    normalized = str(anchor or "center").strip().lower()
+    if normalized not in ORIGIN_ANCHORS:
+        allowed = ", ".join(sorted(ORIGIN_ANCHORS))
+        raise ValueError(f"Invalid origin anchor '{anchor}'. Allowed values: {allowed}")
+    return normalized
+
+
+def _bundle_is_empty(bundle: GeometryBundle) -> bool:
+    return (
+        not bundle.outline_segments
+        and not bundle.fill_boundary_segments
+        and not bundle.detail_segments
+        and not bundle.fill_shapes
+        and (bundle.printable_geometry is None or bundle.printable_geometry.is_empty)
+        and (bundle.cutout_geometry is None or bundle.cutout_geometry.is_empty)
+    )
+
+
+def compute_artwork_bbox(bundle: GeometryBundle) -> SvgBounds:
+    return bounds_from_bundle(bundle)
+
+
+def resolve_origin_anchor_point(bounds: SvgBounds, origin_anchor: str) -> Point:
+    anchor = validate_origin_anchor(origin_anchor)
+    center_x = (bounds.min_x + bounds.max_x) / 2.0
+    center_y = (bounds.min_y + bounds.max_y) / 2.0
+    anchor_points = {
+        "center": Point(center_x, center_y),
+        "min-x": Point(bounds.min_x, center_y),
+        "max-x": Point(bounds.max_x, center_y),
+        "min-y": Point(center_x, bounds.min_y),
+        "max-y": Point(center_x, bounds.max_y),
+        # In the displayed surface-mm convention used by preview and slicing, top=maxY and bottom=minY.
+        "top-left": Point(bounds.min_x, bounds.max_y),
+        "top-center": Point(center_x, bounds.max_y),
+        "top-right": Point(bounds.max_x, bounds.max_y),
+        "center-left": Point(bounds.min_x, center_y),
+        "center-right": Point(bounds.max_x, center_y),
+        "bottom-left": Point(bounds.min_x, bounds.min_y),
+        "bottom-center": Point(center_x, bounds.min_y),
+        "bottom-right": Point(bounds.max_x, bounds.min_y),
+        # There is no explicit custom-point UI yet, so custom currently resolves from center plus manual offsets.
+        "custom": Point(center_x, center_y),
+    }
+    return anchor_points[anchor]
+
+
+def apply_surface_mm_translation(bundle: GeometryBundle, dx: float, dy: float) -> GeometryBundle:
+    if not math.isfinite(dx) or not math.isfinite(dy):
+        raise ValueError("Surface-mm translation must be finite")
+    if _bundle_is_empty(bundle):
+        return GeometryBundle(metadata=dict(bundle.metadata))
+    if abs(dx) <= 1e-12 and abs(dy) <= 1e-12:
+        return bundle
+
+    def translate_point(point: Point) -> Point:
+        return Point(point.x + dx, point.y + dy)
+
+    outline_segments = [
+        Segment([translate_point(point) for point in seg.points], closed=seg.closed)
+        for seg in bundle.outline_segments
+    ]
+    fill_boundary_segments = [
+        Segment([translate_point(point) for point in seg.points], closed=seg.closed)
+        for seg in bundle.fill_boundary_segments
+    ]
+    detail_segments = [
+        Segment([translate_point(point) for point in seg.points], closed=seg.closed)
+        for seg in bundle.detail_segments
+    ]
+    fill_shapes = [
+        SvgFillShape(
+            geometry=affinity.translate(fill_shape.geometry, xoff=dx, yoff=dy),
+            fill_rule=fill_shape.fill_rule,
+            source_tag=fill_shape.source_tag,
+        )
+        for fill_shape in bundle.fill_shapes
+    ]
+    printable_geometry = bundle.printable_geometry
+    if printable_geometry is not None and not printable_geometry.is_empty:
+        printable_geometry = affinity.translate(printable_geometry, xoff=dx, yoff=dy)
+    cutout_geometry = bundle.cutout_geometry
+    if cutout_geometry is not None and not cutout_geometry.is_empty:
+        cutout_geometry = affinity.translate(cutout_geometry, xoff=dx, yoff=dy)
+
+    return GeometryBundle(
+        outline_segments=outline_segments,
+        fill_boundary_segments=fill_boundary_segments,
+        detail_segments=detail_segments,
+        fill_shapes=fill_shapes,
+        printable_geometry=printable_geometry,
+        cutout_geometry=cutout_geometry,
+        metadata=dict(bundle.metadata),
+    )
+
+
+def apply_origin_anchor_placement(
+    bundle: GeometryBundle,
+    *,
+    origin_anchor: str,
+    origin_offset_x_mm: float,
+    origin_offset_y_mm: float,
+) -> GeometryBundle:
+    if not math.isfinite(origin_offset_x_mm):
+        raise ValueError("Origin offset X must be finite")
+    if not math.isfinite(origin_offset_y_mm):
+        raise ValueError("Origin offset Y must be finite")
+    if _bundle_is_empty(bundle):
+        return GeometryBundle(metadata=dict(bundle.metadata))
+
+    bounds = compute_artwork_bbox(bundle)
+    anchor_point = resolve_origin_anchor_point(bounds, origin_anchor)
+    dx = origin_offset_x_mm - anchor_point.x
+    dy = origin_offset_y_mm - anchor_point.y
+    placed = apply_surface_mm_translation(bundle, dx, dy)
+    return GeometryBundle(
+        outline_segments=placed.outline_segments,
+        fill_boundary_segments=placed.fill_boundary_segments,
+        detail_segments=placed.detail_segments,
+        fill_shapes=placed.fill_shapes,
+        printable_geometry=placed.printable_geometry,
+        cutout_geometry=placed.cutout_geometry,
+        metadata={
+            **bundle.metadata,
+            "origin_anchor": validate_origin_anchor(origin_anchor),
+            "origin_offset_x_mm": origin_offset_x_mm,
+            "origin_offset_y_mm": origin_offset_y_mm,
+            "origin_anchor_point": {"x": anchor_point.x, "y": anchor_point.y},
+            "origin_translation_mm": {"x": dx, "y": dy},
+        },
     )
 
 

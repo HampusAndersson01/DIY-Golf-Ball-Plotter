@@ -103,6 +103,8 @@ function DashboardApp() {
   const dismissToast = useAppStore((state) => state.dismissToast)
   const [generationDurationMs, setGenerationDurationMs] = useState<number | null>(null)
   const restoredPersistedPreviewRef = useRef(false)
+  const lastSeenPlacementPreviewKeyRef = useRef<string | null>(null)
+  const pendingPlacementPreviewKeyRef = useRef<string | null>(null)
 
   const readySettings = settings
   const progressPercent = getProgressPercent(machine)
@@ -177,6 +179,32 @@ function DashboardApp() {
   }
 
   const settingsState = readySettings
+  const placementPreviewKey = [
+    settingsState.originAnchor,
+    settingsState.originOffsetXmm,
+    settingsState.originOffsetYmm,
+  ].join('|')
+
+  const refreshPlacedPreview = useEffectEvent(() => {
+    void handleGenerate()
+  })
+
+  useEffect(() => {
+    const previousKey = lastSeenPlacementPreviewKeyRef.current
+    lastSeenPlacementPreviewKeyRef.current = placementPreviewKey
+    if (previousKey == null || previousKey === placementPreviewKey) return
+    pendingPlacementPreviewKeyRef.current = placementPreviewKey
+  }, [placementPreviewKey])
+
+  useEffect(() => {
+    if (pendingPlacementPreviewKeyRef.current !== placementPreviewKey) return
+    if (!imageFile || !selectedColors.length || (!preview.length && !gcode.length) || busy.generating) return
+    const timer = window.setTimeout(() => {
+      pendingPlacementPreviewKeyRef.current = null
+      refreshPlacedPreview()
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [busy.generating, gcode.length, imageFile, placementPreviewKey, preview.length, refreshPlacedPreview, selectedColors.length])
 
   async function refreshMachine() {
     const nextState = await fetchState()
@@ -282,6 +310,8 @@ function DashboardApp() {
       const payload = await generateImageGcode(buildGenerateFormData(imageFile, normalizedSettings, selectedColors))
       const effectiveSettings = normalizeEffectiveSettings(payload.effective_settings, normalizedSettings)
       const preview = sanitizePreviewPaths(payload.preview)
+      lastSeenPlacementPreviewKeyRef.current = buildPlacementPreviewKey(normalizedSettings)
+      pendingPlacementPreviewKeyRef.current = null
       setPreviewPayload({
         preview,
         maskPreviewUrl: payload.mask_preview,
@@ -609,6 +639,9 @@ function buildGenerateFormData(file: File, settings: SettingsState, selectedColo
   formData.append('draw_feed', String(settings.drawFeed))
   formData.append('travel_feed', String(settings.travelFeed))
   formData.append('artwork_scale_percent', String(settings.artworkScalePercent))
+  formData.append('origin_anchor', settings.originAnchor)
+  formData.append('origin_offset_x_mm', String(settings.originOffsetXmm))
+  formData.append('origin_offset_y_mm', String(settings.originOffsetYmm))
   formData.append('placement_scale', String(settings.placementScale))
   formData.append('placement_offset_x', String(settings.placementOffsetX))
   formData.append('placement_offset_y', String(settings.placementOffsetY))
@@ -665,6 +698,8 @@ function normalizeGenerateSettings(settings: SettingsState): SettingsState {
     ...settings,
     lineThicknessMm,
     artworkScalePercent,
+    originOffsetXmm: normalizeFiniteNumber(settings.originOffsetXmm, 0),
+    originOffsetYmm: normalizeFiniteNumber(settings.originOffsetYmm, 0),
     infillSpacingMm: settings.customInfillSpacingEnabled ? Number(settings.infillSpacingMm) : lineThicknessMm,
   }
 }
@@ -672,6 +707,14 @@ function normalizeGenerateSettings(settings: SettingsState): SettingsState {
 function clampArtworkScalePercent(value: number) {
   if (!Number.isFinite(value)) return 100
   return Math.min(200, Math.max(10, Math.round(value)))
+}
+
+function normalizeFiniteNumber(value: number, fallback: number) {
+  return Number.isFinite(value) ? value : fallback
+}
+
+function buildPlacementPreviewKey(settings: Pick<SettingsState, 'originAnchor' | 'originOffsetXmm' | 'originOffsetYmm'>) {
+  return [settings.originAnchor, settings.originOffsetXmm, settings.originOffsetYmm].join('|')
 }
 
 function normalizeEffectiveSettings(

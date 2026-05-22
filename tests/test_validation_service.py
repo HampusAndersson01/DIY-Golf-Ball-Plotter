@@ -135,6 +135,9 @@ def test_generate_raster_form_clamps_artwork_scale_percent():
     )
 
     assert options["artwork_scale_percent"] == pytest.approx(200.0)
+    assert options["origin_anchor"] == "center"
+    assert options["origin_offset_x_mm"] == pytest.approx(0.0)
+    assert options["origin_offset_y_mm"] == pytest.approx(0.0)
 
 
 def test_generate_raster_form_rejects_non_positive_artwork_scale_percent():
@@ -144,6 +147,48 @@ def test_generate_raster_form_rejects_non_positive_artwork_scale_percent():
             {
                 "selected_colors": "[\"#000000\"]",
                 "artwork_scale_percent": "0",
+            },
+            make_config(),
+        )
+
+
+def test_generate_raster_form_accepts_supported_origin_anchor_and_offsets():
+    service = ValidationService()
+    options = service.parse_generate_raster_form(
+        {
+            "selected_colors": "[\"#000000\"]",
+            "origin_anchor": "bottom-left",
+            "origin_offset_x_mm": "5.25",
+            "origin_offset_y_mm": "-2,5",
+        },
+        make_config(),
+    )
+
+    assert options["origin_anchor"] == "bottom-left"
+    assert options["origin_offset_x_mm"] == pytest.approx(5.25)
+    assert options["origin_offset_y_mm"] == pytest.approx(-2.5)
+
+
+def test_generate_raster_form_rejects_invalid_origin_anchor():
+    service = ValidationService()
+    with pytest.raises(ValueError, match="Invalid origin anchor"):
+        service.parse_generate_raster_form(
+            {
+                "selected_colors": "[\"#000000\"]",
+                "origin_anchor": "left",
+            },
+            make_config(),
+        )
+
+
+@pytest.mark.parametrize("field_name", ["origin_offset_x_mm", "origin_offset_y_mm"])
+def test_generate_raster_form_rejects_non_finite_origin_offsets(field_name: str):
+    service = ValidationService()
+    with pytest.raises(ValueError, match="must be a finite number"):
+        service.parse_generate_raster_form(
+            {
+                "selected_colors": "[\"#000000\"]",
+                field_name: "Infinity",
             },
             make_config(),
         )

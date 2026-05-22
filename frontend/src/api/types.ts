@@ -259,6 +259,23 @@ export type AppDefaults = {
   drawFeed: number
   travelFeed: number
   artworkScalePercent: number
+  originAnchor:
+    | 'center'
+    | 'min-x'
+    | 'max-x'
+    | 'min-y'
+    | 'max-y'
+    | 'top-left'
+    | 'top-center'
+    | 'top-right'
+    | 'center-left'
+    | 'center-right'
+    | 'bottom-left'
+    | 'bottom-center'
+    | 'bottom-right'
+    | 'custom'
+  originOffsetXmm: number
+  originOffsetYmm: number
   lineThicknessMm: number
   penUpS: number
   penDownS: number

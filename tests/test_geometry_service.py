@@ -70,3 +70,101 @@ def test_surface_artwork_scale_100_preserves_geometry_bounds():
     assert scaled_bounds.min_y == pytest.approx(original_bounds.min_y, abs=1e-6)
     assert scaled_bounds.max_x == pytest.approx(original_bounds.max_x, abs=1e-6)
     assert scaled_bounds.max_y == pytest.approx(original_bounds.max_y, abs=1e-6)
+
+
+def _make_rect_bundle() -> GeometryBundle:
+    return GeometryBundle(
+        outline_segments=[
+            Segment(
+                points=[
+                    Point(-10.0, -4.0),
+                    Point(10.0, -4.0),
+                    Point(10.0, 4.0),
+                    Point(-10.0, 4.0),
+                    Point(-10.0, -4.0),
+                ],
+                closed=True,
+            ),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("anchor", "expected_bounds"),
+    [
+        ("center", (-10.0, -4.0, 10.0, 4.0)),
+        ("min-x", (0.0, -4.0, 20.0, 4.0)),
+        ("max-x", (-20.0, -4.0, 0.0, 4.0)),
+        ("min-y", (-10.0, 0.0, 10.0, 8.0)),
+        ("max-y", (-10.0, -8.0, 10.0, 0.0)),
+        ("bottom-left", (0.0, 0.0, 20.0, 8.0)),
+        ("top-right", (-20.0, -8.0, 0.0, 0.0)),
+    ],
+)
+def test_origin_anchor_placement_moves_expected_bbox_point_to_surface_origin(anchor: str, expected_bounds: tuple[float, float, float, float]):
+    geometry = GeometryService()
+    placed = geometry.apply_origin_anchor_placement(
+        _make_rect_bundle(),
+        origin_anchor=anchor,
+        origin_offset_x_mm=0.0,
+        origin_offset_y_mm=0.0,
+    )
+
+    bounds = geometry.bounds_from_bundle(placed)
+    assert (bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y) == pytest.approx(expected_bounds, abs=1e-6)
+
+
+def test_origin_anchor_custom_uses_center_until_custom_point_ui_exists():
+    geometry = GeometryService()
+    center_placed = geometry.apply_origin_anchor_placement(
+        _make_rect_bundle(),
+        origin_anchor="center",
+        origin_offset_x_mm=3.0,
+        origin_offset_y_mm=-2.0,
+    )
+    custom_placed = geometry.apply_origin_anchor_placement(
+        _make_rect_bundle(),
+        origin_anchor="custom",
+        origin_offset_x_mm=3.0,
+        origin_offset_y_mm=-2.0,
+    )
+
+    center_bounds = geometry.bounds_from_bundle(center_placed)
+    custom_bounds = geometry.bounds_from_bundle(custom_placed)
+    assert (custom_bounds.min_x, custom_bounds.min_y, custom_bounds.max_x, custom_bounds.max_y) == pytest.approx(
+        (center_bounds.min_x, center_bounds.min_y, center_bounds.max_x, center_bounds.max_y),
+        abs=1e-6,
+    )
+
+
+def test_origin_anchor_manual_offset_translates_geometry_after_anchor_resolution():
+    geometry = GeometryService()
+    placed = geometry.apply_origin_anchor_placement(
+        _make_rect_bundle(),
+        origin_anchor="bottom-left",
+        origin_offset_x_mm=5.0,
+        origin_offset_y_mm=2.0,
+    )
+
+    bounds = geometry.bounds_from_bundle(placed)
+    assert bounds.min_x == pytest.approx(5.0, abs=1e-6)
+    assert bounds.min_y == pytest.approx(2.0, abs=1e-6)
+    assert bounds.max_x == pytest.approx(25.0, abs=1e-6)
+    assert bounds.max_y == pytest.approx(10.0, abs=1e-6)
+
+
+def test_origin_anchor_is_applied_after_artwork_scale():
+    geometry = GeometryService()
+    scaled = geometry.apply_surface_artwork_scale(_make_rect_bundle(), 50.0)
+    placed = geometry.apply_origin_anchor_placement(
+        scaled,
+        origin_anchor="bottom-left",
+        origin_offset_x_mm=0.0,
+        origin_offset_y_mm=0.0,
+    )
+
+    bounds = geometry.bounds_from_bundle(placed)
+    assert bounds.min_x == pytest.approx(0.0, abs=1e-6)
+    assert bounds.min_y == pytest.approx(0.0, abs=1e-6)
+    assert bounds.max_x == pytest.approx(10.0, abs=1e-6)
+    assert bounds.max_y == pytest.approx(4.0, abs=1e-6)
