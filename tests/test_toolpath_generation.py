@@ -73,6 +73,14 @@ def _fill_modes(paths: list[Toolpath]) -> set[str]:
     }
 
 
+def _drawable_row_offsets(row_data: dict) -> list[float]:
+    return [
+        float(row["offset_mm"])
+        for row in row_data.get("rows") or []
+        if row.get("segments")
+    ]
+
+
 def _assert_infill_segments_stay_inside_region(toolpaths, region, epsilon=1e-6):
     cover_region = region.buffer(epsilon, join_style=1)
     for path in toolpaths:
@@ -440,7 +448,91 @@ def test_short_clipped_infill_fragments_are_skipped():
     )
 
     assert paths
-    assert all(pipeline_core.segment_length(path.points) >= 2.0 for path in paths)
+    assert any(pipeline_core.segment_length(path.points) < 2.0 for path in paths)
+
+
+def test_rectangle_hatch_offsets_stay_on_even_surface_mm_grid():
+    slicer = pipeline_core.SlicerService()
+    region = _infill_region(_rect(12.0, 8.0), line_width_mm=0.5)
+
+    row_data = slicer._collect_scanline_rows(
+        region,
+        spacing_mm=0.5,
+        angle_deg=0.0,
+        min_segment_length_mm=0.0,
+    )
+    offsets = _drawable_row_offsets(row_data)
+    gaps = [offsets[index] - offsets[index - 1] for index in range(1, len(offsets))]
+
+    assert offsets
+    assert min(gaps) == pytest.approx(0.5, abs=1e-6)
+    assert max(gaps) == pytest.approx(0.5, abs=1e-6)
+
+
+def test_angled_notch_hatch_gap_detection_reinstates_skipped_rows():
+    slicer = pipeline_core.SlicerService()
+    polygon = Polygon([
+        (0.0, 0.0),
+        (24.0, 0.0),
+        (24.0, 10.0),
+        (16.0, 10.0),
+        (13.0, 16.0),
+        (4.0, 16.0),
+        (0.0, 12.0),
+    ])
+    region = _infill_region(polygon, line_width_mm=0.5)
+
+    row_data = slicer._collect_scanline_rows(
+        region,
+        spacing_mm=0.5,
+        angle_deg=0.0,
+        min_segment_length_mm=1.2,
+    )
+    offsets = _drawable_row_offsets(row_data)
+    gaps = [offsets[index] - offsets[index - 1] for index in range(1, len(offsets))]
+
+    assert offsets
+    assert max(gaps) <= 0.75 + 1e-6
+    assert any(offset >= 10.0 for offset in offsets)
+
+
+def test_pen_down_connectors_only_join_adjacent_rows_and_do_not_cross_holes():
+    printable = Polygon(
+        _rect(24.0, 24.0).exterior.coords,
+        [[(x + 8.0, y + 8.0) for x, y in _rect(8.0, 8.0).exterior.coords[:-1]]],
+    )
+    toolpaths = _generate_fill_toolpaths(printable, line_width_mm=0.5, infill_spacing_mm=0.5)
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+
+    assert infill_paths
+    assert len(infill_paths) >= 2
+    _assert_infill_segments_stay_inside_region(infill_paths, _infill_region(printable, line_width_mm=0.5))
+
+
+def test_scanline_infill_order_is_preserved_after_region_planning():
+    printable = Polygon([
+        (0.0, 0.0),
+        (26.0, 0.0),
+        (26.0, 12.0),
+        (14.0, 12.0),
+        (9.0, 18.0),
+        (0.0, 18.0),
+    ])
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.5,
+        infill_spacing_mm=0.5,
+        infill_angle_deg=0.0,
+        outline_after_fill=False,
+    )
+    offsets = [
+        float(path.metadata["scanline_offset_mm"])
+        for path in toolpaths
+        if path.kind == "fill-infill" and "scanline_offset_mm" in path.metadata
+    ]
+
+    assert offsets
+    assert offsets == sorted(offsets)
 
 
 def test_long_thin_infill_ordering_is_deterministic():

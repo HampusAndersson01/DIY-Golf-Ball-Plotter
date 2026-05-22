@@ -4904,6 +4904,17 @@ def _dedupe_infill_candidate_angles(candidate_angles: list[float]) -> list[float
     return deduped
 
 
+def _preserve_infill_path_order(toolpaths: list[Toolpath]) -> bool:
+    if not toolpaths:
+        return False
+    return all(
+        path.kind == "fill-infill"
+        and "scanline_grid_index" in path.metadata
+        and "scanline_offset_mm" in path.metadata
+        for path in toolpaths
+    )
+
+
 class SlicerService:
     def _scanline_spacing_mm(self, settings: SlicerSettings) -> float:
         base_spacing_mm = settings.infill_spacing_mm if settings.infill_spacing_mm > 0 else settings.line_width_mm
@@ -4917,7 +4928,13 @@ class SlicerService:
         )
 
     def _recommended_infill_min_segment_length_mm(self, line_width_mm: float, minimum_length_mm: float) -> float:
-        return max(minimum_length_mm, max(0.2, line_width_mm * 0.75))
+        return max(minimum_length_mm, max(0.15, line_width_mm * 0.5))
+
+    def _scanline_filter_threshold_mm(self, spacing_mm: float, min_segment_length_mm: float) -> float:
+        return max(0.15, min(min_segment_length_mm, max(0.15, spacing_mm * 0.5)))
+
+    def _scanline_gap_tolerance_mm(self, spacing_mm: float) -> float:
+        return spacing_mm * 1.5
 
     def _polygon_axis_metrics(self, region: Any) -> dict[str, float]:
         if region is None or region.is_empty:
@@ -5084,6 +5101,115 @@ class SlicerService:
             "offset_collapses": offset_collapses,
         }
 
+    def _build_stable_scanline_rows(
+        self,
+        region: Any,
+        *,
+        spacing_mm: float,
+        angle_deg: float,
+    ) -> dict[str, Any]:
+        if region is None or region.is_empty or spacing_mm <= 0:
+            return {"origin": None, "rotated_region": None, "rows": [], "cover_region": None, "region_area": 0.0}
+
+        origin = (0.0, 0.0)
+        rotated = affinity.rotate(region, -angle_deg, origin=origin)
+        epsilon = max(1e-6, spacing_mm * 0.01)
+        rows: list[dict[str, Any]] = []
+
+        for polygon_index, polygon in enumerate(normalize_geometry(rotated)):
+            poly_min_x, poly_min_y, poly_max_x, poly_max_y = polygon.bounds
+            if not all(math.isfinite(value) for value in [poly_min_x, poly_min_y, poly_max_x, poly_max_y]):
+                continue
+            start_index = math.floor((poly_min_y - 1e-6) / spacing_mm)
+            end_index = math.ceil((poly_max_y + 1e-6) / spacing_mm)
+            for grid_index in range(start_index, end_index + 1):
+                offset_mm = grid_index * spacing_mm
+                raw_scan = LineString([(poly_min_x - spacing_mm, offset_mm), (poly_max_x + spacing_mm, offset_mm)])
+                raw_segments = extract_lines(polygon.intersection(raw_scan))
+                rows.append({
+                    "polygon_index": polygon_index,
+                    "grid_index": grid_index,
+                    "offset_mm": offset_mm,
+                    "raw_segments": [list(line.coords) for line in raw_segments if len(line.coords) >= 2],
+                })
+
+        rows.sort(key=lambda row: (row["offset_mm"], row["polygon_index"], row["grid_index"]))
+        for row in rows:
+            serpentine_reverse = bool(row["grid_index"] % 2)
+            oriented_segments: list[list[tuple[float, float]]] = []
+            for coords in row["raw_segments"]:
+                segment = list(coords)
+                if serpentine_reverse:
+                    if segment[0][0] < segment[-1][0]:
+                        segment.reverse()
+                else:
+                    if segment[0][0] > segment[-1][0]:
+                        segment.reverse()
+                oriented_segments.append(segment)
+            oriented_segments.sort(
+                key=lambda coords: min(coords[0][0], coords[-1][0]),
+                reverse=serpentine_reverse,
+            )
+            row["raw_segments"] = oriented_segments
+
+        return {
+            "origin": origin,
+            "rotated_region": rotated,
+            "rows": rows,
+            "cover_region": rotated.buffer(epsilon, join_style=1),
+            "region_area": float(region.area),
+        }
+
+    def _finalize_scanline_rows(
+        self,
+        row_data: dict[str, Any],
+        *,
+        spacing_mm: float,
+        min_segment_length_mm: float,
+    ) -> dict[str, Any]:
+        rows = row_data.get("rows") or []
+        short_segment_threshold_mm = self._scanline_filter_threshold_mm(spacing_mm, min_segment_length_mm)
+        finalized_rows: list[dict[str, Any]] = []
+        for row in rows:
+            kept_segments: list[list[tuple[float, float]]] = []
+            filtered_segments: list[list[tuple[float, float]]] = []
+            for coords in row.get("raw_segments") or []:
+                if float(LineString(coords).length) + 1e-6 >= short_segment_threshold_mm:
+                    kept_segments.append(coords)
+                else:
+                    filtered_segments.append(coords)
+            finalized_rows.append({
+                **row,
+                "segments": kept_segments,
+                "filtered_segments": filtered_segments,
+            })
+
+        kept_rows = [row for row in finalized_rows if row["segments"]]
+        gap_tolerance_mm = self._scanline_gap_tolerance_mm(spacing_mm)
+        for previous_row, next_row in zip(kept_rows, kept_rows[1:]):
+            gap_mm = next_row["offset_mm"] - previous_row["offset_mm"]
+            if gap_mm <= gap_tolerance_mm + 1e-6:
+                continue
+            for candidate in finalized_rows:
+                if candidate["segments"]:
+                    continue
+                if candidate["offset_mm"] <= previous_row["offset_mm"] + 1e-6:
+                    continue
+                if candidate["offset_mm"] >= next_row["offset_mm"] - 1e-6:
+                    continue
+                filtered_segments = candidate.get("filtered_segments") or []
+                if not filtered_segments:
+                    continue
+                longest = max(filtered_segments, key=lambda coords: float(LineString(coords).length))
+                candidate["segments"] = [longest]
+                candidate["filtered_segments"] = [coords for coords in filtered_segments if coords is not longest]
+
+        row_data = dict(row_data)
+        row_data["rows"] = finalized_rows
+        row_data["short_segment_threshold_mm"] = short_segment_threshold_mm
+        row_data["gap_tolerance_mm"] = gap_tolerance_mm
+        return row_data
+
     def _collect_scanline_rows(
         self,
         region: Any,
@@ -5092,50 +5218,16 @@ class SlicerService:
         angle_deg: float,
         min_segment_length_mm: float,
     ) -> dict[str, Any]:
-        if region is None or region.is_empty or spacing_mm <= 0:
-            return {"origin": None, "rows": [], "cover_region": None, "region_area": 0.0, "short_segment_threshold_mm": 0.0}
-
-        origin = region.centroid.coords[0]
-        rotated = affinity.rotate(region, -angle_deg, origin=origin)
-        epsilon = max(1e-6, spacing_mm * 0.01)
-        short_segment_threshold_mm = max(min_segment_length_mm, spacing_mm * DEFAULT_SHORT_INFILL_SEGMENT_FACTOR)
-        rows: list[list[list[tuple[float, float]]]] = []
-
-        for polygon in normalize_geometry(rotated):
-            poly_min_x, poly_min_y, poly_max_x, poly_max_y = polygon.bounds
-            polygon_rows: list[list[list[tuple[float, float]]]] = []
-            row_index = 0
-            y = poly_min_y
-            while y <= poly_max_y + 1e-6:
-                raw_scan = LineString([(poly_min_x - spacing_mm, y), (poly_max_x + spacing_mm, y)])
-                clipped_segments: list[list[tuple[float, float]]] = []
-                for line in extract_lines(polygon.intersection(raw_scan)):
-                    if line.length < min_segment_length_mm:
-                        continue
-                    coords = list(line.coords)
-                    if row_index % 2 == 0:
-                        if coords[0][0] > coords[-1][0]:
-                            coords.reverse()
-                    else:
-                        if coords[0][0] < coords[-1][0]:
-                            coords.reverse()
-                    clipped_segments.append(coords)
-                clipped_segments.sort(
-                    key=lambda coords: coords[0][0],
-                    reverse=bool(row_index % 2 == 1),
-                )
-                polygon_rows.append(clipped_segments)
-                y += spacing_mm
-                row_index += 1
-            rows.append(polygon_rows)
-
-        return {
-            "origin": origin,
-            "rows": rows,
-            "cover_region": rotated.buffer(epsilon, join_style=1),
-            "region_area": float(region.area),
-            "short_segment_threshold_mm": short_segment_threshold_mm,
-        }
+        row_data = self._build_stable_scanline_rows(
+            region,
+            spacing_mm=spacing_mm,
+            angle_deg=angle_deg,
+        )
+        return self._finalize_scanline_rows(
+            row_data,
+            spacing_mm=spacing_mm,
+            min_segment_length_mm=min_segment_length_mm,
+        )
 
     def _score_infill_candidate(
         self,
@@ -5155,16 +5247,16 @@ class SlicerService:
         short_segment_count = 0
         row_count = 0
 
-        for polygon_rows in rows:
-            for row_segments in polygon_rows:
-                if row_segments:
-                    row_count += 1
-                for coords in row_segments:
-                    line = LineString(coords)
-                    segment_lengths.append(float(line.length))
-                    if line.length < short_segment_threshold_mm:
-                        short_segment_count += 1
-                    ordered_segments.append(coords)
+        for row in rows:
+            row_segments = row.get("segments") or []
+            if row_segments:
+                row_count += 1
+            for coords in row_segments:
+                line = LineString(coords)
+                segment_lengths.append(float(line.length))
+                if line.length < short_segment_threshold_mm:
+                    short_segment_count += 1
+                ordered_segments.append(coords)
 
         segment_count = len(segment_lengths)
         total_draw_length_mm = sum(segment_lengths)
@@ -5236,6 +5328,82 @@ class SlicerService:
             key,
             [Toolpath(points=[Point(x, y) for x, y in world_line.coords], kind=kind, closed=False)],
         )
+
+    def _row_world_paths(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        angle_deg: float,
+        origin: tuple[float, float],
+        tolerance_mm: float,
+        kind: str,
+    ) -> list[dict[str, Any]]:
+        world_paths: list[dict[str, Any]] = []
+        for row in rows:
+            for coords in row.get("segments") or []:
+                world_line = affinity.rotate(LineString(coords), angle_deg, origin=origin)
+                points = simplify_segment_points([Point(x, y) for x, y in world_line.coords], tolerance_mm, False)
+                if len(points) < 2:
+                    continue
+                world_paths.append({
+                    "row": row,
+                    "coords": list(coords),
+                    "toolpath": Toolpath(
+                        points=points,
+                        kind=kind,
+                        closed=False,
+                        metadata={
+                            "scanline_offset_mm": float(row["offset_mm"]),
+                            "scanline_grid_index": int(row["grid_index"]),
+                            "scanline_polygon_index": int(row["polygon_index"]),
+                        },
+                    ),
+                })
+        return world_paths
+
+    def _plan_scanline_connector(
+        self,
+        polygon: Polygon,
+        current_row: dict[str, Any],
+        current_coords: list[tuple[float, float]],
+        next_row: dict[str, Any],
+        next_coords: list[tuple[float, float]],
+        *,
+        spacing_mm: float,
+        tolerance_mm: float,
+    ) -> list[tuple[float, float]]:
+        row_delta = abs(float(next_row["offset_mm"]) - float(current_row["offset_mm"]))
+        if abs(row_delta - spacing_mm) > max(1e-6, spacing_mm * 0.1):
+            return []
+
+        start = current_coords[-1]
+        end = next_coords[0]
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        direct = LineString([start, end])
+        cover_region = polygon.buffer(max(tolerance_mm, 1e-6), join_style=1)
+        if (
+            cover_region.covers(direct)
+            and abs(abs(dy) - spacing_mm) <= max(1e-6, spacing_mm * 0.1)
+            and abs(dx) <= (spacing_mm * 0.35)
+        ):
+            return [start, end]
+
+        boundary_coords = boundary_connector_coords(
+            polygon,
+            start,
+            end,
+            tolerance=max(tolerance_mm, 1e-6),
+        )
+        if len(boundary_coords) < 2:
+            return []
+        boundary_line = LineString(boundary_coords)
+        if (
+            cover_region.covers(boundary_line)
+            and boundary_line.length <= self._max_pen_down_connector_length_mm(spacing_mm) + 1e-6
+        ):
+            return boundary_coords
+        return []
 
     def _scanline_metrics(
         self,
@@ -5374,7 +5542,6 @@ class SlicerService:
         if region is None or region.is_empty or spacing_mm <= 0:
             return []
 
-        toolpaths: list[Toolpath] = []
         row_data = self._collect_scanline_rows(
             region,
             spacing_mm=spacing_mm,
@@ -5385,101 +5552,112 @@ class SlicerService:
         if origin is None:
             return []
 
-        rotated = affinity.rotate(region, -angle_deg, origin=origin)
-        min_x, min_y, max_x, max_y = rotated.bounds
-        if not all(math.isfinite(value) for value in [min_x, min_y, max_x, max_y]):
+        rotated = row_data.get("rotated_region")
+        if rotated is None or rotated.is_empty:
             return []
 
-        max_connector_length_mm = self._max_pen_down_connector_length_mm(spacing_mm)
-        for polygon, rows in zip(normalize_geometry(rotated), row_data["rows"]):
-            cover_region = polygon.buffer(max(tolerance_mm, 1e-6), join_style=1)
-            poly_min_x, poly_min_y, poly_max_x, poly_max_y = polygon.bounds
+        rows = row_data.get("rows") or []
+        toolpaths: list[Toolpath] = []
 
-            if debug is not None:
-                row = 0
-                y = poly_min_y
-                while y <= poly_max_y + 1e-6:
-                    raw_scan = LineString([(poly_min_x - spacing_mm, y), (poly_max_x + spacing_mm, y)])
+        if debug is not None:
+            for row in rows:
+                raw_scan = LineString([(-1e6, row["offset_mm"]), (1e6, row["offset_mm"])]).intersection(rotated.envelope)
+                if raw_scan is not None and not raw_scan.is_empty:
                     raw_scan_world = affinity.rotate(raw_scan, angle_deg, origin=origin)
                     debug_append_toolpaths(debug, "raw_scanlines", [
-                        Toolpath(points=[Point(x, y2) for x, y2 in raw_scan_world.coords], kind="debug-raw-scanline", closed=False)
+                        Toolpath(points=[Point(x, y) for x, y in raw_scan_world.coords], kind="debug-raw-scanline", closed=False)
                     ])
-                    row_paths: list[Toolpath] = []
-                    if row < len(rows):
-                        for coords in rows[row]:
-                            world_line = affinity.rotate(LineString(coords), angle_deg, origin=origin)
-                            points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_mm, False)
-                            if len(points) >= 2:
-                                row_paths.append(Toolpath(points=points, kind=kind, closed=False))
-                    debug_append_toolpaths(debug, "clipped_infill_lines", row_paths)
-                    y += spacing_mm
-                    row += 1
+                debug_append_toolpaths(
+                    debug,
+                    "clipped_infill_lines",
+                    [entry["toolpath"] for entry in self._row_world_paths([row], angle_deg=angle_deg, origin=origin, tolerance_mm=tolerance_mm, kind=kind)],
+                )
 
-            if not allow_pen_down_infill_connectors:
-                for row_segments in rows:
-                    for coords in row_segments:
-                        world_line = affinity.rotate(LineString(coords), angle_deg, origin=origin)
-                        points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_mm, False)
-                        if len(points) >= 2:
-                            toolpaths.append(Toolpath(points=points, kind=kind, closed=False))
-                continue
+        if not allow_pen_down_infill_connectors:
+            return [
+                entry["toolpath"]
+                for entry in self._row_world_paths(rows, angle_deg=angle_deg, origin=origin, tolerance_mm=tolerance_mm, kind=kind)
+            ]
 
-            used = [[False for _ in row_segments] for row_segments in rows]
-            for row_index, row_segments in enumerate(rows):
-                for segment_index, coords in enumerate(row_segments):
-                    if used[row_index][segment_index]:
-                        continue
+        rows_by_polygon: dict[int, list[dict[str, Any]]] = {}
+        for row in rows:
+            rows_by_polygon.setdefault(int(row["polygon_index"]), []).append(row)
+
+        for polygon_index, polygon in enumerate(normalize_geometry(rotated)):
+            current_entry: dict[str, Any] | None = None
+            current_coords: list[tuple[float, float]] | None = None
+            current_row: dict[str, Any] | None = None
+            drawable_rows = [row for row in rows_by_polygon.get(polygon_index, []) if row.get("segments")]
+            for entry in self._row_world_paths(
+                drawable_rows,
+                angle_deg=angle_deg,
+                origin=origin,
+                tolerance_mm=tolerance_mm,
+                kind=kind,
+            ):
+                row = entry["row"]
+                coords = entry["coords"]
+                if current_entry is None or current_coords is None or current_row is None:
+                    current_entry = entry
                     current_coords = list(coords)
-                    used[row_index][segment_index] = True
-                    current_row = row_index
+                    current_row = row
+                    continue
 
-                    while True:
-                        next_row = current_row + 1
-                        while next_row < len(rows) and not any(not flag for flag in used[next_row]):
-                            next_row += 1
-                        if next_row >= len(rows):
-                            break
-
-                        candidates: list[tuple[float, int, list[tuple[float, float]]]] = []
-                        for next_index, next_coords in enumerate(rows[next_row]):
-                            if used[next_row][next_index]:
-                                continue
-                            connector = LineString([current_coords[-1], next_coords[0]])
-                            connector_is_short = connector.length <= max_connector_length_mm + 1e-6
-                            if cover_region.covers(connector) and connector_is_short:
-                                candidates.append((connector.length, next_index, next_coords))
-                            else:
-                                self._emit_debug_connector(
-                                    debug,
-                                    "rejected_infill_connectors",
-                                    current_coords[-1],
-                                    next_coords[0],
-                                    angle_deg,
-                                    origin,
-                                    "debug-rejected-connector",
-                                )
-
-                        if not candidates:
-                            break
-
-                        _, next_index, next_coords = min(candidates, key=lambda item: item[0])
-                        self._emit_debug_connector(
-                            debug,
-                            "valid_infill_connectors",
-                            current_coords[-1],
-                            next_coords[0],
-                            angle_deg,
-                            origin,
-                            "debug-valid-connector",
-                        )
-                        current_coords = _concat_coords(current_coords, next_coords)
-                        used[next_row][next_index] = True
-                        current_row = next_row
-
+                connector_coords = self._plan_scanline_connector(
+                    polygon,
+                    current_row,
+                    current_coords,
+                    row,
+                    coords,
+                    spacing_mm=spacing_mm,
+                    tolerance_mm=tolerance_mm,
+                )
+                if connector_coords:
+                    self._emit_debug_connector(
+                        debug,
+                        "valid_infill_connectors",
+                        connector_coords[0],
+                        connector_coords[-1],
+                        angle_deg,
+                        origin,
+                        "debug-valid-connector",
+                    )
+                    current_coords = _concat_coords(current_coords, connector_coords, coords)
                     world_line = affinity.rotate(LineString(current_coords), angle_deg, origin=origin)
-                    points = simplify_segment_points([Point(x, y2) for x, y2 in world_line.coords], tolerance_mm, False)
+                    points = simplify_segment_points([Point(x, y) for x, y in world_line.coords], tolerance_mm, False)
                     if len(points) >= 2:
-                        toolpaths.append(Toolpath(points=points, kind=kind, closed=False))
+                        current_entry = {
+                            "row": row,
+                            "coords": current_coords,
+                            "toolpath": clone_toolpath(
+                                current_entry["toolpath"],
+                                points=points,
+                                metadata={
+                                    **current_entry["toolpath"].metadata,
+                                    "scanline_offset_mm": float(row["offset_mm"]),
+                                    "scanline_grid_index": int(row["grid_index"]),
+                                },
+                            ),
+                        }
+                    current_row = row
+                    continue
+
+                self._emit_debug_connector(
+                    debug,
+                    "rejected_infill_connectors",
+                    current_coords[-1],
+                    coords[0],
+                    angle_deg,
+                    origin,
+                    "debug-rejected-connector",
+                )
+                toolpaths.append(current_entry["toolpath"])
+                current_entry = entry
+                current_coords = list(coords)
+                current_row = row
+
+            if current_entry is not None:
+                toolpaths.append(current_entry["toolpath"])
 
         return toolpaths
 
@@ -5611,13 +5789,12 @@ class SlicerService:
             return []
 
         segments: list[tuple[float, list[tuple[float, float]]]] = []
-        for polygon_rows in row_data.get("rows") or []:
-            for row_segments in polygon_rows:
-                for coords in row_segments:
-                    length = float(LineString(coords).length)
-                    if length < max(min_segment_length_mm, line_width_mm * 1.5):
-                        continue
-                    segments.append((length, coords))
+        for row in row_data.get("rows") or []:
+            for coords in row.get("segments") or []:
+                length = float(LineString(coords).length)
+                if length < max(min_segment_length_mm, line_width_mm * 1.5):
+                    continue
+                segments.append((length, coords))
         if not segments:
             return self._generate_centerline_fallback(
                 region,
@@ -6201,11 +6378,12 @@ class SlicerService:
             slicer_counts["thin_detail_path_count"] += sum(1 for path in infill_paths if path.kind == "detail-trace")
             slicer_counts["detail_trace_path_count"] = slicer_counts["thin_detail_path_count"]
 
-            infill_paths = optimize_toolpath_order(
-                infill_paths,
-                strategy=travel_optimization,
-                start_point=region_paths[-1].points[-1] if region_paths and region_paths[-1].points else anchor,
-            )
+            if not _preserve_infill_path_order(infill_paths):
+                infill_paths = optimize_toolpath_order(
+                    infill_paths,
+                    strategy=travel_optimization,
+                    start_point=region_paths[-1].points[-1] if region_paths and region_paths[-1].points else anchor,
+                )
             region_paths.extend(infill_paths)
 
             if outline_after_fill and cleanup_outline_only_paths:
