@@ -65,6 +65,14 @@ def _path_segments(paths: list[Toolpath]) -> list[tuple[Point, Point]]:
     return segments
 
 
+def _fill_modes(paths: list[Toolpath]) -> set[str]:
+    return {
+        str(path.metadata.get("fill_mode"))
+        for path in paths
+        if path.kind == "fill-infill" and path.metadata.get("fill_mode") is not None
+    }
+
+
 def _assert_infill_segments_stay_inside_region(toolpaths, region, epsilon=1e-6):
     cover_region = region.buffer(epsilon, join_style=1)
     for path in toolpaths:
@@ -240,6 +248,7 @@ def test_simple_rectangle_infill_becomes_single_zigzag_path():
 
     y_values = [point.y for point in infill_paths[0].points]
     assert max(y_values) > min(y_values)
+    assert _fill_modes(infill_paths) == {"large_open"}
 
 
 def test_long_horizontal_rectangle_prefers_horizontal_long_axis_infill():
@@ -256,6 +265,7 @@ def test_long_horizontal_rectangle_prefers_horizontal_long_axis_infill():
 
     infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
     assert infill_paths
+    assert _fill_modes(infill_paths) == {"long_thin"}
     assert all(path.metadata["resolved_infill_angle_deg"] == pytest.approx(0.0, abs=1e-6) for path in infill_paths)
     assert all(path.metadata["long_thin_fast_path_used"] is True for path in infill_paths)
 
@@ -282,6 +292,7 @@ def test_long_vertical_rectangle_prefers_vertical_long_axis_infill():
 
     infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
     assert infill_paths
+    assert _fill_modes(infill_paths) == {"long_thin"}
     assert all(path.metadata["resolved_infill_angle_deg"] == pytest.approx(90.0, abs=1e-6) for path in infill_paths)
     assert all(path.metadata["long_thin_fast_path_used"] is True for path in infill_paths)
 
@@ -455,6 +466,116 @@ def test_long_thin_infill_ordering_is_deterministic():
     first_infill = [path.points for path in first if path.kind == "fill-infill"]
     second_infill = [path.points for path in second if path.kind == "fill-infill"]
     assert first_infill == second_infill
+
+
+def test_small_detail_region_uses_hybrid_small_detail_fill_mode():
+    printable = _rect(width_mm=4.0, height_mm=2.0)
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.5,
+        infill_spacing_mm=0.5,
+        infill_angle_deg=45.0,
+        fill_strategy="adaptive_angle",
+        simplify_tolerance_mm=0.0,
+    )
+
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    assert infill_paths
+    assert _fill_modes(infill_paths) == {"small_detail_or_text"}
+    assert any(path.metadata.get("small_detail_fill_style") in {"contour_following", "sparse_strokes"} for path in infill_paths)
+    assert not any(path.metadata.get("long_thin_fast_path_used") for path in infill_paths)
+
+
+def test_small_detail_fill_uses_fewer_more_meaningful_strokes_than_hatch():
+    slicer = pipeline_core.SlicerService()
+    printable = _rect(width_mm=4.0, height_mm=2.0)
+    region = _infill_region(printable, line_width_mm=0.5)
+
+    hatch = slicer._generate_scanline_infill(
+        region,
+        spacing_mm=0.5,
+        angle_deg=45.0,
+        min_segment_length_mm=0.0,
+        tolerance_mm=0.0,
+        allow_pen_down_infill_connectors=False,
+    )
+    hybrid = slicer._generate_small_detail_fill(
+        region,
+        line_width_mm=0.5,
+        scanline_spacing_mm=0.5,
+        angle_deg=45.0,
+        min_segment_length_mm=0.0,
+        tolerance_mm=0.0,
+        detail_tolerance_mm=0.0,
+        allow_overlap=True,
+    )
+
+    hatch_segments = sum(max(0, len(path.points) - 1) for path in hatch)
+    hybrid_segments = sum(max(0, len(path.points) - 1) for path in hybrid)
+
+    assert hatch_segments > 0
+    assert hybrid_segments > 0
+    assert len(hybrid) <= len(hatch)
+    assert max(_path_lengths(hybrid)) >= max(_path_lengths(hatch)) * 0.8
+
+
+def test_small_detail_fill_stays_inside_true_polygon_and_preserves_hole():
+    outer = _rect(5.0, 4.0)
+    hole = Polygon([(x + 1.5, y + 1.0) for x, y in _rect(2.0, 2.0).exterior.coords[:-1]])
+    printable = Polygon(outer.exterior.coords, [hole.exterior.coords])
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.5,
+        infill_spacing_mm=0.5,
+        infill_angle_deg=45.0,
+        fill_strategy="adaptive_angle",
+        simplify_tolerance_mm=0.0,
+    )
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    assert infill_paths
+    assert _fill_modes(infill_paths) == {"small_detail_or_text"}
+    _assert_infill_segments_stay_inside_region(infill_paths, _infill_region(printable, line_width_mm=0.5))
+    assert all(not hole.buffer(-0.01).covers(_line_for_path(path)) for path in infill_paths)
+
+
+def test_small_detail_preview_uses_pen_up_travel_and_outline_draws_last():
+    printable = _rect(width_mm=4.0, height_mm=2.0)
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.5,
+        infill_spacing_mm=0.5,
+        infill_angle_deg=45.0,
+        fill_strategy="adaptive_angle",
+        outline_after_fill=True,
+        simplify_tolerance_mm=0.0,
+    )
+    prepared = pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=0.5)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(prepared, center_lon_deg=0.0, center_lat_deg=0.0)
+
+    service = GcodeService()
+    _, preview = service.generate_from_toolpaths(
+        toolpaths=projected,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=False,
+    )
+
+    preview_kinds = [entry["kind"] for entry in preview]
+    assert "travel" in preview_kinds
+    assert [entry["kind"] for entry in preview if entry["kind"] != "travel"][-1] == "outline"
 
 
 def test_raster_area_fill_suppresses_injected_detail_segments():
@@ -904,6 +1025,28 @@ def test_cleanup_can_still_prune_short_infill_segments_when_requested():
     assert stats["short_segments_removed"] == 1
     assert len(cleaned) == 1
     assert cleaned[0].points == [Point(0.0, 0.0), Point(1.0, 0.0)]
+
+
+def test_prepare_projection_handles_degenerate_closed_outline_without_fake_closing_edge():
+    outline = Toolpath(
+        points=[
+            Point(0.0, 0.0),
+            Point(0.29805293668211186, 0.0),
+            Point(0.0, 0.0),
+        ],
+        kind="outline",
+        closed=True,
+        coordinate_space="surface_mm",
+        path_id="outline_017",
+        metadata={"pen_width_mm": 0.2},
+    )
+
+    prepared = pipeline_core.prepare_toolpaths_for_projection([outline], default_pen_width_mm=0.2)
+
+    assert len(prepared) == 1
+    assert prepared[0].closed is False
+    assert prepared[0].metadata["closed_path_degenerated_before_projection"] is True
+    assert float(prepared[0].metadata["max_surface_segment_mm_after_resampling"]) <= 0.1 + 1e-6
 
 
 def test_outer_ring_and_hole_remain_separate_paths_with_pen_up_travel():
