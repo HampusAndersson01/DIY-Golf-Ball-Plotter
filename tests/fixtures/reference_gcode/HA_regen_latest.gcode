@@ -1,0 +1,2476 @@
+(Generated for golf ball plotter)
+(Units are angular degrees. X=-180..180 ball rotation, Y=-45..45 arm tilt)
+$X
+G21
+G90
+M3 S575
+G4 P0.030
+M3 S700
+G4 P0.060
+(outline path 1, 122 points)
+G1 X-1.6999 Y0.9472 F1200.000
+G1 X-1.6983 Y0.9521 F1200.000
+G1 X-1.6572 Y1.0960 F1200.000
+G1 X-1.6568 Y1.0974 F1200.000
+G1 X0.8617 Y10.9870 F1200.000
+G1 X7.8329 Y10.9870 F1200.000
+G1 X13.4389 Y-10.9661 F1200.000
+G1 X9.3719 Y-10.9461 F1200.000
+G1 X7.9835 Y-5.1679 F1200.000
+G1 X7.9834 Y-5.1674 F1200.000
+G1 X7.8395 Y-4.5919 F1200.000
+G1 X7.8382 Y-4.5875 F1200.000
+G1 X7.8365 Y-4.5833 F1200.000
+G1 X7.8344 Y-4.5792 F1200.000
+G1 X7.8320 Y-4.5753 F1200.000
+G1 X7.8292 Y-4.5717 F1200.000
+G1 X7.8261 Y-4.5683 F1200.000
+G1 X7.7645 Y-4.5066 F1200.000
+G1 X7.7606 Y-4.5032 F1200.000
+G1 X7.7564 Y-4.5001 F1200.000
+G1 X7.7519 Y-4.4975 F1200.000
+G1 X7.7472 Y-4.4953 F1200.000
+G1 X7.7423 Y-4.4936 F1200.000
+G1 X7.7372 Y-4.4925 F1200.000
+G1 X1.2420 Y-3.3620 F1200.000
+G1 X1.2370 Y-3.3614 F1200.000
+G1 X1.2319 Y-3.3613 F1200.000
+G1 X1.2268 Y-3.3617 F1200.000
+G1 X1.2218 Y-3.3626 F1200.000
+G1 X1.2169 Y-3.3639 F1200.000
+G1 X1.2122 Y-3.3658 F1200.000
+G1 X1.2077 Y-3.3681 F1200.000
+G1 X1.2034 Y-3.3709 F1200.000
+G1 X1.1995 Y-3.3741 F1200.000
+G1 X1.1959 Y-3.3777 F1200.000
+G1 X1.1926 Y-3.3816 F1200.000
+G1 X1.1310 Y-3.4638 F1200.000
+G1 X1.1281 Y-3.4680 F1200.000
+G1 X1.1257 Y-3.4724 F1200.000
+G1 X1.1238 Y-3.4771 F1200.000
+G1 X1.1223 Y-3.4820 F1200.000
+G1 X0.9990 Y-3.9753 F1200.000
+G1 X0.9989 Y-3.9757 F1200.000
+G1 X-0.6773 Y-10.9461 F1200.000
+G1 X-4.7444 Y-10.9661 F1200.000
+G1 X-2.6639 Y-2.7668 F1200.000
+G1 X-2.6630 Y-2.7621 F1200.000
+G1 X-2.6625 Y-2.7574 F1200.000
+G1 X-2.6624 Y-2.7526 F1200.000
+G1 X-2.6628 Y-2.7479 F1200.000
+G1 X-2.6636 Y-2.7432 F1200.000
+G1 X-2.6649 Y-2.7385 F1200.000
+G1 X-2.6666 Y-2.7341 F1200.000
+G1 X-2.6687 Y-2.7298 F1200.000
+G1 X-2.6712 Y-2.7257 F1200.000
+G1 X-2.6741 Y-2.7219 F1200.000
+G1 X-2.6773 Y-2.7184 F1200.000
+G1 X-2.7184 Y-2.6773 F1200.000
+G1 X-2.7221 Y-2.6739 F1200.000
+G1 X-2.7261 Y-2.6710 F1200.000
+G1 X-2.7303 Y-2.6684 F1200.000
+G1 X-2.7348 Y-2.6663 F1200.000
+G1 X-2.7395 Y-2.6646 F1200.000
+G1 X-2.7443 Y-2.6634 F1200.000
+G1 X-3.0527 Y-2.6017 F1200.000
+G1 X-3.0540 Y-2.6015 F1200.000
+G1 X-7.6993 Y-1.7998 F1200.000
+G1 X-7.7042 Y-1.7992 F1200.000
+G1 X-7.7090 Y-1.7991 F1200.000
+G1 X-7.7139 Y-1.7994 F1200.000
+G1 X-7.7187 Y-1.8002 F1200.000
+G1 X-7.7233 Y-1.8015 F1200.000
+G1 X-7.7279 Y-1.8032 F1200.000
+G1 X-7.7323 Y-1.8053 F1200.000
+G1 X-7.7364 Y-1.8078 F1200.000
+G1 X-7.7403 Y-1.8107 F1200.000
+G1 X-7.7439 Y-1.8140 F1200.000
+G1 X-7.7850 Y-1.8551 F1200.000
+G1 X-7.7884 Y-1.8588 F1200.000
+G1 X-7.7913 Y-1.8628 F1200.000
+G1 X-7.7939 Y-1.8671 F1200.000
+G1 X-7.7960 Y-1.8716 F1200.000
+G1 X-7.7977 Y-1.8763 F1200.000
+G1 X-7.7989 Y-1.8811 F1200.000
+G1 X-7.7997 Y-1.8860 F1200.000
+G1 X-7.7999 Y-1.8910 F1200.000
+G1 X-7.7999 Y-10.9664 F1200.000
+G1 X-11.7270 Y-10.9664 F1200.000
+G1 X-11.7270 Y10.9870 F1200.000
+G1 X-7.7999 Y10.9870 F1200.000
+G1 X-7.7999 Y1.9732 F1200.000
+G1 X-7.7997 Y1.9683 F1200.000
+G1 X-7.7989 Y1.9633 F1200.000
+G1 X-7.7977 Y1.9585 F1200.000
+G1 X-7.7960 Y1.9538 F1200.000
+G1 X-7.7939 Y1.9493 F1200.000
+G1 X-7.7913 Y1.9450 F1200.000
+G1 X-7.7884 Y1.9410 F1200.000
+G1 X-7.7850 Y1.9373 F1200.000
+G1 X-7.7234 Y1.8756 F1200.000
+G1 X-7.7195 Y1.8721 F1200.000
+G1 X-7.7153 Y1.8691 F1200.000
+G1 X-7.7108 Y1.8664 F1200.000
+G1 X-7.7060 Y1.8643 F1200.000
+G1 X-7.7011 Y1.8626 F1200.000
+G1 X-7.6960 Y1.8615 F1200.000
+G1 X-1.8174 Y0.8543 F1200.000
+G1 X-1.8126 Y0.8537 F1200.000
+G1 X-1.8077 Y0.8536 F1200.000
+G1 X-1.8029 Y0.8539 F1200.000
+G1 X-1.7981 Y0.8547 F1200.000
+G1 X-1.7934 Y0.8560 F1200.000
+G1 X-1.7889 Y0.8577 F1200.000
+G1 X-1.7845 Y0.8598 F1200.000
+G1 X-1.7803 Y0.8623 F1200.000
+G1 X-1.7765 Y0.8652 F1200.000
+G1 X-1.7729 Y0.8685 F1200.000
+G1 X-1.7112 Y0.9301 F1200.000
+G1 X-1.7077 Y0.9340 F1200.000
+G1 X-1.7047 Y0.9381 F1200.000
+G1 X-1.7021 Y0.9425 F1200.000
+M3 S575
+G4 P0.030
+(Travel to outline path 2)
+G1 X2.0462 Y0.2534 F3000.000
+M3 S700
+G4 P0.060
+(outline path 2, 77 points)
+G1 X2.0458 Y0.2482 F1200.000
+G1 X2.0459 Y0.2431 F1200.000
+G1 X2.0465 Y0.2379 F1200.000
+G1 X2.0477 Y0.2329 F1200.000
+G1 X2.0493 Y0.2279 F1200.000
+G1 X2.0515 Y0.2232 F1200.000
+G1 X2.0541 Y0.2188 F1200.000
+G1 X2.0572 Y0.2146 F1200.000
+G1 X2.0606 Y0.2107 F1200.000
+G1 X2.1017 Y0.1696 F1200.000
+G1 X2.1055 Y0.1662 F1200.000
+G1 X2.1096 Y0.1632 F1200.000
+G1 X2.1140 Y0.1606 F1200.000
+G1 X2.1186 Y0.1585 F1200.000
+G1 X2.1234 Y0.1568 F1200.000
+G1 X2.1283 Y0.1556 F1200.000
+G1 X2.4572 Y0.0939 F1200.000
+G1 X2.4579 Y0.0938 F1200.000
+G1 X6.7538 Y-0.6462 F1200.000
+G1 X6.7587 Y-0.6468 F1200.000
+G1 X6.7636 Y-0.6469 F1200.000
+G1 X6.7684 Y-0.6466 F1200.000
+G1 X6.7733 Y-0.6457 F1200.000
+G1 X6.7780 Y-0.6445 F1200.000
+G1 X6.7825 Y-0.6428 F1200.000
+G1 X6.7869 Y-0.6406 F1200.000
+G1 X6.7911 Y-0.6381 F1200.000
+G1 X6.7950 Y-0.6351 F1200.000
+G1 X6.7986 Y-0.6318 F1200.000
+G1 X6.8019 Y-0.6282 F1200.000
+G1 X6.8048 Y-0.6243 F1200.000
+G1 X6.8459 Y-0.5626 F1200.000
+G1 X6.8485 Y-0.5581 F1200.000
+G1 X6.8507 Y-0.5533 F1200.000
+G1 X6.8524 Y-0.5484 F1200.000
+G1 X6.8536 Y-0.5433 F1200.000
+G1 X6.8543 Y-0.5381 F1200.000
+G1 X6.8544 Y-0.5328 F1200.000
+G1 X6.8539 Y-0.5276 F1200.000
+G1 X6.8530 Y-0.5224 F1200.000
+G1 X4.6947 Y8.3777 F1200.000
+G1 X4.6934 Y8.3822 F1200.000
+G1 X4.6917 Y8.3865 F1200.000
+G1 X4.6897 Y8.3906 F1200.000
+G1 X4.6872 Y8.3945 F1200.000
+G1 X4.6844 Y8.3982 F1200.000
+G1 X4.6813 Y8.4017 F1200.000
+G1 X4.6196 Y8.4633 F1200.000
+G1 X4.6159 Y8.4667 F1200.000
+G1 X4.6119 Y8.4696 F1200.000
+G1 X4.6076 Y8.4722 F1200.000
+G1 X4.6031 Y8.4743 F1200.000
+G1 X4.5984 Y8.4760 F1200.000
+G1 X4.5936 Y8.4772 F1200.000
+G1 X4.5887 Y8.4780 F1200.000
+G1 X4.5837 Y8.4782 F1200.000
+G1 X4.1109 Y8.4782 F1200.000
+G1 X4.1059 Y8.4780 F1200.000
+G1 X4.1010 Y8.4772 F1200.000
+G1 X4.0962 Y8.4760 F1200.000
+G1 X4.0915 Y8.4743 F1200.000
+G1 X4.0870 Y8.4722 F1200.000
+G1 X4.0827 Y8.4696 F1200.000
+G1 X4.0787 Y8.4667 F1200.000
+G1 X4.0750 Y8.4633 F1200.000
+G1 X4.0133 Y8.4017 F1200.000
+G1 X4.0102 Y8.3983 F1200.000
+G1 X4.0075 Y8.3946 F1200.000
+G1 X4.0050 Y8.3908 F1200.000
+G1 X4.0030 Y8.3867 F1200.000
+G1 X4.0013 Y8.3824 F1200.000
+G1 X4.0000 Y8.3780 F1200.000
+G1 X3.8766 Y7.8847 F1200.000
+G1 X3.8765 Y7.8843 F1200.000
+G1 X2.0471 Y0.2585 F1200.000
+G1 X2.0462 Y0.2534 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 3)
+G1 X13.2357 Y-10.9143 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 3, 2 points)
+G1 X13.3452 Y-10.8048 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 4)
+G1 X13.2867 Y-10.5758 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 4, 2 points)
+G1 X12.9496 Y-10.9129 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 5)
+G1 X12.6635 Y-10.9115 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 5, 2 points)
+G1 X13.2282 Y-10.3468 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 6)
+G1 X13.1698 Y-10.1177 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 6, 2 points)
+G1 X12.3774 Y-10.9101 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 7)
+G1 X12.0913 Y-10.9087 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 7, 2 points)
+G1 X13.1113 Y-9.8887 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 8)
+G1 X13.0528 Y-9.6597 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 8, 2 points)
+G1 X11.8053 Y-10.9072 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 9)
+G1 X11.5192 Y-10.9058 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 9, 2 points)
+G1 X12.9943 Y-9.4307 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 10)
+G1 X12.9358 Y-9.2017 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 10, 2 points)
+G1 X11.2331 Y-10.9044 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 11)
+G1 X10.9470 Y-10.9030 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 11, 2 points)
+G1 X12.8774 Y-8.9726 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 12)
+G1 X12.8189 Y-8.7436 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 12, 2 points)
+G1 X10.6609 Y-10.9016 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 13)
+G1 X10.3748 Y-10.9002 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 13, 2 points)
+G1 X12.7604 Y-8.5146 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 14)
+G1 X12.7019 Y-8.2856 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 14, 2 points)
+G1 X10.0887 Y-10.8988 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 15)
+G1 X9.8026 Y-10.8974 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 15, 2 points)
+G1 X12.6434 Y-8.0566 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 16)
+G1 X12.5849 Y-7.8276 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 16, 2 points)
+G1 X9.5165 Y-10.8960 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 17)
+G1 X9.3767 Y-10.7483 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 17, 2 points)
+G1 X12.5265 Y-7.5985 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 18)
+G1 X12.4680 Y-7.3695 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 18, 2 points)
+G1 X9.3210 Y-10.5165 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 19)
+G1 X9.2653 Y-10.2847 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 19, 2 points)
+G1 X12.4095 Y-7.1405 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 20)
+G1 X12.3510 Y-6.9115 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 20, 2 points)
+G1 X9.2096 Y-10.0529 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 21)
+G1 X9.1539 Y-9.8211 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 21, 2 points)
+G1 X12.2925 Y-6.6825 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 22)
+G1 X12.2341 Y-6.4534 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 22, 2 points)
+G1 X9.0982 Y-9.5893 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 23)
+G1 X9.0425 Y-9.3575 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 23, 2 points)
+G1 X12.1756 Y-6.2244 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 24)
+G1 X12.1171 Y-5.9954 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 24, 2 points)
+G1 X8.9868 Y-9.1257 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 25)
+G1 X8.9311 Y-8.8939 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 25, 2 points)
+G1 X12.0586 Y-5.7664 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 26)
+G1 X12.0001 Y-5.5374 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 26, 2 points)
+G1 X8.8754 Y-8.6621 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 27)
+G1 X8.8197 Y-8.4303 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 27, 2 points)
+G1 X11.9416 Y-5.3084 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 28)
+G1 X11.8832 Y-5.0793 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 28, 2 points)
+G1 X8.7640 Y-8.1985 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 29)
+G1 X8.7083 Y-7.9667 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 29, 2 points)
+G1 X11.8247 Y-4.8503 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 30)
+G1 X11.7662 Y-4.6213 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 30, 2 points)
+G1 X8.6526 Y-7.7349 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 31)
+G1 X8.5969 Y-7.5031 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 31, 2 points)
+G1 X11.7077 Y-4.3923 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 32)
+G1 X11.6492 Y-4.1633 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 32, 2 points)
+G1 X8.5412 Y-7.2713 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 33)
+G1 X8.4855 Y-7.0395 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 33, 2 points)
+G1 X11.5908 Y-3.9342 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 34)
+G1 X11.5323 Y-3.7052 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 34, 2 points)
+G1 X8.4298 Y-6.8077 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 35)
+G1 X8.3741 Y-6.5759 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 35, 2 points)
+G1 X11.4738 Y-3.4762 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 36)
+G1 X11.4153 Y-3.2472 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 36, 2 points)
+G1 X8.3184 Y-6.3441 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 37)
+G1 X8.2627 Y-6.1123 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 37, 2 points)
+G1 X11.3568 Y-3.0182 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 38)
+G1 X11.2983 Y-2.7892 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 38, 2 points)
+G1 X8.2070 Y-5.8805 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 39)
+G1 X8.1513 Y-5.6487 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 39, 2 points)
+G1 X11.2399 Y-2.5601 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 40)
+G1 X11.1814 Y-2.3311 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 40, 2 points)
+G1 X8.0956 Y-5.4169 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 41)
+G1 X8.0399 Y-5.1851 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 41, 2 points)
+G1 X11.1229 Y-2.1021 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 42)
+G1 X11.0644 Y-1.8731 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 42, 2 points)
+G1 X7.9826 Y-4.9549 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 43)
+G1 X7.9251 Y-4.7249 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 43, 2 points)
+G1 X11.0059 Y-1.6441 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 44)
+G1 X10.9475 Y-1.4150 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 44, 2 points)
+G1 X7.8461 Y-4.5164 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 45)
+G1 X7.6494 Y-4.4256 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 45, 2 points)
+G1 X10.8890 Y-1.1860 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 46)
+G1 X10.8305 Y-0.9570 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 46, 2 points)
+G1 X7.4045 Y-4.3830 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 47)
+G1 X7.1596 Y-4.3404 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 47, 2 points)
+G1 X10.7720 Y-0.7280 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 48)
+G1 X10.7135 Y-0.4990 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 48, 2 points)
+G1 X6.9147 Y-4.2978 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 49)
+G1 X6.6699 Y-4.2551 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 49, 2 points)
+G1 X10.6550 Y-0.2700 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 50)
+G1 X10.5966 Y-0.0409 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 50, 2 points)
+G1 X6.4250 Y-4.2125 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 51)
+G1 X6.1801 Y-4.1699 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 51, 2 points)
+G1 X10.5381 Y0.1881 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 52)
+G1 X10.4796 Y0.4171 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 52, 2 points)
+G1 X5.9352 Y-4.1273 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 53)
+G1 X10.3626 Y0.8751 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 53, 2 points)
+G1 X5.4455 Y-4.0420 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 54)
+G1 X10.2457 Y1.3332 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 54, 2 points)
+G1 X4.9557 Y-3.9568 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 55)
+G1 X10.1287 Y1.7912 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 55, 2 points)
+G1 X4.4660 Y-3.8715 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 56)
+G1 X10.0117 Y2.2492 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 56, 2 points)
+G1 X3.9762 Y-3.7863 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 57)
+G1 X5.6904 Y-4.0846 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 57, 2 points)
+G1 X10.4211 Y0.6461 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 58)
+G1 X5.2006 Y-3.9994 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 58, 2 points)
+G1 X10.3042 Y1.1042 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 59)
+G1 X4.7108 Y-3.9142 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 59, 2 points)
+G1 X10.1872 Y1.5622 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 60)
+G1 X4.2211 Y-3.8289 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 60, 2 points)
+G1 X10.0702 Y2.0202 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 61)
+G1 X-1.1225 Y-10.8975 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 61, 2 points)
+G1 X-0.5898 Y-10.3648 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 62)
+G1 X-1.7003 Y-10.9003 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 62, 2 points)
+G1 X-0.4077 Y-9.6077 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 63)
+G1 X-2.2781 Y-10.9031 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 63, 2 points)
+G1 X-0.2257 Y-8.8507 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 64)
+G1 X-2.8560 Y-10.9060 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 64, 2 points)
+G1 X-0.0436 Y-8.0936 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 65)
+G1 X-3.4338 Y-10.9088 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 65, 2 points)
+G1 X0.1384 Y-7.3366 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 66)
+G1 X-0.6808 Y-10.7433 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 66, 2 points)
+G1 X-0.8335 Y-10.8960 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 67)
+G1 X-0.4988 Y-9.9863 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 67, 2 points)
+G1 X-1.4114 Y-10.8989 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 68)
+G1 X-0.3167 Y-9.2292 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 68, 2 points)
+G1 X-1.9892 Y-10.9017 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 69)
+G1 X-0.1347 Y-8.4722 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 69, 2 points)
+G1 X-2.5671 Y-10.9046 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 70)
+G1 X0.0474 Y-7.7151 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 70, 2 points)
+G1 X-3.1449 Y-10.9074 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 71)
+G1 X3.7313 Y-3.7437 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 71, 2 points)
+G1 X6.7787 Y-0.6963 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 72)
+G1 X6.5286 Y-0.6589 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 72, 2 points)
+G1 X3.4864 Y-3.7011 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 73)
+G1 X3.2416 Y-3.6584 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 73, 2 points)
+G1 X6.2833 Y-0.6167 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 74)
+G1 X6.0381 Y-0.5744 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 74, 2 points)
+G1 X2.9967 Y-3.6158 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 75)
+G1 X2.7518 Y-3.5732 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 75, 2 points)
+G1 X5.7928 Y-0.5322 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 76)
+G1 X5.5475 Y-0.4900 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 76, 2 points)
+G1 X2.5069 Y-3.5306 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 77)
+G1 X2.2621 Y-3.4879 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 77, 2 points)
+G1 X5.3023 Y-0.4477 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 78)
+G1 X5.0570 Y-0.4055 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 78, 2 points)
+G1 X2.0172 Y-3.4453 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 79)
+G1 X1.7723 Y-3.4027 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 79, 2 points)
+G1 X4.8118 Y-0.3632 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 80)
+G1 X4.5665 Y-0.3210 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 80, 2 points)
+G1 X1.5274 Y-3.3601 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 81)
+G1 X1.2825 Y-3.3175 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 81, 2 points)
+G1 X4.3213 Y-0.2787 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 82)
+G1 X6.8938 Y-0.5812 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 82, 2 points)
+G1 X9.9533 Y2.4783 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 83)
+G1 X0.2294 Y-6.9581 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 83, 2 points)
+G1 X-3.7228 Y-10.9103 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 84)
+G1 X9.8948 Y2.7073 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 84, 2 points)
+G1 X6.8584 Y-0.3291 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 85)
+G1 X-4.0117 Y-10.9117 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 85, 2 points)
+G1 X0.3205 Y-6.5795 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 86)
+G1 X6.8023 Y-0.0977 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 86, 2 points)
+G1 X9.8363 Y2.9363 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 87)
+G1 X0.4115 Y-6.2010 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 87, 2 points)
+G1 X-4.3006 Y-10.9131 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 88)
+G1 X9.7778 Y3.1653 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 88, 2 points)
+G1 X6.7462 Y0.1337 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 89)
+G1 X-4.5895 Y-10.9145 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 89, 2 points)
+G1 X0.5025 Y-5.8225 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 90)
+G1 X6.6900 Y0.3650 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 90, 2 points)
+G1 X9.7193 Y3.3943 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 91)
+G1 X0.5935 Y-5.4440 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 91, 2 points)
+G1 X-4.6115 Y-10.6490 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 92)
+G1 X9.6609 Y3.6234 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 92, 2 points)
+G1 X6.6339 Y0.5964 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 93)
+G1 X-4.5137 Y-10.2637 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 93, 2 points)
+G1 X0.6845 Y-5.0655 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 94)
+G1 X6.5778 Y0.8278 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 94, 2 points)
+G1 X9.6024 Y3.8524 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 95)
+G1 X0.7756 Y-4.6869 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 95, 2 points)
+G1 X-4.4160 Y-9.8785 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 96)
+G1 X9.5439 Y4.0814 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 96, 2 points)
+G1 X6.5217 Y1.0592 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 97)
+G1 X-4.3182 Y-9.4932 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 97, 2 points)
+G1 X0.8666 Y-4.3084 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 98)
+G1 X6.4656 Y1.2906 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 98, 2 points)
+G1 X9.4854 Y4.3104 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 99)
+G1 X0.9580 Y-3.9295 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 99, 2 points)
+G1 X-4.2205 Y-9.1080 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 100)
+G1 X9.4269 Y4.5394 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 100, 2 points)
+G1 X6.4095 Y1.5220 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 101)
+G1 X-4.1227 Y-8.7227 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 101, 2 points)
+G1 X1.0539 Y-3.5461 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 102)
+G1 X6.3534 Y1.7534 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 102, 2 points)
+G1 X9.3684 Y4.7684 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 103)
+G1 X-3.9272 Y-7.9522 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 103, 2 points)
+G1 X3.8308 Y-0.1942 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 104)
+G1 X-3.7317 Y-7.1817 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 104, 2 points)
+G1 X3.3402 Y-0.1098 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 105)
+G1 X4.0760 Y-0.2365 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 105, 2 points)
+G1 X-4.0250 Y-8.3375 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 106)
+G1 X3.5855 Y-0.1520 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 106, 2 points)
+G1 X-3.8295 Y-7.5670 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 107)
+G1 X3.0950 Y-0.0675 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 107, 2 points)
+G1 X-3.6340 Y-6.7965 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 108)
+G1 X-3.5362 Y-6.4112 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 108, 2 points)
+G1 X2.8497 Y-0.0253 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 109)
+G1 X2.6045 Y0.0170 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 109, 2 points)
+G1 X-3.4385 Y-6.0260 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 110)
+G1 X9.3100 Y4.9975 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 110, 2 points)
+G1 X6.2973 Y1.9848 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 111)
+G1 X9.1930 Y5.4555 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 111, 2 points)
+G1 X6.1851 Y2.4476 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 112)
+G1 X9.0760 Y5.9135 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 112, 2 points)
+G1 X6.0728 Y2.9103 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 113)
+G1 X6.2412 Y2.2162 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 113, 2 points)
+G1 X9.2515 Y5.2265 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 114)
+G1 X6.1289 Y2.6789 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 114, 2 points)
+G1 X9.1345 Y5.6845 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 115)
+G1 X-8.0406 Y-10.9156 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 115, 2 points)
+G1 X-7.8507 Y-10.7257 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 116)
+G1 X6.0167 Y3.1417 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 116, 2 points)
+G1 X9.0176 Y6.1426 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 117)
+G1 X-7.8507 Y-10.4382 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 117, 2 points)
+G1 X-8.3281 Y-10.9156 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 118)
+G1 X8.9591 Y6.3716 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 118, 2 points)
+G1 X5.9606 Y3.3731 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 119)
+G1 X-8.6156 Y-10.9156 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 119, 2 points)
+G1 X-7.8507 Y-10.1507 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 120)
+G1 X-3.3407 Y-5.6407 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 120, 2 points)
+G1 X2.3604 Y0.0604 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 121)
+G1 X5.9045 Y3.6045 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 121, 2 points)
+G1 X8.9006 Y6.6006 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 122)
+G1 X-7.8507 Y-9.8632 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 122, 2 points)
+G1 X-8.9031 Y-10.9156 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 123)
+G1 X2.1183 Y0.1058 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 123, 2 points)
+G1 X-3.2430 Y-5.2555 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 124)
+G1 X8.8421 Y6.8296 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 124, 2 points)
+G1 X5.8484 Y3.8359 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 125)
+G1 X-9.1906 Y-10.9156 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 125, 2 points)
+G1 X-7.8507 Y-9.5757 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 126)
+G1 X-3.1452 Y-4.8702 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 126, 2 points)
+G1 X1.9985 Y0.2735 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 127)
+G1 X5.7923 Y4.0673 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 127, 2 points)
+G1 X8.7836 Y7.0586 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 128)
+G1 X-7.8507 Y-9.2882 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 128, 2 points)
+G1 X-9.4781 Y-10.9156 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 129)
+G1 X2.0892 Y0.6517 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 129, 2 points)
+G1 X-3.0475 Y-4.4850 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 130)
+G1 X8.7251 Y7.2876 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 130, 2 points)
+G1 X5.7362 Y4.2987 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 131)
+G1 X-9.7656 Y-10.9156 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 131, 2 points)
+G1 X-7.8507 Y-9.0007 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 132)
+G1 X-2.9497 Y-4.0997 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 132, 2 points)
+G1 X2.1799 Y1.0299 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 133)
+G1 X5.6801 Y4.5301 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 133, 2 points)
+G1 X8.6667 Y7.5167 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 134)
+G1 X-7.8507 Y-8.7132 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 134, 2 points)
+G1 X-10.0531 Y-10.9156 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 135)
+G1 X2.2707 Y1.4082 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 135, 2 points)
+G1 X-2.8520 Y-3.7145 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 136)
+G1 X8.6082 Y7.7457 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 136, 2 points)
+G1 X5.6239 Y4.7614 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 137)
+G1 X-10.3406 Y-10.9156 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 137, 2 points)
+G1 X-7.8507 Y-8.4257 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 138)
+G1 X-2.7542 Y-3.3292 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 138, 2 points)
+G1 X2.3614 Y1.7864 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 139)
+G1 X5.5678 Y4.9928 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 139, 2 points)
+G1 X8.5497 Y7.9747 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 140)
+G1 X-7.8507 Y-8.1382 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 140, 2 points)
+G1 X-10.6281 Y-10.9156 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 141)
+G1 X2.4522 Y2.1647 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 141, 2 points)
+G1 X-2.6565 Y-2.9440 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 142)
+G1 X8.4912 Y8.2037 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 142, 2 points)
+G1 X5.5117 Y5.2242 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 143)
+G1 X-10.9156 Y-10.9156 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 143, 2 points)
+G1 X-7.8507 Y-7.8507 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 144)
+G1 X-2.6619 Y-2.6619 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 144, 2 points)
+G1 X2.5429 Y2.5429 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 145)
+G1 X5.4556 Y5.4556 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 145, 2 points)
+G1 X8.4327 Y8.4327 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 146)
+G1 X-7.8507 Y-7.5632 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 146, 2 points)
+G1 X-11.2031 Y-10.9156 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 147)
+G1 X2.6336 Y2.9211 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 147, 2 points)
+G1 X-2.8733 Y-2.5858 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 148)
+G1 X8.3743 Y8.6618 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 148, 2 points)
+G1 X5.3995 Y5.6870 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 149)
+G1 X-11.4906 Y-10.9156 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 149, 2 points)
+G1 X-7.8507 Y-7.2757 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 150)
+G1 X-3.1145 Y-2.5395 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 150, 2 points)
+G1 X2.7244 Y3.2994 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 151)
+G1 X2.8151 Y3.6776 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 151, 2 points)
+G1 X-3.3596 Y-2.4971 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 152)
+G1 X-3.6048 Y-2.4548 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 152, 2 points)
+G1 X2.9058 Y4.0558 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 153)
+G1 X2.9966 Y4.4341 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 153, 2 points)
+G1 X-3.8500 Y-2.4125 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 154)
+G1 X-4.0952 Y-2.3702 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 154, 2 points)
+G1 X3.0873 Y4.8123 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 155)
+G1 X3.1780 Y5.1905 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 155, 2 points)
+G1 X-4.3404 Y-2.3279 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 156)
+G1 X-4.5856 Y-2.2856 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 156, 2 points)
+G1 X3.2688 Y5.5688 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 157)
+G1 X5.3434 Y5.9184 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 157, 2 points)
+G1 X8.3158 Y8.8908 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 158)
+G1 X-7.8507 Y-6.9882 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 158, 2 points)
+G1 X-11.6761 Y-10.8136 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 159)
+G1 X8.2573 Y9.1198 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 159, 2 points)
+G1 X5.2873 Y6.1498 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 160)
+G1 X-11.6761 Y-10.5261 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 160, 2 points)
+G1 X-7.8507 Y-6.7007 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 161)
+G1 X5.2312 Y6.3812 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 161, 2 points)
+G1 X8.1988 Y9.3488 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 162)
+G1 X-7.8507 Y-6.4132 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 162, 2 points)
+G1 X-11.6761 Y-10.2386 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 163)
+G1 X8.1403 Y9.5778 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 163, 2 points)
+G1 X5.1751 Y6.6126 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 164)
+G1 X-11.6761 Y-9.9511 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 164, 2 points)
+G1 X-7.8507 Y-6.1257 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 165)
+G1 X5.1190 Y6.8440 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 165, 2 points)
+G1 X8.0818 Y9.8068 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 166)
+G1 X-7.8507 Y-5.8382 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 166, 2 points)
+G1 X-11.6761 Y-9.6636 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 167)
+G1 X8.0234 Y10.0359 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 167, 2 points)
+G1 X5.0628 Y7.0753 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 168)
+G1 X-11.6761 Y-9.3761 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 168, 2 points)
+G1 X-7.8507 Y-5.5507 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 169)
+G1 X5.0067 Y7.3067 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 169, 2 points)
+G1 X7.9649 Y10.2649 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 170)
+G1 X-7.8507 Y-5.2632 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 170, 2 points)
+G1 X-11.6761 Y-9.0886 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 171)
+G1 X-5.0760 Y-2.2010 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 171, 2 points)
+G1 X-2.0350 Y0.8400 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 172)
+G1 X-5.5663 Y-2.1163 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 172, 2 points)
+G1 X-2.5259 Y0.9241 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 173)
+G1 X-6.0567 Y-2.0317 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 173, 2 points)
+G1 X-3.0168 Y1.0082 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 174)
+G1 X-6.5471 Y-1.9471 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 174, 2 points)
+G1 X-3.5077 Y1.0923 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 175)
+G1 X-3.7531 Y1.1344 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 175, 2 points)
+G1 X-6.7923 Y-1.9048 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 176)
+G1 X-7.0375 Y-1.8625 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 176, 2 points)
+G1 X-3.9986 Y1.1764 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 177)
+G1 X-4.2440 Y1.2185 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 177, 2 points)
+G1 X-7.2827 Y-1.8202 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 178)
+G1 X-7.5278 Y-1.7778 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 178, 2 points)
+G1 X-4.4895 Y1.2605 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 179)
+G1 X-1.7807 Y0.8068 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 179, 2 points)
+G1 X-4.8308 Y-2.2433 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 180)
+G1 X-2.2804 Y0.8821 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 180, 2 points)
+G1 X-5.3212 Y-2.1587 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 181)
+G1 X-2.7713 Y0.9662 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 181, 2 points)
+G1 X-5.8115 Y-2.0740 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 182)
+G1 X-3.2622 Y1.0503 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 182, 2 points)
+G1 X-6.3019 Y-1.9894 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 183)
+G1 X3.3595 Y5.9470 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 183, 2 points)
+G1 X-1.6494 Y0.9381 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 184)
+G1 X7.9064 Y10.4939 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 184, 2 points)
+G1 X4.9506 Y7.5381 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 185)
+G1 X-11.6761 Y-8.8011 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 185, 2 points)
+G1 X-7.8507 Y-4.9757 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 186)
+G1 X-1.5451 Y1.3299 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 186, 2 points)
+G1 X3.4502 Y6.3252 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 187)
+G1 X4.8945 Y7.7695 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 187, 2 points)
+G1 X7.8479 Y10.7229 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 188)
+G1 X-7.8507 Y-4.6882 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 188, 2 points)
+G1 X-11.6761 Y-8.5136 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 189)
+G1 X3.5410 Y6.7035 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 189, 2 points)
+G1 X-1.4469 Y1.7156 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 190)
+G1 X7.7737 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 190, 2 points)
+G1 X4.8384 Y8.0009 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 191)
+G1 X-11.6761 Y-8.2261 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 191, 2 points)
+G1 X-7.8507 Y-4.4007 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 192)
+G1 X-1.3487 Y2.1013 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 192, 2 points)
+G1 X3.6317 Y7.0817 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 193)
+G1 X4.7823 Y8.2323 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 193, 2 points)
+G1 X7.4862 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 194)
+G1 X-7.8507 Y-4.1132 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 194, 2 points)
+G1 X-11.6761 Y-7.9386 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 195)
+G1 X3.7225 Y7.4600 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 195, 2 points)
+G1 X-1.2505 Y2.4870 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 196)
+G1 X7.1987 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 196, 2 points)
+G1 X4.7087 Y8.4462 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 197)
+G1 X-11.6761 Y-7.6511 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 197, 2 points)
+G1 X-7.8507 Y-3.8257 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 198)
+G1 X-1.1522 Y2.8728 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 198, 2 points)
+G1 X3.8132 Y7.8382 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 199)
+G1 X4.5040 Y8.5290 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 199, 2 points)
+G1 X6.9112 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 200)
+G1 X-7.8507 Y-3.5382 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 200, 2 points)
+G1 X-11.6761 Y-7.3636 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 201)
+G1 X3.9082 Y8.2207 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 201, 2 points)
+G1 X-1.0540 Y3.2585 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 202)
+G1 X6.6237 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 202, 2 points)
+G1 X4.2165 Y8.5290 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 203)
+G1 X-11.6761 Y-7.0761 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 203, 2 points)
+G1 X-7.8507 Y-3.2507 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 204)
+G1 X-0.9558 Y3.6442 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 204, 2 points)
+G1 X6.3362 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 205)
+G1 X-7.8507 Y-2.9632 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 205, 2 points)
+G1 X-11.6761 Y-6.7886 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 206)
+G1 X6.0487 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 206, 2 points)
+G1 X-0.8575 Y4.0300 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 207)
+G1 X-11.6761 Y-6.5011 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 207, 2 points)
+G1 X-7.8507 Y-2.6757 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 208)
+G1 X-0.7593 Y4.4157 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 208, 2 points)
+G1 X5.7612 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 209)
+G1 X-7.8507 Y-2.3882 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 209, 2 points)
+G1 X-11.6761 Y-6.2136 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 210)
+G1 X5.4737 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 210, 2 points)
+G1 X-0.6611 Y4.8014 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 211)
+G1 X-11.6761 Y-5.9261 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 211, 2 points)
+G1 X-7.8507 Y-2.1007 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 212)
+G1 X-0.5628 Y5.1872 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 212, 2 points)
+G1 X5.1862 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 213)
+G1 X-11.6761 Y-5.3511 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 213, 2 points)
+G1 X-4.9803 Y1.3447 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 214)
+G1 X-11.6761 Y-4.7761 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 214, 2 points)
+G1 X-5.4712 Y1.4288 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 215)
+G1 X-11.6761 Y-4.2011 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 215, 2 points)
+G1 X-5.9621 Y1.5129 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 216)
+G1 X-11.6761 Y-3.6261 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 216, 2 points)
+G1 X-6.4530 Y1.5970 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 217)
+G1 X-11.6761 Y-3.0511 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 217, 2 points)
+G1 X-6.9439 Y1.6811 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 218)
+G1 X-11.6761 Y-2.4761 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 218, 2 points)
+G1 X-7.4348 Y1.7652 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 219)
+G1 X-11.6761 Y-1.9011 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 219, 2 points)
+G1 X-7.8422 Y1.9328 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 220)
+G1 X-7.8507 Y2.2118 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 220, 2 points)
+G1 X-11.6761 Y-1.6136 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 221)
+G1 X-11.6761 Y-1.3261 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 221, 2 points)
+G1 X-7.8507 Y2.4993 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 222)
+G1 X-7.8507 Y2.7868 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 222, 2 points)
+G1 X-11.6761 Y-1.0386 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 223)
+G1 X-11.6761 Y-0.7511 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 223, 2 points)
+G1 X-7.8507 Y3.0743 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 224)
+G1 X-7.8507 Y3.3618 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 224, 2 points)
+G1 X-11.6761 Y-0.4636 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 225)
+G1 X-11.6761 Y-0.1761 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 225, 2 points)
+G1 X-7.8507 Y3.6493 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 226)
+G1 X-7.8507 Y3.9368 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 226, 2 points)
+G1 X-11.6761 Y0.1114 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 227)
+G1 X-11.6761 Y0.3989 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 227, 2 points)
+G1 X-7.8507 Y4.2243 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 228)
+G1 X-7.8507 Y4.5118 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 228, 2 points)
+G1 X-11.6761 Y0.6864 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 229)
+G1 X-11.6761 Y0.9739 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 229, 2 points)
+G1 X-7.8507 Y4.7993 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 230)
+G1 X-7.8507 Y5.0868 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 230, 2 points)
+G1 X-11.6761 Y1.2614 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 231)
+G1 X-11.6761 Y1.5489 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 231, 2 points)
+G1 X-7.8507 Y5.3743 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 232)
+G1 X-7.8507 Y5.6618 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 232, 2 points)
+G1 X-11.6761 Y1.8364 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 233)
+G1 X-11.6761 Y2.1239 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 233, 2 points)
+G1 X-7.8507 Y5.9493 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 234)
+G1 X-7.8507 Y6.2368 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 234, 2 points)
+G1 X-11.6761 Y2.4114 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 235)
+G1 X-11.6761 Y2.6989 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 235, 2 points)
+G1 X-7.8507 Y6.5243 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 236)
+G1 X-7.8507 Y6.8118 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 236, 2 points)
+G1 X-11.6761 Y2.9864 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 237)
+G1 X-11.6761 Y3.2739 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 237, 2 points)
+G1 X-7.8507 Y7.0993 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 238)
+G1 X-7.8507 Y7.3868 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 238, 2 points)
+G1 X-11.6761 Y3.5614 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 239)
+G1 X-11.6761 Y3.8489 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 239, 2 points)
+G1 X-7.8507 Y7.6743 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 240)
+G1 X-7.8507 Y7.9618 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 240, 2 points)
+G1 X-11.6761 Y4.1364 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 241)
+G1 X-11.6761 Y4.4239 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 241, 2 points)
+G1 X-7.8507 Y8.2493 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 242)
+G1 X-7.8507 Y8.5368 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 242, 2 points)
+G1 X-11.6761 Y4.7114 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 243)
+G1 X-11.6761 Y4.9989 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 243, 2 points)
+G1 X-7.8507 Y8.8243 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 244)
+G1 X-7.8507 Y9.1118 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 244, 2 points)
+G1 X-11.6761 Y5.2864 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 245)
+G1 X-11.6761 Y5.5739 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 245, 2 points)
+G1 X-7.8507 Y9.3993 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 246)
+G1 X-7.8507 Y9.6868 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 246, 2 points)
+G1 X-11.6761 Y5.8614 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 247)
+G1 X-11.6761 Y6.1489 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 247, 2 points)
+G1 X-7.8507 Y9.9743 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 248)
+G1 X-7.8507 Y10.2618 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 248, 2 points)
+G1 X-11.6761 Y6.4364 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 249)
+G1 X-11.6761 Y6.7239 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 249, 2 points)
+G1 X-7.8507 Y10.5493 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 250)
+G1 X-7.8507 Y10.8368 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 250, 2 points)
+G1 X-11.6761 Y7.0114 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 251)
+G1 X-11.6761 Y7.2989 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 251, 2 points)
+G1 X-8.0388 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 252)
+G1 X-8.3263 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 252, 2 points)
+G1 X-11.6761 Y7.5864 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 253)
+G1 X-11.6761 Y7.8739 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 253, 2 points)
+G1 X-8.6138 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 254)
+G1 X-8.9013 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 254, 2 points)
+G1 X-11.6761 Y8.1614 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 255)
+G1 X-11.6761 Y8.4489 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 255, 2 points)
+G1 X-9.1888 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 256)
+G1 X-9.4763 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 256, 2 points)
+G1 X-11.6761 Y8.7364 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 257)
+G1 X-11.6761 Y9.0239 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 257, 2 points)
+G1 X-9.7638 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 258)
+G1 X-10.0513 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 258, 2 points)
+G1 X-11.6761 Y9.3114 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 259)
+G1 X-11.6761 Y9.5989 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 259, 2 points)
+G1 X-10.3388 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 260)
+G1 X-10.6263 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 260, 2 points)
+G1 X-11.6761 Y9.8864 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 261)
+G1 X-11.6761 Y10.1739 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 261, 2 points)
+G1 X-10.9138 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 262)
+G1 X-11.2013 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 262, 2 points)
+G1 X-11.6761 Y10.4614 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 263)
+G1 X-11.6761 Y10.7489 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 263, 2 points)
+G1 X-11.4888 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 264)
+G1 X-4.7349 Y1.3026 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 264, 2 points)
+G1 X-11.6761 Y-5.6386 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 265)
+G1 X-5.2258 Y1.3867 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 265, 2 points)
+G1 X-11.6761 Y-5.0636 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 266)
+G1 X-5.7167 Y1.4708 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 266, 2 points)
+G1 X-11.6761 Y-4.4886 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 267)
+G1 X-6.2076 Y1.5549 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 267, 2 points)
+G1 X-11.6761 Y-3.9136 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 268)
+G1 X-6.6985 Y1.6390 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 268, 2 points)
+G1 X-11.6761 Y-3.3386 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 269)
+G1 X-7.1894 Y1.7231 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 269, 2 points)
+G1 X-11.6761 Y-2.7636 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 270)
+G1 X-7.6803 Y1.8072 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 270, 2 points)
+G1 X-11.6761 Y-2.1886 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 271)
+G1 X4.8987 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 271, 2 points)
+G1 X-0.4646 Y5.5729 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 272)
+G1 X4.3237 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 272, 2 points)
+G1 X-0.2682 Y6.3443 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 273)
+G1 X3.7487 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 273, 2 points)
+G1 X-0.0717 Y7.1158 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 274)
+G1 X3.1737 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 274, 2 points)
+G1 X0.1248 Y7.8873 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 275)
+G1 X2.5987 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 275, 2 points)
+G1 X0.3212 Y8.6587 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 276)
+G1 X2.0237 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 276, 2 points)
+G1 X0.5177 Y9.4302 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 277)
+G1 X1.4487 Y10.9362 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 277, 2 points)
+G1 X0.7141 Y10.2016 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 278)
+G1 X-0.3664 Y5.9586 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 278, 2 points)
+G1 X4.6112 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 279)
+G1 X-0.1699 Y6.7301 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 279, 2 points)
+G1 X4.0362 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 280)
+G1 X0.0265 Y7.5015 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 280, 2 points)
+G1 X3.4612 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 281)
+G1 X0.2230 Y8.2730 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 281, 2 points)
+G1 X2.8862 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 282)
+G1 X0.4194 Y9.0444 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 282, 2 points)
+G1 X2.3112 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 283)
+G1 X0.6159 Y9.8159 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 283, 2 points)
+G1 X1.7362 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 284)
+G1 X0.8124 Y10.5874 F3000.000
+M3 S700
+G4 P0.060
+(fill-infill path 284, 2 points)
+G1 X1.1612 Y10.9362 F1200.000
+M3 S575
+G4 P0.030
+(Return to zero with pen up)
+G1 X0.0000 Y0.0000 F3000.000
+M3 S575
+G4 P0.030

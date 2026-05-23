@@ -405,6 +405,90 @@ def test_rectangle_with_hole_does_not_connect_across_hole():
     _assert_infill_segments_stay_inside_region(infill_paths, _infill_region(printable))
 
 
+def test_broken_rows_are_split_into_multiple_cells_for_hole_shape():
+    outer = _rect(24.0, 24.0)
+    hole = _rect(8.0, 8.0)
+    hole = Polygon([(point[0] + 8.0, point[1] + 8.0) for point in hole.exterior.coords[:-1]])
+    printable = Polygon(outer.exterior.coords, [hole.exterior.coords])
+    debug: dict = {}
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.5,
+        infill_spacing_mm=0.5,
+        allow_pen_down_infill_connectors=True,
+        infill_path_mode="serpentine_optimized",
+        debug=debug,
+    )
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    hole_region = _rect(8.0, 8.0)
+    hole_region = Polygon([(point[0] + 8.0, point[1] + 8.0) for point in hole_region.exterior.coords[:-1]])
+
+    assert infill_paths
+    assert debug.get("rows_with_multiple_intervals", 0) > 0
+    assert debug.get("local_cell_count", 0) >= 1
+    assert debug.get("rejected_cross_gap_connectors", 0) >= 0
+    for path in infill_paths:
+        for start, end in zip(path.points, path.points[1:]):
+            assert not hole_region.buffer(-0.01).covers(LineString([(start.x, start.y), (end.x, end.y)]))
+
+
+def test_letter_like_counter_shape_uses_pen_up_between_cells():
+    # Rectangle with internal counter and narrow bridge to mimic letter-like cavities.
+    outer = _rect(26.0, 24.0)
+    counter = Polygon([(x + 8.0, y + 8.0) for x, y in _rect(10.0, 8.0).exterior.coords[:-1]])
+    notch = Polygon([(x + 17.0, y + 10.0) for x, y in _rect(5.0, 4.0).exterior.coords[:-1]])
+    printable = Polygon(outer.exterior.coords, [counter.exterior.coords]).difference(notch)
+
+    debug: dict = {}
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.5,
+        infill_spacing_mm=0.5,
+        allow_pen_down_infill_connectors=True,
+        infill_path_mode="serpentine_optimized",
+        debug=debug,
+    )
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    assert infill_paths
+    assert debug.get("rows_with_multiple_intervals", 0) > 0
+    assert debug.get("rejected_cross_gap_connectors", 0) >= 0
+    counter_cover = counter.buffer(-0.01)
+    for path in infill_paths:
+        for start, end in zip(path.points, path.points[1:]):
+            assert not counter_cover.covers(LineString([(start.x, start.y), (end.x, end.y)]))
+
+
+def test_bifurcation_rows_do_not_merge_into_single_cell():
+    # Shape that creates a single span that splits into two spans around a wedge void.
+    outer = _rect(28.0, 22.0)
+    wedge_void = Polygon([
+        (6.0, 8.0),
+        (18.0, 8.0),
+        (23.0, 13.0),
+        (18.0, 18.0),
+        (6.0, 18.0),
+        (11.0, 13.0),
+    ])
+    printable = Polygon(outer.exterior.coords, [wedge_void.exterior.coords])
+    debug: dict = {}
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.5,
+        infill_spacing_mm=0.5,
+        allow_pen_down_infill_connectors=True,
+        infill_path_mode="serpentine_optimized",
+        debug=debug,
+    )
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+
+    assert infill_paths
+    assert debug.get("rows_with_multiple_intervals", 0) > 0
+    assert debug.get("local_cell_count", 0) >= 2
+    assert debug.get("pen_lifts_after_cell_planning", 0) > 0
+
+
 def test_multi_island_shape_does_not_connect_between_islands():
     left = _rect(10.0, 16.0)
     right = Polygon([(x + 14.0, y) for x, y in _rect(10.0, 16.0).exterior.coords[:-1]])

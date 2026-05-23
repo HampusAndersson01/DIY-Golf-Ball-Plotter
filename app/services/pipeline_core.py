@@ -444,6 +444,22 @@ class SlicerSettings:
 
 
 @dataclass
+class InfillSegment:
+    id: str
+    component_id: str
+    row_index: int
+    interval_index: int
+    cell_id: str | None
+    scanline_offset: float
+    low_u: Point
+    high_u: Point
+    min_u: float
+    max_u: float
+    kind: str = "infill"
+    coords: list[tuple[float, float]] = field(default_factory=list)
+
+
+@dataclass
 class SvgBounds:
     min_x: float
     min_y: float
@@ -5364,6 +5380,307 @@ class SlicerService:
                 })
         return world_paths
 
+    def _to_infill_segments(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        component_id: str,
+    ) -> list[InfillSegment]:
+        segments: list[InfillSegment] = []
+        for row in rows:
+            row_index = int(row["grid_index"])
+            offset = float(row["offset_mm"])
+            for interval_index, coords in enumerate(row.get("segments") or []):
+                if len(coords) < 2:
+                    continue
+                start, end = coords[0], coords[-1]
+                if start[0] <= end[0]:
+                    low_xy, high_xy = start, end
+                else:
+                    low_xy, high_xy = end, start
+                segments.append(InfillSegment(
+                    id=f"{component_id}:r{row_index}:i{interval_index}",
+                    component_id=component_id,
+                    row_index=row_index,
+                    interval_index=interval_index,
+                    cell_id=None,
+                    scanline_offset=offset,
+                    low_u=Point(float(low_xy[0]), float(low_xy[1])),
+                    high_u=Point(float(high_xy[0]), float(high_xy[1])),
+                    min_u=float(min(start[0], end[0])),
+                    max_u=float(max(start[0], end[0])),
+                    coords=list(coords),
+                ))
+        return segments
+
+    def _segment_overlap_mm(self, a: InfillSegment, b: InfillSegment) -> float:
+        return min(a.max_u, b.max_u) - max(a.min_u, b.min_u)
+
+    def _segment_length_mm(self, segment: InfillSegment) -> float:
+        return max(0.0, segment.max_u - segment.min_u)
+
+    def _segment_center_u(self, segment: InfillSegment) -> float:
+        return (segment.min_u + segment.max_u) * 0.5
+
+    def _segment_connectable_same_side(
+        self,
+        polygon: Polygon,
+        a: InfillSegment,
+        b: InfillSegment,
+        *,
+        side: str,
+        spacing_mm: float,
+        tolerance_mm: float,
+    ) -> tuple[bool, str]:
+        if a.component_id != b.component_id:
+            return False, "different_component"
+        row_delta = abs(b.row_index - a.row_index)
+        if row_delta > 1:
+            return False, "non_adjacent_row"
+        if row_delta == 0:
+            return False, "same_row"
+
+        start_pt = (a.low_u.x, a.low_u.y) if side == "low" else (a.high_u.x, a.high_u.y)
+        end_pt = (b.low_u.x, b.low_u.y) if side == "low" else (b.high_u.x, b.high_u.y)
+        delta_u = abs(end_pt[0] - start_pt[0])
+        delta_v = abs(end_pt[1] - start_pt[1])
+        if delta_v > spacing_mm * 1.15 + 1e-6:
+            return False, "non_adjacent_row"
+        if delta_u > spacing_mm * 1.25:
+            return False, "diagonal_gap_crossing"
+
+        connector = LineString([start_pt, end_pt])
+        max_length = max(spacing_mm * DEFAULT_MAX_PEN_DOWN_CONNECTOR_SPACING_FACTOR, spacing_mm + 0.25)
+        if connector.length > max_length + 1e-6:
+            return False, "too_long"
+
+        cover_region = polygon.buffer(max(tolerance_mm, 1e-6), join_style=1)
+        if not cover_region.covers(connector):
+            return False, "outside_polygon"
+        return True, "ok_same_side"
+
+    def _assign_infill_cells(
+        self,
+        polygon: Polygon,
+        segments: list[InfillSegment],
+        *,
+        spacing_mm: float,
+        tolerance_mm: float,
+    ) -> tuple[dict[str, list[InfillSegment]], dict[str, int]]:
+        stats = {
+            "rejected_cross_gap_connectors": 0,
+            "rejected_different_cell_connectors": 0,
+            "rejected_opposite_side_connectors": 0,
+            "rejected_too_long_connectors": 0,
+            "rows_with_multiple_intervals": 0,
+        }
+        if not segments:
+            return {}, stats
+
+        row_counts: dict[int, int] = {}
+        for seg in segments:
+            row_counts[seg.row_index] = row_counts.get(seg.row_index, 0) + 1
+        stats["rows_with_multiple_intervals"] = sum(1 for count in row_counts.values() if count > 1)
+
+        by_row: dict[int, list[InfillSegment]] = {}
+        for seg in segments:
+            by_row.setdefault(seg.row_index, []).append(seg)
+        for row in by_row.values():
+            row.sort(key=lambda s: (s.min_u, s.max_u, s.interval_index))
+
+        cell_index = 0
+        previous_row_segments: list[InfillSegment] = []
+        for row_index in sorted(by_row):
+            current_segments = by_row[row_index]
+            used_previous_ids: set[str] = set()
+            for segment in current_segments:
+                min_overlap_threshold = max(
+                    spacing_mm * 0.25,
+                    0.25 * self._segment_length_mm(segment),
+                )
+                best_match: InfillSegment | None = None
+                best_overlap = float("-inf")
+                for candidate in previous_row_segments:
+                    if candidate.id in used_previous_ids:
+                        # Prevent one previous interval from fan-out into multiple
+                        # current intervals, which collapses broken rows into one cell.
+                        continue
+                    # Keep lane continuity when a row has multiple intervals.
+                    if abs(candidate.interval_index - segment.interval_index) > 1:
+                        continue
+                    overlap = self._segment_overlap_mm(candidate, segment)
+                    if overlap <= min_overlap_threshold:
+                        continue
+                    candidate_len = max(1e-6, self._segment_length_mm(candidate))
+                    segment_len = max(1e-6, self._segment_length_mm(segment))
+                    overlap_ratio = overlap / min(candidate_len, segment_len)
+                    if overlap_ratio < 0.35:
+                        continue
+                    center_delta_u = abs(self._segment_center_u(candidate) - self._segment_center_u(segment))
+                    max_center_delta = max(
+                        spacing_mm * 1.5,
+                        0.35 * min(candidate_len, segment_len),
+                    )
+                    if center_delta_u > max_center_delta + 1e-6:
+                        continue
+                    low_ok, low_reason = self._segment_connectable_same_side(
+                        polygon, candidate, segment, side="low", spacing_mm=spacing_mm, tolerance_mm=tolerance_mm
+                    )
+                    high_ok, high_reason = self._segment_connectable_same_side(
+                        polygon, candidate, segment, side="high", spacing_mm=spacing_mm, tolerance_mm=tolerance_mm
+                    )
+                    if not low_ok and not high_ok:
+                        reasons = {low_reason, high_reason}
+                        if "too_long" in reasons:
+                            stats["rejected_too_long_connectors"] += 1
+                        elif "diagonal_gap_crossing" in reasons or "outside_polygon" in reasons:
+                            stats["rejected_cross_gap_connectors"] += 1
+                        else:
+                            stats["rejected_different_cell_connectors"] += 1
+                        continue
+                    if overlap > best_overlap:
+                        best_overlap = overlap
+                        best_match = candidate
+
+                if best_match is None:
+                    segment.cell_id = f"{segment.component_id}:cell_{cell_index:04d}"
+                    cell_index += 1
+                    continue
+                segment.cell_id = best_match.cell_id
+                used_previous_ids.add(best_match.id)
+            previous_row_segments = current_segments
+
+        cells: dict[str, list[InfillSegment]] = {}
+        for seg in segments:
+            if seg.cell_id is None:
+                seg.cell_id = f"{seg.component_id}:cell_{cell_index:04d}"
+                cell_index += 1
+            cells.setdefault(seg.cell_id, []).append(seg)
+        return cells, stats
+
+    def _segment_to_world_toolpath(
+        self,
+        segment: InfillSegment,
+        *,
+        angle_deg: float,
+        origin: tuple[float, float],
+        tolerance_mm: float,
+        kind: str,
+    ) -> Toolpath:
+        world_line = affinity.rotate(LineString(segment.coords), angle_deg, origin=origin)
+        points = simplify_segment_points([Point(x, y) for x, y in world_line.coords], tolerance_mm, False)
+        return Toolpath(
+            points=points,
+            kind=kind,
+            closed=False,
+            metadata={
+                "scanline_offset_mm": float(segment.scanline_offset),
+                "scanline_grid_index": int(segment.row_index),
+                "scanline_polygon_index": int(segment.component_id.split("_")[-1]) if segment.component_id.split("_")[-1].isdigit() else 0,
+                "interval_index": int(segment.interval_index),
+                "cell_id": segment.cell_id,
+                "infill_segment_id": segment.id,
+            },
+        )
+
+    def _plan_cell_paths(
+        self,
+        polygon: Polygon,
+        cell_segments: list[InfillSegment],
+        *,
+        spacing_mm: float,
+        angle_deg: float,
+        origin: tuple[float, float],
+        tolerance_mm: float,
+        kind: str,
+        debug: Optional[dict[str, Any]],
+    ) -> tuple[list[Toolpath], dict[str, int]]:
+        stats = {"accepted_connectors": 0, "pen_lifts": 0}
+        if not cell_segments:
+            return [], stats
+        cell_segments = sorted(cell_segments, key=lambda s: (s.row_index, s.min_u, s.interval_index))
+        toolpaths: list[Toolpath] = []
+        current_coords: list[tuple[float, float]] | None = None
+        current_segment: InfillSegment | None = None
+        draw_forward = True
+
+        for segment in cell_segments:
+            oriented = list(segment.coords if draw_forward else list(reversed(segment.coords)))
+            if current_coords is None or current_segment is None:
+                current_coords = oriented
+                current_segment = segment
+                draw_forward = not draw_forward
+                continue
+
+            prev_side = "high" if draw_forward else "low"
+            next_side = prev_side
+            ok, reason = self._segment_connectable_same_side(
+                polygon,
+                current_segment,
+                segment,
+                side=prev_side,
+                spacing_mm=spacing_mm,
+                tolerance_mm=tolerance_mm,
+            )
+            if ok:
+                start_pt = (current_segment.high_u.x, current_segment.high_u.y) if prev_side == "high" else (current_segment.low_u.x, current_segment.low_u.y)
+                end_pt = (segment.high_u.x, segment.high_u.y) if next_side == "high" else (segment.low_u.x, segment.low_u.y)
+                connector_coords = [start_pt, end_pt]
+                current_coords = _concat_coords(current_coords, connector_coords, oriented)
+                stats["accepted_connectors"] += 1
+                self._emit_debug_connector(
+                    debug,
+                    "valid_infill_connectors",
+                    connector_coords[0],
+                    connector_coords[-1],
+                    angle_deg,
+                    origin,
+                    "debug-valid-connector",
+                )
+                current_segment = segment
+                draw_forward = not draw_forward
+                continue
+
+            if debug is not None:
+                reasons = debug.setdefault("connector_rejection_reasons", {})
+                reasons[reason] = int(reasons.get(reason, 0)) + 1
+            self._emit_debug_connector(
+                debug,
+                "rejected_infill_connectors",
+                current_coords[-1],
+                oriented[0],
+                angle_deg,
+                origin,
+                "debug-rejected-connector",
+            )
+            world_line = affinity.rotate(LineString(current_coords), angle_deg, origin=origin)
+            points = simplify_segment_points([Point(x, y) for x, y in world_line.coords], tolerance_mm, False)
+            if len(points) >= 2:
+                toolpaths.append(Toolpath(points=points, kind=kind, closed=False, metadata={
+                    "scanline_offset_mm": float(current_segment.scanline_offset),
+                    "scanline_grid_index": int(current_segment.row_index),
+                    "interval_index": int(current_segment.interval_index),
+                    "cell_id": current_segment.cell_id,
+                    "infill_segment_id": current_segment.id,
+                }))
+            stats["pen_lifts"] += 1
+            current_coords = oriented
+            current_segment = segment
+            draw_forward = not draw_forward
+
+        if current_coords is not None and current_segment is not None:
+            world_line = affinity.rotate(LineString(current_coords), angle_deg, origin=origin)
+            points = simplify_segment_points([Point(x, y) for x, y in world_line.coords], tolerance_mm, False)
+            if len(points) >= 2:
+                toolpaths.append(Toolpath(points=points, kind=kind, closed=False, metadata={
+                    "scanline_offset_mm": float(current_segment.scanline_offset),
+                    "scanline_grid_index": int(current_segment.row_index),
+                    "interval_index": int(current_segment.interval_index),
+                    "cell_id": current_segment.cell_id,
+                    "infill_segment_id": current_segment.id,
+                }))
+        return toolpaths, stats
+
     def _plan_scanline_connector(
         self,
         polygon: Polygon,
@@ -5562,6 +5879,15 @@ class SlicerService:
         toolpaths: list[Toolpath] = []
         if debug is not None:
             debug.setdefault("connector_rejection_reasons", {})
+            debug.setdefault("accepted_same_cell_connectors", 0)
+            debug.setdefault("rows_with_multiple_intervals", 0)
+            debug.setdefault("local_cell_count", 0)
+            debug.setdefault("rejected_cross_gap_connectors", 0)
+            debug.setdefault("rejected_different_cell_connectors", 0)
+            debug.setdefault("rejected_opposite_side_connectors", 0)
+            debug.setdefault("rejected_too_long_connectors", 0)
+            debug.setdefault("pen_lifts_before_cell_planning", 0)
+            debug.setdefault("pen_lifts_after_cell_planning", 0)
 
         if debug is not None:
             for row in rows:
@@ -5578,93 +5904,99 @@ class SlicerService:
                 )
 
         if not allow_pen_down_infill_connectors:
-            return [
-                entry["toolpath"]
-                for entry in self._row_world_paths(rows, angle_deg=angle_deg, origin=origin, tolerance_mm=tolerance_mm, kind=kind)
-            ]
+            # Even with connectors disabled, keep split-row regions partitioned into
+            # stable cells so ordering does not repeatedly hop across cutout gaps.
+            rows_by_polygon: dict[int, list[dict[str, Any]]] = {}
+            for row in rows:
+                rows_by_polygon.setdefault(int(row["polygon_index"]), []).append(row)
+
+            for polygon_index, polygon in enumerate(normalize_geometry(rotated)):
+                component_id = f"component_{polygon_index:03d}"
+                drawable_rows = [row for row in rows_by_polygon.get(polygon_index, []) if row.get("segments")]
+                segments = self._to_infill_segments(drawable_rows, component_id=component_id)
+                if debug is not None:
+                    debug["total_scanlines"] = int(debug.get("total_scanlines", 0)) + len(drawable_rows)
+                    debug["total_clipped_intervals"] = int(debug.get("total_clipped_intervals", 0)) + len(segments)
+                    debug["pen_lifts_before_cell_planning"] = int(debug.get("pen_lifts_before_cell_planning", 0)) + max(0, len(segments) - 1)
+
+                cells, cell_stats = self._assign_infill_cells(
+                    polygon,
+                    segments,
+                    spacing_mm=spacing_mm,
+                    tolerance_mm=tolerance_mm,
+                )
+                if debug is not None:
+                    debug["rows_with_multiple_intervals"] = int(debug.get("rows_with_multiple_intervals", 0)) + int(cell_stats["rows_with_multiple_intervals"])
+                    debug["local_cell_count"] = int(debug.get("local_cell_count", 0)) + len(cells)
+                    debug["rejected_cross_gap_connectors"] = int(debug.get("rejected_cross_gap_connectors", 0)) + int(cell_stats["rejected_cross_gap_connectors"])
+                    debug["rejected_different_cell_connectors"] = int(debug.get("rejected_different_cell_connectors", 0)) + int(cell_stats["rejected_different_cell_connectors"])
+                    debug["rejected_opposite_side_connectors"] = int(debug.get("rejected_opposite_side_connectors", 0)) + int(cell_stats["rejected_opposite_side_connectors"])
+                    debug["rejected_too_long_connectors"] = int(debug.get("rejected_too_long_connectors", 0)) + int(cell_stats["rejected_too_long_connectors"])
+                    debug["pen_lifts_after_cell_planning"] = int(debug.get("pen_lifts_after_cell_planning", 0)) + max(0, len(segments) - len(cells))
+
+                for cell_id in sorted(cells.keys()):
+                    ordered_segments = sorted(
+                        cells[cell_id],
+                        key=lambda s: (s.row_index, s.min_u, s.interval_index),
+                    )
+                    for segment in ordered_segments:
+                        toolpaths.append(
+                            self._segment_to_world_toolpath(
+                                segment,
+                                angle_deg=angle_deg,
+                                origin=origin,
+                                tolerance_mm=tolerance_mm,
+                                kind=kind,
+                            )
+                        )
+
+            return optimize_toolpath_order(
+                toolpaths,
+                strategy="nearest-neighbor",
+            )
 
         rows_by_polygon: dict[int, list[dict[str, Any]]] = {}
         for row in rows:
             rows_by_polygon.setdefault(int(row["polygon_index"]), []).append(row)
 
         for polygon_index, polygon in enumerate(normalize_geometry(rotated)):
-            current_entry: dict[str, Any] | None = None
-            current_coords: list[tuple[float, float]] | None = None
-            current_row: dict[str, Any] | None = None
+            component_id = f"component_{polygon_index:03d}"
             drawable_rows = [row for row in rows_by_polygon.get(polygon_index, []) if row.get("segments")]
-            for entry in self._row_world_paths(
-                drawable_rows,
-                angle_deg=angle_deg,
-                origin=origin,
+            segments = self._to_infill_segments(drawable_rows, component_id=component_id)
+            if debug is not None:
+                debug["total_scanlines"] = int(debug.get("total_scanlines", 0)) + len(drawable_rows)
+                debug["total_clipped_intervals"] = int(debug.get("total_clipped_intervals", 0)) + len(segments)
+                debug["pen_lifts_before_cell_planning"] = int(debug.get("pen_lifts_before_cell_planning", 0)) + max(0, len(segments) - 1)
+
+            cells, cell_stats = self._assign_infill_cells(
+                polygon,
+                segments,
+                spacing_mm=spacing_mm,
                 tolerance_mm=tolerance_mm,
-                kind=kind,
-            ):
-                row = entry["row"]
-                coords = entry["coords"]
-                if current_entry is None or current_coords is None or current_row is None:
-                    current_entry = entry
-                    current_coords = list(coords)
-                    current_row = row
-                    continue
+            )
+            if debug is not None:
+                debug["rows_with_multiple_intervals"] = int(debug.get("rows_with_multiple_intervals", 0)) + int(cell_stats["rows_with_multiple_intervals"])
+                debug["local_cell_count"] = int(debug.get("local_cell_count", 0)) + len(cells)
+                debug["rejected_cross_gap_connectors"] = int(debug.get("rejected_cross_gap_connectors", 0)) + int(cell_stats["rejected_cross_gap_connectors"])
+                debug["rejected_different_cell_connectors"] = int(debug.get("rejected_different_cell_connectors", 0)) + int(cell_stats["rejected_different_cell_connectors"])
+                debug["rejected_opposite_side_connectors"] = int(debug.get("rejected_opposite_side_connectors", 0)) + int(cell_stats["rejected_opposite_side_connectors"])
+                debug["rejected_too_long_connectors"] = int(debug.get("rejected_too_long_connectors", 0)) + int(cell_stats["rejected_too_long_connectors"])
 
-                connector_coords, rejection_reason = self._plan_scanline_connector(
+            for cell_id in sorted(cells.keys()):
+                cell_paths, plan_stats = self._plan_cell_paths(
                     polygon,
-                    current_row,
-                    current_coords,
-                    row,
-                    coords,
+                    cells[cell_id],
                     spacing_mm=spacing_mm,
+                    angle_deg=angle_deg,
+                    origin=origin,
                     tolerance_mm=tolerance_mm,
+                    kind=kind,
+                    debug=debug,
                 )
-                if connector_coords:
-                    self._emit_debug_connector(
-                        debug,
-                        "valid_infill_connectors",
-                        connector_coords[0],
-                        connector_coords[-1],
-                        angle_deg,
-                        origin,
-                        "debug-valid-connector",
-                    )
-                    current_coords = _concat_coords(current_coords, connector_coords, coords)
-                    world_line = affinity.rotate(LineString(current_coords), angle_deg, origin=origin)
-                    points = simplify_segment_points([Point(x, y) for x, y in world_line.coords], tolerance_mm, False)
-                    if len(points) >= 2:
-                        current_entry = {
-                            "row": row,
-                            "coords": current_coords,
-                            "toolpath": clone_toolpath(
-                                current_entry["toolpath"],
-                                points=points,
-                                metadata={
-                                    **current_entry["toolpath"].metadata,
-                                    "scanline_offset_mm": float(row["offset_mm"]),
-                                    "scanline_grid_index": int(row["grid_index"]),
-                                },
-                            ),
-                        }
-                    current_row = row
-                    continue
-
+                toolpaths.extend(cell_paths)
                 if debug is not None:
-                    reasons = debug.setdefault("connector_rejection_reasons", {})
-                    reasons[rejection_reason] = int(reasons.get(rejection_reason, 0)) + 1
-                self._emit_debug_connector(
-                    debug,
-                    "rejected_infill_connectors",
-                    current_coords[-1],
-                    coords[0],
-                    angle_deg,
-                    origin,
-                    "debug-rejected-connector",
-                )
-                toolpaths.append(current_entry["toolpath"])
-                current_entry = entry
-                current_coords = list(coords)
-                current_row = row
-
-            if current_entry is not None:
-                toolpaths.append(current_entry["toolpath"])
+                    debug["accepted_same_cell_connectors"] = int(debug.get("accepted_same_cell_connectors", 0)) + int(plan_stats["accepted_connectors"])
+                    debug["pen_lifts_after_cell_planning"] = int(debug.get("pen_lifts_after_cell_planning", 0)) + int(plan_stats["pen_lifts"])
 
         return toolpaths
 
