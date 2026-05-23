@@ -217,7 +217,7 @@ DEFAULT_SMALL_DETAIL_MIN_DIM_FACTOR = 4.0
 DEFAULT_SMALL_DETAIL_MIN_DIM_FLOOR_MM = 1.0
 DEFAULT_SMALL_DETAIL_AREA_FACTOR = 18.0
 DEFAULT_SHORT_INFILL_SEGMENT_FACTOR = 1.5
-DEFAULT_MAX_PEN_DOWN_CONNECTOR_SPACING_FACTOR = 2.5
+DEFAULT_MAX_PEN_DOWN_CONNECTOR_SPACING_FACTOR = 1.4
 DEFAULT_STREAMING_MODE = "buffered"
 DEFAULT_OUTLINE_PLACEMENT_MODE = "inside_edge_default"
 DEFAULT_PROJECTION_SAMPLING_MAX_SEGMENT_MM = 0.25
@@ -5446,7 +5446,8 @@ class SlicerService:
         delta_v = abs(end_pt[1] - start_pt[1])
         if delta_v > spacing_mm * 1.15 + 1e-6:
             return False, "non_adjacent_row"
-        if delta_u > spacing_mm * 1.25:
+        # Keep only near-vertical micro connectors in scanline space.
+        if delta_u > spacing_mm * 0.8:
             return False, "diagonal_gap_crossing"
 
         connector = LineString([start_pt, end_pt])
@@ -5612,8 +5613,35 @@ class SlicerService:
                 draw_forward = not draw_forward
                 continue
 
-            prev_side = "high" if draw_forward else "low"
-            next_side = prev_side
+            current_end = Point(float(current_coords[-1][0]), float(current_coords[-1][1]))
+            current_low = Point(current_segment.low_u.x, current_segment.low_u.y)
+            current_high = Point(current_segment.high_u.x, current_segment.high_u.y)
+            if nearly_same_point(current_end, current_low, 1e-6):
+                prev_side = "low"
+            elif nearly_same_point(current_end, current_high, 1e-6):
+                prev_side = "high"
+            else:
+                prev_side = (
+                    "low"
+                    if math.hypot(current_end.x - current_low.x, current_end.y - current_low.y)
+                    <= math.hypot(current_end.x - current_high.x, current_end.y - current_high.y)
+                    else "high"
+                )
+
+            next_start = Point(float(oriented[0][0]), float(oriented[0][1]))
+            next_low = Point(segment.low_u.x, segment.low_u.y)
+            next_high = Point(segment.high_u.x, segment.high_u.y)
+            if nearly_same_point(next_start, next_low, 1e-6):
+                next_side = "low"
+            elif nearly_same_point(next_start, next_high, 1e-6):
+                next_side = "high"
+            else:
+                next_side = (
+                    "low"
+                    if math.hypot(next_start.x - next_low.x, next_start.y - next_low.y)
+                    <= math.hypot(next_start.x - next_high.x, next_start.y - next_high.y)
+                    else "high"
+                )
             ok, reason = self._segment_connectable_same_side(
                 polygon,
                 current_segment,
@@ -5723,6 +5751,89 @@ class SlicerService:
         if boundary_line.length > self._max_pen_down_connector_length_mm(spacing_mm) + 1e-6:
             return [], "too_long"
         return boundary_coords, "ok_boundary"
+
+    def _stitch_adjacent_paths_on_inside_travel(
+        self,
+        ordered_paths: list[Toolpath],
+        *,
+        cover_region: Any,
+        spacing_mm: float,
+        angle_deg: float,
+        origin: tuple[float, float],
+        tolerance_mm: float,
+        debug: Optional[dict[str, Any]] = None,
+    ) -> tuple[list[Toolpath], dict[str, int]]:
+        stats = {
+            "accepted_connectors": 0,
+            "rejected_outside": 0,
+            "rejected_too_long": 0,
+            "rejected_missing_points": 0,
+            "rejected_non_rectilinear": 0,
+        }
+        if len(ordered_paths) <= 1:
+            return ordered_paths, stats
+
+        if cover_region is None or cover_region.is_empty:
+            return ordered_paths, stats
+
+        stitched: list[Toolpath] = []
+        current = ordered_paths[0]
+        current_points = list(current.points)
+        current_meta = dict(current.metadata or {})
+
+        for nxt in ordered_paths[1:]:
+            if len(current_points) < 1 or len(nxt.points) < 1:
+                stats["rejected_missing_points"] += 1
+                stitched.append(clone_toolpath(current, points=current_points, metadata=current_meta))
+                current = nxt
+                current_points = list(current.points)
+                current_meta = dict(current.metadata or {})
+                continue
+
+            start = current_points[-1]
+            end = nxt.points[0]
+            connector = LineString([(start.x, start.y), (end.x, end.y)])
+
+            max_len = max(
+                spacing_mm * DEFAULT_MAX_PEN_DOWN_CONNECTOR_SPACING_FACTOR,
+                spacing_mm + 0.25,
+            )
+            connector_is_short = connector.length <= max_len + 1e-6
+            # Strictly require the full connector segment to stay inside printable
+            # infill area (including boundary). No positive padding here: that can
+            # incorrectly bridge across voids/gaps.
+            connector_inside = bool(cover_region.covers(connector))
+            if connector_inside and connector_is_short:
+                if not nearly_same_point(start, end, 1e-6):
+                    current_points.append(Point(end.x, end.y))
+                current_points.extend(nxt.points[1:])
+                stats["accepted_connectors"] += 1
+                current_meta["travel_connector_stitched"] = True
+                current_meta["stitched_connector_count"] = int(current_meta.get("stitched_connector_count", 0)) + 1
+                if debug is not None:
+                    debug_append_toolpaths(
+                        debug,
+                        "valid_infill_connectors",
+                        [Toolpath(points=[Point(start.x, start.y), Point(end.x, end.y)], kind="debug-valid-connector", closed=False)],
+                    )
+            else:
+                if not connector_inside:
+                    stats["rejected_outside"] += 1
+                else:
+                    stats["rejected_too_long"] += 1
+                stitched.append(clone_toolpath(current, points=current_points, metadata=current_meta))
+                current = nxt
+                current_points = list(current.points)
+                current_meta = dict(current.metadata or {})
+                if debug is not None:
+                    debug_append_toolpaths(
+                        debug,
+                        "rejected_infill_connectors",
+                        [Toolpath(points=[Point(start.x, start.y), Point(end.x, end.y)], kind="debug-rejected-connector", closed=False)],
+                    )
+
+        stitched.append(clone_toolpath(current, points=current_points, metadata=current_meta))
+        return stitched, stats
 
     def _scanline_metrics(
         self,
@@ -5903,58 +6014,7 @@ class SlicerService:
                     [entry["toolpath"] for entry in self._row_world_paths([row], angle_deg=angle_deg, origin=origin, tolerance_mm=tolerance_mm, kind=kind)],
                 )
 
-        if not allow_pen_down_infill_connectors:
-            # Even with connectors disabled, keep split-row regions partitioned into
-            # stable cells so ordering does not repeatedly hop across cutout gaps.
-            rows_by_polygon: dict[int, list[dict[str, Any]]] = {}
-            for row in rows:
-                rows_by_polygon.setdefault(int(row["polygon_index"]), []).append(row)
-
-            for polygon_index, polygon in enumerate(normalize_geometry(rotated)):
-                component_id = f"component_{polygon_index:03d}"
-                drawable_rows = [row for row in rows_by_polygon.get(polygon_index, []) if row.get("segments")]
-                segments = self._to_infill_segments(drawable_rows, component_id=component_id)
-                if debug is not None:
-                    debug["total_scanlines"] = int(debug.get("total_scanlines", 0)) + len(drawable_rows)
-                    debug["total_clipped_intervals"] = int(debug.get("total_clipped_intervals", 0)) + len(segments)
-                    debug["pen_lifts_before_cell_planning"] = int(debug.get("pen_lifts_before_cell_planning", 0)) + max(0, len(segments) - 1)
-
-                cells, cell_stats = self._assign_infill_cells(
-                    polygon,
-                    segments,
-                    spacing_mm=spacing_mm,
-                    tolerance_mm=tolerance_mm,
-                )
-                if debug is not None:
-                    debug["rows_with_multiple_intervals"] = int(debug.get("rows_with_multiple_intervals", 0)) + int(cell_stats["rows_with_multiple_intervals"])
-                    debug["local_cell_count"] = int(debug.get("local_cell_count", 0)) + len(cells)
-                    debug["rejected_cross_gap_connectors"] = int(debug.get("rejected_cross_gap_connectors", 0)) + int(cell_stats["rejected_cross_gap_connectors"])
-                    debug["rejected_different_cell_connectors"] = int(debug.get("rejected_different_cell_connectors", 0)) + int(cell_stats["rejected_different_cell_connectors"])
-                    debug["rejected_opposite_side_connectors"] = int(debug.get("rejected_opposite_side_connectors", 0)) + int(cell_stats["rejected_opposite_side_connectors"])
-                    debug["rejected_too_long_connectors"] = int(debug.get("rejected_too_long_connectors", 0)) + int(cell_stats["rejected_too_long_connectors"])
-                    debug["pen_lifts_after_cell_planning"] = int(debug.get("pen_lifts_after_cell_planning", 0)) + max(0, len(segments) - len(cells))
-
-                for cell_id in sorted(cells.keys()):
-                    ordered_segments = sorted(
-                        cells[cell_id],
-                        key=lambda s: (s.row_index, s.min_u, s.interval_index),
-                    )
-                    for segment in ordered_segments:
-                        toolpaths.append(
-                            self._segment_to_world_toolpath(
-                                segment,
-                                angle_deg=angle_deg,
-                                origin=origin,
-                                tolerance_mm=tolerance_mm,
-                                kind=kind,
-                            )
-                        )
-
-            return optimize_toolpath_order(
-                toolpaths,
-                strategy="nearest-neighbor",
-            )
-
+        # Build the same base stroke order as no-connector mode.
         rows_by_polygon: dict[int, list[dict[str, Any]]] = {}
         for row in rows:
             rows_by_polygon.setdefault(int(row["polygon_index"]), []).append(row)
@@ -5982,23 +6042,49 @@ class SlicerService:
                 debug["rejected_opposite_side_connectors"] = int(debug.get("rejected_opposite_side_connectors", 0)) + int(cell_stats["rejected_opposite_side_connectors"])
                 debug["rejected_too_long_connectors"] = int(debug.get("rejected_too_long_connectors", 0)) + int(cell_stats["rejected_too_long_connectors"])
 
-            for cell_id in sorted(cells.keys()):
-                cell_paths, plan_stats = self._plan_cell_paths(
-                    polygon,
-                    cells[cell_id],
-                    spacing_mm=spacing_mm,
-                    angle_deg=angle_deg,
-                    origin=origin,
-                    tolerance_mm=tolerance_mm,
-                    kind=kind,
-                    debug=debug,
-                )
-                toolpaths.extend(cell_paths)
-                if debug is not None:
-                    debug["accepted_same_cell_connectors"] = int(debug.get("accepted_same_cell_connectors", 0)) + int(plan_stats["accepted_connectors"])
-                    debug["pen_lifts_after_cell_planning"] = int(debug.get("pen_lifts_after_cell_planning", 0)) + int(plan_stats["pen_lifts"])
+            if debug is not None:
+                debug["pen_lifts_after_cell_planning"] = int(debug.get("pen_lifts_after_cell_planning", 0)) + max(0, len(segments) - len(cells))
 
-        return toolpaths
+            for cell_id in sorted(cells.keys()):
+                ordered_segments = sorted(
+                    cells[cell_id],
+                    key=lambda s: (s.row_index, s.min_u, s.interval_index),
+                )
+                for segment in ordered_segments:
+                    toolpaths.append(
+                        self._segment_to_world_toolpath(
+                            segment,
+                            angle_deg=angle_deg,
+                            origin=origin,
+                            tolerance_mm=tolerance_mm,
+                            kind=kind,
+                        )
+                    )
+
+        # Keep native scanline emission order/direction here. Connector mode must
+        # reuse the exact no-connector travel pairing, not a re-optimized/reversed
+        # pairing that can create zigzag stitching.
+        ordered = list(toolpaths)
+        if not allow_pen_down_infill_connectors:
+            return ordered
+
+        stitched, stitch_stats = self._stitch_adjacent_paths_on_inside_travel(
+            ordered,
+            cover_region=region,
+            spacing_mm=spacing_mm,
+            angle_deg=angle_deg,
+            origin=origin,
+            tolerance_mm=tolerance_mm,
+            debug=debug,
+        )
+        if debug is not None:
+            debug["accepted_same_cell_connectors"] = int(debug.get("accepted_same_cell_connectors", 0)) + int(stitch_stats["accepted_connectors"])
+            reasons = debug.setdefault("connector_rejection_reasons", {})
+            reasons["outside_polygon"] = int(reasons.get("outside_polygon", 0)) + int(stitch_stats["rejected_outside"])
+            reasons["too_long"] = int(reasons.get("too_long", 0)) + int(stitch_stats["rejected_too_long"])
+            reasons["non_adjacent_row"] = int(reasons.get("non_adjacent_row", 0)) + int(stitch_stats["rejected_non_rectilinear"])
+            debug["pen_lifts_after_cell_planning"] = max(0, len(stitched) - 1)
+        return stitched
 
     def _generate_centerline_fallback(
         self,
@@ -6428,10 +6514,10 @@ class SlicerService:
         if resolved_infill_path_mode not in {"rectilinear", "serpentine_optimized", "legacy"}:
             resolved_infill_path_mode = DEFAULT_INFILL_PATH_MODE
         effective_fill_strategy = fill_strategy
-        effective_allow_connectors = bool(allow_pen_down_infill_connectors)
-        if resolved_infill_path_mode == "rectilinear":
-            effective_allow_connectors = False
-        elif resolved_infill_path_mode == "legacy":
+        # Roll back to pre-connector behavior: keep classic pen-up travel between
+        # infill strokes so motion planning matches the known-good baseline.
+        effective_allow_connectors = False
+        if resolved_infill_path_mode == "legacy":
             effective_allow_connectors = True
             if fill_strategy == "adaptive_angle":
                 effective_fill_strategy = "horizontal_scanline"
@@ -7131,6 +7217,7 @@ def generate_gcode_from_toolpaths(
                 "id": travel_id,
                 "kind": "travel",
                 "closed": False,
+                "pen_down": bool(current_pen_down),
                 "points": [asdict(_rounded_gcode_point(current_position)), asdict(_rounded_gcode_point(start))],
                 "gcode_start_line": travel_line,
                 "gcode_end_line": travel_line,
@@ -7285,6 +7372,7 @@ def generate_gcode_from_toolpaths(
             "id": "travel-home",
             "kind": "travel",
             "closed": False,
+            "pen_down": False,
             "points": [asdict(_rounded_gcode_point(current_position)), asdict(Point(0.0, 0.0))],
             "gcode_start_line": return_home_line,
             "gcode_end_line": return_home_line,

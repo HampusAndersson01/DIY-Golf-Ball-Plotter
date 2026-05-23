@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState }
 
 import type { MachineState, PreviewPath } from '../../api/types'
 import { PanZoomCanvas } from './PanZoomCanvas'
-import { WORLD_BOUNDS, classifyPath, derivePreviewBounds, getCurrentMarker, pathColor, phaseOpacity, phaseStroke, printableXBounds, shouldRenderPath } from './previewMath'
+import { WORLD_BOUNDS, classifyPath, derivePreviewBounds, getCurrentMarker, pathColor, phaseOpacity, phaseStroke, previewPathDashed, previewVisualKind, printableXBounds, shouldRenderPath } from './previewMath'
 
 export type Toolpath2DHandle = {
   fit: () => void
@@ -53,11 +53,12 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
       for (let index = 1; index < points.length; index += 1) {
         ctx.lineTo(points[index].x, -points[index].y)
       }
-      ctx.setLineDash(path.kind === 'travel' ? [3 / engine.getScale(), 2 / engine.getScale()] : [])
+      const visualKind = previewVisualKind(path)
+      ctx.setLineDash(previewPathDashed(path) ? [3 / engine.getScale(), 2 / engine.getScale()] : [])
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
       ctx.lineWidth = (phase === 'current' ? 2.4 : 1.6) / engine.getScale()
-      ctx.strokeStyle = hexWithAlpha(phaseStroke(phase, path.kind), phaseOpacity(phase, path.kind))
+      ctx.strokeStyle = hexWithAlpha(phaseStroke(phase, visualKind), phaseOpacity(phase, visualKind))
       ctx.stroke()
 
       const marker = getCurrentMarker(path, nextMachine)

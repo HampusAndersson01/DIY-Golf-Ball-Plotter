@@ -7,7 +7,7 @@ import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
 
 import type { MachineState, PreviewPath } from '../../api/types'
 import type { ViewPreset } from '../../store/appStore'
-import { classifyPath, getCurrentMarker, phaseOpacity, phaseStroke, printableXBounds, shouldRenderPath } from './previewMath'
+import { classifyPath, getCurrentMarker, phaseOpacity, phaseStroke, previewPathDashed, previewVisualKind, printableXBounds, shouldRenderPath } from './previewMath'
 
 export type Ball3DHandle = {
   fit: () => void
@@ -127,8 +127,9 @@ function ScenePaths({ paths, machine, maxPrintXSpanDeg }: { paths: PreviewPath[]
       </mesh>
       {paths.map((path, index) => {
         const phase = classifyPath(path, machine)
-        const color = phaseStroke(phase, path.kind)
-        const opacity = phaseOpacity(phase, path.kind)
+        const visualKind = previewVisualKind(path)
+        const color = phaseStroke(phase, visualKind)
+        const opacity = phaseOpacity(phase, visualKind)
         const marker = getCurrentMarker(path, machine)
         const points = path.points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
         if (points.length < 2) return null
@@ -136,7 +137,7 @@ function ScenePaths({ paths, machine, maxPrintXSpanDeg }: { paths: PreviewPath[]
           <group key={path.id ?? `${path.kind}-${index}`}>
             <Line
               color={color}
-              dashed={path.kind === 'travel'}
+              dashed={previewPathDashed(path)}
               dashScale={6}
               lineWidth={phase === 'current' ? 2.6 : 1.4}
               opacity={opacity}

@@ -1151,13 +1151,13 @@ def test_pen_width_drives_dense_infill_spacing_when_spacing_matches_pen_width():
     printable = _rect(10.0, 10.0)
 
     toolpaths = _generate_fill_toolpaths(printable, line_width_mm=0.3, infill_spacing_mm=0.3)
-    infill_path = next(path for path in toolpaths if path.kind == "fill-infill")
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
 
     row_positions = []
-    for point in infill_path.points:
-        y_value = round(point.y, 6)
-        if not row_positions or abs(row_positions[-1] - y_value) > 1e-6:
-            row_positions.append(y_value)
+    for infill_path in infill_paths:
+        for point in infill_path.points:
+            row_positions.append(round(point.y, 6))
+    row_positions = sorted(set(row_positions))
 
     spacings = [row_positions[index] - row_positions[index - 1] for index in range(1, len(row_positions))]
 

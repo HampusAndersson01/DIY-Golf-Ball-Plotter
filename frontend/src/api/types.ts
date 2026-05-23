@@ -12,6 +12,11 @@ export type PreviewPath = {
   points: PreviewPoint[]
   gcode_start_line: number | null
   gcode_end_line: number | null
+  pen_down?: boolean
+  source_path_id?: string
+  source_path_kind?: string
+  source?: string
+  region_id?: number
 }
 
 export type CalibrationBbox = {

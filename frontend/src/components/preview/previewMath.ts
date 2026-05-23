@@ -65,6 +65,18 @@ export function phaseStroke(phase: PathPhase, kind: string) {
   return pathColor(kind)
 }
 
+export function travelRendersAsInfill(path: PreviewPath) {
+  return path.kind === 'travel' && path.pen_down === true
+}
+
+export function previewVisualKind(path: PreviewPath) {
+  return travelRendersAsInfill(path) ? 'fill-infill' : path.kind
+}
+
+export function previewPathDashed(path: PreviewPath) {
+  return path.kind === 'travel' && !travelRendersAsInfill(path)
+}
+
 export function derivePreviewBounds(paths: PreviewPath[], maxPrintXSpanDeg: number) {
   const printableBounds = printableXBounds(maxPrintXSpanDeg)
   let minX = WORLD_BOUNDS.minX
