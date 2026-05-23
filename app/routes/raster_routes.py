@@ -292,6 +292,7 @@ def generate_image_gcode_route():
             min_segment_length_mm=options["min_segment_length_mm"],
             travel_optimization=options["travel_optimization"],
             allow_pen_down_infill_connectors=options["allow_pen_down_infill_connectors"],
+            infill_path_mode=options["infill_path_mode"],
             debug=debug_data,
         )
         if not toolpaths:

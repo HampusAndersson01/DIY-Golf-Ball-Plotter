@@ -125,6 +125,7 @@ class ValidationService:
             "min_segment_length_mm": self.validate_non_negative_float(form.get("min_segment_length_mm", config["DEFAULT_MIN_SEGMENT_LENGTH_MM"]), "Minimum segment length", maximum=20),
             "travel_optimization": form.get("travel_optimization", config["DEFAULT_TRAVEL_OPTIMIZATION"]),
             "allow_pen_down_infill_connectors": self.validate_bool(form.get("allow_pen_down_infill_connectors", config["DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS"])),
+            "infill_path_mode": form.get("infill_path_mode", config.get("DEFAULT_INFILL_PATH_MODE", "rectilinear")),
             "fit_mode": form.get("fit_mode", "contain"),
             "invert_y": form.get("invert_y", "1") == "1",
             "include_comments": form.get("include_comments", "1") == "1",
@@ -161,6 +162,8 @@ class ValidationService:
             raise ValueError("Invalid small shape mode")
         if options["travel_optimization"] not in {"nearest-neighbor"}:
             raise ValueError("Invalid travel optimization")
+        if options["infill_path_mode"] not in {"rectilinear", "serpentine_optimized", "legacy"}:
+            raise ValueError("Invalid infill path mode")
         if options["gcode_mode"] not in {"simple"}:
             raise ValueError("Invalid G-code mode")
         return options
@@ -254,6 +257,7 @@ class ValidationService:
             "min_segment_length_mm": self.validate_non_negative_float(form.get("min_segment_length_mm", config["DEFAULT_MIN_SEGMENT_LENGTH_MM"]), "Minimum segment length", maximum=20),
             "travel_optimization": form.get("travel_optimization", config["DEFAULT_TRAVEL_OPTIMIZATION"]),
             "allow_pen_down_infill_connectors": self.validate_bool(form.get("allow_pen_down_infill_connectors", config["DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS"])),
+            "infill_path_mode": form.get("infill_path_mode", config.get("DEFAULT_INFILL_PATH_MODE", "rectilinear")),
             "fit_mode": form.get("fit_mode", "contain"),
             "invert_y": form.get("invert_y", "1") == "1",
             "include_comments": form.get("include_comments", "1") == "1",
@@ -302,6 +306,8 @@ class ValidationService:
             raise ValueError("Invalid small shape mode")
         if options["travel_optimization"] not in {"nearest-neighbor"}:
             raise ValueError("Invalid travel optimization")
+        if options["infill_path_mode"] not in {"rectilinear", "serpentine_optimized", "legacy"}:
+            raise ValueError("Invalid infill path mode")
         if options["gcode_mode"] not in {"simple"}:
             raise ValueError("Invalid G-code mode")
         return options

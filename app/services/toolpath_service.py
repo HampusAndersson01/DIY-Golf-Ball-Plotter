@@ -15,7 +15,7 @@ class ToolpathService:
         *,
         pen_width_mm: float,
         wall_count: int,
-        infill_pattern: str = "zigzag",
+        infill_pattern: str = "hatch",
         infill_spacing_mm: float | None = None,
         infill_density: float = 100.0,
         infill_angle_deg: float = 0.0,
@@ -33,7 +33,8 @@ class ToolpathService:
         thin_detail_overlap: bool = True,
         min_segment_length_mm: float = 0.0,
         travel_optimization: str = "nearest-neighbor",
-        allow_pen_down_infill_connectors: bool = True,
+        allow_pen_down_infill_connectors: bool = False,
+        infill_path_mode: str = "rectilinear",
         debug=None,
     ):
         if infill_pattern not in {"zigzag", "hatch"}:
@@ -70,5 +71,6 @@ class ToolpathService:
             min_segment_length_mm=min_segment_length_mm,
             travel_optimization=travel_optimization,
             allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
+            infill_path_mode=infill_path_mode,
             debug=debug,
         )

@@ -66,6 +66,7 @@ RUNTIME_KEYS = [
     "DEFAULT_MIN_SEGMENT_LENGTH_MM",
     "DEFAULT_TRAVEL_OPTIMIZATION",
     "DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS",
+    "DEFAULT_INFILL_PATH_MODE",
     "DEFAULT_STREAMING_MODE",
     "SVG_DARK_FILL_LUMINANCE_THRESHOLD",
     "SVG_LIGHT_CUTOUT_LUMINANCE_THRESHOLD",
@@ -191,7 +192,7 @@ DEFAULT_COLOR_MAPPING_MODE = False
 DEFAULT_TRACE_STROKE_ONLY_PATHS = True
 DEFAULT_FILL_ONLY_DARK_SVG_FILLS = True
 DEFAULT_WALL_COUNT = 1
-DEFAULT_INFILL_PATTERN = "zigzag"
+DEFAULT_INFILL_PATTERN = "hatch"
 DEFAULT_INFILL_DENSITY = 100.0
 DEFAULT_INFILL_SPACING_MM = DEFAULT_LINE_THICKNESS_MM
 DEFAULT_INFILL_ANGLE_DEG = 45.0
@@ -209,7 +210,8 @@ DEFAULT_THIN_DETAIL_SIMPLIFY_MM = 0.1
 DEFAULT_THIN_DETAIL_OVERLAP = True
 DEFAULT_MIN_SEGMENT_LENGTH_MM = 0.5
 DEFAULT_TRAVEL_OPTIMIZATION = "nearest-neighbor"
-DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS = True
+DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS = False
+DEFAULT_INFILL_PATH_MODE = "rectilinear"
 DEFAULT_LONG_THIN_INFILL_ASPECT_RATIO = 3.0
 DEFAULT_SMALL_DETAIL_MIN_DIM_FACTOR = 4.0
 DEFAULT_SMALL_DETAIL_MIN_DIM_FLOOR_MM = 1.0
@@ -438,6 +440,7 @@ class SlicerSettings:
     min_segment_length_mm: float = DEFAULT_MIN_SEGMENT_LENGTH_MM
     travel_optimization: str = DEFAULT_TRAVEL_OPTIMIZATION
     allow_pen_down_infill_connectors: bool = DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS
+    infill_path_mode: str = DEFAULT_INFILL_PATH_MODE
 
 
 @dataclass
@@ -5371,10 +5374,10 @@ class SlicerService:
         *,
         spacing_mm: float,
         tolerance_mm: float,
-    ) -> list[tuple[float, float]]:
+    ) -> tuple[list[tuple[float, float]], str]:
         row_delta = abs(float(next_row["offset_mm"]) - float(current_row["offset_mm"]))
         if abs(row_delta - spacing_mm) > max(1e-6, spacing_mm * 0.1):
-            return []
+            return [], "non_adjacent_row"
 
         start = current_coords[-1]
         end = next_coords[0]
@@ -5387,7 +5390,7 @@ class SlicerService:
             and abs(abs(dy) - spacing_mm) <= max(1e-6, spacing_mm * 0.1)
             and abs(dx) <= (spacing_mm * 0.35)
         ):
-            return [start, end]
+            return [start, end], "ok_direct"
 
         boundary_coords = boundary_connector_coords(
             polygon,
@@ -5396,14 +5399,13 @@ class SlicerService:
             tolerance=max(tolerance_mm, 1e-6),
         )
         if len(boundary_coords) < 2:
-            return []
+            return [], "outside_polygon"
         boundary_line = LineString(boundary_coords)
-        if (
-            cover_region.covers(boundary_line)
-            and boundary_line.length <= self._max_pen_down_connector_length_mm(spacing_mm) + 1e-6
-        ):
-            return boundary_coords
-        return []
+        if not cover_region.covers(boundary_line):
+            return [], "outside_polygon"
+        if boundary_line.length > self._max_pen_down_connector_length_mm(spacing_mm) + 1e-6:
+            return [], "too_long"
+        return boundary_coords, "ok_boundary"
 
     def _scanline_metrics(
         self,
@@ -5558,6 +5560,8 @@ class SlicerService:
 
         rows = row_data.get("rows") or []
         toolpaths: list[Toolpath] = []
+        if debug is not None:
+            debug.setdefault("connector_rejection_reasons", {})
 
         if debug is not None:
             for row in rows:
@@ -5603,7 +5607,7 @@ class SlicerService:
                     current_row = row
                     continue
 
-                connector_coords = self._plan_scanline_connector(
+                connector_coords, rejection_reason = self._plan_scanline_connector(
                     polygon,
                     current_row,
                     current_coords,
@@ -5642,6 +5646,9 @@ class SlicerService:
                     current_row = row
                     continue
 
+                if debug is not None:
+                    reasons = debug.setdefault("connector_rejection_reasons", {})
+                    reasons[rejection_reason] = int(reasons.get(rejection_reason, 0)) + 1
                 self._emit_debug_connector(
                     debug,
                     "rejected_infill_connectors",
@@ -6079,10 +6086,23 @@ class SlicerService:
         thin_detail_overlap: bool = DEFAULT_THIN_DETAIL_OVERLAP,
         travel_optimization: str = DEFAULT_TRAVEL_OPTIMIZATION,
         allow_pen_down_infill_connectors: bool = DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS,
+        infill_path_mode: str = DEFAULT_INFILL_PATH_MODE,
         debug: Optional[dict[str, Any]] = None,
     ) -> list[Toolpath]:
         if printable_geometry is None or printable_geometry.is_empty or line_width_mm <= 0:
             return []
+
+        resolved_infill_path_mode = (infill_path_mode or DEFAULT_INFILL_PATH_MODE).strip().lower()
+        if resolved_infill_path_mode not in {"rectilinear", "serpentine_optimized", "legacy"}:
+            resolved_infill_path_mode = DEFAULT_INFILL_PATH_MODE
+        effective_fill_strategy = fill_strategy
+        effective_allow_connectors = bool(allow_pen_down_infill_connectors)
+        if resolved_infill_path_mode == "rectilinear":
+            effective_allow_connectors = False
+        elif resolved_infill_path_mode == "legacy":
+            effective_allow_connectors = True
+            if fill_strategy == "adaptive_angle":
+                effective_fill_strategy = "horizontal_scanline"
 
         simplify_tolerance_resolved_mm = simplify_tolerance_mm
         thin_detail_tolerance_mm = thin_detail_simplify_mm
@@ -6095,18 +6115,21 @@ class SlicerService:
             infill_density=infill_density,
             infill_spacing_mm=infill_spacing_mm,
             infill_angle_deg=infill_angle_deg,
-            fill_strategy=fill_strategy,
+            fill_strategy=effective_fill_strategy,
             alternate_fill_angle_deg=alternate_fill_angle_deg,
-            allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
+            allow_pen_down_infill_connectors=effective_allow_connectors,
+            infill_path_mode=resolved_infill_path_mode,
         ))
         logger.debug(
-            "Fill generation resolved settings: line_width_mm=%.4f infill_spacing_mm=%.4f wall_count=%d infill_density=%.2f infill_angle_deg=%.2f fill_strategy=%s alternate_fill_angle_deg=%.2f min_fill_area_mm2=%.4f min_fill_width_mm=%.4f min_segment_length_mm=%.4f coordinate_space=%s",
+            "Fill generation resolved settings: line_width_mm=%.4f infill_spacing_mm=%.4f wall_count=%d infill_density=%.2f infill_angle_deg=%.2f fill_strategy=%s infill_path_mode=%s allow_connectors=%s alternate_fill_angle_deg=%.2f min_fill_area_mm2=%.4f min_fill_width_mm=%.4f min_segment_length_mm=%.4f coordinate_space=%s",
             line_width_mm,
             scanline_spacing_mm,
             wall_count,
             infill_density,
             infill_angle_deg,
-            fill_strategy,
+            effective_fill_strategy,
+            resolved_infill_path_mode,
+            effective_allow_connectors,
             alternate_fill_angle_deg,
             min_fill_area_resolved_mm2,
             min_fill_width_mm,
@@ -6209,7 +6232,7 @@ class SlicerService:
                     spacing_mm=scanline_spacing_mm,
                     angle_deg=infill_angle_deg,
                     alternate_angle_deg=alternate_fill_angle_deg,
-                    fill_strategy=fill_strategy,
+                    fill_strategy=effective_fill_strategy,
                     min_segment_length_mm=min_segment_length_resolved_mm,
                     line_width_mm=line_width_mm,
                     region_index=region_index,
@@ -6262,7 +6285,7 @@ class SlicerService:
                         angle_deg=resolved_infill_angle_deg,
                         min_segment_length_mm=min_segment_length_resolved_mm,
                         tolerance_mm=simplify_tolerance_resolved_mm,
-                        allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
+                        allow_pen_down_infill_connectors=effective_allow_connectors,
                         debug=debug,
                     )
                 infill_paths = [
@@ -6311,7 +6334,7 @@ class SlicerService:
                         tolerance_mm=simplify_tolerance_resolved_mm,
                         detail_tolerance_mm=thin_detail_tolerance_mm,
                         allow_overlap=thin_detail_overlap,
-                        allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
+                        allow_pen_down_infill_connectors=effective_allow_connectors,
                         debug=debug,
                     )
                     infill_paths = [
@@ -6480,7 +6503,9 @@ class SlicerService:
         if debug is not None:
             debug["infill_debug"] = {
                 "coordinate_space": "surface_mm",
-                "fill_strategy": fill_strategy,
+                "fill_strategy": effective_fill_strategy,
+                "infill_path_mode": resolved_infill_path_mode,
+                "allow_pen_down_infill_connectors": effective_allow_connectors,
                 "fill_angles_deg": [infill_angle_deg, alternate_fill_angle_deg],
                 "spacing_mm": scanline_spacing_mm,
                 "pen_width_mm": line_width_mm,
@@ -6525,6 +6550,7 @@ def generate_toolpaths(
     min_segment_length_mm: float = DEFAULT_MIN_SEGMENT_LENGTH_MM,
     travel_optimization: str = DEFAULT_TRAVEL_OPTIMIZATION,
     allow_pen_down_infill_connectors: bool = DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS,
+    infill_path_mode: str = DEFAULT_INFILL_PATH_MODE,
     debug: Optional[dict[str, Any]] = None,
 ) -> list[Toolpath]:
     toolpaths: list[Toolpath] = []
@@ -6582,6 +6608,7 @@ def generate_toolpaths(
             thin_detail_overlap=thin_detail_overlap,
             travel_optimization=travel_optimization,
             allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
+            infill_path_mode=infill_path_mode,
             debug=debug,
         ))
 

@@ -36,6 +36,7 @@ def make_config():
         "DEFAULT_MIN_SEGMENT_LENGTH_MM": 0.5,
         "DEFAULT_TRAVEL_OPTIMIZATION": "nearest-neighbor",
         "DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS": True,
+        "DEFAULT_INFILL_PATH_MODE": "rectilinear",
         "DEFAULT_RASTER_MAX_COLORS": 8,
         "DEFAULT_RASTER_COLOR_TOLERANCE": 24,
         "DEFAULT_RASTER_MIN_COMPONENT_AREA_PX": 8,
@@ -177,6 +178,18 @@ def test_generate_raster_form_rejects_invalid_origin_anchor():
             {
                 "selected_colors": "[\"#000000\"]",
                 "origin_anchor": "left",
+            },
+            make_config(),
+        )
+
+
+def test_generate_raster_form_rejects_invalid_infill_path_mode():
+    service = ValidationService()
+    with pytest.raises(ValueError, match="Invalid infill path mode"):
+        service.parse_generate_raster_form(
+            {
+                "selected_colors": "[\"#000000\"]",
+                "infill_path_mode": "unsupported",
             },
             make_config(),
         )

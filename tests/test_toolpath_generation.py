@@ -36,6 +36,7 @@ def _generate_fill_toolpaths(printable_geometry, **overrides):
         "min_segment_length_mm": 0.0,
         "travel_optimization": "nearest-neighbor",
         "allow_pen_down_infill_connectors": True,
+        "infill_path_mode": "serpentine_optimized",
     }
     params.update(overrides)
     return generate_toolpaths(GeometryBundle(printable_geometry=printable_geometry), **params)
@@ -228,7 +229,7 @@ def test_regions_without_outline_clearance_fall_back_to_detail_fill():
     assert not any(path.kind == "fill-wall" for path in toolpaths)
 
 
-def test_simple_rectangle_infill_becomes_single_zigzag_path():
+def test_simple_rectangle_infill_is_rectilinear_without_zigzag_connectors():
     line_width_mm = 1.0
     printable = _rect(width_mm=10.0, height_mm=10.0)
 
@@ -251,11 +252,9 @@ def test_simple_rectangle_infill_becomes_single_zigzag_path():
     )
 
     infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
-    assert len(infill_paths) == 1
-    assert len(infill_paths[0].points) > 4
-
-    y_values = [point.y for point in infill_paths[0].points]
-    assert max(y_values) > min(y_values)
+    assert len(infill_paths) >= 2
+    assert all(len(path.points) >= 2 for path in infill_paths)
+    assert all(len(path.points) <= 3 for path in infill_paths)
     assert _fill_modes(infill_paths) == {"large_open"}
 
 
@@ -377,8 +376,9 @@ def test_trapezoid_infill_follows_angled_walls_without_fragmenting():
     )
 
     infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
-    assert len(infill_paths) == 1
-    assert len(infill_paths[0].points) > 10
+    assert len(infill_paths) > 10
+    assert all(len(path.points) >= 2 for path in infill_paths)
+    _assert_infill_segments_stay_inside_region(infill_paths, _infill_region(printable))
 
 
 def test_concave_c_shape_does_not_connect_across_open_gap():
@@ -428,6 +428,45 @@ def test_disabling_pen_down_infill_connectors_outputs_separate_spans():
     infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
     assert len(infill_paths) > 1
     _assert_infill_segments_stay_inside_region(infill_paths, _infill_region(printable))
+
+
+def test_infill_path_mode_rectilinear_forces_separate_rows_even_when_connectors_enabled():
+    printable = Polygon([
+        (0.0, 0.0),
+        (16.0, 0.0),
+        (12.0, 18.0),
+        (4.0, 18.0),
+    ])
+    debug: dict = {}
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        allow_pen_down_infill_connectors=True,
+        infill_path_mode="rectilinear",
+        debug=debug,
+    )
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    assert len(infill_paths) > 1
+    assert debug.get("infill_debug", {}).get("infill_path_mode") == "rectilinear"
+    assert debug.get("infill_debug", {}).get("allow_pen_down_infill_connectors") is False
+
+
+def test_infill_path_mode_serpentine_optimized_keeps_connector_attempts_and_reports_rejections():
+    printable = Polygon([
+        (0.0, 0.0),
+        (24.0, 0.0),
+        (24.0, 12.0),
+        (0.0, 12.0),
+    ])
+    debug: dict = {}
+    _generate_fill_toolpaths(
+        printable,
+        allow_pen_down_infill_connectors=True,
+        infill_path_mode="serpentine_optimized",
+        debug=debug,
+    )
+    reasons = debug.get("connector_rejection_reasons", {})
+    assert isinstance(reasons, dict)
+    assert set(reasons.keys()).issubset({"too_long", "outside_polygon", "non_adjacent_row"})
 
 
 def test_short_clipped_infill_fragments_are_skipped():
