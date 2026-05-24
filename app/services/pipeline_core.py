@@ -210,7 +210,7 @@ DEFAULT_THIN_DETAIL_SIMPLIFY_MM = 0.1
 DEFAULT_THIN_DETAIL_OVERLAP = True
 DEFAULT_MIN_SEGMENT_LENGTH_MM = 0.5
 DEFAULT_TRAVEL_OPTIMIZATION = "nearest-neighbor"
-DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS = False
+DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS = True
 DEFAULT_INFILL_PATH_MODE = "rectilinear"
 DEFAULT_LONG_THIN_INFILL_ASPECT_RATIO = 3.0
 DEFAULT_SMALL_DETAIL_MIN_DIM_FACTOR = 4.0
@@ -5546,7 +5546,7 @@ class SlicerService:
         # inside the polygon (shrunk by tolerance). This allows long angled
         # connectors that are fully internal to be used as pen-down travels.
         try:
-            inner_ok = False
+            inner_region = None
             try:
                 inner_region = polygon.buffer(-max(tolerance_mm, 1e-6), join_style=1)
             except Exception:
@@ -5561,20 +5561,45 @@ class SlicerService:
             return False, "too_long"
 
         cover_region = polygon.buffer(max(tolerance_mm, 1e-6), join_style=1)
-        if not cover_region.covers(connector):
-            boundary_coords = boundary_connector_coords(
-                polygon,
-                start_pt,
-                end_pt,
-                tolerance=max(tolerance_mm, spacing_mm * 0.75, 0.05),
-            )
-            if len(boundary_coords) >= 2:
-                boundary_line = LineString(boundary_coords)
-                if cover_region.covers(boundary_line):
-                    if boundary_line.length <= max_length + 1e-6 or _line_fully_inside(cover_region, boundary_line, tolerance_mm=max(0.01, spacing_mm * 0.05)):
-                        return True, "ok_boundary"
-            return False, "outside_polygon"
-        return True, "ok_same_side"
+        # Accept connectors that are mostly inside the cover region even if
+        # the entire chord is not strictly covered. This tolerates small
+        # gaps and boundary noise while still preventing obvious outside hops.
+        try:
+            if cover_region is not None and not getattr(cover_region, "is_empty", True):
+                if cover_region.covers(connector):
+                    return True, "ok_same_side"
+                # fraction of connector inside cover_region
+                inter = connector.intersection(cover_region)
+                inter_len = float(getattr(inter, "length", 0.0) or 0.0)
+                if inter_len >= 0.5 * float(connector.length):
+                    return True, "ok_partial_coverage"
+                # Accept short connectors with any non-zero overlap to favour
+                # pen-down stitching for tiny internal hops.
+                if inter_len > 1e-6 and connector.length <= max_length + 1e-6:
+                    return True, "ok_partial_small"
+        except Exception:
+            pass
+
+        # Try boundary-following candidate and accept when a large fraction
+        # of the boundary routing lies inside the cover region.
+        boundary_coords = boundary_connector_coords(
+            polygon,
+            start_pt,
+            end_pt,
+            tolerance=max(tolerance_mm, spacing_mm * 0.75, 0.05),
+        )
+        if len(boundary_coords) >= 2:
+            boundary_line = LineString(boundary_coords)
+            try:
+                inter = boundary_line.intersection(cover_region)
+                inter_len = float(getattr(inter, "length", 0.0) or 0.0)
+                if inter_len >= 0.5 * float(boundary_line.length) and boundary_line.length <= max_length + 1e-6:
+                    return True, "ok_boundary_partial"
+                if inter_len > 1e-6 and boundary_line.length <= max_length + 1e-6:
+                    return True, "ok_boundary_partial_small"
+            except Exception:
+                pass
+        return False, "outside_polygon"
 
     def _assign_infill_cells(
         self,
@@ -5929,7 +5954,9 @@ class SlicerService:
             connector_mode = "direct"
             if connector_fully_inside:
                 connector_coords = [start, end]
-            elif connector_inside and connector_is_short:
+            elif (connector_is_short and (connector_inside or (connector.intersection(cover_region).length > 1e-6 if hasattr(connector, 'intersection') else False))):
+                # Permit short connectors when they have any overlap with the
+                # cover region to prefer pen-down stitching for small hops.
                 connector_coords = [start, end]
             else:
                 for polygon in normalize_geometry(cover_region):
@@ -5942,7 +5969,15 @@ class SlicerService:
                     if len(candidate_coords) < 2:
                         continue
                     candidate_line = LineString(candidate_coords)
-                    if not cover_region.covers(candidate_line):
+                    # Accept candidate when it substantially lies inside the
+                    # cover region (not necessarily fully covered) and length
+                    # is within the allowed maximum.
+                    try:
+                        inter = candidate_line.intersection(cover_region)
+                        inter_len = float(getattr(inter, "length", 0.0) or 0.0)
+                    except Exception:
+                        inter_len = 0.0
+                    if inter_len < 0.5 * float(candidate_line.length):
                         continue
                     if candidate_line.length > max_len + 1e-6:
                         continue
