@@ -101,16 +101,20 @@ class GcodeService:
             for point in pts[1:]:
                 gcode.append(f"G1 X{point.x:.4f} Y{point.y:.4f} F{draw_feed:.3f}")
                 current_position = point
-            gcode.extend(self.build_pen_position_commands(
-                current_servo,
-                pen_up_s,
-                ramp_enabled=servo_ramp_enabled,
-                ramp_step=servo_ramp_step,
-                ramp_delay_ms=servo_ramp_delay_ms,
-                dwell_ms=pen_up_dwell_ms,
-            ))
-            current_servo = pen_up_s
-            current_pen_down = False
+            next_toolpath = toolpaths[index] if index < len(toolpaths) else None
+            if next_toolpath is not None and getattr(next_toolpath, "kind", None) == "fill-infill-travel":
+                comment(f"PATH_END id={index} (keeping pen down for connector)")
+            else:
+                gcode.extend(self.build_pen_position_commands(
+                    current_servo,
+                    pen_up_s,
+                    ramp_enabled=servo_ramp_enabled,
+                    ramp_step=servo_ramp_step,
+                    ramp_delay_ms=servo_ramp_delay_ms,
+                    dwell_ms=pen_up_dwell_ms,
+                ))
+                current_servo = pen_up_s
+                current_pen_down = False
 
         if current_position is not None and not pipeline_core.nearly_same_point(current_position, pipeline_core.Point(0.0, 0.0)):
             comment("Return to zero with pen up")

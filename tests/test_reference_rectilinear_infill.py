@@ -55,6 +55,26 @@ def _count_long_diagonal_connectors(lines: list[LineString], *, main_angle_deg: 
     return count
 
 
+def _count_real_pen_lifts_from_gcode(gcode: list[str], *, pen_up_s: float, pen_down_s: float) -> int:
+    lifts = 0
+    current_pen_down = False
+    for line in gcode:
+        if not line.startswith("M3 S"):
+            continue
+        try:
+            value = float(line.split("S", 1)[1].strip())
+        except Exception:
+            continue
+        if abs(value - pen_down_s) <= 1e-6:
+            current_pen_down = True
+            continue
+        if abs(value - pen_up_s) <= 1e-6:
+            if current_pen_down:
+                lifts += 1
+            current_pen_down = False
+    return lifts
+
+
 def _load_services() -> tuple[RasterAnalysisService, GeometryService, ToolpathService, GcodeService]:
     raster = RasterAnalysisService(CONFIG, MachineState(default_pen_up_s=575))
     return raster, GeometryService(), ToolpathService(), GcodeService()
@@ -202,7 +222,30 @@ def test_reference_rectilinear_infill_can_emit_pen_down_connector_travels():
 
     reference = parse_reference_gcode(FIXTURE_GCODE)
     reference_spacing = max(0.15, reference.infill.spacing_mm)
-    debug: dict = {}
+
+    before_debug: dict = {}
+    toolpaths_before = toolpaths_service.generate_from_regions(
+        mapped,
+        pen_width_mm=reference_spacing,
+        wall_count=1,
+        infill_pattern="hatch",
+        infill_spacing_mm=reference_spacing,
+        infill_density=100.0,
+        infill_angle_deg=reference.infill.angle_deg,
+        fill_strategy="rotated_scanline",
+        min_region_area=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=True,
+        small_shape_mode="single-wall",
+        thin_detail_mode=True,
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+        allow_pen_down_infill_connectors=False,
+        debug=before_debug,
+    )
+
+    after_debug: dict = {}
     toolpaths = toolpaths_service.generate_from_regions(
         mapped,
         pen_width_mm=reference_spacing,
@@ -221,7 +264,7 @@ def test_reference_rectilinear_infill_can_emit_pen_down_connector_travels():
         min_segment_length_mm=0.0,
         travel_optimization="nearest-neighbor",
         allow_pen_down_infill_connectors=True,
-        debug=debug,
+        debug=after_debug,
     )
 
     connector_paths = [path for path in toolpaths if path.kind == "fill-infill-travel"]
@@ -244,5 +287,39 @@ def test_reference_rectilinear_infill_can_emit_pen_down_connector_travels():
         include_comments=True,
     )
 
+    actual_pen_lifts = _count_real_pen_lifts_from_gcode(gcode, pen_up_s=575, pen_down_s=700)
+    before_infill_paths = [path for path in toolpaths_before if path.kind == "fill-infill"]
+    after_infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    after_connector_paths = [path for path in toolpaths if path.kind == "fill-infill-travel"]
+    diagnostics = after_debug.get("infill_connector_diagnostics", {})
+    top_rejection_reason = diagnostics.get("top_rejection_reason")
+
+    report = {
+        "before": {
+            "pen_lifts": len(before_infill_paths),
+            "infill_chains": len(before_infill_paths),
+        },
+        "after": {
+            "pen_lifts": actual_pen_lifts,
+            "infill_chains": len(after_infill_paths),
+            "accepted_connectors": len(after_connector_paths),
+            "rejected_connectors": diagnostics.get("rejected_connectors", 0),
+            "top_rejection_reason": top_rejection_reason,
+        },
+        "diagnostics": diagnostics,
+        "preview_fill_infill_travel_count": len([entry for entry in preview if entry.get("kind") == "fill-infill-travel"]),
+        "preview_pen_down_connector_count": len([entry for entry in preview if entry.get("kind") == "fill-infill-travel" and entry.get("pen_down")]),
+    }
+    print("\nHA_CONNECTOR_COMPARISON", json.dumps(report, separators=(",", ":"), sort_keys=True))
+
     assert any(entry["kind"] == "fill-infill-travel" and entry.get("pen_down") for entry in preview)
+    assert report["preview_fill_infill_travel_count"] == len(after_connector_paths)
+    assert actual_pen_lifts < 50
+    assert diagnostics.get("total_infill_rows", 0) > 0
+    assert diagnostics.get("total_possible_adjacent_row_connector_attempts", 0) >= len(after_connector_paths)
+    assert diagnostics.get("accepted_connectors", 0) == len(after_connector_paths)
+    assert diagnostics.get("rejection_counts", {}).get("crosses_gap_hole_void", 0) >= 0
+    assert diagnostics.get("rejection_counts", {}).get("outside_fillable_polygon", 0) >= 0
+    assert diagnostics.get("rejection_counts", {}).get("different_component", 0) >= 0
+    assert diagnostics.get("rejection_counts", {}).get("different_cell_or_section", 0) >= 0
     assert any(line.startswith("G1 X") for line in gcode)
