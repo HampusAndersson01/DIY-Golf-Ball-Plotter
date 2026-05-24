@@ -49,6 +49,7 @@ export function getCurrentMarker(path: PreviewPath, machine: MachineState | null
 export function pathColor(kind: string) {
   if (kind === 'fill-wall' || kind === 'outline') return '#f6b756'
   if (kind === 'fill-infill') return '#46c0c6'
+  if (kind === 'fill-infill-travel') return '#84cc16'
   if (kind === 'detail-trace') return '#de5eb4'
   if (kind === 'travel') return '#64748b'
   return '#94a3b8'
@@ -70,6 +71,7 @@ export function travelRendersAsInfill(path: PreviewPath) {
 }
 
 export function previewVisualKind(path: PreviewPath) {
+  if (path.kind === 'fill-infill-travel') return 'fill-infill-travel'
   return travelRendersAsInfill(path) ? 'fill-infill' : path.kind
 }
 

@@ -2641,6 +2641,12 @@ def _drawing_path_kinds() -> set[str]:
     return {"outline", "fill-wall", "fill-infill", "detail-trace"}
 
 
+def _minimum_toolpath_length_threshold(toolpath: Toolpath, requested_minimum_length: float) -> float:
+    if toolpath.kind in {"detail-trace", "fill-infill-travel"}:
+        return 0.0
+    return requested_minimum_length
+
+
 def _path_component_label(toolpath: Toolpath) -> str:
     component_id = _extract_component_id(
         toolpath.metadata.get("source_component_id")
@@ -3412,7 +3418,7 @@ def _sanitize_toolpath_points(
 
 
 def _effective_cleanup_min_segment_length_mm(toolpath: Toolpath, requested_min_segment_length_mm: float) -> float:
-    if toolpath.kind in {"outline", "fill-wall", "detail-trace"}:
+    if toolpath.kind in {"outline", "fill-wall", "detail-trace", "fill-infill-travel"}:
         return 0.0
     return requested_min_segment_length_mm
 
@@ -3695,6 +3701,7 @@ def _expected_relation_to_fill(toolpath: Toolpath) -> str:
         "outline": "boundary_cleanup",
         "fill-wall": "supporting_wall",
         "fill-infill": "fill_interior",
+        "fill-infill-travel": "internal_fill_connector",
         "detail-trace": "detail_overlay",
     }
     return str(toolpath.metadata.get("expected_relation_to_fill") or defaults.get(toolpath.kind, "independent"))
@@ -4790,7 +4797,7 @@ def dedupe_toolpaths(paths: list[Toolpath], minimum_length: float) -> list[Toolp
     for path in paths:
         if len(path.points) < 2:
             continue
-        if segment_length(path.points) < minimum_length:
+        if segment_length(path.points) < _minimum_toolpath_length_threshold(path, minimum_length):
             continue
         signature = path_signature(path)
         if signature in seen:
@@ -4802,11 +4809,10 @@ def dedupe_toolpaths(paths: list[Toolpath], minimum_length: float) -> list[Toolp
 
 def filter_toolpaths_by_length(paths: list[Toolpath], minimum_length: float) -> list[Toolpath]:
     filtered: list[Toolpath] = []
-    relaxed_minimum = max(0.0, minimum_length * 0.25)
     for path in paths:
         if len(path.points) < 2:
             continue
-        threshold = relaxed_minimum if path.kind == "detail-trace" else minimum_length
+        threshold = _minimum_toolpath_length_threshold(path, minimum_length)
         if segment_length(path.points) < threshold:
             continue
         filtered.append(path)
@@ -5804,18 +5810,34 @@ class SlicerService:
             # incorrectly bridge across voids/gaps.
             connector_inside = bool(cover_region.covers(connector))
             if connector_inside and connector_is_short:
-                if not nearly_same_point(start, end, 1e-6):
-                    current_points.append(Point(end.x, end.y))
-                current_points.extend(nxt.points[1:])
                 stats["accepted_connectors"] += 1
-                current_meta["travel_connector_stitched"] = True
-                current_meta["stitched_connector_count"] = int(current_meta.get("stitched_connector_count", 0)) + 1
+                stitched.append(clone_toolpath(current, points=current_points, metadata=current_meta))
+                connector_path = Toolpath(
+                    points=[Point(start.x, start.y), Point(end.x, end.y)],
+                    kind="fill-infill-travel",
+                    closed=False,
+                    source="infill_connector",
+                    region_id=current.region_id,
+                    metadata={
+                        "projection_count": 0,
+                        "expected_relation_to_fill": "internal_fill_connector",
+                        "travel_mode": "pen_down",
+                        "connector_source_path_id": current.path_id,
+                        "connector_target_path_id": nxt.path_id,
+                    },
+                )
+                stitched.append(connector_path)
                 if debug is not None:
                     debug_append_toolpaths(
                         debug,
                         "valid_infill_connectors",
                         [Toolpath(points=[Point(start.x, start.y), Point(end.x, end.y)], kind="debug-valid-connector", closed=False)],
                     )
+                current = nxt
+                current_points = list(current.points)
+                current_meta = dict(current.metadata or {})
+                continue
+
             else:
                 if not connector_inside:
                     stats["rejected_outside"] += 1
@@ -6514,9 +6536,7 @@ class SlicerService:
         if resolved_infill_path_mode not in {"rectilinear", "serpentine_optimized", "legacy"}:
             resolved_infill_path_mode = DEFAULT_INFILL_PATH_MODE
         effective_fill_strategy = fill_strategy
-        # Roll back to pre-connector behavior: keep classic pen-up travel between
-        # infill strokes so motion planning matches the known-good baseline.
-        effective_allow_connectors = False
+        effective_allow_connectors = allow_pen_down_infill_connectors
         if resolved_infill_path_mode == "legacy":
             effective_allow_connectors = True
             if fill_strategy == "adaptive_angle":
@@ -7063,6 +7083,7 @@ def generate_toolpaths(
     toolpath_counts = {
         "generated_fill_walls": sum(1 for path in toolpaths if path.kind == "fill-wall"),
         "generated_infill_paths": sum(1 for path in toolpaths if path.kind == "fill-infill"),
+        "generated_infill_travel_paths": sum(1 for path in toolpaths if path.kind == "fill-infill-travel"),
         "generated_thin_detail_paths": sum(1 for path in toolpaths if path.kind == "detail-trace"),
         "generated_detail_trace_paths": sum(1 for path in toolpaths if path.kind == "detail-trace"),
         "generated_outline_paths": sum(1 for path in toolpaths if path.kind == "outline"),
@@ -7184,6 +7205,94 @@ def generate_gcode_from_toolpaths(
         start = pts[0]
         pen_up_before_travel_to_start = not current_pen_down
         unexpected_pen_down_travel = False
+        is_pen_down_travel = toolpath.kind == "fill-infill-travel"
+        if is_pen_down_travel:
+            if not current_pen_down:
+                for command in build_pen_position_commands(
+                    current_servo,
+                    pen_down_s,
+                    ramp_enabled=servo_ramp_enabled,
+                    ramp_step=servo_ramp_step,
+                    ramp_delay_ms=servo_ramp_delay_ms,
+                    dwell_ms=pen_down_dwell_ms,
+                ):
+                    append_gcode(command)
+                current_servo = pen_down_s
+                current_pen_down = True
+
+            path_id = toolpath.path_id or f"path-{index:04d}"
+            draw_start_line = None
+            draw_end_line = None
+            path_gcode_start_index = len(g)
+            max_surface_segment_mm = float(toolpath.metadata.get("max_surface_segment_mm_after_resampling", 0.0))
+            source_label = toolpath.metadata.get("source_polygon_id", _path_component_label(toolpath))
+            comment(
+                f"PATH_START id={path_id} kind={toolpath.kind} space={toolpath.coordinate_space} "
+                f"source={source_label} points={len(pts)} max_surface_segment_mm={max_surface_segment_mm:.4f}"
+            )
+            comment(f"{toolpath.kind} path {index}, {len(pts)} points")
+            previous_point = pts[0]
+            for point in pts[1:]:
+                line_number = append_motion("G1", point, travel_feed)
+                if line_number is not None:
+                    if draw_start_line is None:
+                        draw_start_line = line_number
+                    draw_end_line = line_number
+                    jump = math.hypot(point.x - previous_point.x, point.y - previous_point.y)
+                    max_pen_down_jump = max(max_pen_down_jump, jump)
+                    if jump > max(5.0, sample_step_deg * 5.0):
+                        long_pen_down_jumps += 1
+                    pen_state_debug.append({
+                        "line_index": line_number,
+                        "command": g[-1],
+                        "path_id": path_id,
+                        "kind": toolpath.kind,
+                        "expected_pen_state": "down",
+                        "actual_pen_state": "down" if current_pen_down else "up",
+                        "is_drawing_move": False,
+                        "warning": "",
+                    })
+                current_position = point
+                previous_point = point
+            emitted_points = [_rounded_gcode_point(point) for point in pts]
+            preview.append({
+                "id": path_id,
+                "kind": toolpath.kind,
+                "closed": toolpath.closed,
+                "pen_down": True,
+                "travel_mode": "pen_down",
+                "points": [asdict(point) for point in emitted_points],
+                "gcode_start_line": draw_start_line,
+                "gcode_end_line": draw_end_line,
+                "source": toolpath.source,
+                "region_id": toolpath.region_id,
+            })
+            preview_points = [Point(point.x, point.y) for point in emitted_points]
+            comment(f"PATH_END id={path_id}")
+            path_gcode_lines = g[path_gcode_start_index:]
+            log_path_pipeline_audit(
+                None,
+                toolpath,
+                gcode_motion_count=max(0, len(pts) - 1),
+                pen_down_motion_count=max(0, len(pts) - 1),
+                pen_up_motion_count=0,
+                uses_same_projected_object_for_preview_and_gcode=True,
+            )
+            log_preview_gcode_identity_check(path_id, toolpath.kind, preview_points, emitted_points)
+            log_pen_state_path_boundary_check(
+                path_id=path_id,
+                kind=toolpath.kind,
+                previous_path_id=previous_draw_path_id,
+                pen_up_before_travel_to_start=pen_up_before_travel_to_start,
+                pen_down_only_after_reaching_start=True,
+                pen_up_after_path_end=False,
+                unexpected_pen_down_travel=False,
+                first_gcode_for_path=path_gcode_lines[:3],
+                last_gcode_for_path=path_gcode_lines[-3:],
+            )
+            previous_draw_path_id = path_id
+            continue
+
         if not nearly_same_point(current_position, start):
             travel_id = f"travel-{index:04d}"
             if current_pen_down:

@@ -51,6 +51,25 @@ class GcodeService:
             if len(pts) < 2:
                 continue
             start = pts[0]
+            is_pen_down_travel = toolpath.kind == "fill-infill-travel"
+            if is_pen_down_travel:
+                if not current_pen_down:
+                    gcode.extend(self.build_pen_position_commands(
+                        current_servo,
+                        pen_down_s,
+                        ramp_enabled=servo_ramp_enabled,
+                        ramp_step=servo_ramp_step,
+                        ramp_delay_ms=servo_ramp_delay_ms,
+                        dwell_ms=pen_down_dwell_ms,
+                    ))
+                    current_servo = pen_down_s
+                    current_pen_down = True
+                preview.append({"kind": toolpath.kind, "closed": toolpath.closed, "pen_down": True, "travel_mode": "pen_down", "points": [asdict(point) for point in pts]})
+                comment(f"Internal travel to {toolpath.kind} path {index}")
+                for point in pts[1:]:
+                    gcode.append(f"G1 X{point.x:.4f} Y{point.y:.4f} F{travel_feed:.3f}")
+                    current_position = point
+                continue
             if current_position is not None and not pipeline_core.nearly_same_point(current_position, start):
                 preview.append({"kind": "travel", "closed": False, "points": [asdict(current_position), asdict(start)]})
                 if current_pen_down:

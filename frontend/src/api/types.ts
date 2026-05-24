@@ -1,4 +1,4 @@
-export type PreviewKind = 'fill-wall' | 'fill-infill' | 'detail-trace' | 'outline' | 'travel' | string
+export type PreviewKind = 'fill-wall' | 'fill-infill' | 'fill-infill-travel' | 'detail-trace' | 'outline' | 'travel' | string
 
 export type PreviewPoint = {
   x: number

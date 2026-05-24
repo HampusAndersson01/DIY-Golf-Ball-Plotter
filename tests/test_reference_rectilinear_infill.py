@@ -179,3 +179,70 @@ def test_reference_rectilinear_infill_matches_fixture():
         "travel_moves_inside_infill": len([entry for entry in preview if entry.get("kind") == "travel"]),
     }
     print("\nREFERENCE_INFILL_DEBUG", json.dumps(debug_payload, separators=(",", ":"), sort_keys=True))
+
+
+def test_reference_rectilinear_infill_can_emit_pen_down_connector_travels():
+    assert FIXTURE_IMAGE.exists(), f"Missing fixture image: {FIXTURE_IMAGE}"
+
+    image_bytes = FIXTURE_IMAGE.read_bytes()
+    raster, geometry, toolpaths_service, gcode_service = _load_services()
+    analysis = raster.analyze_image(image_bytes, max_colors=32)
+    selected = next((color.id for color in analysis.colors if color.hex == "#000000"), analysis.colors[0].id if analysis.colors else None)
+    assert selected is not None, "No selectable color found in fixture image"
+    mask = raster.build_mask(
+        image_bytes,
+        [selected],
+        tolerance=24,
+        min_component_area_px=0,
+        open_radius_px=0,
+        close_radius_px=1,
+    )
+    regions = raster.extract_regions(mask, min_region_area_px=8, simplify_tolerance_px=1.0)
+    mapped = geometry.map_bundle_to_angles(regions.bundle, regions.bounds, "contain", True, 4.0)
+
+    reference = parse_reference_gcode(FIXTURE_GCODE)
+    reference_spacing = max(0.15, reference.infill.spacing_mm)
+    debug: dict = {}
+    toolpaths = toolpaths_service.generate_from_regions(
+        mapped,
+        pen_width_mm=reference_spacing,
+        wall_count=1,
+        infill_pattern="hatch",
+        infill_spacing_mm=reference_spacing,
+        infill_density=100.0,
+        infill_angle_deg=reference.infill.angle_deg,
+        fill_strategy="rotated_scanline",
+        min_region_area=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=True,
+        small_shape_mode="single-wall",
+        thin_detail_mode=True,
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+        allow_pen_down_infill_connectors=True,
+        debug=debug,
+    )
+
+    connector_paths = [path for path in toolpaths if path.kind == "fill-infill-travel"]
+    assert connector_paths, "Expected at least one pen-down infill connector path"
+    assert all(len(path.points) == 2 for path in connector_paths)
+
+    gcode, preview = gcode_service.generate_from_toolpaths(
+        toolpaths=toolpaths,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=True,
+    )
+
+    assert any(entry["kind"] == "fill-infill-travel" and entry.get("pen_down") for entry in preview)
+    assert any(line.startswith("G1 X") for line in gcode)
