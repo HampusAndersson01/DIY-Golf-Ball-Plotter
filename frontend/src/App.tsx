@@ -1,15 +1,11 @@
-import { startTransition, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
+import { startTransition, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 
 import { analyzeImage, apiConfig, fetchBootstrap, fetchState, generateDiagnosticGcode, generateImageGcode, postJson } from './api/client'
 import { CalibrationPatternPanel } from './components/calibration/CalibrationPatternPanel'
 import { XAxisCalibrationPanel } from './components/calibration/XAxisCalibrationPanel'
-import { AppShell } from './components/layout/AppShell'
 import { StepNav } from './components/layout/StepNav'
-import { TopStatusBar } from './components/layout/TopStatusBar'
-import { ColorPickerPanel } from './components/image/ColorPickerPanel'
-import { ImageImportCard } from './components/image/ImageImportCard'
-import { PenSettingsCard } from './components/image/PenSettingsCard'
+import { PrintSetupPanel } from './components/image/PrintSetupPanel'
 import { AdvancedDrawer } from './components/job/AdvancedDrawer'
 import { GcodePanel } from './components/job/GcodePanel'
 import { JobSummaryPanel } from './components/job/JobSummaryPanel'
@@ -23,6 +19,18 @@ import { getProgressPercent } from './components/preview/previewMath'
 import type { JobSummary, MachineState, PreviewPath } from './api/types'
 import type { SettingsState } from './store/appStore'
 import { useAppStore } from './store/appStore'
+import type { ComponentType } from 'react'
+import { MdChevronLeft, MdChevronRight, MdPrint, MdSettingsApplications, MdUsb } from 'react-icons/md'
+
+type SidebarCategory = 'control' | 'output' | 'advanced'
+
+type SidebarIcon = ComponentType<{ 'aria-hidden'?: boolean }>
+
+const SIDEBAR_CATEGORIES: Array<{ id: SidebarCategory; label: string; icon: SidebarIcon }> = [
+  { id: 'control', label: 'Control', icon: () => <MdUsb aria-hidden="true" /> },
+  { id: 'output', label: 'Output', icon: () => <MdPrint aria-hidden="true" /> },
+  { id: 'advanced', label: 'Advanced', icon: () => <MdSettingsApplications aria-hidden="true" /> },
+]
 
 function App() {
   const busy = useAppStore((state) => state.busy)
@@ -103,6 +111,9 @@ function DashboardApp() {
   const pushToast = useAppStore((state) => state.pushToast)
   const dismissToast = useAppStore((state) => state.dismissToast)
   const [generationDurationMs, setGenerationDurationMs] = useState<number | null>(null)
+  const [activeSidebarCategory, setActiveSidebarCategory] = useState<SidebarCategory>('output')
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(true)
+  const [previewZoomLabel, setPreviewZoomLabel] = useState('100%')
   const restoredPersistedPreviewRef = useRef(false)
   const lastSeenPlacementPreviewKeyRef = useRef<string | null>(null)
   const pendingPlacementPreviewKeyRef = useRef<string | null>(null)
@@ -110,12 +121,18 @@ function DashboardApp() {
   const readySettings = settings
   const progressPercent = getProgressPercent(machine)
   const runReady = Boolean(machine?.connected && machine?.calibrated && gcode.length && !machine?.y_loop_test?.enabled && !busy.running)
+  const runLockReason = !machine?.connected
+    ? 'Connect machine first'
+    : !machine?.calibrated
+      ? 'Calibration pending'
+      : !gcode.length
+        ? 'Generate a job first'
+        : machine?.y_loop_test?.enabled
+          ? 'Stop Y-loop test before run'
+          : busy.running
+            ? 'Job startup in progress'
+            : null
   const currentSettings = useMemo(() => readySettings, [readySettings])
-  const currentPath = useMemo(
-    () => preview.find((path) => path.id === machine?.current_path_id) ?? null,
-    [machine?.current_path_id, preview],
-  )
-  const currentKind = currentPath ? formatKind(currentPath.kind) : 'Idle'
   const elapsedSeconds = getElapsedSeconds(machine)
   const remainingSeconds = getRemainingSeconds(machine, summary, progressPercent, elapsedSeconds)
 
@@ -124,6 +141,34 @@ function DashboardApp() {
     if (machine?.paused) await handleResume()
     else await handlePause()
   })
+
+  const hydrateGeneratedPreviewFromMachineOnce = useCallback((nextState: MachineState) => {
+    if (restoredPersistedPreviewRef.current) {
+      return
+    }
+
+    const hydratedPreview = sanitizePreviewPaths(
+      Array.isArray(nextState.last_preview) ? (nextState.last_preview as Array<Record<string, unknown>>) : [],
+    )
+    const hydratedGcode = Array.isArray(nextState.last_gcode)
+      ? nextState.last_gcode.filter((line): line is string => typeof line === 'string')
+      : []
+    const hydratedSummary = nextState.last_summary ?? null
+
+    if (!hydratedPreview.length && !hydratedGcode.length && !hydratedSummary) {
+      return
+    }
+
+    restoredPersistedPreviewRef.current = true
+    setPreviewPayload({
+      preview: hydratedPreview,
+      maskPreviewUrl: null,
+      gcode: hydratedGcode,
+      summary: hydratedSummary,
+      calibrationPattern: null,
+      xAxisCalibrationPattern: null,
+    })
+  }, [setPreviewPayload])
 
   useEffect(() => {
     let active = true
@@ -146,7 +191,7 @@ function DashboardApp() {
       active = false
       window.clearInterval(timer)
     }
-  }, [appendLog, setMachine])
+  }, [appendLog, hydrateGeneratedPreviewFromMachineOnce, setMachine])
 
   useEffect(() => {
     const timers = toasts.map((toast) => window.setTimeout(() => dismissToast(toast.id), 2800))
@@ -175,6 +220,38 @@ function DashboardApp() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [machine?.running, setShowCompare])
 
+  const placementPreviewKey = readySettings
+    ? [
+      readySettings.originAnchor,
+      readySettings.originOffsetXmm,
+      readySettings.originOffsetYmm,
+    ].join('|')
+    : 'uninitialized'
+
+  const refreshPlacedPreview = useEffectEvent(() => {
+    if (!readySettings) return
+    void handleGenerate()
+  })
+
+  useEffect(() => {
+    if (!readySettings) return
+    const previousKey = lastSeenPlacementPreviewKeyRef.current
+    lastSeenPlacementPreviewKeyRef.current = placementPreviewKey
+    if (previousKey == null || previousKey === placementPreviewKey) return
+    pendingPlacementPreviewKeyRef.current = placementPreviewKey
+  }, [placementPreviewKey, readySettings])
+
+  useEffect(() => {
+    if (!readySettings) return
+    if (pendingPlacementPreviewKeyRef.current !== placementPreviewKey) return
+    if (!imageFile || !selectedColors.length || (!preview.length && !gcode.length) || busy.generating) return
+    const timer = window.setTimeout(() => {
+      pendingPlacementPreviewKeyRef.current = null
+      refreshPlacedPreview()
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [busy.generating, gcode.length, imageFile, placementPreviewKey, preview.length, readySettings, selectedColors.length])
+
   if (!readySettings) {
     return <BootMessage title="Loading dashboard" detail="Preparing local operator state." />
   }
@@ -183,64 +260,10 @@ function DashboardApp() {
   }
 
   const settingsState = readySettings
-  const placementPreviewKey = [
-    settingsState.originAnchor,
-    settingsState.originOffsetXmm,
-    settingsState.originOffsetYmm,
-  ].join('|')
-
-  const refreshPlacedPreview = useEffectEvent(() => {
-    void handleGenerate()
-  })
-
-  useEffect(() => {
-    const previousKey = lastSeenPlacementPreviewKeyRef.current
-    lastSeenPlacementPreviewKeyRef.current = placementPreviewKey
-    if (previousKey == null || previousKey === placementPreviewKey) return
-    pendingPlacementPreviewKeyRef.current = placementPreviewKey
-  }, [placementPreviewKey])
-
-  useEffect(() => {
-    if (pendingPlacementPreviewKeyRef.current !== placementPreviewKey) return
-    if (!imageFile || !selectedColors.length || (!preview.length && !gcode.length) || busy.generating) return
-    const timer = window.setTimeout(() => {
-      pendingPlacementPreviewKeyRef.current = null
-      refreshPlacedPreview()
-    }, 250)
-    return () => window.clearTimeout(timer)
-  }, [busy.generating, gcode.length, imageFile, placementPreviewKey, preview.length, refreshPlacedPreview, selectedColors.length])
 
   async function refreshMachine() {
     const nextState = await fetchState()
     setMachine(nextState)
-  }
-
-  function hydrateGeneratedPreviewFromMachineOnce(nextState: MachineState) {
-    if (restoredPersistedPreviewRef.current) {
-      return
-    }
-
-    const hydratedPreview = sanitizePreviewPaths(
-      Array.isArray(nextState.last_preview) ? (nextState.last_preview as Array<Record<string, unknown>>) : [],
-    )
-    const hydratedGcode = Array.isArray(nextState.last_gcode)
-      ? nextState.last_gcode.filter((line): line is string => typeof line === 'string')
-      : []
-    const hydratedSummary = nextState.last_summary ?? null
-
-    if (!hydratedPreview.length && !hydratedGcode.length && !hydratedSummary) {
-      return
-    }
-
-    restoredPersistedPreviewRef.current = true
-    setPreviewPayload({
-      preview: hydratedPreview,
-      maskPreviewUrl: null,
-      gcode: hydratedGcode,
-      summary: hydratedSummary,
-      calibrationPattern: null,
-      xAxisCalibrationPattern: null,
-    })
   }
 
   async function callEndpoint(endpoint: string, body: unknown, successMessage?: string) {
@@ -277,28 +300,6 @@ function DashboardApp() {
       )
     } catch (error) {
       pushToast(String(error), 'error')
-    }
-  }
-
-  async function handleAnalyze() {
-    if (!imageFile) {
-      pushToast('Select a PNG or JPG first.', 'error')
-      return
-    }
-    setBusy('analyzing', true)
-    try {
-      const formData = new FormData()
-      formData.append('image', imageFile)
-      formData.append('max_colors', String(settingsState.maxColors))
-      formData.append('simplify_colors', settingsState.simplifyColors ? '1' : '0')
-      const result = await analyzeImage(formData)
-      setAnalysis(result)
-      pushToast('Colors analyzed.', 'success')
-    } catch (error) {
-      pushToast(String(error), 'error')
-      appendLog(`Analyze failed: ${String(error)}`)
-    } finally {
-      setBusy('analyzing', false)
     }
   }
 
@@ -511,97 +512,300 @@ function DashboardApp() {
     }
   }
 
-  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+  async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null
     const previewUrl = file ? URL.createObjectURL(file) : null
     if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl)
     setImageFile(file, previewUrl)
+    if (file) {
+      void handleAnalyzeFile(file)
+    }
+  }
+
+  async function handleAnalyzeFile(file: File) {
+    setBusy('analyzing', true)
+    try {
+      const formData = new FormData()
+      formData.append('image', file)
+      formData.append('max_colors', String(settingsState.maxColors))
+      formData.append('simplify_colors', settingsState.simplifyColors ? '1' : '0')
+      const result = await analyzeImage(formData)
+      setAnalysis(result)
+      pushToast('Colors analyzed.', 'success')
+    } catch (error) {
+      pushToast(String(error), 'error')
+      appendLog(`Analyze failed: ${String(error)}`)
+    } finally {
+      setBusy('analyzing', false)
+    }
   }
 
   function jumpTo(step: string) {
-    document.querySelector(`[data-step-anchor="${step}"]`)?.scrollIntoView({ block: 'nearest' })
+    const mapping: Record<string, SidebarCategory> = {
+      connect: 'control',
+      calibrate: 'control',
+      prepare: 'output',
+      generate: 'output',
+      run: 'control',
+    }
+    setActiveSidebarCategory(mapping[step] ?? 'control')
   }
+
+  const machineSetupPanel = (
+    <div className="sidebar-stack">
+      <section className="sidebar-panel sidebar-panel--surface">
+        <div className="sidebar-panel__header">
+          <div>
+            <div className="panel-kicker">Machine setup</div>
+            <h2>Connection, calibration, manual</h2>
+          </div>
+          <span className={`badge ${machine?.connected ? 'good' : 'muted'}`}>{machine?.connected ? 'Online' : 'Offline'}</span>
+        </div>
+        <div className="sidebar-panel__status-row">
+          <div className={`status-pill ${machine?.connected ? 'good' : 'muted'}`}>
+            <span>Connection</span>
+            <strong>{machine?.connected ? 'Connected' : 'Disconnected'}</strong>
+          </div>
+          <div className={`status-pill ${machine?.calibrated ? 'good' : 'warn'}`}>
+            <span>Calibration</span>
+            <strong>{machine?.calibrated ? 'Locked' : 'Pending'}</strong>
+          </div>
+          <div className={`status-pill ${runReady ? 'good' : 'warn'}`}>
+            <span>Job</span>
+            <strong>{runReady ? 'Ready' : 'Locked'}</strong>
+          </div>
+        </div>
+      </section>
+
+      <MachineCard onApplyConfig={handleApplyConfig} onConnect={handleConnect} />
+      <CalibrationCard machine={machine} onCalibrate={handleCalibrate} onClear={handleClearCalibrated} />
+      <ManualControlCard
+        machine={machine}
+        onGoHome={handleGoHome}
+        onJog={handleJog}
+        onPenDown={handlePenDown}
+        onPenUp={handlePenUp}
+        onTestStepperHoldPolicy={handleTestStepperHoldPolicy}
+        onToggleYLoop={handleToggleYLoop}
+      />
+      <RunControls
+        machine={machine}
+        onPause={() => void handlePause()}
+        onResume={() => void handleResume()}
+        onRun={handleRun}
+        onStop={handleStop}
+        runReady={runReady}
+        runStarting={busy.running}
+      />
+
+      <section className="sidebar-panel sidebar-panel--compact">
+        <details className="details-panel">
+          <summary>Calibration tests</summary>
+          <div className="sidebar-panel__test-stack">
+            <CalibrationPatternPanel generating={busy.generating} onGenerate={() => void handleGenerateCalibrationPattern()} />
+            <XAxisCalibrationPanel generating={busy.generating} onGenerate={() => void handleGenerateXAxisCalibrationPattern()} />
+          </div>
+        </details>
+      </section>
+    </div>
+  )
+
+  const printSetupPanel = (
+    <div className="sidebar-stack">
+      <PrintSetupPanel
+        analysis={analysis}
+        canGenerate={Boolean(imageFile && selectedColors.length) && !busy.generating}
+        imagePreviewUrl={imagePreviewUrl}
+        onFileChange={handleFileChange}
+        onGenerate={handleGenerate}
+        onToggleColor={toggleColor}
+        selectedColors={selectedColors}
+      />
+    </div>
+  )
+
+  const advancedPanel = (
+    <div className="sidebar-stack">
+      <section className="sidebar-panel sidebar-panel--surface">
+        <div className="sidebar-panel__header">
+          <div>
+            <div className="panel-kicker">Advanced</div>
+            <h2>Settings and diagnostics</h2>
+          </div>
+        </div>
+        <AdvancedDrawer activeTab={drawerTab} onTab={setDrawerTab} />
+      </section>
+      {advancedOpen && drawerTab === 'gcode' ? <GcodePanel gcode={gcode} /> : null}
+      {advancedOpen && drawerTab === 'logs' ? <LogsPanel logs={logs} /> : null}
+    </div>
+  )
+
+  const sidebarPanel = activeSidebarCategory === 'output'
+    ? printSetupPanel
+    : activeSidebarCategory === 'advanced'
+      ? advancedPanel
+      : machineSetupPanel
 
   return (
     <>
-      <AppShell
-        leftRail={
-          <div className="rail-stack">
-            <div data-step-anchor="connect">
-              <MachineCard onApplyConfig={handleApplyConfig} onConnect={handleConnect} />
+      <div className={`plotter-dashboard ${inspectorCollapsed ? 'inspector-collapsed' : ''}`}>
+        <header className="control-header">
+          <div className="control-header__title">
+            <h1>GLF-1 Plotter Control</h1>
+            <p>Raster G-code generated — calibrate before run</p>
+          </div>
+
+          <div className="control-header__status">
+            <div className="header-metric-group">
+              <div className="header-metric">
+                <span>Progress</span>
+                <strong>{progressPercent}%</strong>
+              </div>
+              <div className="header-divider" />
+              <div className="header-metric">
+                <span>Elapsed</span>
+                <strong>{formatClock(elapsedSeconds)}</strong>
+              </div>
+              <div className="header-metric">
+                <span>Remaining</span>
+                <strong>{formatClock(remainingSeconds)}</strong>
+              </div>
             </div>
-            <div data-step-anchor="calibrate">
-              <CalibrationCard machine={machine} onCalibrate={handleCalibrate} onClear={handleClearCalibrated} />
+          </div>
+
+          <div className="control-header__actions">
+            <button className="utility-icon-button" type="button" aria-label="Help">?</button>
+            <button className="utility-icon-button" type="button" aria-label="Connection">↻</button>
+            <button className="utility-icon-button" type="button" aria-label="Settings">⚙</button>
+            <button className="emergency-stop" disabled={!machine?.connected} onClick={handleStop} type="button">
+              EMERGENCY STOP
+            </button>
+          </div>
+        </header>
+
+        <StepNav
+          hasImage={Boolean(imageFile)}
+          hasPreview={Boolean(preview.length)}
+          machine={machine}
+          onSelect={jumpTo}
+          runLockReason={runLockReason}
+          runReady={runReady}
+        />
+
+        <div className="dashboard-grid">
+          <aside className="left-rail" aria-label="Control panel">
+            <div className="sidebar-shell">
+              <div className="sidebar-nav" role="tablist" aria-label="Control categories">
+                {SIDEBAR_CATEGORIES.map((category) => (
+                  <button
+                    key={category.id}
+                    className={`sidebar-nav-item ${activeSidebarCategory === category.id ? 'active' : ''}`}
+                    onClick={() => setActiveSidebarCategory(category.id)}
+                    title={category.label}
+                    role="tab"
+                    type="button"
+                  >
+                    <span className="sidebar-nav-item__index sidebar-nav-item__icon">
+                      <category.icon />
+                    </span>
+                    <span className="sidebar-nav-item__label">{category.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="sidebar-content" role="tabpanel">
+                {sidebarPanel}
+              </div>
             </div>
-            <ManualControlCard
+          </aside>
+
+          <main className="workspace-panel">
+            <PreviewWorkspace
+              imagePreviewUrl={imagePreviewUrl}
               machine={machine}
-              onGoHome={handleGoHome}
-              onJog={handleJog}
-              onPenDown={handlePenDown}
-              onPenUp={handlePenUp}
-              onTestStepperHoldPolicy={handleTestStepperHoldPolicy}
-              onToggleYLoop={handleToggleYLoop}
+              maskPreviewUrl={maskPreviewUrl}
+              maxPrintXSpanDeg={config.defaults.maxPrintXSpanDeg}
+              onPreviewMode={setPreviewMode}
+              onProgressFilter={setProgressFilter}
+              onShowCompare={setShowCompare}
+              onShowTravel={setShowTravel}
+              onViewPreset={setViewPreset}
+              paths={preview}
+              previewMode={previewMode}
+              progressFilter={progressFilter}
+              showCompare={showCompare}
+              showTravel={showTravel}
+              onZoomChange={setPreviewZoomLabel}
+              zoomLabel={previewZoomLabel}
+              viewPreset={viewPreset}
             />
-            <div data-step-anchor="run">
-              <RunControls machine={machine} onPause={() => void handlePause()} onResume={() => void handleResume()} onRun={handleRun} onStop={handleStop} runReady={runReady} runStarting={busy.running} />
+          </main>
+
+          <aside className={`right-rail dashboard-inspector ${inspectorCollapsed ? 'collapsed' : ''}`}>
+            <div className="inspector-shell">
+              <div className="inspector-shell__top">
+                <button
+                  aria-label={inspectorCollapsed ? 'Expand job summary sidebar' : 'Collapse job summary sidebar'}
+                  className="button subtle inspector-toggle-button"
+                  onClick={() => setInspectorCollapsed((value) => !value)}
+                  type="button"
+                >
+                  {inspectorCollapsed ? <MdChevronLeft aria-hidden="true" /> : <MdChevronRight aria-hidden="true" />}
+                </button>
+              </div>
+
+              {!inspectorCollapsed ? (
+                <div className="inspector-stack">
+                  <section className="inspector-card inspector-card--image">
+                    <div className="inspector-card__header">
+                      <div>
+                        <span className="panel-kicker">Input image</span>
+                        <strong>{analysis ? `${analysis.width}x${analysis.height}px` : 'No image yet'}</strong>
+                      </div>
+                      <div className="inspector-icon">▣</div>
+                    </div>
+                    <div className="thumb-frame">
+                      {imagePreviewUrl ? <img alt="Selected input" src={imagePreviewUrl} /> : <span>Image preview</span>}
+                    </div>
+                  </section>
+
+                  <div className="inspector-card-grid">
+                    <section className="inspector-card inspector-card--metric">
+                      <span className="panel-kicker">G-code lines</span>
+                      <strong>{summary?.gcode_line_count ?? gcode.length ?? '--'}</strong>
+                    </section>
+                    <section className="inspector-card inspector-card--metric">
+                      <span className="panel-kicker">Estimated runtime</span>
+                      <strong>{summary ? formatClock(summary.estimated_runtime_seconds) : '--'}</strong>
+                    </section>
+                    <section className="inspector-card inspector-card--metric">
+                      <span className="panel-kicker">Pen lifts</span>
+                      <strong>{summary?.pen_lift_count ?? '--'}</strong>
+                    </section>
+                    <section className="inspector-card inspector-card--metric">
+                      <span className="panel-kicker">Readiness</span>
+                      <strong>{machine?.calibrated ? 'Ready to Calibrate' : 'Calibration pending'}</strong>
+                    </section>
+                  </div>
+
+                  <section className="inspector-card inspector-card--note">
+                    <div className="inspector-card__header">
+                      <span className="panel-kicker">Job status</span>
+                      <span className={`badge ${runReady ? 'good' : 'warn'}`}>{runReady ? 'Ready' : 'Locked'}</span>
+                    </div>
+                    <p>{machine?.status ?? 'Idle'}{runLockReason ? ` · ${runLockReason}` : ''}</p>
+                  </section>
+
+                  <details className="details-panel inspector-details">
+                    <summary>Detailed metrics</summary>
+                    <JobSummaryPanel generationDurationMs={generationDurationMs} summary={summary} />
+                  </details>
+                </div>
+              ) : null}
             </div>
-          </div>
-        }
-        rightRail={
-          <div className="rail-stack">
-            <div data-step-anchor="prepare">
-              <ImageImportCard
-                disabled={!imageFile || busy.analyzing}
-                hasAnalysis={Boolean(analysis)}
-                imagePreviewUrl={imagePreviewUrl}
-                onAnalyze={handleAnalyze}
-                onFileChange={handleFileChange}
-              />
-            </div>
-            <ColorPickerPanel analysis={analysis} onToggle={toggleColor} selectedColors={selectedColors} />
-            <div data-step-anchor="generate">
-              <PenSettingsCard canGenerate={Boolean(imageFile && selectedColors.length) && !busy.generating} onGenerate={handleGenerate} />
-            </div>
-            <JobSummaryPanel generationDurationMs={generationDurationMs} summary={summary} />
-            <CalibrationPatternPanel generating={busy.generating} onGenerate={() => void handleGenerateCalibrationPattern()} />
-            <XAxisCalibrationPanel generating={busy.generating} onGenerate={() => void handleGenerateXAxisCalibrationPattern()} />
-            <AdvancedDrawer activeTab={drawerTab} onTab={setDrawerTab} />
-            {advancedOpen && drawerTab === 'gcode' ? <GcodePanel gcode={gcode} /> : null}
-            {advancedOpen && drawerTab === 'logs' ? <LogsPanel logs={logs} /> : null}
-          </div>
-        }
-        stepNav={<StepNav hasImage={Boolean(imageFile)} hasPreview={Boolean(preview.length)} machine={machine} onSelect={jumpTo} />}
-        topBar={
-          <TopStatusBar
-            canStop={Boolean(machine?.connected)}
-            currentKind={currentKind}
-            elapsedLabel={formatClock(elapsedSeconds)}
-            machine={machine}
-            onStop={handleStop}
-            progressPercent={progressPercent}
-            remainingLabel={formatClock(remainingSeconds)}
-          />
-        }
-        workspace={
-          <PreviewWorkspace
-            imagePreviewUrl={imagePreviewUrl}
-            machine={machine}
-            maskPreviewUrl={maskPreviewUrl}
-            maxPrintXSpanDeg={config.defaults.maxPrintXSpanDeg}
-            onPreviewMode={setPreviewMode}
-            onProgressFilter={setProgressFilter}
-            onShowCompare={setShowCompare}
-            onShowTravel={setShowTravel}
-            onViewPreset={setViewPreset}
-            paths={preview}
-            previewMode={previewMode}
-            progressFilter={progressFilter}
-            showCompare={showCompare}
-            showTravel={showTravel}
-            viewPreset={viewPreset}
-          />
-        }
-      />
+          </aside>
+        </div>
+      </div>
 
       <div className="toast-stack">
         {toasts.map((toast) => (
@@ -815,13 +1019,6 @@ function formatClock(totalSeconds: number) {
   const minutes = Math.floor((seconds % 3600) / 60)
   const remainder = seconds % 60
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
-}
-
-function formatKind(kind: string) {
-  return kind
-    .replace(/^fill-/, '')
-    .replace(/-/g, ' ')
-    .replace(/\b\w/g, (char) => char.toUpperCase())
 }
 
 export default App

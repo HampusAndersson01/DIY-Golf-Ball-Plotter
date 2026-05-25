@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react'
 
 import type { MachineState, PreviewPath } from '../../api/types'
 import { PanZoomCanvas } from './PanZoomCanvas'
@@ -15,10 +15,11 @@ type Props = {
   filter: 'all' | 'progress'
   showTravel: boolean
   maxPrintXSpanDeg: number
+  onZoomChange?: (zoomLabel: string) => void
 }
 
 export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolpath2DView(
-  { paths, machine, filter, showTravel, maxPrintXSpanDeg },
+  { paths, machine, filter, showTravel, maxPrintXSpanDeg, onZoomChange },
   ref,
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -27,8 +28,6 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
     visiblePaths: [],
     machine: null,
   })
-  const [zoomLabel, setZoomLabel] = useState('100%')
-
   const visiblePaths = useMemo(
     () => paths.filter((path) => shouldRenderPath(path, machine, filter, showTravel)),
     [filter, machine, paths, showTravel],
@@ -36,10 +35,10 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
 
   renderStateRef.current = { visiblePaths, machine }
 
-  const renderCanvas = (ctx: CanvasRenderingContext2D, engine: PanZoomCanvas) => {
+  const renderCanvas = useCallback((ctx: CanvasRenderingContext2D, engine: PanZoomCanvas) => {
     const { visiblePaths: nextVisiblePaths, machine: nextMachine } = renderStateRef.current
     const { width, height } = engine.getViewState()
-    ctx.fillStyle = '#f4efe6'
+    ctx.fillStyle = '#f7fbff'
     ctx.fillRect(0, 0, width * window.devicePixelRatio, height * window.devicePixelRatio)
 
     engine.applyTransform(ctx)
@@ -73,7 +72,7 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
       }
     }
     ctx.setLineDash([])
-  }
+  }, [maxPrintXSpanDeg])
 
   useImperativeHandle(ref, () => ({
     fit: () => controllerRef.current?.fitToView(),
@@ -86,12 +85,13 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
     const controller = new PanZoomCanvas(canvas, {
       minScale: 0.2,
       maxScale: 72,
-      onChange: (view) => setZoomLabel(`${Math.round(view.scale * 100)}%`),
+      onChange: (view) => onZoomChange?.(`${Math.round(view.scale * 100)}%`),
     })
     controllerRef.current = controller
     controller.setRenderer(renderCanvas)
     controller.setContentBounds(flipBoundsY(derivePreviewBounds(paths, maxPrintXSpanDeg)))
     controller.fitToView()
+    onZoomChange?.(`${Math.round(controller.getScale() * 100)}%`)
 
     const observer = new ResizeObserver(() => controller.resize(true))
     observer.observe(canvas)
@@ -100,7 +100,7 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
       controller.destroy()
       controllerRef.current = null
     }
-  }, [maxPrintXSpanDeg, paths])
+  }, [maxPrintXSpanDeg, onZoomChange, paths, renderCanvas])
 
   useEffect(() => {
     const controller = controllerRef.current
@@ -108,6 +108,12 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
     controller.setContentBounds(flipBoundsY(derivePreviewBounds(paths, maxPrintXSpanDeg)))
     controller.requestDraw()
   }, [maxPrintXSpanDeg, paths])
+
+  useEffect(() => {
+    const controller = controllerRef.current
+    if (!controller) return
+    onZoomChange?.(`${Math.round(controller.getScale() * 100)}%`)
+  }, [onZoomChange, paths, maxPrintXSpanDeg])
 
   useEffect(() => {
     const controller = controllerRef.current
@@ -120,7 +126,6 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
       <canvas ref={canvasRef} className="toolpath-canvas" />
       <div className="canvas-meta">
         <span>Wheel zoom, drag pan, double-click fit, `F` fit, `R` reset</span>
-        <strong>{zoomLabel}</strong>
       </div>
     </div>
   )

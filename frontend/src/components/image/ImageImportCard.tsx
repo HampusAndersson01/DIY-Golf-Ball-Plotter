@@ -4,11 +4,9 @@ type Props = {
   imagePreviewUrl: string | null
   hasAnalysis: boolean
   onFileChange: (event: ChangeEvent<HTMLInputElement>) => void
-  onAnalyze: () => void
-  disabled: boolean
 }
 
-export function ImageImportCard({ imagePreviewUrl, hasAnalysis, onFileChange, onAnalyze, disabled }: Props) {
+export function ImageImportCard({ imagePreviewUrl, hasAnalysis, onFileChange }: Props) {
   return (
     <section className="panel">
       <div className="panel-heading">
@@ -27,10 +25,6 @@ export function ImageImportCard({ imagePreviewUrl, hasAnalysis, onFileChange, on
       <div className="thumb-frame">
         {imagePreviewUrl ? <img alt="Original upload" src={imagePreviewUrl} /> : <span>Image preview</span>}
       </div>
-
-      <button className="button primary" disabled={disabled} onClick={onAnalyze} type="button">
-        Analyze Colors
-      </button>
     </section>
   )
 }
