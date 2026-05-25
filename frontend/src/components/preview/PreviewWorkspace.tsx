@@ -26,6 +26,8 @@ type Props = {
   onShowTravel: (show: boolean) => void
   onShowCompare: (show: boolean) => void
   onViewPreset: (preset: ViewPreset) => void
+  onZoomChange?: (zoomLabel: string) => void
+  zoomLabel: string
 }
 
 export function PreviewWorkspace(props: Props) {
@@ -58,33 +60,31 @@ export function PreviewWorkspace(props: Props) {
   }, [fit, reset])
 
   return (
-    <section className="panel preview-panel" data-step-anchor="generate">
-      <div className="panel-heading compact">
+    <section className="preview-command-center" data-step-anchor="generate">
+      <div className="preview-command-center__header">
         <div>
           <div className="panel-kicker">Workspace</div>
           <h2>Preview &amp; Live Visualization</h2>
         </div>
+        <PreviewToolbar
+          onFilterChange={props.onProgressFilter}
+          onFit={fit}
+          onModeChange={props.onPreviewMode}
+          onReset={reset}
+          onShowCompare={props.onShowCompare}
+          onShowTravel={props.onShowTravel}
+          onViewPreset={props.onViewPreset}
+          previewMode={props.previewMode}
+          progressFilter={props.progressFilter}
+          showCompare={props.showCompare}
+          showTravel={props.showTravel}
+        />
       </div>
 
-      <PreviewToolbar
-        onFilterChange={props.onProgressFilter}
-        onFit={fit}
-        onModeChange={props.onPreviewMode}
-        onReset={reset}
-        onShowCompare={props.onShowCompare}
-        onShowTravel={props.onShowTravel}
-        onViewPreset={props.onViewPreset}
-        previewMode={props.previewMode}
-        progressFilter={props.progressFilter}
-        showCompare={props.showCompare}
-        showTravel={props.showTravel}
-      />
-
-      <ToolpathLegend />
-
-      <div className="preview-workspace">
-        <div className="preview-canvas-shell">
-          <div className="preview-surface">
+      <div className="preview-command-center__body">
+        <div className="preview-surface">
+          <div className="preview-grid-overlay" />
+          <div className="preview-stage-frame">
             <CurrentLineOverlay currentPath={currentPath} machine={props.machine} />
             {props.previewMode === '2d' ? (
               <Toolpath2DView
@@ -119,9 +119,41 @@ export function PreviewWorkspace(props: Props) {
                 </div>
               </aside>
             ) : null}
+
+            <div className="preview-floating-legend">
+              <ToolpathLegend />
+            </div>
+
+            <div className="preview-floating-zoom" aria-hidden>
+              <div className="zoom-pill">
+                <strong>{props.zoomLabel}</strong>
+                <small>Wheel zoom · drag pan · double-click fit · F = fit · R = reset</small>
+              </div>
+            </div>
+
+            {/* Floating zoom pill removed — zoom is shown in the canvas meta and via the top toolbar state. */}
+
+            {/* Bottom toolbar removed to avoid duplicate view controls. Top `PreviewToolbar` contains Printer/Front/Fit/Reset. */}
+
+            <div className="preview-status-strip">
+              <div className="status-left">
+                <span>X: {formatCoordinate(props.machine?.current_position_x)}</span>
+                <span>Y: {formatCoordinate(props.machine?.current_position_y)}</span>
+                <span>Z: 0.000</span>
+              </div>
+
+              <div className="status-right">Live Visualization Engine v2.1</div>
+            </div>
           </div>
         </div>
       </div>
     </section>
   )
+}
+
+
+
+function formatCoordinate(value: number | undefined) {
+  if (value == null || !Number.isFinite(value)) return '--'
+  return value.toFixed(3)
 }
