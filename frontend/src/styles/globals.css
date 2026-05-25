@@ -352,20 +352,45 @@ select:focus {
 }
 
 .step-nav {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0;
   padding: 8px 12px;
-  overflow-x: auto;
+  align-items: center;
+  position: relative;
 }
 
-.step-pill {
-  display: inline-grid;
-  justify-items: center;
-  gap: 4px;
-  min-width: 92px;
-  padding: 2px 8px;
+.step-node-wrap {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 6px 8px;
+}
+
+.step-node-wrap .step-pill {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
   color: var(--muted);
+  background: transparent;
+  min-width: 0;
+  z-index: 2;
+}
+
+/* connector line between steps */
+.step-node-wrap:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: -50%;
+  left: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  background: var(--line-soft);
+  z-index: 1;
 }
 
 .step-pill span {
@@ -401,19 +426,21 @@ select:focus {
 }
 
 .step-lock-note {
-  margin: 0 0 0 auto;
   white-space: nowrap;
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.66rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--warning);
+  position: absolute;
+  right: 12px;
+  top: calc(100% + 6px);
 }
 
 .dashboard-grid {
   min-height: 0;
   display: grid;
-  grid-template-columns: clamp(304px, 24vw, 340px) minmax(0, 1fr) clamp(280px, 22vw, 320px);
+  grid-template-columns: auto minmax(0, 1fr) clamp(280px, 22vw, 320px);
   gap: 12px;
   overflow: hidden;
 }
@@ -426,10 +453,23 @@ select:focus {
 }
 
 .left-rail,
+.right-rail,
+.workspace-panel {
+  min-width: 0;
+}
+
+.left-rail,
 .right-rail {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* Let the left sidebar size to its content but prevent extreme growth */
+.left-rail {
+  width: auto;
+  max-width: clamp(240px, 32vw, 420px);
+  justify-self: start;
 }
 
 .dashboard-sidebar {
@@ -978,6 +1018,111 @@ select:focus {
   border-radius: 999px;
 }
 
+/* Floating legend card placed in preview viewport */
+.preview-floating-legend {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  z-index: 10;
+}
+
+.preview-floating-legend .legend-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  align-items: center;
+}
+
+/* Floating zoom/help pill */
+.preview-floating-zoom {
+  position: absolute;
+  /* place below the preview header/toolbar so it doesn't overlap */
+  top: 62px;
+  left: 14px;
+  z-index: 3;
+}
+
+.zoom-pill {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+
+.zoom-pill strong {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.86rem;
+}
+
+.zoom-pill small {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+/* Preview status strip - left telemetry and right engine/version */
+.preview-status-strip {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--line);
+  z-index: 8;
+}
+
+.preview-status-strip .status-left {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.preview-status-strip span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.preview-status-strip .status-left span {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Compact horizontal tabs for the left sidebar */
+.sidebar-nav-header .tab-row {
+  padding: 6px;
+  gap: 6px;
+  align-items: center;
+}
+
+.sidebar-nav-header .sidebar-nav-item {
+  padding: 6px 10px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-nav-header .sidebar-nav-item__icon {
+  display: inline-grid;
+}
+
+.sidebar-nav-header .sidebar-nav-item__label {
+  white-space: nowrap;
+}
+
 .jog-pad {
   display: grid;
   justify-items: center;
@@ -1124,7 +1269,7 @@ select:focus {
 
 @media (max-width: 1599px) {
   .dashboard-grid {
-    grid-template-columns: clamp(280px, 26vw, 340px) minmax(0, 1fr) 300px;
+    grid-template-columns: auto minmax(0, 1fr) 300px;
   }
 }
 
@@ -1245,12 +1390,12 @@ select:focus {
 
 @media (max-width: 1399px) {
   .dashboard-grid {
-    grid-template-columns: clamp(280px, 24vw, 320px) minmax(0, 1fr) clamp(260px, 24vw, 320px);
+    grid-template-columns: auto minmax(0, 1fr) clamp(260px, 24vw, 320px);
   }
 }
 
 .plotter-dashboard {
-  --sidebar-width: 340px;
+  --sidebar-width: auto;
   --inspector-width: 360px;
   --dashboard-column-gap: 12px;
   display: grid;
@@ -1272,7 +1417,7 @@ select:focus {
 }
 
 .plotter-dashboard .dashboard-grid {
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--inspector-width);
+  grid-template-columns: max-content minmax(0, 1fr) var(--inspector-width);
   row-gap: 12px;
   column-gap: var(--dashboard-column-gap);
   min-height: 0;
@@ -1309,16 +1454,58 @@ select:focus {
   justify-content: center;
 }
 
-.header-metric-group {
+.header-progress-card {
+  min-width: min(100%, 360px);
   display: grid;
-  grid-auto-flow: column;
-  align-items: center;
-  gap: 16px;
-  padding: 10px 16px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: #eef4ff;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid rgba(15, 109, 153, 0.18);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(238, 244, 255, 0.96));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
   box-shadow: none;
+}
+
+.header-progress-card__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.header-progress-card__top span {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.62rem;
+  color: #68748c;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+}
+
+.header-progress-card__top strong {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 1rem;
+  color: var(--text);
+}
+
+.header-progress-track {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(184, 198, 216, 0.5);
+}
+
+.header-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--primary) 0%, var(--primary-bright) 100%);
+  box-shadow: 0 0 0 1px rgba(31, 159, 227, 0.18);
+}
+
+.header-progress-card__metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
 }
 
 .header-metric {
@@ -1340,15 +1527,9 @@ select:focus {
   color: var(--text);
 }
 
-.header-divider,
-.progress-divider {
-  width: 1px;
-  height: 28px;
-  background: var(--line);
-}
-
 .control-header__actions {
   display: flex;
+  flex-direction: column;
   align-items: center;
   gap: 10px;
   justify-content: flex-end;
@@ -1375,6 +1556,21 @@ select:focus {
 .utility-icon-button svg {
   width: 17px;
   height: 17px;
+}
+
+.header-details-button {
+  min-width: 0;
+  padding: 0.7rem 0.95rem;
+  border-radius: 14px;
+  align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-details-button svg {
+  width: 16px;
+  height: 16px;
 }
 
 .emergency-stop {
@@ -1786,6 +1982,30 @@ select:focus {
   gap: 8px;
 }
 
+.print-setup-rotate-field {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+
+.print-setup-rotate-field > span {
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+.print-setup-offset-stack {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 8px;
+}
+
+.print-setup-offset-stack .inline-number-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
 .print-setup-grid--single {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -1891,6 +2111,7 @@ select:focus {
   background: var(--surface);
   overflow: hidden;
   min-height: 0;
+  min-width: 0;
 }
 
 .preview-command-center__header {
@@ -2176,6 +2397,18 @@ select:focus {
   background: #f7faff;
 }
 
+
+.print-setup-rotate-toggle {
+  justify-self: start;
+  min-height: 48px;
+  padding: 0;
+}
+
+.print-setup-rotate-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+
 .panel,
 .details-panel,
 .toast {
@@ -2219,6 +2452,11 @@ select:focus {
 
   .control-header {
     grid-template-columns: 1fr;
+  }
+
+  .header-progress-card {
+    min-width: 0;
+    width: min(100%, 420px);
   }
 
   .control-header__actions {

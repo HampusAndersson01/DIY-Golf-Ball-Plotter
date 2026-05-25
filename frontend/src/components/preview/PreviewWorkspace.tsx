@@ -124,15 +124,25 @@ export function PreviewWorkspace(props: Props) {
               <ToolpathLegend />
             </div>
 
+            <div className="preview-floating-zoom" aria-hidden>
+              <div className="zoom-pill">
+                <strong>{props.zoomLabel}</strong>
+                <small>Wheel zoom · drag pan · double-click fit · F = fit · R = reset</small>
+              </div>
+            </div>
+
             {/* Floating zoom pill removed — zoom is shown in the canvas meta and via the top toolbar state. */}
 
             {/* Bottom toolbar removed to avoid duplicate view controls. Top `PreviewToolbar` contains Printer/Front/Fit/Reset. */}
 
             <div className="preview-status-strip">
-              <span>X: {formatCoordinate(props.machine?.current_position_x)}</span>
-              <span>Y: {formatCoordinate(props.machine?.current_position_y)}</span>
-              <span>Z: 0.000</span>
-              <span>Live Visualization Engine v2.1</span>
+              <div className="status-left">
+                <span>X: {formatCoordinate(props.machine?.current_position_x)}</span>
+                <span>Y: {formatCoordinate(props.machine?.current_position_y)}</span>
+                <span>Z: 0.000</span>
+              </div>
+
+              <div className="status-right">Live Visualization Engine v2.1</div>
             </div>
           </div>
         </div>

@@ -1,5 +1,6 @@
 import type { ChangeEvent } from 'react'
 import { useMemo } from 'react'
+import { MdRotate90DegreesCcw } from 'react-icons/md'
 
 import type { AnalyzeColor, ImageAnalysis } from '../../api/types'
 import type { OriginAnchor } from '../../store/appStore'
@@ -60,6 +61,7 @@ export function PrintSetupPanel({
   const effectiveInfillSpacingMm = settings.customInfillSpacingEnabled ? settings.infillSpacingMm : settings.lineThicknessMm
   const runtimeText = summary ? formatDuration(summary.estimated_runtime_seconds) : '--'
   const lineCount = summary?.gcode_line_count ?? gcode.length
+  const rotate90Enabled = Math.abs(settings.rotationDeg - 90) < 1e-9
 
   return (
     <section className="sidebar-panel sidebar-panel--surface print-setup-panel">
@@ -174,33 +176,49 @@ export function PrintSetupPanel({
             </select>
           </label>
 
-          <label className="inline-number-field" htmlFor="originOffsetXmm">
-            <span>Manual offset X</span>
-            <div className="inline-number-field__control">
-              <input
-                id="originOffsetXmm"
-                onChange={(event) => updateSetting('originOffsetXmm', parseLocaleNumber(event.target.value))}
-                step="0.01"
-                type="number"
-                value={settings.originOffsetXmm}
-              />
-              <small>mm</small>
-            </div>
-          </label>
+          <div className="print-setup-rotate-field">
+            <span>Rotate 90°</span>
+            <button
+              aria-label="Rotate artwork 90 degrees"
+              aria-pressed={rotate90Enabled}
+              className={`icon-toggle print-setup-rotate-toggle ${rotate90Enabled ? 'is-active' : ''}`}
+              onClick={() => updateSetting('rotationDeg', rotate90Enabled ? 0 : 90)}
+              title={rotate90Enabled ? 'Rotation 90° on' : 'Rotation 90° off'}
+              type="button"
+            >
+              <MdRotate90DegreesCcw aria-hidden="true" />
+            </button>
+          </div>
 
-          <label className="inline-number-field" htmlFor="originOffsetYmm">
-            <span>Manual offset Y</span>
-            <div className="inline-number-field__control">
-              <input
-                id="originOffsetYmm"
-                onChange={(event) => updateSetting('originOffsetYmm', parseLocaleNumber(event.target.value))}
-                step="0.01"
-                type="number"
-                value={settings.originOffsetYmm}
-              />
-              <small>mm</small>
-            </div>
-          </label>
+          <div className="print-setup-offset-stack">
+            <label className="inline-number-field" htmlFor="originOffsetXmm">
+              <span>Manual offset X</span>
+              <div className="inline-number-field__control">
+                <input
+                  id="originOffsetXmm"
+                  onChange={(event) => updateSetting('originOffsetXmm', parseLocaleNumber(event.target.value))}
+                  step="0.01"
+                  type="number"
+                  value={settings.originOffsetXmm}
+                />
+                <small>mm</small>
+              </div>
+            </label>
+
+            <label className="inline-number-field" htmlFor="originOffsetYmm">
+              <span>Manual offset Y</span>
+              <div className="inline-number-field__control">
+                <input
+                  id="originOffsetYmm"
+                  onChange={(event) => updateSetting('originOffsetYmm', parseLocaleNumber(event.target.value))}
+                  step="0.01"
+                  type="number"
+                  value={settings.originOffsetYmm}
+                />
+                <small>mm</small>
+              </div>
+            </label>
+          </div>
         </div>
       </section>
 

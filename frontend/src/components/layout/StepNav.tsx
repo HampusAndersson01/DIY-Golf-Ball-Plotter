@@ -45,7 +45,7 @@ export function StepNav({ machine, hasImage, hasPreview, runReady, runLockReason
             <span>{complete[step.id as keyof typeof complete] ? '✓' : index + 1}</span>
             <small>{step.label}</small>
           </button>
-          {index < STEPS.length - 1 ? <span className="step-connector" aria-hidden="true" /> : null}
+          {/* connector handled purely by CSS pseudo-element for even spacing */}
         </div>
       ))}
 

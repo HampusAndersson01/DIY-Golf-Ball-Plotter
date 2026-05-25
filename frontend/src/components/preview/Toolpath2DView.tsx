@@ -124,9 +124,6 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
   return (
     <div className="toolpath-canvas-wrap">
       <canvas ref={canvasRef} className="toolpath-canvas" />
-      <div className="canvas-meta">
-        <span>Wheel zoom, drag pan, double-click fit, `F` fit, `R` reset</span>
-      </div>
     </div>
   )
 })

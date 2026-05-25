@@ -651,34 +651,45 @@ function DashboardApp() {
       <div className={`plotter-dashboard ${inspectorCollapsed ? 'inspector-collapsed' : ''}`}>
         <header className="control-header">
           <div className="control-header__title">
-            <h1>GLF-1 Plotter Control</h1>
+            <h1>DIY Golf Ball Plotter</h1>
             <p>Raster G-code generated — calibrate before run</p>
           </div>
 
           <div className="control-header__status">
-            <div className="header-metric-group">
-              <div className="header-metric">
+            <div className="header-progress-card" aria-label="Job progress">
+              <div className="header-progress-card__top">
                 <span>Progress</span>
                 <strong>{progressPercent}%</strong>
               </div>
-              <div className="header-divider" />
-              <div className="header-metric">
-                <span>Elapsed</span>
-                <strong>{formatClock(elapsedSeconds)}</strong>
+              <div className="header-progress-track" aria-hidden="true">
+                <div className="header-progress-fill" style={{ width: `${progressPercent}%` }} />
               </div>
-              <div className="header-metric">
-                <span>Remaining</span>
-                <strong>{formatClock(remainingSeconds)}</strong>
+              <div className="header-progress-card__metrics">
+                <div className="header-metric">
+                  <span>Elapsed</span>
+                  <strong>{formatClock(elapsedSeconds)}</strong>
+                </div>
+                <div className="header-metric">
+                  <span>Remaining</span>
+                  <strong>{formatClock(remainingSeconds)}</strong>
+                </div>
               </div>
             </div>
           </div>
 
           <div className="control-header__actions">
-            <button className="utility-icon-button" type="button" aria-label="Help">?</button>
-            <button className="utility-icon-button" type="button" aria-label="Connection">↻</button>
-            <button className="utility-icon-button" type="button" aria-label="Settings">⚙</button>
             <button className="emergency-stop" disabled={!machine?.connected} onClick={handleStop} type="button">
               EMERGENCY STOP
+            </button>
+
+            <button
+              aria-label={inspectorCollapsed ? 'Show details' : 'Hide details'}
+              className="button subtle header-details-button"
+              onClick={() => setInspectorCollapsed((value) => !value)}
+              type="button"
+            >
+              <span>{inspectorCollapsed ? 'Show details' : 'Hide details'}</span>
+              {inspectorCollapsed ? <MdChevronLeft aria-hidden="true" /> : <MdChevronRight aria-hidden="true" />}
             </button>
           </div>
         </header>
@@ -695,23 +706,25 @@ function DashboardApp() {
         <div className="dashboard-grid">
           <aside className="left-rail" aria-label="Control panel">
             <div className="sidebar-shell">
-              <div className="sidebar-nav" role="tablist" aria-label="Control categories">
-                {SIDEBAR_CATEGORIES.map((category) => (
-                  <button
-                    key={category.id}
-                    className={`sidebar-nav-item ${activeSidebarCategory === category.id ? 'active' : ''}`}
-                    onClick={() => setActiveSidebarCategory(category.id)}
-                    title={category.label}
-                    role="tab"
-                    type="button"
-                  >
-                    <span className="sidebar-nav-item__index sidebar-nav-item__icon">
-                      <category.icon />
-                    </span>
-                    <span className="sidebar-nav-item__label">{category.label}</span>
-                  </button>
-                ))}
-              </div>
+                <div className="sidebar-nav-header" aria-hidden>
+                  <div className="tab-row" role="tablist" aria-label="Control categories">
+                    {SIDEBAR_CATEGORIES.map((category) => (
+                      <button
+                        key={category.id}
+                        className={`sidebar-nav-item ${activeSidebarCategory === category.id ? 'active' : ''}`}
+                        onClick={() => setActiveSidebarCategory(category.id)}
+                        title={category.label}
+                        role="tab"
+                        type="button"
+                      >
+                        <span className="sidebar-nav-item__icon">
+                          <category.icon />
+                        </span>
+                        <span className="sidebar-nav-item__label">{category.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
               <div className="sidebar-content" role="tabpanel">
                 {sidebarPanel}
@@ -743,17 +756,6 @@ function DashboardApp() {
 
           <aside className={`right-rail dashboard-inspector ${inspectorCollapsed ? 'collapsed' : ''}`}>
             <div className="inspector-shell">
-              <div className="inspector-shell__top">
-                <button
-                  aria-label={inspectorCollapsed ? 'Expand job summary sidebar' : 'Collapse job summary sidebar'}
-                  className="button subtle inspector-toggle-button"
-                  onClick={() => setInspectorCollapsed((value) => !value)}
-                  type="button"
-                >
-                  {inspectorCollapsed ? <MdChevronLeft aria-hidden="true" /> : <MdChevronRight aria-hidden="true" />}
-                </button>
-              </div>
-
               {!inspectorCollapsed ? (
                 <div className="inspector-stack">
                   <section className="inspector-card inspector-card--image">
