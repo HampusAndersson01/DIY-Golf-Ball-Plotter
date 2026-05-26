@@ -455,8 +455,48 @@ class InfillSegment:
     high_u: Point
     min_u: float
     max_u: float
+    center: Point
+    length: float
     kind: str = "infill"
     coords: list[tuple[float, float]] = field(default_factory=list)
+
+
+@dataclass
+class InfillCellPlan:
+    cell_id: str
+    component_id: str
+    segments: list[InfillSegment]
+    toolpaths: list[Toolpath]
+    entry_point: Point
+    exit_point: Point
+    centroid: Point
+    total_length: float
+
+
+@dataclass
+class InfillCellAdaptiveDecision:
+    mode: str
+    reasons: list[str]
+    metrics: dict[str, float]
+
+
+@dataclass
+class InfillConnectorValidationResult:
+    accepted: bool
+    reason: str
+    connector_mode: str = "direct"
+    connector_coords: list[tuple[float, float]] = field(default_factory=list)
+    sample_failures: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _connector_meta_value(meta: dict[str, Any] | None, *keys: str) -> Any:
+    if not meta:
+        return None
+    for key in keys:
+        value = meta.get(key)
+        if value is not None:
+            return value
+    return None
 
 
 @dataclass
@@ -1496,6 +1536,58 @@ def apply_svg_matrix(point: Point, matrix: tuple[float, float, float, float, flo
 def shapely_affine_from_svg_matrix(matrix: tuple[float, float, float, float, float, float]) -> list[float]:
     a, b, c, d, e, f = matrix
     return [a, c, b, d, e, f]
+
+
+def invert_svg_matrix(matrix: tuple[float, float, float, float, float, float]) -> tuple[float, float, float, float, float, float]:
+    a, b, c, d, e, f = matrix
+    determinant = (a * d) - (b * c)
+    if abs(determinant) <= 1e-12:
+        raise ValueError("Matrix is not invertible")
+    inverse_det = 1.0 / determinant
+    return (
+        d * inverse_det,
+        -b * inverse_det,
+        -c * inverse_det,
+        a * inverse_det,
+        ((c * f) - (d * e)) * inverse_det,
+        ((b * e) - (a * f)) * inverse_det,
+    )
+
+
+def _identity_svg_matrix() -> tuple[float, float, float, float, float, float]:
+    return (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+
+
+def _connector_validation_context(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not metadata:
+        return None
+    context = metadata.get("connector_validation")
+    return context if isinstance(context, dict) else None
+
+
+def _update_connector_validation_metadata(
+    metadata: dict[str, Any] | None,
+    matrix: tuple[float, float, float, float, float, float] | None,
+) -> dict[str, Any]:
+    if not metadata:
+        return {}
+    updated = dict(metadata)
+    context = _connector_validation_context(updated)
+    if context is None:
+        return updated
+    current_matrix = context.get("source_to_current_matrix")
+    if not isinstance(current_matrix, (tuple, list)) or len(current_matrix) != 6:
+        current_matrix = _identity_svg_matrix()
+    if matrix is not None:
+        current_matrix = multiply_svg_matrices(matrix, tuple(float(value) for value in current_matrix))
+    updated_context = dict(context)
+    updated_context["source_to_current_matrix"] = tuple(float(value) for value in current_matrix)
+    try:
+        updated_context["current_to_source_matrix"] = invert_svg_matrix(updated_context["source_to_current_matrix"])
+    except Exception:
+        updated_context["current_to_source_matrix"] = _identity_svg_matrix()
+    updated["connector_validation"] = updated_context
+    return updated
 
 
 def path_d_to_segments(d: str, curve_samples: int) -> list[Segment]:
@@ -3018,6 +3110,7 @@ def map_bundle_to_surface_mm(
     ]
     printable_geometry = affinity.affine_transform(bundle.printable_geometry, matrix) if bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty else bundle.printable_geometry
     cutout_geometry = affinity.affine_transform(bundle.cutout_geometry, matrix) if bundle.cutout_geometry is not None and not bundle.cutout_geometry.is_empty else bundle.cutout_geometry
+    metadata = _update_connector_validation_metadata(bundle.metadata, tuple(matrix))
     return GeometryBundle(
         outline_segments=outline_segments,
         fill_boundary_segments=fill_boundary_segments,
@@ -3025,6 +3118,7 @@ def map_bundle_to_surface_mm(
         fill_shapes=fill_shapes,
         printable_geometry=printable_geometry,
         cutout_geometry=cutout_geometry,
+        metadata=metadata,
     )
 
 
@@ -3079,6 +3173,15 @@ def apply_surface_placement_transform(
         cutout_geometry = affinity.scale(cutout_geometry, xfact=scale, yfact=scale, origin=(0.0, 0.0))
         cutout_geometry = affinity.rotate(cutout_geometry, rotation_deg, origin=(0.0, 0.0))
 
+    transform_matrix = (
+        scale * cos_a,
+        scale * sin_a,
+        -scale * sin_a,
+        scale * cos_a,
+        0.0,
+        0.0,
+    )
+
     return GeometryBundle(
         outline_segments=outline_segments,
         fill_boundary_segments=fill_boundary_segments,
@@ -3086,7 +3189,7 @@ def apply_surface_placement_transform(
         fill_shapes=fill_shapes,
         printable_geometry=printable_geometry,
         cutout_geometry=cutout_geometry,
-        metadata=dict(bundle.metadata),
+        metadata=_update_connector_validation_metadata(bundle.metadata, transform_matrix),
     )
 
 
@@ -3143,6 +3246,15 @@ def apply_surface_artwork_scale(
     if cutout_geometry is not None and not cutout_geometry.is_empty:
         cutout_geometry = affinity.scale(cutout_geometry, xfact=scale_factor, yfact=scale_factor, origin=(center_x, center_y))
 
+    transform_matrix = (
+        scale_factor,
+        0.0,
+        0.0,
+        scale_factor,
+        center_x - (center_x * scale_factor),
+        center_y - (center_y * scale_factor),
+    )
+
     return GeometryBundle(
         outline_segments=outline_segments,
         fill_boundary_segments=fill_boundary_segments,
@@ -3150,7 +3262,7 @@ def apply_surface_artwork_scale(
         fill_shapes=fill_shapes,
         printable_geometry=printable_geometry,
         cutout_geometry=cutout_geometry,
-        metadata=dict(bundle.metadata),
+        metadata=_update_connector_validation_metadata(bundle.metadata, transform_matrix),
     )
 
 
@@ -3265,6 +3377,8 @@ def apply_surface_mm_translation(bundle: GeometryBundle, dx: float, dy: float) -
     if cutout_geometry is not None and not cutout_geometry.is_empty:
         cutout_geometry = affinity.translate(cutout_geometry, xoff=dx, yoff=dy)
 
+    transform_matrix = (1.0, 0.0, 0.0, 1.0, dx, dy)
+
     return GeometryBundle(
         outline_segments=outline_segments,
         fill_boundary_segments=fill_boundary_segments,
@@ -3272,7 +3386,7 @@ def apply_surface_mm_translation(bundle: GeometryBundle, dx: float, dy: float) -
         fill_shapes=fill_shapes,
         printable_geometry=printable_geometry,
         cutout_geometry=cutout_geometry,
-        metadata=dict(bundle.metadata),
+        metadata=_update_connector_validation_metadata(bundle.metadata, transform_matrix),
     )
 
 
@@ -3303,7 +3417,7 @@ def apply_origin_anchor_placement(
         printable_geometry=placed.printable_geometry,
         cutout_geometry=placed.cutout_geometry,
         metadata={
-            **bundle.metadata,
+            **placed.metadata,
             "origin_anchor": validate_origin_anchor(origin_anchor),
             "origin_offset_x_mm": origin_offset_x_mm,
             "origin_offset_y_mm": origin_offset_y_mm,
@@ -3365,6 +3479,137 @@ def surface_mm_to_ball_angles(
         raise ValueError("Toolpath approaches the ball pole too closely for stable longitude mapping")
     lon = center_lon + (point.x / (radius * cos_lat))
     return Point(math.degrees(lon), math.degrees(lat))
+
+
+def resolve_safe_projection_center_lat(
+    toolpaths_surface_mm: list[Toolpath],
+    *,
+    requested_center_lat_deg: float,
+    ball_diameter_mm: float = BALL_DIAMETER_MM,
+    y_draw_min_deg: float = Y_DRAW_MIN,
+    y_draw_max_deg: float = Y_DRAW_MAX,
+) -> tuple[float, dict[str, float | bool]]:
+    if not toolpaths_surface_mm:
+        return requested_center_lat_deg, {
+            "requested_center_lat_deg": requested_center_lat_deg,
+            "resolved_center_lat_deg": requested_center_lat_deg,
+            "auto_clamped": False,
+            "surface_min_y_mm": 0.0,
+            "surface_max_y_mm": 0.0,
+            "allowed_center_lat_min_deg": y_draw_min_deg,
+            "allowed_center_lat_max_deg": y_draw_max_deg,
+        }
+
+    y_values = [point.y for path in toolpaths_surface_mm for point in path.points]
+    if not y_values:
+        return requested_center_lat_deg, {
+            "requested_center_lat_deg": requested_center_lat_deg,
+            "resolved_center_lat_deg": requested_center_lat_deg,
+            "auto_clamped": False,
+            "surface_min_y_mm": 0.0,
+            "surface_max_y_mm": 0.0,
+            "allowed_center_lat_min_deg": y_draw_min_deg,
+            "allowed_center_lat_max_deg": y_draw_max_deg,
+        }
+
+    surface_min_y_mm = float(min(y_values))
+    surface_max_y_mm = float(max(y_values))
+    mm_to_deg = 360.0 / (math.pi * ball_diameter_mm)
+    allowed_center_lat_min_deg = y_draw_min_deg - (surface_min_y_mm * mm_to_deg)
+    allowed_center_lat_max_deg = y_draw_max_deg - (surface_max_y_mm * mm_to_deg)
+
+    if allowed_center_lat_min_deg > allowed_center_lat_max_deg + 1e-9:
+        raise ValueError(
+            "Artwork exceeds available Y drawing band after placement; reduce scale or move origin Y toward center"
+        )
+
+    resolved_center_lat_deg = requested_center_lat_deg
+    if resolved_center_lat_deg < allowed_center_lat_min_deg:
+        resolved_center_lat_deg = allowed_center_lat_min_deg
+    if resolved_center_lat_deg > allowed_center_lat_max_deg:
+        resolved_center_lat_deg = allowed_center_lat_max_deg
+
+    return resolved_center_lat_deg, {
+        "requested_center_lat_deg": requested_center_lat_deg,
+        "resolved_center_lat_deg": resolved_center_lat_deg,
+        "auto_clamped": abs(resolved_center_lat_deg - requested_center_lat_deg) > 1e-9,
+        "surface_min_y_mm": surface_min_y_mm,
+        "surface_max_y_mm": surface_max_y_mm,
+        "allowed_center_lat_min_deg": allowed_center_lat_min_deg,
+        "allowed_center_lat_max_deg": allowed_center_lat_max_deg,
+    }
+
+
+def fit_surface_toolpaths_to_y_band(
+    toolpaths_surface_mm: list[Toolpath],
+    *,
+    ball_diameter_mm: float = BALL_DIAMETER_MM,
+    y_draw_min_deg: float = Y_DRAW_MIN,
+    y_draw_max_deg: float = Y_DRAW_MAX,
+    safety_factor: float = 0.995,
+) -> tuple[list[Toolpath], dict[str, float | bool]]:
+    if not toolpaths_surface_mm:
+        return toolpaths_surface_mm, {
+            "auto_scaled": False,
+            "scale_factor": 1.0,
+            "current_span_mm": 0.0,
+            "allowed_span_mm": 0.0,
+        }
+
+    points = [point for path in toolpaths_surface_mm for point in path.points]
+    if not points:
+        return toolpaths_surface_mm, {
+            "auto_scaled": False,
+            "scale_factor": 1.0,
+            "current_span_mm": 0.0,
+            "allowed_span_mm": 0.0,
+        }
+
+    min_y = min(point.y for point in points)
+    max_y = max(point.y for point in points)
+    min_x = min(point.x for point in points)
+    max_x = max(point.x for point in points)
+    current_span_mm = float(max_y - min_y)
+    mm_to_deg = 360.0 / (math.pi * ball_diameter_mm)
+    allowed_span_mm = max(0.0, (y_draw_max_deg - y_draw_min_deg) / mm_to_deg)
+
+    if current_span_mm <= allowed_span_mm + 1e-9:
+        return toolpaths_surface_mm, {
+            "auto_scaled": False,
+            "scale_factor": 1.0,
+            "current_span_mm": current_span_mm,
+            "allowed_span_mm": allowed_span_mm,
+        }
+
+    scale_factor = max(0.001, (allowed_span_mm / max(current_span_mm, 1e-9)) * max(0.8, min(1.0, safety_factor)))
+    origin_x = float((min_x + max_x) * 0.5)
+    origin_y = float((min_y + max_y) * 0.5)
+    scaled: list[Toolpath] = []
+    for path in toolpaths_surface_mm:
+        scaled_points = [
+            Point(
+                origin_x + ((point.x - origin_x) * scale_factor),
+                origin_y + ((point.y - origin_y) * scale_factor),
+            )
+            for point in path.points
+        ]
+        scaled.append(clone_toolpath(
+            path,
+            points=scaled_points,
+            metadata={
+                **path.metadata,
+                "auto_scaled_to_y_band": True,
+                "auto_scale_factor": scale_factor,
+            },
+        ))
+    return scaled, {
+        "auto_scaled": True,
+        "scale_factor": scale_factor,
+        "current_span_mm": current_span_mm,
+        "allowed_span_mm": allowed_span_mm,
+        "origin_x_mm": origin_x,
+        "origin_y_mm": origin_y,
+    }
 
 
 def project_toolpaths_to_ball_angles(
@@ -4118,16 +4363,16 @@ def build_projected_path_debug(
         raise AssertionError("Preview paths do not match projected toolpaths used for G-code")
 
     projection_applied_to = {
-        kind: False for kind in ("outline", "fill-wall", "fill-infill", "detail-trace", "travel")
+        kind: False for kind in ("outline", "fill-wall", "fill-infill", "fill-infill-travel", "detail-trace", "travel")
     }
     projection_count_by_kind = {
-        kind: 0 for kind in ("outline", "fill-wall", "fill-infill", "detail-trace", "travel")
+        kind: 0 for kind in ("outline", "fill-wall", "fill-infill", "fill-infill-travel", "detail-trace", "travel")
     }
     coordinate_space_before_projection_by_kind = {
-        kind: "n/a" for kind in ("outline", "fill-wall", "fill-infill", "detail-trace", "travel")
+        kind: "n/a" for kind in ("outline", "fill-wall", "fill-infill", "fill-infill-travel", "detail-trace", "travel")
     }
     coordinate_space_after_projection_by_kind = {
-        kind: "n/a" for kind in ("outline", "fill-wall", "fill-infill", "detail-trace", "travel")
+        kind: "n/a" for kind in ("outline", "fill-wall", "fill-infill", "fill-infill-travel", "detail-trace", "travel")
     }
     for path_mm, path_deg in zip(toolpaths_mm, toolpaths_deg):
         projection_applied_to[path_mm.kind] = True
@@ -5017,6 +5262,145 @@ class SlicerService:
             spacing_mm + 0.25,
         )
 
+    def _validate_infill_connector(
+        self,
+        polygon: Polygon,
+        connector: LineString,
+        *,
+        from_meta: dict[str, Any],
+        to_meta: dict[str, Any],
+        spacing_mm: float,
+        line_width_mm: float,
+        tolerance_mm: float,
+        connector_validation: dict[str, Any] | None = None,
+    ) -> InfillConnectorValidationResult:
+        start = connector.coords[0]
+        end = connector.coords[-1]
+        current_component = _connector_meta_value(from_meta, "infill_component_id", "scanline_polygon_index", "source_component_id")
+        next_component = _connector_meta_value(to_meta, "infill_component_id", "scanline_polygon_index", "source_component_id")
+        if current_component is not None and next_component is not None and current_component != next_component:
+            return InfillConnectorValidationResult(False, "different_component")
+
+        current_cell = _connector_meta_value(from_meta, "cell_id", "infill_cell_id", "scanline_cell_id")
+        next_cell = _connector_meta_value(to_meta, "cell_id", "infill_cell_id", "scanline_cell_id")
+        if current_cell is not None and next_cell is not None and current_cell != next_cell:
+            return InfillConnectorValidationResult(False, "different_cell_or_section")
+
+        current_row = _connector_meta_value(from_meta, "infill_row_index", "scanline_grid_index")
+        next_row = _connector_meta_value(to_meta, "infill_row_index", "scanline_grid_index")
+        row_delta = None
+        if current_row is not None and next_row is not None:
+            try:
+                row_delta = abs(int(next_row) - int(current_row))
+            except Exception:
+                row_delta = None
+
+        current_end_side = _connector_meta_value(from_meta, "infill_end_side")
+        next_start_side = _connector_meta_value(to_meta, "infill_start_side")
+        if current_end_side is not None and next_start_side is not None and current_end_side != next_start_side:
+            return InfillConnectorValidationResult(False, "opposite_side_endpoint")
+
+        delta_u = abs(float(end[0]) - float(start[0]))
+        delta_v = abs(float(end[1]) - float(start[1]))
+        if (row_delta is not None and row_delta != 1) and abs(delta_v - spacing_mm) > max(1e-6, spacing_mm * 0.1):
+            return InfillConnectorValidationResult(False, "non_adjacent_row")
+        if row_delta is None and abs(delta_v - spacing_mm) > max(1e-6, spacing_mm * 0.1):
+            return InfillConnectorValidationResult(False, "non_adjacent_row")
+
+        max_connector_length_mm = self._max_pen_down_connector_length_mm(spacing_mm)
+        max_normal_delta_u = max(1.5 * line_width_mm, 0.75 * spacing_mm)
+        max_edge_length = max(10.0 * spacing_mm, 12.0 * line_width_mm)
+        connector_is_short = connector.length <= max_connector_length_mm + 1e-6
+        cover_region = polygon.buffer(max(tolerance_mm, 0.25 * line_width_mm, 0.1 * spacing_mm, 0.01), join_style=1)
+        connector_fully_inside = bool(_line_fully_inside(cover_region, connector, tolerance_mm=max(0.01, spacing_mm * 0.05)))
+        connector_inside = bool(cover_region.covers(connector))
+
+        def sample_mask_failures(sample_line: LineString) -> list[dict[str, Any]]:
+            if not connector_validation:
+                return []
+            mask = connector_validation.get("mask")
+            matrix = connector_validation.get("current_to_source_matrix")
+            if mask is None or matrix is None:
+                return []
+            try:
+                current_to_source = tuple(float(value) for value in matrix)
+            except Exception:
+                return []
+            if sample_line.length <= 1e-9:
+                return []
+            sample_step_mm = max(0.01, min(spacing_mm / 3.0, line_width_mm / 3.0, float(connector_validation.get("sample_step_mm_default", 0.05))))
+            sample_count = max(2, int(math.ceil(sample_line.length / sample_step_mm)) + 1)
+            sample_failures: list[dict[str, Any]] = []
+            mask_height, mask_width = mask.shape[:2]
+            for sample_index in range(sample_count):
+                distance_mm = min(sample_line.length, (sample_line.length * sample_index) / max(sample_count - 1, 1))
+                sample_point = sample_line.interpolate(distance_mm)
+                mask_point = apply_svg_matrix(Point(float(sample_point.x), float(sample_point.y)), current_to_source)
+                mask_x = int(round(mask_point.x))
+                mask_y = int(round(mask_point.y))
+                inside_mask = 0 <= mask_x < mask_width and 0 <= mask_y < mask_height and bool(mask[mask_y, mask_x])
+                if not inside_mask:
+                    sample_failures.append({
+                        "sample_index": sample_index,
+                        "surface_x": float(sample_point.x),
+                        "surface_y": float(sample_point.y),
+                        "mask_x": float(mask_point.x),
+                        "mask_y": float(mask_point.y),
+                    })
+                    if len(sample_failures) >= 8:
+                        break
+            return sample_failures
+
+        if not connector_inside:
+            try:
+                intersection = connector.intersection(cover_region)
+                intersection_length = float(getattr(intersection, "length", 0.0) or 0.0)
+            except Exception:
+                intersection_length = 0.0
+            if intersection_length <= 1e-6:
+                return InfillConnectorValidationResult(False, "outside_fillable_polygon")
+            return InfillConnectorValidationResult(False, "crosses_gap_hole_void")
+
+        if connector_fully_inside and abs(delta_v - spacing_mm) <= max(1e-6, spacing_mm * 0.1) and delta_u <= max_normal_delta_u + 1e-6:
+            sample_failures = sample_mask_failures(connector)
+            if sample_failures:
+                return InfillConnectorValidationResult(False, "outside_selected_color", sample_failures=sample_failures)
+            return InfillConnectorValidationResult(True, "ok_normal", connector_coords=[start, end])
+
+        if delta_u > max_normal_delta_u + 1e-6:
+            if connector.length <= 3.0 * max_edge_length + 1e-6:
+                sample_failures = sample_mask_failures(connector)
+                if sample_failures:
+                    return InfillConnectorValidationResult(False, "outside_selected_color", connector_mode="edge_direct", sample_failures=sample_failures)
+                return InfillConnectorValidationResult(True, "ok_edge_direct", connector_mode="edge_direct", connector_coords=[start, end])
+            boundary_coords = boundary_connector_coords(
+                polygon,
+                start,
+                end,
+                tolerance=max(tolerance_mm, 0.5 * line_width_mm, spacing_mm * 0.75, 0.05),
+            )
+            if len(boundary_coords) >= 2:
+                boundary_line = LineString(boundary_coords)
+                if boundary_line.length <= max(16.0 * spacing_mm, 20.0 * line_width_mm) + 1e-6 and cover_region.covers(boundary_line):
+                    sample_failures = sample_mask_failures(boundary_line)
+                    if sample_failures:
+                        return InfillConnectorValidationResult(False, "outside_selected_color", connector_mode="boundary", sample_failures=sample_failures)
+                    return InfillConnectorValidationResult(True, "ok_boundary", connector_mode="boundary", connector_coords=boundary_coords)
+            if connector.length > max_connector_length_mm + 1e-6:
+                return InfillConnectorValidationResult(False, "too_long")
+            return InfillConnectorValidationResult(False, "delta_u_too_large")
+
+        if connector.length > max_connector_length_mm + 1e-6:
+            return InfillConnectorValidationResult(False, "too_long")
+
+        sample_failures = sample_mask_failures(connector)
+        if sample_failures:
+            return InfillConnectorValidationResult(False, "outside_selected_color", sample_failures=sample_failures)
+
+        if connector.length <= max_connector_length_mm + 1e-6:
+            return InfillConnectorValidationResult(True, "ok_short_local", connector_coords=[start, end])
+        return InfillConnectorValidationResult(False, "outside_fillable_polygon")
+
     def _recommended_infill_min_segment_length_mm(self, line_width_mm: float, minimum_length_mm: float) -> float:
         return max(minimum_length_mm, max(0.15, line_width_mm * 0.5))
 
@@ -5190,6 +5574,113 @@ class SlicerService:
             "small_detail_threshold_mm": small_detail_threshold_mm,
             "offset_collapses": offset_collapses,
         }
+
+    def _build_cell_region_from_segments(
+        self,
+        segments: list[InfillSegment],
+        *,
+        angle_deg: float,
+        origin: tuple[float, float],
+        spacing_mm: float,
+        cover_region: Any,
+    ) -> Any:
+        if not segments:
+            return None
+        stroke_half = max(0.05, spacing_mm * 0.55)
+        buffered_lines = []
+        for segment in segments:
+            line = LineString(segment.coords if segment.coords else [(segment.low_u.x, segment.low_u.y), (segment.high_u.x, segment.high_u.y)])
+            world_line = affinity.rotate(line, angle_deg, origin=origin)
+            buffered_lines.append(world_line.buffer(stroke_half, join_style=1, cap_style=1))
+        if not buffered_lines:
+            return None
+        cell_region = unary_union(buffered_lines)
+        if cover_region is not None and not cover_region.is_empty:
+            cell_region = cell_region.intersection(cover_region)
+        return cell_region
+
+    def _evaluate_adaptive_cell_mode(
+        self,
+        *,
+        cell_segments: list[InfillSegment],
+        spacing_mm: float,
+        line_width_mm: float,
+        cover_region: Any,
+    ) -> InfillCellAdaptiveDecision:
+        if not cell_segments:
+            return InfillCellAdaptiveDecision(mode="detail_contour", reasons=["empty_cell"], metrics={})
+
+        lengths = [max(0.0, float(segment.length)) for segment in cell_segments]
+        total_hatch_length = sum(lengths)
+        avg_segment_length = total_hatch_length / max(1, len(lengths))
+        short_threshold = max(line_width_mm * 1.5, spacing_mm * DEFAULT_SHORT_INFILL_SEGMENT_FACTOR)
+        short_segments = sum(1 for value in lengths if value <= short_threshold)
+        short_ratio = short_segments / max(1, len(lengths))
+        row_count = len({int(segment.row_index) for segment in cell_segments})
+
+        connector_length = 0.0
+        connector_count = 0
+        for previous, current in zip(cell_segments, cell_segments[1:]):
+            connector = LineString([(previous.high_u.x, previous.high_u.y), (current.low_u.x, current.low_u.y)])
+            if cover_region is not None and not cover_region.is_empty:
+                if not _line_fully_inside(cover_region, connector, tolerance_mm=max(0.01, spacing_mm * 0.05)):
+                    continue
+            connector_length += float(connector.length)
+            connector_count += 1
+        connector_ratio = connector_length / max(total_hatch_length, 1e-6)
+
+        min_u = min(float(segment.min_u) for segment in cell_segments)
+        max_u = max(float(segment.max_u) for segment in cell_segments)
+        min_row_offset = min(float(segment.scanline_offset) for segment in cell_segments)
+        max_row_offset = max(float(segment.scanline_offset) for segment in cell_segments)
+        width_u = max(0.0, max_u - min_u)
+        width_v = max(0.0, max_row_offset - min_row_offset)
+        approx_local_width = min(width_u, width_v if width_v > 1e-6 else spacing_mm)
+        area_estimate_mm2 = max(0.0, width_u * max(width_v, spacing_mm))
+        sorted_by_row = sorted(cell_segments, key=lambda segment: (segment.row_index, segment.min_u, segment.interval_index))
+        center_u_values = [self._segment_center_u(segment) for segment in sorted_by_row]
+        direction_changes = 0
+        last_sign = 0
+        for previous_value, next_value in zip(center_u_values, center_u_values[1:]):
+            delta = next_value - previous_value
+            sign = 0 if abs(delta) <= 1e-6 else (1 if delta > 0 else -1)
+            if sign == 0:
+                continue
+            if last_sign != 0 and sign != last_sign:
+                direction_changes += 1
+            last_sign = sign
+
+        reasons: list[str] = []
+        if row_count < 3 and avg_segment_length <= spacing_mm * 3.0:
+            reasons.append("too_few_hatch_rows")
+        if approx_local_width < 3.0 * spacing_mm and avg_segment_length <= spacing_mm * 4.0:
+            reasons.append("narrow_local_width")
+        if avg_segment_length <= spacing_mm * 2.2 or short_ratio >= 0.6:
+            reasons.append("short_fragmented_hatch")
+        if direction_changes >= 2:
+            reasons.append("narrow_curved_stroke")
+        if total_hatch_length <= spacing_mm * 2.0 and avg_segment_length <= spacing_mm * 1.5:
+            reasons.append("mostly_connector_fragments")
+
+        mode = "rectilinear"
+        if reasons:
+            mode = "detail_contour"
+        return InfillCellAdaptiveDecision(
+            mode=mode,
+            reasons=reasons,
+            metrics={
+                "cell_area_estimate_mm2": area_estimate_mm2,
+                "cell_row_count": float(row_count),
+                "avg_hatch_segment_length_mm": avg_segment_length,
+                "short_hatch_segment_ratio": short_ratio,
+                "connector_length_mm": connector_length,
+                "connector_count": float(connector_count),
+                "connector_to_hatch_ratio": connector_ratio,
+                "approx_local_width_mm": approx_local_width,
+                "estimated_hatch_rows": float(row_count),
+                "centerline_turns": float(direction_changes),
+            },
+        )
 
     def _build_stable_scanline_rows(
         self,
@@ -5478,6 +5969,7 @@ class SlicerService:
                     low_xy, high_xy = start, end
                 else:
                     low_xy, high_xy = end, start
+                center = Point(float((low_xy[0] + high_xy[0]) * 0.5), float((low_xy[1] + high_xy[1]) * 0.5))
                 segments.append(InfillSegment(
                     id=f"{component_id}:r{row_index}:i{interval_index}",
                     component_id=component_id,
@@ -5489,6 +5981,8 @@ class SlicerService:
                     high_u=Point(float(high_xy[0]), float(high_xy[1])),
                     min_u=float(min(start[0], end[0])),
                     max_u=float(max(start[0], end[0])),
+                    center=center,
+                    length=float(LineString(coords).length),
                     coords=list(coords),
                 ))
         return segments
@@ -5498,6 +5992,65 @@ class SlicerService:
 
     def _segment_length_mm(self, segment: InfillSegment) -> float:
         return max(0.0, segment.max_u - segment.min_u)
+
+    def _segment_gap_mm(self, a: InfillSegment, b: InfillSegment) -> float:
+        return max(0.0, max(a.min_u, b.min_u) - min(a.max_u, b.max_u))
+
+    def _cell_centroid_for_segments(self, segments: list[InfillSegment]) -> Point:
+        if not segments:
+            return Point(0.0, 0.0)
+        return Point(
+            sum(segment.center.x for segment in segments) / len(segments),
+            sum(segment.center.y for segment in segments) / len(segments),
+        )
+
+    def _cell_entry_exit_points(self, cell_paths: list[Toolpath]) -> tuple[Point, Point]:
+        drawing_paths = [path for path in cell_paths if len(path.points) >= 2 and path.kind != "fill-infill-travel"]
+        if not drawing_paths:
+            return Point(0.0, 0.0), Point(0.0, 0.0)
+        entry = drawing_paths[0].points[0]
+        exit_point = drawing_paths[-1].points[-1]
+        return Point(float(entry.x), float(entry.y)), Point(float(exit_point.x), float(exit_point.y))
+
+    def _order_infill_cells(
+        self,
+        cell_plans: list[InfillCellPlan],
+        *,
+        origin: tuple[float, float],
+    ) -> list[InfillCellPlan]:
+        if len(cell_plans) <= 1:
+            return list(cell_plans)
+
+        remaining = list(cell_plans)
+        ordered: list[InfillCellPlan] = []
+        current_point = Point(float(origin[0]), float(origin[1]))
+
+        start = min(
+            remaining,
+            key=lambda plan: (
+                math.hypot(plan.entry_point.x - current_point.x, plan.entry_point.y - current_point.y),
+                math.hypot(plan.centroid.x - current_point.x, plan.centroid.y - current_point.y),
+                plan.cell_id,
+            ),
+        )
+        ordered.append(start)
+        remaining.remove(start)
+        current_point = start.exit_point
+
+        while remaining:
+            next_plan = min(
+                remaining,
+                key=lambda plan: (
+                    math.hypot(plan.entry_point.x - current_point.x, plan.entry_point.y - current_point.y),
+                    math.hypot(plan.centroid.x - current_point.x, plan.centroid.y - current_point.y),
+                    plan.cell_id,
+                ),
+            )
+            ordered.append(next_plan)
+            remaining.remove(next_plan)
+            current_point = next_plan.exit_point
+
+        return ordered
 
     def _segment_center_u(self, segment: InfillSegment) -> float:
         return (segment.min_u + segment.max_u) * 0.5
@@ -5512,59 +6065,34 @@ class SlicerService:
         spacing_mm: float,
         line_width_mm: float,
         tolerance_mm: float,
+        connector_validation: dict[str, Any] | None = None,
     ) -> tuple[bool, str]:
-        if a.component_id != b.component_id:
-            return False, "different_component"
         start_pt = (a.low_u.x, a.low_u.y) if side == "low" else (a.high_u.x, a.high_u.y)
         end_pt = (b.low_u.x, b.low_u.y) if side == "low" else (b.high_u.x, b.high_u.y)
-        delta_u = abs(end_pt[0] - start_pt[0])
-        delta_v = abs(end_pt[1] - start_pt[1])
-        row_delta = abs(b.row_index - a.row_index)
-        if row_delta != 1 and abs(delta_v - spacing_mm) > max(1e-6, spacing_mm * 0.1):
-            return False, "non_adjacent_row"
         connector = LineString([start_pt, end_pt])
-        cover_region = polygon.buffer(max(tolerance_mm, 0.25 * line_width_mm, 0.1 * spacing_mm, 0.01), join_style=1)
-        max_normal_delta_u = max(1.5 * line_width_mm, 0.75 * spacing_mm)
-        max_edge_length = max(10.0 * spacing_mm, 12.0 * line_width_mm)
-
-        if delta_v > spacing_mm * 1.15 + 1e-6:
-            return False, "non_adjacent_row"
-
-        connector_fully_inside = _line_fully_inside(cover_region, connector, tolerance_mm=max(0.01, spacing_mm * 0.05))
-        if connector_fully_inside and abs(delta_v - spacing_mm) <= max(1e-6, spacing_mm * 0.1) and delta_u <= max_normal_delta_u + 1e-6:
-            return True, "ok_normal"
-
-        if delta_u > max_normal_delta_u + 1e-6:
-            if connector.length <= 3.0 * max_edge_length + 1e-6:
-                return True, "ok_edge_direct"
-            boundary_coords = boundary_connector_coords(
-                polygon,
-                start_pt,
-                end_pt,
-                tolerance=max(tolerance_mm, 0.5 * line_width_mm, spacing_mm * 0.75, 0.05),
-            )
-            if len(boundary_coords) >= 2:
-                boundary_line = LineString(boundary_coords)
-                if boundary_line.length <= max(16.0 * spacing_mm, 20.0 * line_width_mm) + 1e-6:
-                    return True, "ok_edge"
-            if connector.length > max_edge_length + 1e-6:
-                return False, "too_long"
-            return False, "delta_u_too_large"
-
-        if connector.length > max_edge_length + 1e-6:
-            return False, "too_long"
-        if connector.length <= max_edge_length + 1e-6:
-            return True, "ok_short_local"
-        if not connector_fully_inside:
-            try:
-                inter = connector.intersection(cover_region)
-                inter_len = float(getattr(inter, "length", 0.0) or 0.0)
-            except Exception:
-                inter_len = 0.0
-            if inter_len <= 1e-6:
-                return False, "outside_polygon"
-            return False, "crosses_gap_hole_void"
-        return True, "ok_inside"
+        result = self._validate_infill_connector(
+            polygon,
+            connector,
+            from_meta={
+                "infill_component_id": a.component_id,
+                "infill_row_index": a.row_index,
+                "cell_id": a.cell_id,
+                "infill_start_side": side,
+                "infill_end_side": side,
+            },
+            to_meta={
+                "infill_component_id": b.component_id,
+                "infill_row_index": b.row_index,
+                "cell_id": b.cell_id,
+                "infill_start_side": side,
+                "infill_end_side": side,
+            },
+            spacing_mm=spacing_mm,
+            line_width_mm=line_width_mm,
+            tolerance_mm=tolerance_mm,
+            connector_validation=connector_validation,
+        )
+        return result.accepted, result.reason
 
     def _assign_infill_cells(
         self,
@@ -5574,12 +6102,14 @@ class SlicerService:
         spacing_mm: float,
         line_width_mm: float,
         tolerance_mm: float,
+        connector_validation: dict[str, Any] | None = None,
     ) -> tuple[dict[str, list[InfillSegment]], dict[str, int]]:
         stats = {
             "rejected_cross_gap_connectors": 0,
             "rejected_different_cell_connectors": 0,
             "rejected_opposite_side_connectors": 0,
             "rejected_too_long_connectors": 0,
+            "rejected_outside_selected_color_connectors": 0,
             "rows_with_multiple_intervals": 0,
         }
         if not segments:
@@ -5602,12 +6132,8 @@ class SlicerService:
             current_segments = by_row[row_index]
             used_previous_ids: set[str] = set()
             for segment in current_segments:
-                min_overlap_threshold = max(
-                    spacing_mm * 0.25,
-                    0.25 * self._segment_length_mm(segment),
-                )
                 best_match: InfillSegment | None = None
-                best_overlap = float("-inf")
+                best_score = float("inf")
                 for candidate in previous_row_segments:
                     if candidate.id in used_previous_ids:
                         # Prevent one previous interval from fan-out into multiple
@@ -5617,34 +6143,43 @@ class SlicerService:
                     if abs(candidate.interval_index - segment.interval_index) > 1:
                         continue
                     overlap = self._segment_overlap_mm(candidate, segment)
-                    if overlap <= min_overlap_threshold:
-                        continue
-                    candidate_len = max(1e-6, self._segment_length_mm(candidate))
-                    segment_len = max(1e-6, self._segment_length_mm(segment))
-                    overlap_ratio = overlap / min(candidate_len, segment_len)
-                    if overlap_ratio < 0.35:
-                        continue
-                    center_delta_u = abs(self._segment_center_u(candidate) - self._segment_center_u(segment))
-                    max_center_delta = max(4.0 * spacing_mm, 6.0 * line_width_mm)
-                    if center_delta_u > max_center_delta + 1e-6:
-                        continue
                     low_ok, low_reason = self._segment_connectable_same_side(
-                        polygon, candidate, segment, side="low", spacing_mm=spacing_mm, line_width_mm=line_width_mm, tolerance_mm=tolerance_mm
+                        polygon,
+                        candidate,
+                        segment,
+                        side="low",
+                        spacing_mm=spacing_mm,
+                        line_width_mm=line_width_mm,
+                        tolerance_mm=tolerance_mm,
+                        connector_validation=connector_validation,
                     )
                     high_ok, high_reason = self._segment_connectable_same_side(
-                        polygon, candidate, segment, side="high", spacing_mm=spacing_mm, line_width_mm=line_width_mm, tolerance_mm=tolerance_mm
+                        polygon,
+                        candidate,
+                        segment,
+                        side="high",
+                        spacing_mm=spacing_mm,
+                        line_width_mm=line_width_mm,
+                        tolerance_mm=tolerance_mm,
+                        connector_validation=connector_validation,
                     )
                     if not low_ok and not high_ok:
                         reasons = {low_reason, high_reason}
                         if "too_long" in reasons:
                             stats["rejected_too_long_connectors"] += 1
-                        elif "diagonal_gap_crossing" in reasons or "outside_polygon" in reasons:
+                        elif "outside_selected_color" in reasons:
+                            stats["rejected_outside_selected_color_connectors"] += 1
+                        elif "diagonal_gap_crossing" in reasons or "outside_fillable_polygon" in reasons or "crosses_gap_hole_void" in reasons:
                             stats["rejected_cross_gap_connectors"] += 1
                         else:
                             stats["rejected_different_cell_connectors"] += 1
                         continue
-                    if overlap > best_overlap:
-                        best_overlap = overlap
+
+                    low_connector_len = math.hypot(candidate.low_u.x - segment.low_u.x, candidate.low_u.y - segment.low_u.y)
+                    high_connector_len = math.hypot(candidate.high_u.x - segment.high_u.x, candidate.high_u.y - segment.high_u.y)
+                    connector_score = min(low_connector_len, high_connector_len)
+                    if connector_score < best_score:
+                        best_score = connector_score
                         best_match = candidate
 
                 if best_match is None:
@@ -5707,71 +6242,138 @@ class SlicerService:
         tolerance_mm: float,
         kind: str,
         debug: Optional[dict[str, Any]],
+        connector_validation: dict[str, Any] | None = None,
     ) -> tuple[list[Toolpath], dict[str, int]]:
         stats = {"accepted_connectors": 0, "pen_lifts": 0}
         if not cell_segments:
             return [], stats
         cell_segments = sorted(cell_segments, key=lambda s: (s.row_index, s.min_u, s.interval_index))
         toolpaths: list[Toolpath] = []
-        current_coords: list[tuple[float, float]] | None = None
-        current_segment: InfillSegment | None = None
-        draw_forward = True
         effective_line_width_mm = line_width_mm if line_width_mm is not None else spacing_mm
 
-        for segment in cell_segments:
-            oriented = list(segment.coords if draw_forward else list(reversed(segment.coords)))
-            if current_coords is None or current_segment is None:
-                current_coords = oriented
-                current_segment = segment
-                draw_forward = not draw_forward
-                continue
+        def _segment_side(segment: InfillSegment, point: Point) -> str:
+            low_distance = math.hypot(point.x - segment.low_u.x, point.y - segment.low_u.y)
+            high_distance = math.hypot(point.x - segment.high_u.x, point.y - segment.high_u.y)
+            return "low" if low_distance <= high_distance else "high"
 
+        def _choose_oriented_coords(
+            current_segment: InfillSegment,
+            current_coords: list[tuple[float, float]],
+            next_segment: InfillSegment,
+        ) -> tuple[list[tuple[float, float]] | None, str | None, InfillConnectorValidationResult | None]:
             current_end = Point(float(current_coords[-1][0]), float(current_coords[-1][1]))
-            current_low = Point(current_segment.low_u.x, current_segment.low_u.y)
-            current_high = Point(current_segment.high_u.x, current_segment.high_u.y)
-            if nearly_same_point(current_end, current_low, 1e-6):
-                prev_side = "low"
-            elif nearly_same_point(current_end, current_high, 1e-6):
-                prev_side = "high"
-            else:
-                prev_side = (
-                    "low"
-                    if math.hypot(current_end.x - current_low.x, current_end.y - current_low.y)
-                    <= math.hypot(current_end.x - current_high.x, current_end.y - current_high.y)
-                    else "high"
+            current_side = _segment_side(current_segment, current_end)
+            best_coords: list[tuple[float, float]] | None = None
+            best_reason: str | None = None
+            best_result: InfillConnectorValidationResult | None = None
+            best_length = float("inf")
+            for oriented in (list(next_segment.coords), list(reversed(next_segment.coords))):
+                if len(oriented) < 2:
+                    continue
+                next_start = Point(float(oriented[0][0]), float(oriented[0][1]))
+                next_side = _segment_side(next_segment, next_start)
+                if next_side != current_side:
+                    continue
+                connector_result = self._validate_infill_connector(
+                    polygon,
+                    LineString([(
+                        current_end.x,
+                        current_end.y,
+                    ), (
+                        next_start.x,
+                        next_start.y,
+                    )]),
+                    from_meta={
+                        "infill_component_id": current_segment.component_id,
+                        "infill_row_index": current_segment.row_index,
+                        "cell_id": current_segment.cell_id,
+                        "infill_end_side": current_side,
+                    },
+                    to_meta={
+                        "infill_component_id": next_segment.component_id,
+                        "infill_row_index": next_segment.row_index,
+                        "cell_id": next_segment.cell_id,
+                        "infill_start_side": next_side,
+                    },
+                    spacing_mm=spacing_mm,
+                    line_width_mm=effective_line_width_mm,
+                    tolerance_mm=tolerance_mm,
+                    connector_validation=connector_validation,
                 )
+                if not connector_result.accepted:
+                    best_reason = connector_result.reason
+                    continue
+                connector_length = float(LineString(connector_result.connector_coords or [(current_end.x, current_end.y), (next_start.x, next_start.y)]).length)
+                if connector_length < best_length:
+                    best_length = connector_length
+                    best_coords = oriented
+                    best_reason = None
+                    best_result = connector_result
+            return best_coords, best_reason, best_result
 
-            next_start = Point(float(oriented[0][0]), float(oriented[0][1]))
-            next_low = Point(segment.low_u.x, segment.low_u.y)
-            next_high = Point(segment.high_u.x, segment.high_u.y)
-            if nearly_same_point(next_start, next_low, 1e-6):
-                next_side = "low"
-            elif nearly_same_point(next_start, next_high, 1e-6):
-                next_side = "high"
-            else:
-                next_side = (
-                    "low"
-                    if math.hypot(next_start.x - next_low.x, next_start.y - next_low.y)
-                    <= math.hypot(next_start.x - next_high.x, next_start.y - next_high.y)
-                    else "high"
-                )
-            ok, reason = self._segment_connectable_same_side(
-                polygon,
-                current_segment,
-                segment,
-                side=prev_side,
-                spacing_mm=spacing_mm,
-                line_width_mm=effective_line_width_mm,
-                tolerance_mm=tolerance_mm,
-            )
-            if next_side != prev_side:
-                ok = False
-                reason = "opposite_side_endpoint"
-            if ok:
-                start_pt = (current_segment.high_u.x, current_segment.high_u.y) if prev_side == "high" else (current_segment.low_u.x, current_segment.low_u.y)
-                end_pt = (segment.high_u.x, segment.high_u.y) if next_side == "high" else (segment.low_u.x, segment.low_u.y)
-                connector_coords = [start_pt, end_pt]
-                current_coords = _concat_coords(current_coords, connector_coords, oriented)
+        current_coords: list[tuple[float, float]] | None = None
+        current_segment: InfillSegment | None = None
+
+        def _segment_world_points(coords: list[tuple[float, float]]) -> list[Point]:
+            world_line = affinity.rotate(LineString(coords), angle_deg, origin=origin)
+            return simplify_segment_points([Point(x, y) for x, y in world_line.coords], tolerance_mm, False)
+
+        if cell_segments:
+            first_segment = cell_segments[0]
+            current_segment = first_segment
+            current_coords = list(first_segment.coords)
+            if len(cell_segments) > 1:
+                best_first_coords: list[tuple[float, float]] | None = None
+                best_first_length = float("inf")
+                for oriented in (list(first_segment.coords), list(reversed(first_segment.coords))):
+                    if len(oriented) < 2:
+                        continue
+                    trial_current = oriented
+                    chosen_coords, _, connector_result = _choose_oriented_coords(first_segment, trial_current, cell_segments[1])
+                    if chosen_coords is None or connector_result is None:
+                        continue
+                    connector_length = float(LineString(connector_result.connector_coords or [trial_current[-1], chosen_coords[0]]).length)
+                    if connector_length < best_first_length:
+                        best_first_length = connector_length
+                        best_first_coords = oriented
+                if best_first_coords is not None:
+                    current_coords = best_first_coords
+
+        if current_coords is None or current_segment is None:
+            return [], stats
+
+        for segment in cell_segments[1:]:
+            chosen_coords, reason, connector_result = _choose_oriented_coords(current_segment, current_coords, segment)
+            if chosen_coords is not None and connector_result is not None:
+                current_points = _segment_world_points(current_coords)
+                if len(current_points) >= 2:
+                    toolpaths.append(Toolpath(points=current_points, kind=kind, closed=False, metadata={
+                        "scanline_offset_mm": float(current_segment.scanline_offset),
+                        "scanline_grid_index": int(current_segment.row_index),
+                        "interval_index": int(current_segment.interval_index),
+                        "cell_id": current_segment.cell_id,
+                        "infill_segment_id": current_segment.id,
+                    }))
+                connector_coords = connector_result.connector_coords or [current_coords[-1], chosen_coords[0]]
+                if debug is not None and connector_result.sample_failures:
+                    debug.setdefault("connector_validation_sample_failures", []).extend(connector_result.sample_failures)
+                connector_points = [Point(float(x), float(y)) for x, y in connector_coords]
+                toolpaths.append(Toolpath(
+                    points=connector_points,
+                    kind="fill-infill-travel",
+                    closed=False,
+                    source="infill_connector",
+                    metadata={
+                        "projection_count": 0,
+                        "expected_relation_to_fill": "internal_fill_connector",
+                        "travel_mode": "pen_down",
+                        "connector_mode": connector_result.connector_mode,
+                        "connector_source_path_id": current_segment.id,
+                        "connector_target_path_id": segment.id,
+                        "cell_id": current_segment.cell_id,
+                        "infill_component_id": current_segment.component_id,
+                    },
+                ))
                 stats["accepted_connectors"] += 1
                 self._emit_debug_connector(
                     debug,
@@ -5782,24 +6384,38 @@ class SlicerService:
                     origin,
                     "debug-valid-connector",
                 )
+                current_coords = chosen_coords
                 current_segment = segment
-                draw_forward = not draw_forward
                 continue
 
             if debug is not None:
                 reasons = debug.setdefault("connector_rejection_reasons", {})
-                reasons[reason] = int(reasons.get(reason, 0)) + 1
+                if reason is not None:
+                    reasons[reason] = int(reasons.get(reason, 0)) + 1
+                if reason == "outside_selected_color":
+                    rejection_counts = debug.setdefault("connector_rejection_counts", {})
+                    rejection_counts[reason] = int(rejection_counts.get(reason, 0)) + 1
+                if connector_validation is not None and reason == "outside_selected_color" and connector_result is not None:
+                    for sample_failure in connector_result.sample_failures:
+                        self._emit_debug_connector(
+                            debug,
+                            "rejected_infill_connector_sample_points",
+                            (float(sample_failure["surface_x"]) - 0.05, float(sample_failure["surface_y"])),
+                            (float(sample_failure["surface_x"]) + 0.05, float(sample_failure["surface_y"])),
+                            angle_deg,
+                            origin,
+                            "debug-connector-failure-sample",
+                        )
             self._emit_debug_connector(
                 debug,
                 "rejected_infill_connectors",
                 current_coords[-1],
-                oriented[0],
+                segment.coords[0],
                 angle_deg,
                 origin,
                 "debug-rejected-connector",
             )
-            world_line = affinity.rotate(LineString(current_coords), angle_deg, origin=origin)
-            points = simplify_segment_points([Point(x, y) for x, y in world_line.coords], tolerance_mm, False)
+            points = _segment_world_points(current_coords)
             if len(points) >= 2:
                 toolpaths.append(Toolpath(points=points, kind=kind, closed=False, metadata={
                     "scanline_offset_mm": float(current_segment.scanline_offset),
@@ -5809,13 +6425,11 @@ class SlicerService:
                     "infill_segment_id": current_segment.id,
                 }))
             stats["pen_lifts"] += 1
-            current_coords = oriented
+            current_coords = list(segment.coords)
             current_segment = segment
-            draw_forward = not draw_forward
 
         if current_coords is not None and current_segment is not None:
-            world_line = affinity.rotate(LineString(current_coords), angle_deg, origin=origin)
-            points = simplify_segment_points([Point(x, y) for x, y in world_line.coords], tolerance_mm, False)
+            points = _segment_world_points(current_coords)
             if len(points) >= 2:
                 toolpaths.append(Toolpath(points=points, kind=kind, closed=False, metadata={
                     "scanline_offset_mm": float(current_segment.scanline_offset),
@@ -5884,6 +6498,7 @@ class SlicerService:
         angle_deg: float,
         origin: tuple[float, float],
         tolerance_mm: float,
+        connector_validation: dict[str, Any] | None = None,
         debug: Optional[dict[str, Any]] = None,
     ) -> tuple[list[Toolpath], dict[str, int]]:
         stats = {
@@ -5897,6 +6512,7 @@ class SlicerService:
             "rejected_delta_u_too_large": 0,
             "rejected_outside_polygon": 0,
             "rejected_cross_gap_hole_void": 0,
+            "rejected_outside_selected_color": 0,
             "rejected_unknown": 0,
             "rejected_missing_points": 0,
         }
@@ -5905,6 +6521,9 @@ class SlicerService:
 
         if cover_region is None or cover_region.is_empty:
             return ordered_paths, stats
+
+        normalized_cover = normalize_geometry(cover_region)
+        validation_polygon = normalized_cover[0] if normalized_cover else cover_region
 
         stitched: list[Toolpath] = []
         current = ordered_paths[0]
@@ -5923,6 +6542,18 @@ class SlicerService:
             if key not in stats:
                 key = "rejected_unknown"
             stats[key] += 1
+
+        reason_to_stat = {
+            "different_component": "different_component",
+            "different_cell_or_section": "different_cell",
+            "non_adjacent_row": "non_adjacent_row",
+            "opposite_side_endpoint": "opposite_side",
+            "too_long": "too_long",
+            "delta_u_too_large": "delta_u_too_large",
+            "outside_fillable_polygon": "outside_polygon",
+            "crosses_gap_hole_void": "cross_gap_hole_void",
+            "outside_selected_color": "outside_selected_color",
+        }
 
         for nxt in ordered_paths[1:]:
             if len(current_points) < 1 or len(nxt.points) < 1:
@@ -5950,68 +6581,22 @@ class SlicerService:
 
             current_cell = _meta_value(current_meta, "cell_id", "infill_cell_id", "scanline_cell_id")
             next_cell = _meta_value(next_meta, "cell_id", "infill_cell_id", "scanline_cell_id")
-            if current_cell != next_cell:
-                _bump("different_cell")
+            connector_result = self._validate_infill_connector(
+                validation_polygon,
+                LineString([(start.x, start.y), (end.x, end.y)]),
+                from_meta=current_meta,
+                to_meta=next_meta,
+                spacing_mm=spacing_mm,
+                line_width_mm=line_width_mm,
+                tolerance_mm=tolerance_mm,
+                connector_validation=connector_validation,
+            )
 
-            current_row = _meta_value(current_meta, "infill_row_index", "scanline_grid_index")
-            next_row = _meta_value(next_meta, "infill_row_index", "scanline_grid_index")
-
-            current_end_side = _meta_value(current_meta, "infill_end_side")
-            next_start_side = _meta_value(next_meta, "infill_start_side")
-            if current_end_side is not None and next_start_side is not None and current_end_side != next_start_side:
-                _bump("opposite_side")
-
-            connector = LineString([(start.x, start.y), (end.x, end.y)])
-            max_normal_delta_u = max(1.5 * line_width_mm, 0.75 * spacing_mm)
-            max_edge_length = max(10.0 * spacing_mm, 12.0 * line_width_mm)
-            delta_u = abs(end.x - start.x)
-            delta_v = abs(end.y - start.y)
-            if (current_row is None or next_row is None or abs(int(next_row) - int(current_row)) != 1) and abs(delta_v - spacing_mm) > max(1e-6, spacing_mm * 0.1):
-                _bump("non_adjacent_row")
-                stitched.append(clone_toolpath(current, points=current_points, metadata=current_meta))
-                current = nxt
-                current_points = list(current.points)
-                current_meta = dict(current.metadata or {})
-                continue
-            connector_is_short = connector.length <= max_edge_length + 1e-6
-            expanded_cover = cover_region.buffer(max(0.25 * line_width_mm, 0.1 * spacing_mm, 0.01), join_style=1)
-            connector_fully_inside = _line_fully_inside(expanded_cover, connector, tolerance_mm=max(0.01, spacing_mm * 0.05))
-            connector_inside = bool(cover_region.covers(connector))
-            connector_coords: list[tuple[float, float]] = []
-            connector_mode = "direct"
-            if connector_fully_inside and abs(delta_v - spacing_mm) <= max(1e-6, spacing_mm * 0.1) and delta_u <= max_normal_delta_u + 1e-6:
-                connector_coords = [start, end]
-            elif delta_u > max_normal_delta_u + 1e-6:
-                if connector.length <= 3.0 * max_edge_length + 1e-6:
-                    connector_coords = [start, end]
-                    connector_mode = "edge_direct"
-                else:
-                    for polygon in normalize_geometry(cover_region):
-                        candidate_coords = boundary_connector_coords(
-                            polygon,
-                            (start.x, start.y),
-                            (end.x, end.y),
-                            tolerance=max(tolerance_mm, 0.5 * line_width_mm, spacing_mm * 0.75, 0.05),
-                        )
-                        if len(candidate_coords) < 2:
-                            continue
-                        candidate_line = LineString(candidate_coords)
-                        if candidate_line.length > max(16.0 * spacing_mm, 20.0 * line_width_mm) + 1e-6:
-                            continue
-                        connector_coords = candidate_coords
-                        connector_mode = "boundary"
-                        break
-            elif connector_is_short:
-                connector_coords = [start, end]
-
-            if connector_coords:
+            if connector_result.accepted:
                 stats["accepted_connectors"] += 1
                 stitched.append(clone_toolpath(current, points=current_points, metadata=current_meta))
-                connector_points = [
-                    Point(float(coord.x), float(coord.y)) if hasattr(coord, "x") and hasattr(coord, "y")
-                    else Point(float(coord[0]), float(coord[1]))
-                    for coord in connector_coords
-                ]
+                connector_coords = connector_result.connector_coords or [(start.x, start.y), (end.x, end.y)]
+                connector_points = [Point(float(coord[0]), float(coord[1])) for coord in connector_coords]
                 connector_path = Toolpath(
                     points=connector_points,
                     kind="fill-infill-travel",
@@ -6022,9 +6607,11 @@ class SlicerService:
                         "projection_count": 0,
                         "expected_relation_to_fill": "internal_fill_connector",
                         "travel_mode": "pen_down",
-                        "connector_mode": connector_mode,
+                        "connector_mode": connector_result.connector_mode,
                         "connector_source_path_id": current.path_id,
                         "connector_target_path_id": nxt.path_id,
+                            "cell_id": current_meta.get("cell_id") or current.metadata.get("cell_id"),
+                            "infill_component_id": current_meta.get("infill_component_id") or current.metadata.get("infill_component_id"),
                     },
                 )
                 stitched.append(connector_path)
@@ -6039,22 +6626,7 @@ class SlicerService:
                 current_meta = dict(current.metadata or {})
                 continue
 
-            if delta_u > max_normal_delta_u + 1e-6:
-                _bump("delta_u_too_large")
-            elif not connector_inside:
-                try:
-                    inter = connector.intersection(cover_region)
-                    inter_len = float(getattr(inter, "length", 0.0) or 0.0)
-                except Exception:
-                    inter_len = 0.0
-                if inter_len > 1e-6:
-                    _bump("cross_gap_hole_void")
-                else:
-                    _bump("outside_polygon")
-            elif connector.length > max_edge_length + 1e-6:
-                _bump("too_long")
-            else:
-                _bump("unknown")
+            _bump(reason_to_stat.get(connector_result.reason, connector_result.reason))
             stitched.append(clone_toolpath(current, points=current_points, metadata=current_meta))
             current = nxt
             current_points = list(current.points)
@@ -6065,6 +6637,18 @@ class SlicerService:
                     "rejected_infill_connectors",
                     [Toolpath(points=[Point(start.x, start.y), Point(end.x, end.y)], kind="debug-rejected-connector", closed=False)],
                 )
+                if connector_result.sample_failures:
+                    debug.setdefault("connector_validation_sample_failures", []).extend(connector_result.sample_failures)
+                    for sample_failure in connector_result.sample_failures:
+                        self._emit_debug_connector(
+                            debug,
+                            "rejected_infill_connector_sample_points",
+                            (float(sample_failure["surface_x"]) - 0.05, float(sample_failure["surface_y"])),
+                            (float(sample_failure["surface_x"]) + 0.05, float(sample_failure["surface_y"])),
+                            angle_deg,
+                            origin,
+                            "debug-connector-failure-sample",
+                        )
 
         stitched.append(clone_toolpath(current, points=current_points, metadata=current_meta))
         return stitched, stats
@@ -6196,16 +6780,22 @@ class SlicerService:
         region: Any,
         *,
         spacing_mm: float,
-        line_width_mm: float,
         angle_deg: float,
         min_segment_length_mm: float,
         tolerance_mm: float,
+        line_width_mm: float | None = None,
         kind: str = "fill-infill",
         allow_pen_down_infill_connectors: bool = DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS,
+        infill_path_mode: str = DEFAULT_INFILL_PATH_MODE,
+        connector_validation: dict[str, Any] | None = None,
+        adaptive_detail_cells: bool = False,
         debug: Optional[dict[str, Any]] = None,
     ) -> list[Toolpath]:
         if region is None or region.is_empty or spacing_mm <= 0:
             return []
+
+        if line_width_mm is None:
+            line_width_mm = spacing_mm
 
         row_data = self._collect_scanline_rows(
             region,
@@ -6232,6 +6822,7 @@ class SlicerService:
             debug.setdefault("rejected_different_cell_connectors", 0)
             debug.setdefault("rejected_opposite_side_connectors", 0)
             debug.setdefault("rejected_too_long_connectors", 0)
+            debug.setdefault("rejected_outside_selected_color_connectors", 0)
             debug.setdefault("pen_lifts_before_cell_planning", 0)
             debug.setdefault("pen_lifts_after_cell_planning", 0)
             debug.setdefault("infill_connector_diagnostics", {})
@@ -6250,11 +6841,122 @@ class SlicerService:
                     [entry["toolpath"] for entry in self._row_world_paths([row], angle_deg=angle_deg, origin=origin, tolerance_mm=tolerance_mm, kind=kind)],
                 )
 
-        # Build the same base stroke order as no-connector mode.
+        resolved_infill_path_mode = (infill_path_mode or DEFAULT_INFILL_PATH_MODE).strip().lower()
+        if resolved_infill_path_mode not in {"rectilinear", "serpentine_optimized", "legacy"}:
+            resolved_infill_path_mode = DEFAULT_INFILL_PATH_MODE
+
         rows_by_polygon: dict[int, list[dict[str, Any]]] = {}
         for row in rows:
             rows_by_polygon.setdefault(int(row["polygon_index"]), []).append(row)
 
+        if resolved_infill_path_mode == "legacy":
+            for polygon_index, polygon in enumerate(normalize_geometry(rotated)):
+                component_id = f"component_{polygon_index:03d}"
+                drawable_rows = [row for row in rows_by_polygon.get(polygon_index, []) if row.get("segments")]
+                segments = self._to_infill_segments(drawable_rows, component_id=component_id)
+                if debug is not None:
+                    debug["total_scanlines"] = int(debug.get("total_scanlines", 0)) + len(drawable_rows)
+                    debug["total_clipped_intervals"] = int(debug.get("total_clipped_intervals", 0)) + len(segments)
+                    debug["pen_lifts_before_cell_planning"] = int(debug.get("pen_lifts_before_cell_planning", 0)) + max(0, len(segments) - 1)
+
+                cells, cell_stats = self._assign_infill_cells(
+                    polygon,
+                    segments,
+                    spacing_mm=spacing_mm,
+                    line_width_mm=line_width_mm,
+                    tolerance_mm=tolerance_mm,
+                    connector_validation=connector_validation,
+                )
+                if debug is not None:
+                    debug["rows_with_multiple_intervals"] = int(debug.get("rows_with_multiple_intervals", 0)) + int(cell_stats["rows_with_multiple_intervals"])
+                    debug["local_cell_count"] = int(debug.get("local_cell_count", 0)) + len(cells)
+                    debug["rejected_cross_gap_connectors"] = int(debug.get("rejected_cross_gap_connectors", 0)) + int(cell_stats["rejected_cross_gap_connectors"])
+                    debug["rejected_different_cell_connectors"] = int(debug.get("rejected_different_cell_connectors", 0)) + int(cell_stats["rejected_different_cell_connectors"])
+                    debug["rejected_opposite_side_connectors"] = int(debug.get("rejected_opposite_side_connectors", 0)) + int(cell_stats["rejected_opposite_side_connectors"])
+                    debug["rejected_too_long_connectors"] = int(debug.get("rejected_too_long_connectors", 0)) + int(cell_stats["rejected_too_long_connectors"])
+                    debug["rejected_outside_selected_color_connectors"] = int(debug.get("rejected_outside_selected_color_connectors", 0)) + int(cell_stats.get("rejected_outside_selected_color_connectors", 0))
+                    debug["pen_lifts_after_cell_planning"] = int(debug.get("pen_lifts_after_cell_planning", 0)) + max(0, len(segments) - len(cells))
+
+                for cell_id in sorted(cells.keys()):
+                    ordered_segments = sorted(cells[cell_id], key=lambda s: (s.row_index, s.min_u, s.interval_index))
+                    for segment in ordered_segments:
+                        toolpaths.append(self._segment_to_world_toolpath(
+                            segment,
+                            angle_deg=angle_deg,
+                            origin=origin,
+                            tolerance_mm=tolerance_mm,
+                            kind=kind,
+                        ))
+
+            ordered = list(toolpaths)
+            if not allow_pen_down_infill_connectors:
+                return ordered
+
+            stitched, stitch_stats = self._stitch_adjacent_paths_on_inside_travel(
+                ordered,
+                cover_region=region,
+                spacing_mm=spacing_mm,
+                line_width_mm=line_width_mm,
+                angle_deg=angle_deg,
+                origin=origin,
+                tolerance_mm=tolerance_mm,
+                connector_validation=connector_validation,
+                debug=debug,
+            )
+            if debug is not None:
+                debug["accepted_same_cell_connectors"] = int(debug.get("accepted_same_cell_connectors", 0)) + int(stitch_stats["accepted_connectors"])
+                reasons = debug.setdefault("connector_rejection_reasons", {})
+                mapping = {
+                    "different_component": "rejected_different_component",
+                    "different_cell_or_section": "rejected_different_cell",
+                    "non_adjacent_row": "rejected_non_adjacent_row",
+                    "opposite_side_endpoint": "rejected_opposite_side",
+                    "too_long": "rejected_too_long",
+                    "deltaU_too_large": "rejected_delta_u_too_large",
+                    "outside_fillable_polygon": "rejected_outside_polygon",
+                    "crosses_gap_hole_void": "rejected_cross_gap_hole_void",
+                    "outside_selected_color": "rejected_outside_selected_color",
+                    "unknown": "rejected_unknown",
+                }
+                for reason, stat_key in mapping.items():
+                    reasons[reason] = int(reasons.get(reason, 0)) + int(stitch_stats.get(stat_key, 0))
+                rejection_counts = {
+                    "different_component": int(stitch_stats.get("rejected_different_component", 0)),
+                    "different_cell_or_section": int(stitch_stats.get("rejected_different_cell", 0)),
+                    "non_adjacent_row": int(stitch_stats.get("rejected_non_adjacent_row", 0)),
+                    "opposite_side_endpoint": int(stitch_stats.get("rejected_opposite_side", 0)),
+                    "too_long": int(stitch_stats.get("rejected_too_long", 0)),
+                    "deltaU_too_large": int(stitch_stats.get("rejected_delta_u_too_large", 0)),
+                    "outside_fillable_polygon": int(stitch_stats.get("rejected_outside_polygon", 0)),
+                    "crosses_gap_hole_void": int(stitch_stats.get("rejected_cross_gap_hole_void", 0)),
+                    "outside_selected_color": int(stitch_stats.get("rejected_outside_selected_color", 0)),
+                    "unknown": int(stitch_stats.get("rejected_unknown", 0)),
+                }
+                diagnostics = {
+                    "total_infill_rows": int(debug.get("total_scanlines", 0)),
+                    "total_possible_adjacent_row_connector_attempts": int(stitch_stats.get("attempted_connectors", 0)),
+                    "accepted_connectors": int(stitch_stats.get("accepted_connectors", 0)),
+                    "rejected_connectors": int(sum(rejection_counts.values()) + int(stitch_stats.get("rejected_missing_points", 0))),
+                    "rejected_raster_mask_sampling": int(cell_stats.get("rejected_outside_selected_color_connectors", 0)) + int(stitch_stats.get("rejected_outside_selected_color", 0)),
+                    "final_pen_lift_count_estimate": int(sum(1 for current_path, next_path in zip(stitched, stitched[1:]) if getattr(next_path, "kind", None) != "fill-infill-travel")),
+                    "rejection_counts": rejection_counts,
+                }
+                diagnostics["top_rejection_reason"] = max(rejection_counts, key=rejection_counts.get) if any(rejection_counts.values()) else None
+                debug["infill_connector_diagnostics"] = diagnostics
+                debug["pen_lifts_after_cell_planning"] = int(diagnostics["final_pen_lift_count_estimate"])
+            return stitched
+
+        cell_plans: list[InfillCellPlan] = []
+        adaptive_cell_decisions: dict[str, InfillCellAdaptiveDecision] = {}
+        adaptive_cell_regions: dict[str, Any] = {}
+        adaptive_counts = {
+            "total_cells": 0,
+            "rectilinear_cells": 0,
+            "detail_contour_cells": 0,
+            "narrow_cells_detected": 0,
+            "switched_too_few_rows": 0,
+            "switched_connector_ratio": 0,
+        }
         for polygon_index, polygon in enumerate(normalize_geometry(rotated)):
             component_id = f"component_{polygon_index:03d}"
             drawable_rows = [row for row in rows_by_polygon.get(polygon_index, []) if row.get("segments")]
@@ -6270,6 +6972,7 @@ class SlicerService:
                 spacing_mm=spacing_mm,
                 line_width_mm=line_width_mm,
                 tolerance_mm=tolerance_mm,
+                connector_validation=connector_validation,
             )
             if debug is not None:
                 debug["rows_with_multiple_intervals"] = int(debug.get("rows_with_multiple_intervals", 0)) + int(cell_stats["rows_with_multiple_intervals"])
@@ -6278,86 +6981,208 @@ class SlicerService:
                 debug["rejected_different_cell_connectors"] = int(debug.get("rejected_different_cell_connectors", 0)) + int(cell_stats["rejected_different_cell_connectors"])
                 debug["rejected_opposite_side_connectors"] = int(debug.get("rejected_opposite_side_connectors", 0)) + int(cell_stats["rejected_opposite_side_connectors"])
                 debug["rejected_too_long_connectors"] = int(debug.get("rejected_too_long_connectors", 0)) + int(cell_stats["rejected_too_long_connectors"])
-
-            if debug is not None:
+                debug["rejected_outside_selected_color_connectors"] = int(debug.get("rejected_outside_selected_color_connectors", 0)) + int(cell_stats.get("rejected_outside_selected_color_connectors", 0))
                 debug["pen_lifts_after_cell_planning"] = int(debug.get("pen_lifts_after_cell_planning", 0)) + max(0, len(segments) - len(cells))
 
             for cell_id in sorted(cells.keys()):
-                ordered_segments = sorted(
-                    cells[cell_id],
-                    key=lambda s: (s.row_index, s.min_u, s.interval_index),
-                )
-                for segment in ordered_segments:
-                    toolpaths.append(
-                        self._segment_to_world_toolpath(
-                            segment,
-                            angle_deg=angle_deg,
-                            origin=origin,
-                            tolerance_mm=tolerance_mm,
-                            kind=kind,
-                        )
+                ordered_segments = sorted(cells[cell_id], key=lambda s: (s.row_index, s.min_u, s.interval_index))
+                if not ordered_segments:
+                    continue
+                if adaptive_detail_cells:
+                    decision = self._evaluate_adaptive_cell_mode(
+                        cell_segments=ordered_segments,
+                        spacing_mm=spacing_mm,
+                        line_width_mm=line_width_mm,
+                        cover_region=polygon,
                     )
+                    adaptive_cell_decisions[cell_id] = decision
+                    adaptive_cell_regions[cell_id] = self._build_cell_region_from_segments(
+                        ordered_segments,
+                        angle_deg=angle_deg,
+                        origin=origin,
+                        spacing_mm=spacing_mm,
+                        cover_region=region,
+                    )
+                    adaptive_counts["total_cells"] += 1
+                    if decision.mode == "detail_contour":
+                        adaptive_counts["detail_contour_cells"] += 1
+                        if any(reason in decision.reasons for reason in ("narrow_local_width", "short_fragmented_hatch")):
+                            adaptive_counts["narrow_cells_detected"] += 1
+                        if "too_few_hatch_rows" in decision.reasons:
+                            adaptive_counts["switched_too_few_rows"] += 1
+                        if "connector_dominates_hatch" in decision.reasons or "mostly_connector_fragments" in decision.reasons:
+                            adaptive_counts["switched_connector_ratio"] += 1
+                    else:
+                        adaptive_counts["rectilinear_cells"] += 1
+                seed_plan = InfillCellPlan(
+                    cell_id=cell_id,
+                    component_id=component_id,
+                    segments=ordered_segments,
+                    toolpaths=[],
+                    entry_point=Point(float(ordered_segments[0].low_u.x), float(ordered_segments[0].low_u.y)),
+                    exit_point=Point(float(ordered_segments[-1].high_u.x), float(ordered_segments[-1].high_u.y)),
+                    centroid=self._cell_centroid_for_segments(ordered_segments),
+                    total_length=sum(segment.length for segment in ordered_segments),
+                )
+                cell_plans.append(seed_plan)
 
-        # Keep native scanline emission order/direction here. Connector mode must
-        # reuse the exact no-connector travel pairing, not a re-optimized/reversed
-        # pairing that can create zigzag stitching.
-        ordered = list(toolpaths)
-        if not allow_pen_down_infill_connectors:
-            return ordered
+        ordered_cell_plans = self._order_infill_cells(cell_plans, origin=origin)
+        final_toolpaths: list[Toolpath] = []
+        cell_route_debug: list[dict[str, Any]] = []
+        pen_up_travel_distance_mm = 0.0
+        long_travel_count = 0
+        max_local_travel_mm = max(4.0 * spacing_mm, 6.0 * line_width_mm)
+        previous_exit_point: Point | None = None
 
-        stitched, stitch_stats = self._stitch_adjacent_paths_on_inside_travel(
-            ordered,
-            cover_region=region,
-            spacing_mm=spacing_mm,
-            line_width_mm=line_width_mm,
-            angle_deg=angle_deg,
-            origin=origin,
-            tolerance_mm=tolerance_mm,
-            debug=debug,
-        )
-        if debug is not None:
-            debug["accepted_same_cell_connectors"] = int(debug.get("accepted_same_cell_connectors", 0)) + int(stitch_stats["accepted_connectors"])
-            reasons = debug.setdefault("connector_rejection_reasons", {})
-            mapping = {
-                "different_component": "rejected_different_component",
-                "different_cell_or_section": "rejected_different_cell",
-                "non_adjacent_row": "rejected_non_adjacent_row",
-                "opposite_side_endpoint": "rejected_opposite_side",
-                "too_long": "rejected_too_long",
-                "deltaU_too_large": "rejected_delta_u_too_large",
-                "outside_fillable_polygon": "rejected_outside_polygon",
-                "crosses_gap_hole_void": "rejected_cross_gap_hole_void",
-                "unknown": "rejected_unknown",
-            }
-            for reason, stat_key in mapping.items():
-                reasons[reason] = int(reasons.get(reason, 0)) + int(stitch_stats.get(stat_key, 0))
+        for cell_order, cell_plan in enumerate(ordered_cell_plans, start=1):
+            decision = adaptive_cell_decisions.get(cell_plan.cell_id) if adaptive_detail_cells else None
+            if decision is not None and decision.mode == "detail_contour":
+                cell_region = adaptive_cell_regions.get(cell_plan.cell_id)
+                cell_toolpaths = self._generate_small_detail_fill(
+                    cell_region,
+                    line_width_mm=line_width_mm,
+                    scanline_spacing_mm=spacing_mm,
+                    angle_deg=angle_deg,
+                    min_segment_length_mm=min_segment_length_mm,
+                    tolerance_mm=tolerance_mm,
+                    detail_tolerance_mm=tolerance_mm,
+                    allow_overlap=True,
+                    connector_validation=connector_validation,
+                )
+                if not cell_toolpaths:
+                    cell_toolpaths = self._generate_centerline_fallback(
+                        cell_region,
+                        angle_deg=angle_deg,
+                        min_segment_length_mm=min_segment_length_mm,
+                        tolerance_mm=tolerance_mm,
+                        kind=kind,
+                    )
+                cell_toolpaths = self._clip_toolpaths_to_region(
+                    cell_toolpaths,
+                    region=cell_region,
+                    tolerance_mm=tolerance_mm,
+                    kind=kind,
+                )
+                cell_toolpaths = [
+                    clone_toolpath(
+                        path,
+                        kind=kind,
+                        metadata={
+                            **path.metadata,
+                            "fill_mode": "detail_contour_cell",
+                            "fill_mode_reason": ",".join(decision.reasons) if decision.reasons else "adaptive_detail_fallback",
+                            "adaptive_cell_metrics": decision.metrics,
+                            "small_detail_fill_style": path.metadata.get("small_detail_fill_style", "contour_or_centerline"),
+                        },
+                    )
+                    for path in cell_toolpaths
+                ]
+                cell_stats = {"accepted_connectors": 0, "pen_lifts": max(0, len(cell_toolpaths) - 1)}
+            elif allow_pen_down_infill_connectors:
+                cell_toolpaths, cell_stats = self._plan_cell_paths(
+                    region,
+                    cell_plan.segments,
+                    spacing_mm=spacing_mm,
+                    line_width_mm=line_width_mm,
+                    angle_deg=angle_deg,
+                    origin=origin,
+                    tolerance_mm=tolerance_mm,
+                    kind=kind,
+                    debug=debug,
+                    connector_validation=connector_validation,
+                )
+            else:
+                cell_toolpaths = [
+                    self._segment_to_world_toolpath(
+                        segment,
+                        angle_deg=angle_deg,
+                        origin=origin,
+                        tolerance_mm=tolerance_mm,
+                        kind=kind,
+                    )
+                    for segment in cell_plan.segments
+                ]
+                cell_stats = {"accepted_connectors": 0, "pen_lifts": max(0, len(cell_plan.segments) - 1)}
+
+            cell_entry_point, cell_exit_point = self._cell_entry_exit_points(cell_toolpaths)
+            actual_cell_plan = InfillCellPlan(
+                cell_id=cell_plan.cell_id,
+                component_id=cell_plan.component_id,
+                segments=cell_plan.segments,
+                toolpaths=cell_toolpaths,
+                entry_point=cell_entry_point,
+                exit_point=cell_exit_point,
+                centroid=cell_plan.centroid,
+                total_length=cell_plan.total_length,
+            )
+            cell_route_debug.append({
+                "cell_id": actual_cell_plan.cell_id,
+                "component_id": actual_cell_plan.component_id,
+                "order": cell_order,
+                "segment_count": len(actual_cell_plan.segments),
+                "toolpath_count": len(actual_cell_plan.toolpaths),
+                "total_length_mm": actual_cell_plan.total_length,
+                "entry_point": asdict(actual_cell_plan.entry_point),
+                "exit_point": asdict(actual_cell_plan.exit_point),
+                "centroid": asdict(actual_cell_plan.centroid),
+                "adaptive_fill_mode": (decision.mode if decision is not None else "rectilinear"),
+                "adaptive_fill_reasons": ([] if decision is None else decision.reasons),
+                "adaptive_fill_metrics": ({} if decision is None else decision.metrics),
+            })
+            if previous_exit_point is not None:
+                travel_distance = math.hypot(actual_cell_plan.entry_point.x - previous_exit_point.x, actual_cell_plan.entry_point.y - previous_exit_point.y)
+                if travel_distance > 1e-9:
+                    pen_up_travel_distance_mm += travel_distance
+                    if travel_distance > max_local_travel_mm:
+                        long_travel_count += 1
+            previous_exit_point = actual_cell_plan.exit_point
+
+            if debug is not None:
+                debug.setdefault("cell_route_debug", []).append(cell_route_debug[-1])
+                debug["accepted_same_cell_connectors"] = int(debug.get("accepted_same_cell_connectors", 0)) + int(cell_stats.get("accepted_connectors", 0))
+                debug["pen_lifts_after_cell_planning"] = int(debug.get("pen_lifts_after_cell_planning", 0)) + int(cell_stats.get("pen_lifts", 0))
+
+            final_toolpaths.extend(actual_cell_plan.toolpaths)
+
+        if debug is not None and cell_plans:
+            total_segments = sum(len(plan.segments) for plan in ordered_cell_plans)
+            cell_count = len(ordered_cell_plans)
+            debug["local_cell_count"] = cell_count
+            debug["average_segments_per_cell"] = float(total_segments) / max(1, cell_count)
+            debug["largest_cell_size"] = max((len(plan.segments) for plan in ordered_cell_plans), default=0)
+            debug["singleton_cells"] = sum(1 for plan in ordered_cell_plans if len(plan.segments) == 1)
+            debug["total_pen_up_travel_distance_mm"] = pen_up_travel_distance_mm
+            debug["number_of_long_travels_between_cells"] = long_travel_count
+            debug["cell_route_debug"] = cell_route_debug
+
             rejection_counts = {
-                "different_component": int(stitch_stats.get("rejected_different_component", 0)),
-                "different_cell_or_section": int(stitch_stats.get("rejected_different_cell", 0)),
-                "non_adjacent_row": int(stitch_stats.get("rejected_non_adjacent_row", 0)),
-                "opposite_side_endpoint": int(stitch_stats.get("rejected_opposite_side", 0)),
-                "too_long": int(stitch_stats.get("rejected_too_long", 0)),
-                "deltaU_too_large": int(stitch_stats.get("rejected_delta_u_too_large", 0)),
-                "outside_fillable_polygon": int(stitch_stats.get("rejected_outside_polygon", 0)),
-                "crosses_gap_hole_void": int(stitch_stats.get("rejected_cross_gap_hole_void", 0)),
-                "unknown": int(stitch_stats.get("rejected_unknown", 0)),
+                "different_component": int(debug.get("rejected_different_cell_connectors", 0)),
+                "different_cell_or_section": int(debug.get("rejected_different_cell_connectors", 0)),
+                "non_adjacent_row": 0,
+                "opposite_side_endpoint": int(debug.get("rejected_opposite_side_connectors", 0)),
+                "too_long": int(debug.get("rejected_too_long_connectors", 0)),
+                "deltaU_too_large": 0,
+                "outside_fillable_polygon": int(debug.get("rejected_cross_gap_connectors", 0)),
+                "crosses_gap_hole_void": int(debug.get("rejected_cross_gap_connectors", 0)),
+                "outside_selected_color": int(debug.get("rejected_outside_selected_color_connectors", 0)),
+                "unknown": 0,
             }
-            diagnostics = {
+            debug["infill_connector_diagnostics"] = {
                 "total_infill_rows": int(debug.get("total_scanlines", 0)),
-                "total_possible_adjacent_row_connector_attempts": int(stitch_stats.get("attempted_connectors", 0)),
-                "accepted_connectors": int(stitch_stats.get("accepted_connectors", 0)),
-                "rejected_connectors": int(sum(rejection_counts.values()) + int(stitch_stats.get("rejected_missing_points", 0))),
-                "final_pen_lift_count_estimate": int(sum(
-                    1
-                    for current_path, next_path in zip(stitched, stitched[1:])
-                    if getattr(next_path, "kind", None) != "fill-infill-travel"
-                )),
+                "total_possible_adjacent_row_connector_attempts": int(debug.get("pen_lifts_before_cell_planning", 0)),
+                "accepted_connectors": int(debug.get("accepted_same_cell_connectors", 0)),
+                "rejected_connectors": int(sum(rejection_counts.values())),
+                "rejected_raster_mask_sampling": int(debug.get("rejected_outside_selected_color_connectors", 0)),
+                "final_pen_lift_count_estimate": int(debug.get("pen_lifts_after_cell_planning", 0)),
                 "rejection_counts": rejection_counts,
+                "top_rejection_reason": max(rejection_counts, key=rejection_counts.get) if any(rejection_counts.values()) else None,
             }
-            diagnostics["top_rejection_reason"] = max(rejection_counts, key=rejection_counts.get) if any(rejection_counts.values()) else None
-            debug["infill_connector_diagnostics"] = diagnostics
-            debug["pen_lifts_after_cell_planning"] = int(diagnostics["final_pen_lift_count_estimate"])
-        return stitched
+            if adaptive_detail_cells:
+                debug["adaptive_fill_diagnostics"] = {
+                    **adaptive_counts,
+                }
+
+        return final_toolpaths
 
     def _generate_centerline_fallback(
         self,
@@ -6410,6 +7235,32 @@ class SlicerService:
         if len(points) < 2:
             return []
         return [Toolpath(points=points, kind=kind, closed=False)]
+
+    def _clip_toolpaths_to_region(
+        self,
+        paths: list[Toolpath],
+        *,
+        region: Any,
+        tolerance_mm: float,
+        kind: str,
+    ) -> list[Toolpath]:
+        if not paths:
+            return []
+        if region is None or region.is_empty:
+            return paths
+        clip_region = region.buffer(max(0.001, tolerance_mm * 0.5), join_style=1)
+        clipped_paths: list[Toolpath] = []
+        for path in paths:
+            if len(path.points) < 2:
+                continue
+            line = LineString([(point.x, point.y) for point in path.points])
+            clipped = line.intersection(clip_region)
+            for part in extract_lines(clipped):
+                points = simplify_segment_points([Point(float(x), float(y)) for x, y in part.coords], tolerance_mm, False)
+                if len(points) < 2:
+                    continue
+                clipped_paths.append(clone_toolpath(path, points=points, kind=kind, closed=False))
+        return clipped_paths
 
     def _generate_contour_following_fill(
         self,
@@ -6544,6 +7395,7 @@ class SlicerService:
         tolerance_mm: float,
         detail_tolerance_mm: float,
         allow_overlap: bool,
+        connector_validation: dict[str, Any] | None = None,
     ) -> list[Toolpath]:
         effective_tolerance_mm = max(tolerance_mm, detail_tolerance_mm)
         contour_paths = self._generate_contour_following_fill(
@@ -6577,6 +7429,8 @@ class SlicerService:
         detail_tolerance_mm: float,
         allow_overlap: bool,
         allow_pen_down_infill_connectors: bool = DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS,
+        infill_path_mode: str = DEFAULT_INFILL_PATH_MODE,
+        connector_validation: dict[str, Any] | None = None,
         debug: Optional[dict[str, Any]] = None,
     ) -> list[Toolpath]:
         if region is None or region.is_empty:
@@ -6597,6 +7451,8 @@ class SlicerService:
             tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
             kind="detail-trace",
             allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
+            infill_path_mode=infill_path_mode,
+            connector_validation=connector_validation,
             debug=debug,
         )
         if detail_paths:
@@ -6779,6 +7635,7 @@ class SlicerService:
         travel_optimization: str = DEFAULT_TRAVEL_OPTIMIZATION,
         allow_pen_down_infill_connectors: bool = DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS,
         infill_path_mode: str = DEFAULT_INFILL_PATH_MODE,
+        connector_validation: dict[str, Any] | None = None,
         debug: Optional[dict[str, Any]] = None,
     ) -> list[Toolpath]:
         if printable_geometry is None or printable_geometry.is_empty or line_width_mm <= 0:
@@ -6842,6 +7699,12 @@ class SlicerService:
             "thin_detail_fallback_region_count": 0,
             "thin_detail_path_count": 0,
             "detail_trace_path_count": 0,
+            "adaptive_total_cells": 0,
+            "adaptive_rectilinear_cells": 0,
+            "adaptive_detail_contour_cells": 0,
+            "adaptive_narrow_cells_detected": 0,
+            "adaptive_switched_too_few_rows": 0,
+            "adaptive_switched_connector_ratio": 0,
         }
         infill_region_debug: list[dict[str, Any]] = []
         for region_index, printable_region in enumerate(printable_regions):
@@ -6963,6 +7826,7 @@ class SlicerService:
                         tolerance_mm=simplify_tolerance_resolved_mm,
                         detail_tolerance_mm=thin_detail_tolerance_mm,
                         allow_overlap=thin_detail_overlap,
+                        connector_validation=connector_validation,
                     )
                 else:
                     if classification["mode"] == "long_thin":
@@ -6977,6 +7841,9 @@ class SlicerService:
                         min_segment_length_mm=min_segment_length_resolved_mm,
                         tolerance_mm=simplify_tolerance_resolved_mm,
                         allow_pen_down_infill_connectors=effective_allow_connectors,
+                        infill_path_mode=resolved_infill_path_mode,
+                        connector_validation=connector_validation,
+                        adaptive_detail_cells=(resolved_infill_path_mode == "rectilinear"),
                         debug=debug,
                     )
                 infill_paths = [
@@ -7004,14 +7871,22 @@ class SlicerService:
                             "resolved_infill_angle_deg": resolved_infill_angle_deg,
                             "long_thin_fast_path_used": bool(angle_debug.get("long_thin_fast_path_used", False)),
                             "infill_aspect_ratio": float(angle_debug.get("aspect_ratio", 0.0)),
-                            "fill_mode": classification["mode"],
-                            "fill_mode_reason": classification["reason"],
+                            "fill_mode": path.metadata.get("fill_mode", classification["mode"]),
+                            "fill_mode_reason": path.metadata.get("fill_mode_reason", classification["reason"]),
                             "small_detail_fill_style": path.metadata.get("small_detail_fill_style"),
                             "classification_metrics": classification,
                         },
                     )
                     for path in infill_paths
                 ]
+                adaptive_diag = debug.get("adaptive_fill_diagnostics") if isinstance(debug, dict) else None
+                if isinstance(adaptive_diag, dict):
+                    slicer_counts["adaptive_total_cells"] += int(adaptive_diag.get("total_cells", 0))
+                    slicer_counts["adaptive_rectilinear_cells"] += int(adaptive_diag.get("rectilinear_cells", 0))
+                    slicer_counts["adaptive_detail_contour_cells"] += int(adaptive_diag.get("detail_contour_cells", 0))
+                    slicer_counts["adaptive_narrow_cells_detected"] += int(adaptive_diag.get("narrow_cells_detected", 0))
+                    slicer_counts["adaptive_switched_too_few_rows"] += int(adaptive_diag.get("switched_too_few_rows", 0))
+                    slicer_counts["adaptive_switched_connector_ratio"] += int(adaptive_diag.get("switched_connector_ratio", 0))
             if not infill_paths:
                 detail_region = printable_outline_region if can_fit_outline else polygon
                 if thin_detail_mode and polygon.area >= thin_detail_min_area_resolved_mm2:
@@ -7026,6 +7901,7 @@ class SlicerService:
                         detail_tolerance_mm=thin_detail_tolerance_mm,
                         allow_overlap=thin_detail_overlap,
                         allow_pen_down_infill_connectors=effective_allow_connectors,
+                        connector_validation=connector_validation,
                         debug=debug,
                     )
                     infill_paths = [
@@ -7216,6 +8092,16 @@ class SlicerService:
                     "large_open": slicer_counts["large_open_region_count"],
                     "long_thin": slicer_counts["long_thin_region_count"],
                     "small_detail_or_text": slicer_counts["small_detail_region_count"],
+                    "detail_contour_cell": slicer_counts["adaptive_detail_contour_cells"],
+                },
+                "adaptive_fill_counts": {
+                    "total_cells": slicer_counts["adaptive_total_cells"],
+                    "rectilinear_cells": slicer_counts["adaptive_rectilinear_cells"],
+                    "detail_contour_cells": slicer_counts["adaptive_detail_contour_cells"],
+                    "narrow_cells_detected": slicer_counts["adaptive_narrow_cells_detected"],
+                    "switched_too_few_rows": slicer_counts["adaptive_switched_too_few_rows"],
+                    "switched_connector_ratio": slicer_counts["adaptive_switched_connector_ratio"],
+                    "outline_after_fill": bool(outline_after_fill),
                 },
                 "regions": infill_region_debug,
             }
@@ -7305,6 +8191,7 @@ def generate_toolpaths(
             travel_optimization=travel_optimization,
             allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
             infill_path_mode=infill_path_mode,
+            connector_validation=bundle.metadata.get("connector_validation"),
             debug=debug,
         ))
 

@@ -89,10 +89,46 @@ def project_surface_toolpaths(toolpaths, options: dict):
         cleaned_toolpaths,
         default_pen_width_mm=options["line_thickness_mm"],
     )
+    y_band_scale_debug: dict[str, object] = {}
+    try:
+        _resolved_lat, projection_center_debug = pipeline_core.resolve_safe_projection_center_lat(
+            cleaned_toolpaths,
+            requested_center_lat_deg=options["placement_offset_y"],
+            ball_diameter_mm=current_app.config["BALL_DIAMETER_MM"],
+            y_draw_min_deg=current_app.config["Y_DRAW_MIN"],
+            y_draw_max_deg=current_app.config["Y_DRAW_MAX"],
+        )
+    except ValueError:
+        cleaned_toolpaths, y_band_scale_debug = pipeline_core.fit_surface_toolpaths_to_y_band(
+            cleaned_toolpaths,
+            ball_diameter_mm=current_app.config["BALL_DIAMETER_MM"],
+            y_draw_min_deg=current_app.config["Y_DRAW_MIN"],
+            y_draw_max_deg=current_app.config["Y_DRAW_MAX"],
+        )
+        if bool(y_band_scale_debug.get("auto_scaled", False)):
+            current_app.logger.warning(
+                "Auto-scaled artwork by %.4f to fit Y drawing band (span %.4fmm -> %.4fmm)",
+                float(y_band_scale_debug.get("scale_factor", 1.0)),
+                float(y_band_scale_debug.get("current_span_mm", 0.0)),
+                float(y_band_scale_debug.get("allowed_span_mm", 0.0)),
+            )
+    resolved_center_lat_deg, projection_center_debug = pipeline_core.resolve_safe_projection_center_lat(
+        cleaned_toolpaths,
+        requested_center_lat_deg=options["placement_offset_y"],
+        ball_diameter_mm=current_app.config["BALL_DIAMETER_MM"],
+        y_draw_min_deg=current_app.config["Y_DRAW_MIN"],
+        y_draw_max_deg=current_app.config["Y_DRAW_MAX"],
+    )
+    if bool(projection_center_debug.get("auto_clamped", False)):
+        current_app.logger.warning(
+            "Auto-clamped projection center latitude from %.4f to %.4f to keep projected toolpaths inside Y draw limits",
+            float(projection_center_debug["requested_center_lat_deg"]),
+            float(projection_center_debug["resolved_center_lat_deg"]),
+        )
     projected_toolpaths = pipeline_core.project_toolpaths_to_ball_angles(
         cleaned_toolpaths,
         center_lon_deg=options["placement_offset_x"],
-        center_lat_deg=options["placement_offset_y"],
+        center_lat_deg=resolved_center_lat_deg,
         ball_diameter_mm=current_app.config["BALL_DIAMETER_MM"],
     )
     pipeline_core.validate_toolpaths_finite(projected_toolpaths, coordinate_space="machine_deg")
@@ -100,6 +136,8 @@ def project_surface_toolpaths(toolpaths, options: dict):
     pipeline_core.log_physical_outline_mismatch_check(cleaned_toolpaths, projected_toolpaths)
     coordinate_debug = {
         "unit_model": "surface_mm_then_project_once_to_machine_deg",
+        "auto_y_band_fit": y_band_scale_debug,
+        "projection_center_latitude": projection_center_debug,
         "toolpath_kinds": lifecycle_logs,
         "projection_applied_to": {
             kind: True for kind in ("outline", "fill-wall", "fill-infill", "detail-trace")

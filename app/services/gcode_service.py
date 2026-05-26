@@ -150,6 +150,22 @@ class GcodeService:
                 )
         elif "placement_offset_x" not in kwargs and "placement_offset_y" not in kwargs:
             gcode, preview = self._generate_from_angle_toolpaths_legacy(**kwargs)
+            debug = kwargs.get("debug")
+            if isinstance(debug, dict):
+                try:
+                    from .runtime_estimation_service import estimate_gcode_runtime
+
+                    runtime_estimate = estimate_gcode_runtime(
+                        gcode,
+                        draw_feed=float(kwargs["draw_feed"]),
+                        travel_feed=float(kwargs["travel_feed"]),
+                        pen_up_s=int(kwargs["pen_up_s"]),
+                        pen_down_s=int(kwargs["pen_down_s"]),
+                    )
+                    debug["estimated_runtime_seconds"] = runtime_estimate.estimated_runtime_seconds
+                    debug["estimated_runtime_breakdown"] = runtime_estimate.as_dict()
+                except Exception as exc:  # pragma: no cover - diagnostics only
+                    self.logger.debug("Unable to build runtime estimate: %s", exc)
             self.logger.info("Generated legacy angle G-code lines=%d preview_paths=%d", len(gcode), len(preview))
             return gcode, preview
         gcode, preview = pipeline_core.generate_gcode_from_toolpaths(
@@ -171,5 +187,21 @@ class GcodeService:
             kwargs.get("header_comment_settings"),
             kwargs.get("debug"),
         )
+        debug = kwargs.get("debug")
+        if isinstance(debug, dict):
+            try:
+                from .runtime_estimation_service import estimate_gcode_runtime
+
+                runtime_estimate = estimate_gcode_runtime(
+                    gcode,
+                    draw_feed=float(kwargs["draw_feed"]),
+                    travel_feed=float(kwargs["travel_feed"]),
+                    pen_up_s=int(kwargs["pen_up_s"]),
+                    pen_down_s=int(kwargs["pen_down_s"]),
+                )
+                debug["estimated_runtime_seconds"] = runtime_estimate.estimated_runtime_seconds
+                debug["estimated_runtime_breakdown"] = runtime_estimate.as_dict()
+            except Exception as exc:  # pragma: no cover - diagnostics only
+                self.logger.debug("Unable to build runtime estimate: %s", exc)
         self.logger.info("Generated projected G-code lines=%d preview_paths=%d", len(gcode), len(preview))
         return gcode, preview

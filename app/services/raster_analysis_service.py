@@ -337,6 +337,16 @@ class RasterAnalysisService:
             printable_geometry=printable_geometry,
             cutout_geometry=None,
         )
+        bundle.metadata["connector_validation"] = {
+            "source_space": "raster_mask_px",
+            "mask": mask.copy(),
+            "mask_width": int(width),
+            "mask_height": int(height),
+            "selected_colors": list(mask_result.selected_colors) if isinstance(mask_result, MaskResult) else [],
+            "source_to_current_matrix": (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+            "current_to_source_matrix": (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+            "sample_step_mm_default": 0.05,
+        }
         selected_component_count = 0
         if mask.any():
             component_count, _, _, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
