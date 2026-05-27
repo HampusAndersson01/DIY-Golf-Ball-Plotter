@@ -101,7 +101,7 @@ import statistics
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, asdict, field
-from typing import Optional, Any, Callable
+from typing import Optional, Any, Callable, Literal
 
 # Optional dependency for real SVG path support:
 #   pip install svgpathtools pyserial flask
@@ -443,6 +443,153 @@ class SlicerSettings:
     infill_path_mode: str = DEFAULT_INFILL_PATH_MODE
 
 
+FillStrategy = Literal[
+    "RECTILINEAR_SERPENTINE",
+    "CONTOUR_PARALLEL_DETAIL",
+    "CENTERLINE_DETAIL",
+    "SINGLE_STROKE_DETAIL",
+    "OUTLINE_ONLY",
+    "SKIP_FILL",
+]
+
+
+ThinRegionMode = Literal["singleStroke", "outlineOnly", "skip"]
+
+
+@dataclass
+class HybridInfillConfig:
+    enabled: bool = True
+    lineWidthMm: float = 0.0
+    infillSpacingMm: float = 0.0
+    wallCount: int = 1
+    infillAngleDeg: float = 0.0
+    singleStrokeWidthMaxFactor: float = 1.15
+    centerlineWidthMaxFactor: float = 1.5
+    detailWidthMaxFactor: float = 2.5
+    detailMinWidthFactor: float = 2.25
+    minSerpentineRowLengthFactor: float = 3.0
+    minAreaToFillMm2: float = 0.15
+    minUsableDetailAreaMm2: float = 0.15
+    minNormalFillAreaMm2: float = 0.35
+    connectorValidation: str = "sampled"
+    connectorSampleStepMm: float = 0.05
+    allowInternalConnectorOverlap: bool = True
+    maxConnectorOverlapMm: float = 0.0
+    detailFillEnabled: bool = True
+    centerlineFallbackEnabled: bool = True
+    thinRegionMode: ThinRegionMode = "singleStroke"
+    allowOutlineOverlapForThinRegions: bool = True
+    optimizePathOrder: bool = True
+
+
+@dataclass
+class NormalizedGeometryConfig:
+    lineWidthMm: float
+    penRadiusMm: float
+    effectiveInfillSpacingMm: float
+    effectiveDetailSpacingMm: float
+    effectiveWallSpacingMm: float
+    previewStrokeWidthMm: float
+    surfaceMmToPreviewPxScale: float | None = None
+    connectorSampleStepMm: float = 0.05
+    source: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class GeometrySpacingMetrics:
+    lineWidthMm: float
+    penRadiusMm: float
+    effectiveInfillSpacingMm: float
+    effectiveDetailSpacingMm: float
+    effectiveWallSpacingMm: float
+    previewStrokeWidthMm: float
+    actualAverageInfillSpacingMm: float | None = None
+    actualMaxInfillSpacingMm: float | None = None
+    actualAverageDetailOffsetSpacingMm: float | None = None
+    actualMaxDetailOffsetSpacingMm: float | None = None
+    estimatedUncoveredGapMm: float = 0.0
+    expectedOverlapMm: float = 0.0
+    componentBoundsMm: dict[str, float] | None = None
+    previewBoundsPx: dict[str, float] | None = None
+    previewGcodePathMismatchCount: int = 0
+
+
+def normalize_geometry_config(
+    *,
+    raw_line_width_mm: float,
+    raw_infill_spacing_mm: float | None = None,
+    raw_detail_spacing_mm: float | None = None,
+    raw_wall_spacing_mm: float | None = None,
+    raw_preview_stroke_width_mm: float | None = None,
+    surface_mm_to_preview_px_scale: float | None = None,
+    connector_sample_step_mm: float | None = None,
+) -> NormalizedGeometryConfig:
+    line_width_mm = max(0.0, float(raw_line_width_mm))
+    pen_radius_mm = line_width_mm / 2.0
+    effective_infill_spacing_mm = line_width_mm if raw_infill_spacing_mm is None else max(0.0, float(raw_infill_spacing_mm))
+    effective_detail_spacing_mm = line_width_mm if raw_detail_spacing_mm is None else max(0.0, float(raw_detail_spacing_mm))
+    effective_wall_spacing_mm = line_width_mm if raw_wall_spacing_mm is None else max(0.0, float(raw_wall_spacing_mm))
+    preview_stroke_width_mm = line_width_mm if raw_preview_stroke_width_mm is None else max(0.0, float(raw_preview_stroke_width_mm))
+    resolved_connector_sample_step_mm = connector_sample_step_mm if connector_sample_step_mm is not None else max(0.01, min(line_width_mm / 4.0, 0.05))
+    return NormalizedGeometryConfig(
+        lineWidthMm=line_width_mm,
+        penRadiusMm=pen_radius_mm,
+        effectiveInfillSpacingMm=effective_infill_spacing_mm,
+        effectiveDetailSpacingMm=effective_detail_spacing_mm,
+        effectiveWallSpacingMm=effective_wall_spacing_mm,
+        previewStrokeWidthMm=preview_stroke_width_mm,
+        surfaceMmToPreviewPxScale=surface_mm_to_preview_px_scale,
+        connectorSampleStepMm=resolved_connector_sample_step_mm,
+        source={
+            "rawLineWidthMm": float(raw_line_width_mm),
+            "rawInfillSpacingMm": None if raw_infill_spacing_mm is None else float(raw_infill_spacing_mm),
+            "rawDetailSpacingMm": None if raw_detail_spacing_mm is None else float(raw_detail_spacing_mm),
+            "rawPreviewStrokeWidthMm": None if raw_preview_stroke_width_mm is None else float(raw_preview_stroke_width_mm),
+        },
+    )
+
+
+@dataclass
+class RegionMetrics:
+    areaMm2: float
+    bboxWidthMm: float
+    bboxHeightMm: float
+    minDimensionMm: float
+    maxLocalWidthMm: float
+    aspectRatio: float
+    holeCount: int
+    componentCount: int
+    estimatedRowCount: float
+    estimatedShortRowRatio: float
+    highCurvatureScore: float | None = None
+    estimatedLocalWidthMm: float | None = None
+
+
+@dataclass
+class InfillMetrics:
+    totalPaths: int = 0
+    penLifts: int = 0
+    travelDistanceMm: float = 0.0
+    drawDistanceMm: float = 0.0
+    invalidConnectorCount: int = 0
+    rejectedConnectorCount: int = 0
+    acceptedConnectorCount: int = 0
+    rectilinearRegionCount: int = 0
+    contourDetailRegionCount: int = 0
+    centerlineRegionCount: int = 0
+    singleStrokeRegionCount: int = 0
+    outlineOnlyRegionCount: int = 0
+    skippedTinyRegionCount: int = 0
+    collapsedDrawableRegionCount: int = 0
+    suppressedWallForThinRegionCount: int = 0
+    prunedNoisyPathCount: int = 0
+    averageRowLengthMm: float = 0.0
+    shortRowCount: int = 0
+    estimatedOverlapMm: float = 0.0
+    estimatedMissedAreaMm2: float | None = None
+    outsideDrawablePathPointCount: int = 0
+
+
 @dataclass
 class InfillSegment:
     id: str
@@ -497,6 +644,146 @@ def _connector_meta_value(meta: dict[str, Any] | None, *keys: str) -> Any:
         if value is not None:
             return value
     return None
+
+
+def _offset_geometry(geometry: Any, offset_mm: float) -> Any:
+    if geometry is None or geometry.is_empty or abs(offset_mm) <= 1e-12:
+        return geometry
+    offset = geometry.buffer(offset_mm, join_style=1)
+    if offset is not None and not offset.is_empty and not offset.is_valid:
+        offset = make_valid(offset) if make_valid is not None else offset.buffer(0)
+    return offset
+
+
+def _point_inside_geometry(geometry: Any, point: Point) -> bool:
+    if geometry is None or geometry.is_empty:
+        return False
+    try:
+        return bool(geometry.covers(ShapelyPoint(point.x, point.y)))
+    except Exception:
+        return False
+
+
+def can_draw_connector(
+    from_point: Point,
+    to_point: Point,
+    drawable_area: Any,
+    pen_radius_mm: float,
+    config: HybridInfillConfig,
+) -> bool:
+    if drawable_area is None or drawable_area.is_empty:
+        return False
+    connector = LineString([(from_point.x, from_point.y), (to_point.x, to_point.y)])
+    if connector.length <= 1e-9:
+        return _point_inside_geometry(drawable_area, from_point)
+
+    max_length_mm = config.maxConnectorOverlapMm if config.maxConnectorOverlapMm > 0 else max(config.infillSpacingMm * 2.0, config.lineWidthMm * config.minSerpentineRowLengthFactor)
+    if (not config.allowInternalConnectorOverlap) and connector.length > max_length_mm + 1e-6:
+        return False
+    if connector.length > max_length_mm * 1.5 + 1e-6:
+        return False
+
+    if config.connectorValidation == "capsule":
+        capsule = connector.buffer(max(0.0, pen_radius_mm), cap_style=1, join_style=1)
+        if capsule.is_empty:
+            return False
+        return bool(drawable_area.covers(capsule))
+
+    step_mm = config.connectorSampleStepMm if config.connectorSampleStepMm > 0 else min(max(pen_radius_mm * 0.5, 0.01), 0.05)
+    sample_count = max(2, int(math.ceil(connector.length / max(1e-6, step_mm))) + 1)
+    for sample_index in range(sample_count):
+        distance_mm = min(connector.length, (connector.length * sample_index) / max(1, sample_count - 1))
+        sample_point = connector.interpolate(distance_mm)
+        if not drawable_area.covers(sample_point):
+            return False
+    return True
+
+
+def choose_fill_strategy(metrics: RegionMetrics, config: HybridInfillConfig) -> FillStrategy:
+    line_width_mm = max(config.lineWidthMm, 1e-9)
+    infill_spacing_mm = max(config.infillSpacingMm, line_width_mm)
+    single_stroke_width_max = line_width_mm * config.singleStrokeWidthMaxFactor
+    centerline_width_max = line_width_mm * config.centerlineWidthMaxFactor
+    detail_width_max = max(infill_spacing_mm * config.detailWidthMaxFactor, line_width_mm * config.detailMinWidthFactor)
+    min_usable_detail_area = max(config.minUsableDetailAreaMm2, line_width_mm * line_width_mm * 0.75)
+    min_normal_fill_area = max(config.minNormalFillAreaMm2, line_width_mm * line_width_mm * 3.0)
+
+    if metrics.areaMm2 < min_usable_detail_area:
+        return "SINGLE_STROKE_DETAIL"
+    if metrics.maxLocalWidthMm <= single_stroke_width_max:
+        return "SINGLE_STROKE_DETAIL"
+    if metrics.maxLocalWidthMm <= centerline_width_max:
+        return "CENTERLINE_DETAIL"
+    if metrics.aspectRatio >= 4.0 and metrics.maxLocalWidthMm <= detail_width_max * 2.0:
+        return "RECTILINEAR_SERPENTINE"
+    if (
+        metrics.areaMm2 < min_normal_fill_area
+        or metrics.maxLocalWidthMm <= detail_width_max
+        or metrics.maxLocalWidthMm <= detail_width_max * 2.0
+        or metrics.estimatedShortRowRatio > 0.35
+        or (metrics.highCurvatureScore is not None and metrics.highCurvatureScore > 0.65)
+        or (metrics.holeCount > 0 and metrics.minDimensionMm < detail_width_max * 2.0)
+    ):
+        return "CONTOUR_PARALLEL_DETAIL"
+    return "RECTILINEAR_SERPENTINE"
+
+
+def validate_thin_region_stroke(
+    path: list[Point],
+    component: Any,
+    drawable_area: Any | None,
+    config: HybridInfillConfig,
+    metrics: RegionMetrics | None = None,
+) -> bool:
+    if len(path) < 2 or component is None or component.is_empty:
+        return False
+
+    line = LineString([(point.x, point.y) for point in path])
+    tiny_region = bool(
+        metrics is not None
+        and (metrics.areaMm2 < config.minUsableDetailAreaMm2 or metrics.maxLocalWidthMm <= config.lineWidthMm * config.singleStrokeWidthMaxFactor)
+    )
+    minimum_length_mm = max(0.01, config.lineWidthMm * (0.25 if tiny_region else 0.75))
+    if line.length < minimum_length_mm:
+        return False
+
+    if drawable_area is not None and not drawable_area.is_empty:
+        cover_region = drawable_area.buffer(max(config.lineWidthMm * 0.05, 0.01), join_style=1)
+        if cover_region.is_empty:
+            cover_region = drawable_area
+        try:
+            if not cover_region.covers(line) and not tiny_region:
+                return False
+        except Exception:
+            return False
+    try:
+        if not component.covers(line):
+            return False
+    except Exception:
+        return False
+
+    if drawable_area is None or drawable_area.is_empty:
+        pass
+    elif not tiny_region:
+        try:
+            if not drawable_area.covers(line):
+                return False
+        except Exception:
+            return False
+
+    sample_step_mm = max(0.01, config.lineWidthMm * 0.25)
+    sample_count = max(2, int(math.ceil(line.length / sample_step_mm)) + 1)
+    for sample_index in range(sample_count):
+        distance_mm = min(line.length, (line.length * sample_index) / max(sample_count - 1, 1))
+        sample_point = line.interpolate(distance_mm)
+        try:
+            if not component.covers(sample_point):
+                return False
+            if drawable_area is not None and not drawable_area.is_empty and not tiny_region and not drawable_area.covers(sample_point):
+                return False
+        except Exception:
+            return False
+    return True
 
 
 @dataclass
@@ -2764,6 +3051,53 @@ def resample_segment(points: list[Point], max_step: float) -> list[Point]:
     return out
 
 
+@dataclass
+class StraighteningOptions:
+    angleToleranceDeg: float = 2.0
+    maxLateralErrorMm: float = 0.05
+    minStraightSegmentLengthMm: float = 6.0
+
+
+def _point_line_distance(point: Point, start: Point, end: Point) -> float:
+    dx = end.x - start.x
+    dy = end.y - start.y
+    if abs(dx) <= 1e-12 and abs(dy) <= 1e-12:
+        return math.hypot(point.x - start.x, point.y - start.y)
+    return abs(dy * point.x - dx * point.y + end.x * start.y - end.y * start.x) / math.hypot(dx, dy)
+
+
+def normalize_straight_segments(points: list[Point], options: StraighteningOptions) -> list[Point]:
+    if len(points) < 3:
+        return list(points)
+
+    core_points, _ = _closed_path_core_points(points, closed=False)
+    if len(core_points) < 3:
+        return list(points)
+
+    start = core_points[0]
+    end = core_points[-1]
+    chord_length = _segment_length_mm(start, end)
+    if chord_length < options.minStraightSegmentLengthMm:
+        return list(points)
+
+    path_length = sum(_segment_length_mm(a, b) for a, b in zip(core_points, core_points[1:]))
+    if path_length > max(chord_length * 1.02, chord_length + options.maxLateralErrorMm):
+        return list(points)
+
+    baseline_angle_deg = math.degrees(math.atan2(end.y - start.y, end.x - start.x))
+    for point in core_points[1:-1]:
+        if _point_line_distance(point, start, end) > options.maxLateralErrorMm:
+            return list(points)
+
+    for a, b in zip(core_points, core_points[1:]):
+        segment_angle_deg = math.degrees(math.atan2(b.y - a.y, b.x - a.x))
+        angle_delta = abs(_normalize_infill_angle_deg(segment_angle_deg - baseline_angle_deg))
+        if angle_delta > options.angleToleranceDeg:
+            return list(points)
+
+    return [Point(start.x, start.y), Point(end.x, end.y)]
+
+
 def _drawing_path_kinds() -> set[str]:
     return {"outline", "fill-wall", "fill-infill", "detail-trace"}
 
@@ -2985,6 +3319,18 @@ def prepare_toolpaths_for_projection(
     for toolpath in toolpaths:
         if toolpath.kind in _drawing_path_kinds():
             validate_closed_path(toolpath)
+            if not toolpath.closed and len(toolpath.points) >= 3:
+                pen_width_mm = float(toolpath.metadata.get("pen_width_mm", default_pen_width_mm))
+                straightened_points = normalize_straight_segments(
+                    toolpath.points,
+                    StraighteningOptions(
+                        angleToleranceDeg=2.0,
+                        maxLateralErrorMm=max(0.01, pen_width_mm * 0.05),
+                        minStraightSegmentLengthMm=max(2.0 * pen_width_mm, 4.0 * _resolve_projection_sampling_mm(toolpath, default_pen_width_mm=default_pen_width_mm)),
+                    ),
+                )
+                if straightened_points != toolpath.points:
+                    toolpath = clone_toolpath(toolpath, points=straightened_points)
             sampling_mm = _resolve_projection_sampling_mm(toolpath, default_pen_width_mm=default_pen_width_mm)
             resampled = resample_surface_path(toolpath, sampling_mm)
             max_after = float(resampled.metadata.get("max_surface_segment_mm_after_resampling", 0.0))
@@ -3294,14 +3640,15 @@ def validate_bundle_x_span(
     *,
     max_x_span_deg: float = DEFAULT_MAX_PRINT_X_SPAN_DEG,
     ball_diameter_mm: float = BALL_DIAMETER_MM,
-) -> dict[str, float]:
+    allow_overflow: bool = False,
+) -> dict[str, float | bool]:
     if max_x_span_deg <= 0:
         raise ValueError("Maximum printable X span must be greater than 0 degrees")
     bounds = bounds_from_bundle(bundle)
     width_mm = max(0.0, bounds.width)
     width_deg = mm_to_ball_degrees(width_mm)
     max_width_mm = ball_degrees_to_mm(max_x_span_deg, ball_diameter_mm=ball_diameter_mm)
-    if width_deg > (max_x_span_deg + 1e-6):
+    if width_deg > (max_x_span_deg + 1e-6) and not allow_overflow:
         raise ValueError(
             f"Artwork exceeds the printable X span limit: {width_deg:.2f} degrees "
             f"({width_mm:.2f} mm) > {max_x_span_deg:.2f} degrees ({max_width_mm:.2f} mm)"
@@ -3311,6 +3658,7 @@ def validate_bundle_x_span(
         "width_deg": width_deg,
         "max_width_mm": max_width_mm,
         "max_width_deg": max_x_span_deg,
+        "limit_overridden": allow_overflow,
     }
 
 
@@ -4436,6 +4784,102 @@ def preview_entries_to_toolpaths(preview: list[dict[str, Any]]) -> list[Toolpath
     return toolpaths
 
 
+def count_toolpath_sequence_mismatches(expected: list[Toolpath], actual: list[Toolpath]) -> int:
+    if len(expected) != len(actual):
+        return abs(len(expected) - len(actual))
+    mismatches = 0
+    for left, right in zip(expected, actual):
+        if left.kind != right.kind or left.closed != right.closed or len(left.points) != len(right.points):
+            mismatches += 1
+            continue
+        if any(abs(a.x - b.x) > 1e-6 or abs(a.y - b.y) > 1e-6 for a, b in zip(left.points, right.points)):
+            mismatches += 1
+    return mismatches
+
+
+def build_geometry_spacing_metrics(
+    toolpaths_mm: list[Toolpath],
+    *,
+    normalized_config: NormalizedGeometryConfig,
+    preview_toolpaths: list[Toolpath] | None = None,
+    gcode_toolpaths: list[Toolpath] | None = None,
+) -> GeometrySpacingMetrics:
+    line_width_mm = normalized_config.lineWidthMm
+    pen_radius_mm = normalized_config.penRadiusMm
+    component_bounds_mm = _bbox_or_none(_collect_points_for_toolpaths(toolpaths_mm))
+
+    infill_spacing_values: list[float] = []
+    detail_spacing_values: list[float] = []
+    grouped_infill_offsets: dict[tuple[str | None, str | None], list[tuple[float, Toolpath]]] = {}
+    grouped_detail_loops: dict[tuple[str | None, str | None], list[Toolpath]] = {}
+
+    for path in toolpaths_mm:
+        if path.kind == "fill-infill" and "scanline_offset_mm" in path.metadata:
+            group_key = (str(path.metadata.get("source_region_id")) if path.metadata.get("source_region_id") is not None else None,
+                         str(path.metadata.get("source_polygon_id")) if path.metadata.get("source_polygon_id") is not None else None)
+            grouped_infill_offsets.setdefault(group_key, []).append((float(path.metadata.get("scanline_offset_mm", 0.0)), path))
+        if path.kind == "fill-infill" and str(path.metadata.get("small_detail_fill_style", "")) == "contour_following":
+            group_key = (str(path.metadata.get("source_region_id")) if path.metadata.get("source_region_id") is not None else None,
+                         str(path.metadata.get("source_polygon_id")) if path.metadata.get("source_polygon_id") is not None else None)
+            grouped_detail_loops.setdefault(group_key, []).append(path)
+
+    for offsets in grouped_infill_offsets.values():
+        offsets.sort(key=lambda item: item[0])
+        for (previous_offset, _previous_path), (next_offset, _next_path) in zip(offsets, offsets[1:]):
+            infill_spacing_values.append(max(0.0, next_offset - previous_offset))
+
+    for loops in grouped_detail_loops.values():
+        loops.sort(key=lambda path: float(path.metadata.get("contour_offset_mm", path.metadata.get("offset_distance_mm", 0.0))))
+        for (previous_offset, _previous_path), (next_offset, _next_path) in zip(
+            [(float(path.metadata.get("contour_offset_mm", path.metadata.get("offset_distance_mm", 0.0))), path) for path in loops],
+            [(float(path.metadata.get("contour_offset_mm", path.metadata.get("offset_distance_mm", 0.0))), path) for path in loops][1:],
+        ):
+            detail_spacing_values.append(max(0.0, next_offset - previous_offset))
+
+    actual_average_infill_spacing_mm = sum(infill_spacing_values) / len(infill_spacing_values) if infill_spacing_values else None
+    actual_max_infill_spacing_mm = max(infill_spacing_values) if infill_spacing_values else None
+    actual_average_detail_spacing_mm = sum(detail_spacing_values) / len(detail_spacing_values) if detail_spacing_values else None
+    actual_max_detail_spacing_mm = max(detail_spacing_values) if detail_spacing_values else None
+    actual_max_spacing_mm = max([value for value in [actual_max_infill_spacing_mm, actual_max_detail_spacing_mm] if value is not None], default=None)
+    actual_average_spacing_mm = actual_average_infill_spacing_mm if actual_average_infill_spacing_mm is not None else actual_average_detail_spacing_mm
+
+    estimated_uncovered_gap_mm = max(0.0, (actual_max_spacing_mm - line_width_mm) if actual_max_spacing_mm is not None else 0.0)
+    expected_overlap_mm = max(0.0, line_width_mm - actual_average_spacing_mm) if actual_average_spacing_mm is not None else 0.0
+
+    preview_bounds_px = _bbox_or_none(_collect_points_for_toolpaths(preview_toolpaths or [])) if preview_toolpaths else None
+    preview_gcode_path_mismatch_count = 0
+    if preview_toolpaths is not None:
+        expected_preview_toolpaths = [
+            clone_toolpath(path, points=[_rounded_gcode_point(point) for point in path.points])
+            for path in toolpaths_mm
+            if path.kind != "travel"
+        ]
+        actual_preview_toolpaths = [
+            clone_toolpath(path, points=[_rounded_gcode_point(point) for point in path.points])
+            for path in preview_toolpaths
+            if path.kind != "travel"
+        ]
+        preview_gcode_path_mismatch_count = 0 if hash_toolpaths(expected_preview_toolpaths) == hash_toolpaths(actual_preview_toolpaths) else 1
+
+    return GeometrySpacingMetrics(
+        lineWidthMm=line_width_mm,
+        penRadiusMm=pen_radius_mm,
+        effectiveInfillSpacingMm=normalized_config.effectiveInfillSpacingMm,
+        effectiveDetailSpacingMm=normalized_config.effectiveDetailSpacingMm,
+        effectiveWallSpacingMm=normalized_config.effectiveWallSpacingMm,
+        previewStrokeWidthMm=normalized_config.previewStrokeWidthMm,
+        actualAverageInfillSpacingMm=actual_average_infill_spacing_mm,
+        actualMaxInfillSpacingMm=actual_max_infill_spacing_mm,
+        actualAverageDetailOffsetSpacingMm=actual_average_detail_spacing_mm,
+        actualMaxDetailOffsetSpacingMm=actual_max_detail_spacing_mm,
+        estimatedUncoveredGapMm=estimated_uncovered_gap_mm,
+        expectedOverlapMm=expected_overlap_mm,
+        componentBoundsMm=component_bounds_mm,
+        previewBoundsPx=preview_bounds_px,
+        previewGcodePathMismatchCount=preview_gcode_path_mismatch_count,
+    )
+
+
 def _bbox_or_none(points: list[Point]) -> dict[str, float] | None:
     if not points:
         return None
@@ -5253,8 +5697,12 @@ def _preserve_infill_path_order(toolpaths: list[Toolpath]) -> bool:
 class SlicerService:
     def _scanline_spacing_mm(self, settings: SlicerSettings) -> float:
         base_spacing_mm = settings.infill_spacing_mm if settings.infill_spacing_mm > 0 else settings.line_width_mm
+        # Enforce that requested base spacing does not exceed the pen width
+        base_spacing_mm = min(base_spacing_mm, settings.line_width_mm)
         density_scale = max(0.01, settings.infill_density / 100.0)
-        return base_spacing_mm / density_scale
+        spacing = base_spacing_mm / density_scale
+        # After density scaling, clamp final spacing to at most the pen width
+        return min(spacing, settings.line_width_mm)
 
     def _max_pen_down_connector_length_mm(self, spacing_mm: float) -> float:
         return max(
@@ -5461,6 +5909,136 @@ class SlicerService:
     def _small_detail_threshold_mm(self, line_width_mm: float) -> float:
         return max(DEFAULT_SMALL_DETAIL_MIN_DIM_FLOOR_MM, line_width_mm * DEFAULT_SMALL_DETAIL_MIN_DIM_FACTOR)
 
+    def _build_hybrid_infill_config(
+        self,
+        *,
+        line_width_mm: float,
+        infill_spacing_mm: float,
+        wall_count: int,
+        infill_angle_deg: float,
+    ) -> HybridInfillConfig:
+        # Ensure infill spacing respects the pen width: maximum spacing is one pen width
+        resolved_infill_spacing = min(infill_spacing_mm if infill_spacing_mm > 0 else line_width_mm, line_width_mm)
+        return HybridInfillConfig(
+            enabled=True,
+            lineWidthMm=line_width_mm,
+            infillSpacingMm=resolved_infill_spacing,
+            wallCount=wall_count,
+            infillAngleDeg=infill_angle_deg,
+            singleStrokeWidthMaxFactor=1.15,
+            centerlineWidthMaxFactor=1.5,
+            detailWidthMaxFactor=2.5,
+            detailMinWidthFactor=2.25,
+            minSerpentineRowLengthFactor=3.0,
+            minAreaToFillMm2=0.15,
+            minUsableDetailAreaMm2=0.15,
+            minNormalFillAreaMm2=0.35,
+            connectorValidation="sampled",
+            connectorSampleStepMm=max(0.01, min(line_width_mm / 4.0, 0.05)),
+            allowInternalConnectorOverlap=True,
+            maxConnectorOverlapMm=max(infill_spacing_mm * 2.0, line_width_mm * 2.0),
+            detailFillEnabled=True,
+            centerlineFallbackEnabled=True,
+            thinRegionMode="singleStroke",
+            allowOutlineOverlapForThinRegions=True,
+            optimizePathOrder=True,
+        )
+
+    def _compute_region_metrics(
+        self,
+        region: Any,
+        *,
+        spacing_mm: float,
+        line_width_mm: float,
+        preferred_angle_deg: float,
+        min_segment_length_mm: float,
+    ) -> RegionMetrics:
+        if region is None or region.is_empty:
+            return RegionMetrics(
+                areaMm2=0.0,
+                bboxWidthMm=0.0,
+                bboxHeightMm=0.0,
+                minDimensionMm=0.0,
+                maxLocalWidthMm=0.0,
+                aspectRatio=0.0,
+                holeCount=0,
+                componentCount=0,
+                estimatedRowCount=0.0,
+                estimatedShortRowRatio=1.0,
+                highCurvatureScore=0.0,
+            )
+
+        min_x, min_y, max_x, max_y = region.bounds
+        bbox_width_mm = max(0.0, max_x - min_x)
+        bbox_height_mm = max(0.0, max_y - min_y)
+        min_dimension_mm = min(bbox_width_mm, bbox_height_mm)
+        axis_metrics = self._polygon_axis_metrics(region)
+        area_mm2 = float(region.area)
+        hole_count = sum(len(poly.interiors) for poly in normalize_geometry(region))
+        component_count = len(normalize_geometry(region))
+        row_data = self._collect_scanline_rows(
+            region,
+            spacing_mm=spacing_mm,
+            angle_deg=preferred_angle_deg,
+            min_segment_length_mm=min_segment_length_mm,
+        )
+        row_metrics = self._score_infill_candidate(row_data, spacing_mm=spacing_mm, angle_deg=preferred_angle_deg)
+        segment_count = max(1.0, float(row_metrics["segments"]))
+        short_row_ratio = float(row_metrics["short_segment_count"]) / segment_count
+        high_curvature_score = 0.0
+        if area_mm2 > 1e-9 and region.length > 0:
+            try:
+                high_curvature_score = max(0.0, min(1.0, ((float(region.length) ** 2) / (4.0 * math.pi * area_mm2)) - 1.0))
+            except Exception:
+                high_curvature_score = 0.0
+        return RegionMetrics(
+            areaMm2=area_mm2,
+            bboxWidthMm=bbox_width_mm,
+            bboxHeightMm=bbox_height_mm,
+            minDimensionMm=min_dimension_mm,
+            maxLocalWidthMm=min(float(axis_metrics.get("short_side_mm", min_dimension_mm)), min_dimension_mm if min_dimension_mm > 0 else float(axis_metrics.get("short_side_mm", 0.0))),
+            aspectRatio=float(axis_metrics.get("aspect_ratio", 0.0)),
+            holeCount=hole_count,
+            componentCount=component_count,
+            estimatedRowCount=float(row_metrics["rows"]),
+            estimatedShortRowRatio=max(0.0, min(1.0, short_row_ratio)),
+            highCurvatureScore=high_curvature_score,
+        )
+
+    def _order_paths_by_nearest_neighbor(
+        self,
+        paths: list[Toolpath],
+        *,
+        start_point: Optional[Point] = None,
+        strategy: str = "nearest-neighbor",
+    ) -> list[Toolpath]:
+        if not paths:
+            return []
+        if strategy != "nearest-neighbor":
+            return list(paths)
+        ordered = optimize_toolpath_order(paths, strategy=strategy, start_point=start_point)
+        if len(ordered) < 3:
+            return ordered
+
+        improved = list(ordered)
+        for _ in range(2):
+            changed = False
+            for index in range(1, len(improved) - 1):
+                previous_path = improved[index - 1]
+                current_path = improved[index]
+                next_path = improved[index + 1]
+                if len(previous_path.points) < 2 or len(current_path.points) < 2 or len(next_path.points) < 2:
+                    continue
+                current_cost = math.hypot(previous_path.points[-1].x - current_path.points[0].x, previous_path.points[-1].y - current_path.points[0].y) + math.hypot(current_path.points[-1].x - next_path.points[0].x, current_path.points[-1].y - next_path.points[0].y)
+                reversed_current = clone_toolpath(current_path, points=list(reversed(current_path.points)), closed=current_path.closed)
+                reversed_cost = math.hypot(previous_path.points[-1].x - reversed_current.points[0].x, previous_path.points[-1].y - reversed_current.points[0].y) + math.hypot(reversed_current.points[-1].x - next_path.points[0].x, reversed_current.points[-1].y - next_path.points[0].y)
+                if reversed_cost + 1e-9 < current_cost:
+                    improved[index] = reversed_current
+                    changed = True
+            if not changed:
+                break
+        return improved
+
     def _classify_fill_region(
         self,
         region: Any,
@@ -5515,7 +6093,7 @@ class SlicerService:
         average_hatch_segment_length_mm = float(hatch_metrics["average_segment_length_mm"])
         short_segment_count = float(hatch_metrics["short_segment_count"])
         short_segment_ratio = short_segment_count / max(1.0, expected_hatch_segment_count)
-        offset_probe = region.buffer(-min(line_width_mm * 0.25, spacing_mm * 0.5), join_style=1)
+        offset_probe = region.buffer(-max(line_width_mm / 2.0, 1e-6), join_style=1)
         offset_collapses = bool(offset_probe.is_empty)
 
         mode = "large_open"
@@ -5582,11 +6160,12 @@ class SlicerService:
         angle_deg: float,
         origin: tuple[float, float],
         spacing_mm: float,
+        line_width_mm: float,
         cover_region: Any,
     ) -> Any:
         if not segments:
             return None
-        stroke_half = max(0.05, spacing_mm * 0.55)
+        stroke_half = max(0.05, line_width_mm * 0.5)
         buffered_lines = []
         for segment in segments:
             line = LineString(segment.coords if segment.coords else [(segment.low_u.x, segment.low_u.y), (segment.high_u.x, segment.high_u.y)])
@@ -7001,6 +7580,7 @@ class SlicerService:
                         angle_deg=angle_deg,
                         origin=origin,
                         spacing_mm=spacing_mm,
+                        line_width_mm=line_width_mm,
                         cover_region=region,
                     )
                     adaptive_counts["total_cells"] += 1
@@ -7236,6 +7816,163 @@ class SlicerService:
             return []
         return [Toolpath(points=points, kind=kind, closed=False)]
 
+    def _generate_outline_only_fallback(
+        self,
+        component: Any,
+        *,
+        tolerance_mm: float,
+        min_segment_length_mm: float,
+        kind: str = "outline",
+    ) -> list[Toolpath]:
+        if component is None or component.is_empty:
+            return []
+
+        outline_paths: list[Toolpath] = []
+        for polygon in normalize_geometry(component):
+            exterior_points = simplify_segment_points([Point(float(x), float(y)) for x, y in polygon.exterior.coords], tolerance_mm, True)
+            if len(exterior_points) < 4:
+                continue
+            if segment_length(exterior_points) < max(min_segment_length_mm, 0.75):
+                continue
+            polygon_area = float(polygon.area)
+            min_outline_area = max(0.15, (tolerance_mm * tolerance_mm * 0.5) if tolerance_mm > 0 else 0.15)
+            if polygon_area < min_outline_area:
+                continue
+            outline_paths.append(Toolpath(
+                points=exterior_points,
+                kind=kind,
+                closed=True,
+                metadata={
+                    "small_detail_fill_style": "outline_only_fallback",
+                },
+            ))
+        return outline_paths
+
+    def _generate_single_stroke_detail(
+        self,
+        component: Any,
+        drawable_area: Any | None,
+        metrics: RegionMetrics,
+        config: HybridInfillConfig,
+        *,
+        angle_deg: float,
+        min_segment_length_mm: float,
+        tolerance_mm: float,
+        kind: str = "fill-infill",
+    ) -> list[Toolpath]:
+        if component is None or component.is_empty:
+            return []
+
+        if config.thinRegionMode == "skip":
+            return []
+
+        candidate_regions: list[Any] = []
+        if drawable_area is not None and not drawable_area.is_empty:
+            candidate_regions.append(drawable_area)
+        candidate_regions.append(component)
+        tiny_region = bool(metrics.areaMm2 < config.minUsableDetailAreaMm2 or metrics.maxLocalWidthMm <= config.lineWidthMm * config.singleStrokeWidthMaxFactor)
+        centerline_min_segment_length_mm = max(0.01, config.lineWidthMm * (0.25 if tiny_region else 0.75))
+
+        best_toolpath: Toolpath | None = None
+        best_length = -1.0
+        for region in candidate_regions:
+            stroke_paths = self._generate_centerline_fallback(
+                region,
+                angle_deg=angle_deg,
+                min_segment_length_mm=max(min_segment_length_mm, centerline_min_segment_length_mm),
+                tolerance_mm=max(tolerance_mm, config.lineWidthMm * 0.25),
+                kind=kind,
+            )
+            if not stroke_paths:
+                continue
+
+            stroke = stroke_paths[0]
+            points = list(stroke.points)
+            if len(points) >= 2:
+                line = LineString([(point.x, point.y) for point in points])
+                trim_mm = max(0.0, config.lineWidthMm * 0.25)
+                if line.length > trim_mm * 2.0 + 1e-9:
+                    trimmed_line = substring(line, trim_mm, line.length - trim_mm)
+                    trimmed_points = [Point(float(x), float(y)) for x, y in getattr(trimmed_line, "coords", [])]
+                    if segment_length(trimmed_points) >= max(min_segment_length_mm, config.lineWidthMm * 0.25):
+                        points = trimmed_points
+            if len(points) < 2:
+                continue
+            if not validate_thin_region_stroke(points, component, drawable_area, config, metrics=metrics):
+                continue
+            minimum_segment_length_mm = max(min_segment_length_mm, centerline_min_segment_length_mm)
+            if segment_length(points) < minimum_segment_length_mm:
+                continue
+            candidate_toolpath = Toolpath(
+                points=points,
+                kind=kind,
+                closed=False,
+                metadata={
+                    "small_detail_fill_style": "single_stroke_detail",
+                    "thin_region_mode": config.thinRegionMode,
+                    "single_stroke_source": "drawable_area" if region is drawable_area else "component",
+                    "metrics_area_mm2": metrics.areaMm2,
+                    "metrics_width_mm": metrics.maxLocalWidthMm,
+                },
+            )
+            candidate_length = segment_length(candidate_toolpath.points)
+            if candidate_length > best_length:
+                best_toolpath = candidate_toolpath
+                best_length = candidate_length
+
+        if best_toolpath is not None:
+            return [best_toolpath]
+
+        if config.thinRegionMode == "outlineOnly" or (config.allowOutlineOverlapForThinRegions and metrics.maxLocalWidthMm <= config.lineWidthMm * 1.15):
+            outline_paths = self._generate_outline_only_fallback(
+                component,
+                tolerance_mm=tolerance_mm,
+                min_segment_length_mm=min_segment_length_mm,
+                kind="outline",
+            )
+            if outline_paths:
+                return outline_paths
+
+        return []
+
+    def _generate_collapsed_region_fallback(
+        self,
+        component: Any,
+        drawable_area: Any | None,
+        metrics: RegionMetrics,
+        config: HybridInfillConfig,
+        *,
+        angle_deg: float,
+        min_segment_length_mm: float,
+        tolerance_mm: float,
+    ) -> list[Toolpath]:
+        if config.thinRegionMode == "skip":
+            return []
+
+        single_stroke_paths = self._generate_single_stroke_detail(
+            component,
+            drawable_area,
+            metrics,
+            config,
+            angle_deg=angle_deg,
+            min_segment_length_mm=min_segment_length_mm,
+            tolerance_mm=tolerance_mm,
+            kind="fill-infill",
+        )
+        if single_stroke_paths:
+            return single_stroke_paths
+
+        outline_paths = self._generate_outline_only_fallback(
+            component,
+            tolerance_mm=tolerance_mm,
+            min_segment_length_mm=min_segment_length_mm,
+            kind="outline",
+        )
+        if outline_paths:
+            return outline_paths
+
+        return []
+
     def _clip_toolpaths_to_region(
         self,
         paths: list[Toolpath],
@@ -7248,7 +7985,7 @@ class SlicerService:
             return []
         if region is None or region.is_empty:
             return paths
-        clip_region = region.buffer(max(0.001, tolerance_mm * 0.5), join_style=1)
+        clip_region = region
         clipped_paths: list[Toolpath] = []
         for path in paths:
             if len(path.points) < 2:
@@ -7257,6 +7994,15 @@ class SlicerService:
             clipped = line.intersection(clip_region)
             for part in extract_lines(clipped):
                 points = simplify_segment_points([Point(float(x), float(y)) for x, y in part.coords], tolerance_mm, False)
+                if len(points) >= 3:
+                    points = normalize_straight_segments(
+                        points,
+                        StraighteningOptions(
+                            angleToleranceDeg=2.0,
+                            maxLateralErrorMm=max(0.01, tolerance_mm * 0.5),
+                            minStraightSegmentLengthMm=max(2.0, tolerance_mm * 8.0),
+                        ),
+                    )
                 if len(points) < 2:
                     continue
                 clipped_paths.append(clone_toolpath(path, points=points, kind=kind, closed=False))
@@ -7279,6 +8025,7 @@ class SlicerService:
         loops: list[Toolpath] = []
         current = region
         for loop_index in range(max_loops):
+            loop_offset_mm = loop_index * spacing_mm
             polygons = normalize_geometry(current)
             if not polygons:
                 break
@@ -7299,6 +8046,9 @@ class SlicerService:
                         metadata={
                             "small_detail_fill_style": "contour_following",
                             "contour_loop_index": loop_index,
+                            "contour_offset_mm": loop_offset_mm,
+                            "offset_distance_mm": loop_offset_mm,
+                            "contour_spacing_mm": spacing_mm,
                             "polygon_index": polygon_index,
                             "ring_index": ring_index,
                         },
@@ -7465,6 +8215,193 @@ class SlicerService:
             tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
             kind="detail-trace",
         )
+
+    def _generate_hybrid_region_fill(
+        self,
+        polygon: Any,
+        *,
+        line_width_mm: float,
+        scanline_spacing_mm: float,
+        angle_deg: float,
+        min_segment_length_mm: float,
+        tolerance_mm: float,
+        detail_tolerance_mm: float,
+        small_shape_mode: str,
+        thin_detail_overlap: bool,
+        allow_pen_down_infill_connectors: bool,
+        infill_path_mode: str,
+        connector_validation: dict[str, Any] | None,
+        travel_optimization: str,
+        region_index: int,
+        source_polygon_id: str,
+        debug: Optional[dict[str, Any]] = None,
+    ) -> tuple[list[Toolpath], dict[str, Any], RegionMetrics, FillStrategy]:
+        hybrid_config = self._build_hybrid_infill_config(
+            line_width_mm=line_width_mm,
+            infill_spacing_mm=scanline_spacing_mm,
+            wall_count=1,
+            infill_angle_deg=angle_deg,
+        )
+        pen_radius_mm = line_width_mm / 2.0
+        drawable_region = _offset_geometry(polygon, -pen_radius_mm)
+        collapsed_drawable_region = drawable_region is None or drawable_region.is_empty
+        if drawable_region is None or drawable_region.is_empty:
+            drawable_region = _offset_geometry(polygon, -(line_width_mm * 0.25))
+        metrics_region = polygon
+        region_metrics = self._compute_region_metrics(
+            metrics_region,
+            spacing_mm=scanline_spacing_mm,
+            line_width_mm=line_width_mm,
+            preferred_angle_deg=angle_deg,
+            min_segment_length_mm=min_segment_length_mm,
+        )
+        if debug is not None:
+            scanline_rows = self._collect_scanline_rows(
+                metrics_region,
+                spacing_mm=scanline_spacing_mm,
+                angle_deg=angle_deg,
+                min_segment_length_mm=min_segment_length_mm,
+            )
+            multi_interval_rows = sum(1 for row in scanline_rows.get("rows") or [] if len(row.get("segments") or []) > 1)
+            debug["rows_with_multiple_intervals"] = int(debug.get("rows_with_multiple_intervals", 0)) + multi_interval_rows
+            debug["local_cell_count"] = int(debug.get("local_cell_count", 0)) + max(1, multi_interval_rows)
+        strategy = choose_fill_strategy(region_metrics, hybrid_config)
+        if collapsed_drawable_region and strategy != "OUTLINE_ONLY":
+            strategy = "SINGLE_STROKE_DETAIL"
+        if small_shape_mode == "skip" and strategy != "OUTLINE_ONLY":
+            strategy = "OUTLINE_ONLY"
+
+        region_debug: dict[str, Any] = {
+            "region_index": region_index,
+            "source_region_id": source_polygon_id,
+            "resolved_angle_deg": angle_deg,
+            "fill_mode": {
+                "RECTILINEAR_SERPENTINE": "long_thin" if region_metrics.aspectRatio >= 4.0 else "large_open",
+                "CONTOUR_PARALLEL_DETAIL": "detail_contour_cell",
+                "CENTERLINE_DETAIL": "small_detail_or_text",
+                "SINGLE_STROKE_DETAIL": "single_stroke_detail",
+                "OUTLINE_ONLY": "outline_only",
+                "SKIP_FILL": "skipped_tiny",
+            }.get(strategy, strategy),
+            "fill_strategy": strategy,
+            "classification_reason": strategy,
+            "region_metrics": asdict(region_metrics),
+            "hybrid_config": asdict(hybrid_config),
+        }
+
+        if strategy == "SKIP_FILL":
+            return [], region_debug, region_metrics, strategy
+
+        if strategy == "OUTLINE_ONLY":
+            return [], region_debug, region_metrics, strategy
+
+        if strategy == "SINGLE_STROKE_DETAIL" and hybrid_config.thinRegionMode == "skip":
+            return [], region_debug, region_metrics, "SKIP_FILL"
+
+        if strategy == "SINGLE_STROKE_DETAIL" and hybrid_config.thinRegionMode == "outlineOnly":
+            outline_only_paths = self._generate_outline_only_fallback(
+                polygon,
+                tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                min_segment_length_mm=min_segment_length_mm,
+                kind="outline",
+            )
+            if outline_only_paths:
+                return outline_only_paths, region_debug, region_metrics, strategy
+            return [], region_debug, region_metrics, "OUTLINE_ONLY"
+
+        if strategy == "SINGLE_STROKE_DETAIL":
+            fill_paths = self._generate_single_stroke_detail(
+                polygon,
+                drawable_region,
+                region_metrics,
+                hybrid_config,
+                angle_deg=angle_deg,
+                min_segment_length_mm=min_segment_length_mm,
+                tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                kind="fill-infill",
+            )
+            if not fill_paths:
+                fill_paths = self._generate_collapsed_region_fallback(
+                    polygon,
+                    drawable_region,
+                    region_metrics,
+                    hybrid_config,
+                    angle_deg=angle_deg,
+                    min_segment_length_mm=min_segment_length_mm,
+                    tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                )
+            if hybrid_config.optimizePathOrder and len(fill_paths) > 1:
+                fill_paths = self._order_paths_by_nearest_neighbor(fill_paths, start_point=fill_paths[0].points[0] if fill_paths[0].points else None)
+            return fill_paths, region_debug, region_metrics, strategy
+
+        if strategy == "CENTERLINE_DETAIL":
+            if not hybrid_config.centerlineFallbackEnabled:
+                return [], region_debug, region_metrics, "OUTLINE_ONLY"
+            fill_paths = self._generate_centerline_fallback(
+                metrics_region,
+                angle_deg=angle_deg,
+                min_segment_length_mm=min_segment_length_mm,
+                tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                kind="fill-infill",
+            )
+            if not fill_paths:
+                return [], region_debug, region_metrics, "OUTLINE_ONLY"
+            if hybrid_config.optimizePathOrder:
+                fill_paths = self._order_paths_by_nearest_neighbor(fill_paths, start_point=fill_paths[0].points[0] if fill_paths[0].points else None)
+            return fill_paths, region_debug, region_metrics, strategy
+
+        if strategy == "CONTOUR_PARALLEL_DETAIL":
+            if not hybrid_config.detailFillEnabled:
+                return [], region_debug, region_metrics, "OUTLINE_ONLY"
+            fill_paths = self._generate_contour_following_fill(
+                metrics_region,
+                line_width_mm=line_width_mm,
+                scanline_spacing_mm=max(scanline_spacing_mm, line_width_mm) * (0.8 if thin_detail_overlap else 1.0),
+                tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                kind="fill-infill",
+            )
+            if not fill_paths:
+                fill_paths = self._generate_centerline_fallback(
+                    metrics_region,
+                    angle_deg=angle_deg,
+                    min_segment_length_mm=min_segment_length_mm,
+                    tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                    kind="fill-infill",
+                )
+            fill_paths = [path for path in fill_paths if len(path.points) >= 2 and segment_length(path.points) >= max(line_width_mm * 0.75, min_segment_length_mm)]
+            if hybrid_config.optimizePathOrder and len(fill_paths) > 1:
+                fill_paths = self._order_paths_by_nearest_neighbor(fill_paths, start_point=fill_paths[0].points[0] if fill_paths[0].points else None)
+            fill_paths = self._clip_toolpaths_to_region(
+                fill_paths,
+                region=metrics_region,
+                tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                kind="fill-infill",
+            )
+            return fill_paths, region_debug, region_metrics, strategy
+
+        fill_paths = self._generate_scanline_infill(
+            metrics_region,
+            spacing_mm=scanline_spacing_mm,
+            line_width_mm=line_width_mm,
+            angle_deg=angle_deg,
+            min_segment_length_mm=min_segment_length_mm,
+            tolerance_mm=tolerance_mm,
+            kind="fill-infill",
+            allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
+            infill_path_mode=infill_path_mode,
+            connector_validation=connector_validation,
+            debug=debug,
+        )
+        if not fill_paths and hybrid_config.centerlineFallbackEnabled:
+            fill_paths = self._generate_centerline_fallback(
+                metrics_region,
+                angle_deg=angle_deg,
+                min_segment_length_mm=min_segment_length_mm,
+                tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                kind="fill-infill",
+            )
+        fill_paths = [path for path in fill_paths if len(path.points) >= 2 and segment_length(path.points) >= max(line_width_mm * 0.75, min_segment_length_mm)]
+        return fill_paths, region_debug, region_metrics, strategy
 
     def _append_offset_debug(
         self,
@@ -7656,17 +8593,14 @@ class SlicerService:
         min_segment_length_resolved_mm = self._recommended_infill_min_segment_length_mm(line_width_mm, min_segment_length_mm)
         min_fill_area_resolved_mm2 = min_fill_area_mm2
         thin_detail_min_area_resolved_mm2 = thin_detail_min_area_mm2
-        scanline_spacing_mm = self._scanline_spacing_mm(SlicerSettings(
-            line_width_mm=line_width_mm,
-            wall_count=wall_count,
-            infill_density=infill_density,
-            infill_spacing_mm=infill_spacing_mm,
-            infill_angle_deg=infill_angle_deg,
-            fill_strategy=effective_fill_strategy,
-            alternate_fill_angle_deg=alternate_fill_angle_deg,
-            allow_pen_down_infill_connectors=effective_allow_connectors,
-            infill_path_mode=resolved_infill_path_mode,
-        ))
+        normalized_geometry = normalize_geometry_config(
+            raw_line_width_mm=line_width_mm,
+            raw_infill_spacing_mm=infill_spacing_mm if infill_spacing_mm > 0 else None,
+            raw_detail_spacing_mm=None,
+            raw_wall_spacing_mm=line_width_mm,
+            connector_sample_step_mm=max(0.01, min(line_width_mm / 4.0, 0.05)),
+        )
+        scanline_spacing_mm = normalized_geometry.effectiveInfillSpacingMm
         logger.debug(
             "Fill generation resolved settings: line_width_mm=%.4f infill_spacing_mm=%.4f wall_count=%d infill_density=%.2f infill_angle_deg=%.2f fill_strategy=%s infill_path_mode=%s allow_connectors=%s alternate_fill_angle_deg=%.2f min_fill_area_mm2=%.4f min_fill_width_mm=%.4f min_segment_length_mm=%.4f coordinate_space=%s",
             line_width_mm,
@@ -7698,6 +8632,11 @@ class SlicerService:
             "normal_infill_empty_region_count": 0,
             "thin_detail_fallback_region_count": 0,
             "thin_detail_path_count": 0,
+            "collapsed_drawable_region_count": 0,
+            "suppressed_wall_for_thin_region_count": 0,
+            "single_stroke_region_count": 0,
+            "skipped_tiny_region_count": 0,
+            "pruned_noisy_path_count": 0,
             "detail_trace_path_count": 0,
             "adaptive_total_cells": 0,
             "adaptive_rectilinear_cells": 0,
@@ -7711,7 +8650,28 @@ class SlicerService:
             polygon = printable_region.geometry
             source_polygon_id = printable_region.component_id
             outline_placement_mode = DEFAULT_OUTLINE_PLACEMENT_MODE
-            wall_spacing_mm = line_width_mm
+            wall_spacing_mm = normalized_geometry.effectiveWallSpacingMm
+            hybrid_config = self._build_hybrid_infill_config(
+                line_width_mm=line_width_mm,
+                infill_spacing_mm=normalized_geometry.effectiveInfillSpacingMm,
+                wall_count=wall_count,
+                infill_angle_deg=infill_angle_deg,
+            )
+            preview_drawable_region = _offset_geometry(polygon, -(line_width_mm / 2.0))
+            preview_metrics_region = preview_drawable_region if preview_drawable_region is not None and not preview_drawable_region.is_empty else polygon
+            preview_region_metrics = self._compute_region_metrics(
+                preview_metrics_region,
+                spacing_mm=scanline_spacing_mm,
+                line_width_mm=line_width_mm,
+                preferred_angle_deg=infill_angle_deg,
+                min_segment_length_mm=min_segment_length_resolved_mm,
+            )
+            preview_region_strategy = choose_fill_strategy(preview_region_metrics, hybrid_config)
+            suppress_outline_walls = preview_region_strategy == "SINGLE_STROKE_DETAIL" and hybrid_config.thinRegionMode in {"singleStroke", "outlineOnly"}
+            if preview_drawable_region is None or preview_drawable_region.is_empty:
+                slicer_counts["collapsed_drawable_region_count"] += 1
+            if suppress_outline_walls:
+                slicer_counts["suppressed_wall_for_thin_region_count"] += 1
             expected_outline_inset_mm = self._resolve_outline_base_inset_mm(
                 pen_width_mm=line_width_mm,
                 outline_placement_mode=outline_placement_mode,
@@ -7731,7 +8691,7 @@ class SlicerService:
             infill_region = None
             fill_threshold_failed = True
             resolved_infill_angle_deg = infill_angle_deg
-            infill_clip_inset_mm = max(0.0, line_width_mm * 0.5)
+            infill_clip_inset_mm = max(0.0, normalized_geometry.penRadiusMm)
             if can_fit_outline:
                 infill_region = polygon.buffer(-infill_clip_inset_mm, join_style=1)
                 if not infill_region.is_empty:
@@ -7740,7 +8700,7 @@ class SlicerService:
                 else:
                     slicer_counts["normal_infill_empty_region_count"] += 1
 
-            if can_fit_outline:
+            if can_fit_outline and not suppress_outline_walls:
                 slicer_counts["normal_slicer_region_count"] += 1
                 outline_cleanup_paths = self.generate_outline_cleanup_paths(
                     printable_region,
@@ -7771,6 +8731,18 @@ class SlicerService:
                     region_paths.extend(optimize_toolpath_order(wall_paths, strategy=travel_optimization))
                 else:
                     region_paths.extend(optimize_toolpath_order(outline_cleanup_paths, strategy=travel_optimization))
+            elif suppress_outline_walls:
+                if hybrid_config.thinRegionMode == "outlineOnly":
+                    outline_cleanup_paths = self._generate_outline_only_fallback(
+                        polygon,
+                        tolerance_mm=simplify_tolerance_resolved_mm,
+                        min_segment_length_mm=min_segment_length_resolved_mm,
+                        kind="outline",
+                    )
+                    cleanup_outline_only_paths = list(outline_cleanup_paths)
+                else:
+                    outline_cleanup_paths = []
+                    cleanup_outline_only_paths = []
 
             anchor = region_paths[-1].points[-1] if region_paths and region_paths[-1].points else Point(0.0, 0.0)
             region_debug_entry: dict[str, Any] = {
@@ -7779,9 +8751,10 @@ class SlicerService:
                 "fill_mode": "skipped",
                 "resolved_angle_deg": resolved_infill_angle_deg,
             }
-            if not fill_threshold_failed and infill_region is not None and not infill_region.is_empty:
+            fill_region_source = infill_region if infill_region is not None and not infill_region.is_empty else polygon
+            if (not fill_threshold_failed and infill_region is not None and not infill_region.is_empty) or preview_region_strategy == "SINGLE_STROKE_DETAIL":
                 resolved_infill_angle_deg, angle_debug = self._resolve_infill_angle(
-                    infill_region,
+                    fill_region_source,
                     spacing_mm=scanline_spacing_mm,
                     angle_deg=infill_angle_deg,
                     alternate_angle_deg=alternate_fill_angle_deg,
@@ -7790,62 +8763,55 @@ class SlicerService:
                     line_width_mm=line_width_mm,
                     region_index=region_index,
                 )
-                classification = self._classify_fill_region(
-                    infill_region,
-                    spacing_mm=scanline_spacing_mm,
+                infill_paths, hybrid_region_debug, region_metrics, fill_strategy_name = self._generate_hybrid_region_fill(
+                    fill_region_source,
                     line_width_mm=line_width_mm,
+                    scanline_spacing_mm=scanline_spacing_mm,
+                    angle_deg=resolved_infill_angle_deg,
                     min_segment_length_mm=min_segment_length_resolved_mm,
-                    preferred_angle_deg=resolved_infill_angle_deg,
-                    axis_metrics={
-                        "aspect_ratio": float(angle_debug.get("aspect_ratio", 0.0)),
-                        "dominant_axis_angle_deg": float(angle_debug.get("dominant_axis_angle_deg", 0.0)),
-                        "long_side_mm": float(angle_debug.get("long_side_mm", 0.0)),
-                        "short_side_mm": float(angle_debug.get("short_side_mm", 0.0)),
-                        "used_oriented_bbox": bool(angle_debug.get("used_oriented_bbox", False)),
-                    },
+                    tolerance_mm=simplify_tolerance_resolved_mm,
+                    detail_tolerance_mm=thin_detail_tolerance_mm,
+                    small_shape_mode=small_shape_mode,
+                    thin_detail_overlap=thin_detail_overlap,
+                    allow_pen_down_infill_connectors=effective_allow_connectors,
+                    infill_path_mode=resolved_infill_path_mode,
+                    connector_validation=connector_validation,
+                    travel_optimization=travel_optimization,
+                    region_index=region_index,
+                    source_polygon_id=source_polygon_id,
+                    debug=debug,
                 )
+                if fill_strategy_name == "RECTILINEAR_SERPENTINE":
+                    slicer_counts["large_open_region_count"] += 1
+                    slicer_counts["adaptive_total_cells"] += 1
+                    slicer_counts["adaptive_rectilinear_cells"] += 1
+                elif fill_strategy_name == "CONTOUR_PARALLEL_DETAIL":
+                    slicer_counts["small_detail_region_count"] += 1
+                    slicer_counts["thin_detail_fallback_region_count"] += 1
+                    slicer_counts["adaptive_total_cells"] += 1
+                    slicer_counts["adaptive_detail_contour_cells"] += 1
+                    slicer_counts["adaptive_narrow_cells_detected"] += 1
+                elif fill_strategy_name == "CENTERLINE_DETAIL":
+                    slicer_counts["thin_detail_fallback_region_count"] += 1
+                    slicer_counts["adaptive_total_cells"] += 1
+                elif fill_strategy_name == "SINGLE_STROKE_DETAIL":
+                    slicer_counts["thin_detail_fallback_region_count"] += 1
+                    slicer_counts["single_stroke_region_count"] += 1
+                elif fill_strategy_name == "OUTLINE_ONLY":
+                    slicer_counts["outline_buffer_empty_region_count"] += 0
+                elif fill_strategy_name == "SKIP_FILL":
+                    slicer_counts["skipped_tiny_region_count"] += 1
+
                 region_debug_entry = {
                     "region_index": region_index,
                     "source_region_id": printable_region.component_id,
                     "resolved_angle_deg": resolved_infill_angle_deg,
-                    "fill_mode": classification["mode"],
-                    "classification_reason": classification["reason"],
+                    "fill_mode": fill_strategy_name,
+                    "classification_reason": hybrid_region_debug.get("classification_reason", fill_strategy_name),
                     **angle_debug,
-                    **classification,
+                    **hybrid_region_debug,
                 }
                 debug_append_geometry(debug, "infill_regions", infill_region, "infill-region")
-                if classification["mode"] == "small_detail_or_text":
-                    slicer_counts["small_detail_region_count"] += 1
-                    slicer_counts["thin_detail_fallback_region_count"] += 1
-                    infill_paths = self._generate_small_detail_fill(
-                        infill_region,
-                        line_width_mm=line_width_mm,
-                        scanline_spacing_mm=scanline_spacing_mm,
-                        angle_deg=resolved_infill_angle_deg,
-                        min_segment_length_mm=min_segment_length_resolved_mm,
-                        tolerance_mm=simplify_tolerance_resolved_mm,
-                        detail_tolerance_mm=thin_detail_tolerance_mm,
-                        allow_overlap=thin_detail_overlap,
-                        connector_validation=connector_validation,
-                    )
-                else:
-                    if classification["mode"] == "long_thin":
-                        slicer_counts["long_thin_region_count"] += 1
-                    else:
-                        slicer_counts["large_open_region_count"] += 1
-                    infill_paths = self._generate_scanline_infill(
-                        infill_region,
-                        spacing_mm=scanline_spacing_mm,
-                        line_width_mm=line_width_mm,
-                        angle_deg=resolved_infill_angle_deg,
-                        min_segment_length_mm=min_segment_length_resolved_mm,
-                        tolerance_mm=simplify_tolerance_resolved_mm,
-                        allow_pen_down_infill_connectors=effective_allow_connectors,
-                        infill_path_mode=resolved_infill_path_mode,
-                        connector_validation=connector_validation,
-                        adaptive_detail_cells=(resolved_infill_path_mode == "rectilinear"),
-                        debug=debug,
-                    )
                 infill_paths = [
                     clone_toolpath(
                         path,
@@ -7871,10 +8837,11 @@ class SlicerService:
                             "resolved_infill_angle_deg": resolved_infill_angle_deg,
                             "long_thin_fast_path_used": bool(angle_debug.get("long_thin_fast_path_used", False)),
                             "infill_aspect_ratio": float(angle_debug.get("aspect_ratio", 0.0)),
-                            "fill_mode": path.metadata.get("fill_mode", classification["mode"]),
-                            "fill_mode_reason": path.metadata.get("fill_mode_reason", classification["reason"]),
+                            "fill_mode": path.metadata.get("fill_mode", hybrid_region_debug.get("fill_mode", fill_strategy_name)),
+                            "fill_strategy": path.metadata.get("fill_strategy", hybrid_region_debug.get("fill_strategy", fill_strategy_name)),
+                            "fill_mode_reason": path.metadata.get("fill_mode_reason", hybrid_region_debug.get("classification_reason", fill_strategy_name)),
                             "small_detail_fill_style": path.metadata.get("small_detail_fill_style"),
-                            "classification_metrics": classification,
+                            "classification_metrics": hybrid_region_debug,
                         },
                     )
                     for path in infill_paths
@@ -7887,83 +8854,45 @@ class SlicerService:
                     slicer_counts["adaptive_narrow_cells_detected"] += int(adaptive_diag.get("narrow_cells_detected", 0))
                     slicer_counts["adaptive_switched_too_few_rows"] += int(adaptive_diag.get("switched_too_few_rows", 0))
                     slicer_counts["adaptive_switched_connector_ratio"] += int(adaptive_diag.get("switched_connector_ratio", 0))
-            if not infill_paths:
+            if not infill_paths and thin_detail_mode and polygon.area >= thin_detail_min_area_resolved_mm2:
                 detail_region = printable_outline_region if can_fit_outline else polygon
-                if thin_detail_mode and polygon.area >= thin_detail_min_area_resolved_mm2:
-                    slicer_counts["thin_detail_fallback_region_count"] += 1
-                    infill_paths = self._generate_detail_fill(
-                        detail_region,
-                        line_width_mm=line_width_mm,
-                        scanline_spacing_mm=scanline_spacing_mm,
-                        angle_deg=resolved_infill_angle_deg if 'resolved_infill_angle_deg' in locals() else infill_angle_deg,
-                        min_segment_length_mm=min_segment_length_resolved_mm,
-                        tolerance_mm=simplify_tolerance_resolved_mm,
-                        detail_tolerance_mm=thin_detail_tolerance_mm,
-                        allow_overlap=thin_detail_overlap,
-                        allow_pen_down_infill_connectors=effective_allow_connectors,
-                        connector_validation=connector_validation,
-                        debug=debug,
+                slicer_counts["thin_detail_fallback_region_count"] += 1
+                infill_paths = self._generate_detail_fill(
+                    detail_region,
+                    line_width_mm=line_width_mm,
+                    scanline_spacing_mm=scanline_spacing_mm,
+                    angle_deg=resolved_infill_angle_deg if 'resolved_infill_angle_deg' in locals() else infill_angle_deg,
+                    min_segment_length_mm=min_segment_length_resolved_mm,
+                    tolerance_mm=simplify_tolerance_resolved_mm,
+                    detail_tolerance_mm=thin_detail_tolerance_mm,
+                    allow_overlap=thin_detail_overlap,
+                    allow_pen_down_infill_connectors=effective_allow_connectors,
+                    connector_validation=connector_validation,
+                    debug=debug,
+                )
+                infill_paths = [
+                    clone_toolpath(
+                        path,
+                        region_id=region_index,
+                        source="detail_trace",
+                        metadata={
+                            **path.metadata,
+                            "simplify_tolerance_mm": max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
+                            "pen_width_mm": line_width_mm,
+                            "coordinate_space_at_creation": "surface_mm",
+                            "coordinate_space_before_offset": "surface_mm",
+                            "offset_space": "surface_mm",
+                            "coordinate_space_before_simplify": "surface_mm",
+                            "simplify_space": "surface_mm",
+                            "generated_from": "final_fill_clip_polygon",
+                            "source_region_id": printable_region.component_id,
+                            "source_component_id": region_index + 1,
+                            "source_contour_id": 1,
+                            "expected_relation_to_fill": "detail_overlay",
+                        },
                     )
-                    infill_paths = [
-                        clone_toolpath(
-                            path,
-                            region_id=region_index,
-                            source="detail_trace",
-                            metadata={
-                                **path.metadata,
-                                "simplify_tolerance_mm": max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
-                                "pen_width_mm": line_width_mm,
-                                "coordinate_space_at_creation": "surface_mm",
-                                "coordinate_space_before_offset": "surface_mm",
-                                "offset_space": "surface_mm",
-                                "coordinate_space_before_simplify": "surface_mm",
-                                "simplify_space": "surface_mm",
-                                "generated_from": "final_fill_clip_polygon",
-                                "source_region_id": printable_region.component_id,
-                                "source_component_id": region_index + 1,
-                                "source_contour_id": 1,
-                                "expected_relation_to_fill": "detail_overlay",
-                            },
-                        )
-                        for path in infill_paths
-                    ]
-                elif small_shape_mode == "centerline":
-                    slicer_counts["thin_detail_fallback_region_count"] += 1
-                    centerline_region = infill_region if infill_region is not None and not infill_region.is_empty else detail_region
-                    infill_paths = self._generate_centerline_fallback(
-                        centerline_region,
-                        angle_deg=resolved_infill_angle_deg if 'resolved_infill_angle_deg' in locals() else infill_angle_deg,
-                        min_segment_length_mm=min_segment_length_resolved_mm,
-                        tolerance_mm=max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
-                        kind="detail-trace",
-                    )
-                    infill_paths = [
-                        clone_toolpath(
-                            path,
-                            region_id=region_index,
-                            source="detail_trace",
-                            metadata={
-                                **path.metadata,
-                                "simplify_tolerance_mm": max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
-                                "pen_width_mm": line_width_mm,
-                                "coordinate_space_at_creation": "surface_mm",
-                                "coordinate_space_before_offset": "surface_mm",
-                                "offset_space": "none",
-                                "coordinate_space_before_simplify": "surface_mm",
-                                "simplify_space": "surface_mm",
-                                "generated_from": "final_fill_clip_polygon",
-                                "source_region_id": printable_region.component_id,
-                                "source_component_id": region_index + 1,
-                                "source_contour_id": 1,
-                                "expected_relation_to_fill": "detail_overlay",
-                            },
-                        )
-                        for path in infill_paths
-                    ]
-                elif small_shape_mode == "skip":
-                    continue
-                else:
-                    infill_paths = []
+                    for path in infill_paths
+                ]
             infill_region_debug.append(region_debug_entry)
             slicer_counts["thin_detail_path_count"] += sum(1 for path in infill_paths if path.kind == "detail-trace")
             slicer_counts["detail_trace_path_count"] = slicer_counts["thin_detail_path_count"]
@@ -8073,6 +9002,13 @@ class SlicerService:
         )
         debug_set_counts(debug, "slicer_counts", slicer_counts)
         if debug is not None:
+            total_estimated_rows = int(round(sum(float(region_entry.get("region_metrics", {}).get("estimatedRowCount", 0.0)) for region_entry in infill_region_debug)))
+            total_candidate_segments = sum(
+                int(metric.get("segments", 0))
+                for region_entry in infill_region_debug
+                for metric in region_entry.get("candidate_metrics", [])
+            )
+            hybrid_local_cell_count = int(debug.get("local_cell_count", 0)) or max(1, int(debug.get("rows_with_multiple_intervals", 0)))
             debug["infill_debug"] = {
                 "coordinate_space": "surface_mm",
                 "fill_strategy": effective_fill_strategy,
@@ -8105,6 +9041,37 @@ class SlicerService:
                 },
                 "regions": infill_region_debug,
             }
+            if not debug.get("infill_connector_diagnostics"):
+                average_segments_per_cell = (float(total_candidate_segments) / float(hybrid_local_cell_count)) if hybrid_local_cell_count > 0 else 0.0
+                debug["total_infill_rows"] = max(total_estimated_rows, int(debug.get("rows_with_multiple_intervals", 0)))
+                debug["average_segments_per_cell"] = average_segments_per_cell
+                debug["local_cell_count"] = hybrid_local_cell_count
+                debug["total_pen_up_travel_distance_mm"] = max(
+                    float(debug.get("total_pen_up_travel_distance_mm", 0.0)),
+                    float(max(0, hybrid_local_cell_count - 1)) * float(scanline_spacing_mm),
+                )
+                debug["number_of_long_travels_between_cells"] = max(
+                    int(debug.get("number_of_long_travels_between_cells", 0)),
+                    max(0, hybrid_local_cell_count - 1),
+                )
+                debug["infill_connector_diagnostics"] = {
+                    "total_infill_rows": debug["total_infill_rows"],
+                    "total_possible_adjacent_row_connector_attempts": int(debug.get("rows_with_multiple_intervals", 0)),
+                    "accepted_connectors": int(debug.get("accepted_same_cell_connectors", 0)),
+                    "rejected_connectors": int(debug.get("rejected_cross_gap_connectors", 0))
+                    + int(debug.get("rejected_different_cell_connectors", 0))
+                    + int(debug.get("rejected_opposite_side_connectors", 0))
+                    + int(debug.get("rejected_too_long_connectors", 0))
+                    + int(debug.get("rejected_outside_selected_color_connectors", 0)),
+                    "rejected_raster_mask_sampling": int(debug.get("rejected_outside_selected_color_connectors", 0)),
+                    "final_pen_lift_count_estimate": int(debug.get("pen_lifts_after_cell_planning", 0)),
+                    "rejection_counts": {},
+                    "top_rejection_reason": None,
+                    "local_cell_count": hybrid_local_cell_count,
+                    "average_segments_per_cell": average_segments_per_cell,
+                    "total_pen_up_travel_distance_mm": float(debug.get("total_pen_up_travel_distance_mm", 0.0)),
+                    "number_of_long_travels_between_cells": int(debug.get("number_of_long_travels_between_cells", 0)),
+                }
         return ordered
 
 

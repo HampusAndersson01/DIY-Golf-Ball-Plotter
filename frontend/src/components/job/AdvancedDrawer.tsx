@@ -191,6 +191,10 @@ export function AdvancedDrawer({ activeTab, onTab }: Props) {
                 <span>Thin detail</span>
               </label>
               <label className="toggle">
+                <input checked={settings.ignorePrintableXSpanLimit} onChange={(event) => updateSetting('ignorePrintableXSpanLimit', event.target.checked)} type="checkbox" />
+                <span>Ignore printable X-span limit</span>
+              </label>
+              <label className="toggle">
                 <input checked={settings.allowPenDownInfillConnectors} onChange={(event) => updateSetting('allowPenDownInfillConnectors', event.target.checked)} type="checkbox" />
                 <span>Pen-down connectors</span>
               </label>

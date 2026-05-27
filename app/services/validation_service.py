@@ -68,6 +68,9 @@ class ValidationService:
             "origin_offset_x_mm": self._parse_finite_float(form, "origin_offset_x_mm", 0.0, "Origin offset X"),
             "origin_offset_y_mm": self._parse_finite_float(form, "origin_offset_y_mm", 0.0, "Origin offset Y"),
             "sample_step_deg": self._parse_float(form, "sample_step_deg", config["DEFAULT_SAMPLE_STEP_DEG"]),
+            "ignore_printable_x_span_limit": self.validate_bool(
+                form.get("ignore_printable_x_span_limit", config.get("DEFAULT_IGNORE_PRINTABLE_X_SPAN_LIMIT", "0"))
+            ),
             "margin_percent": self._parse_float(form, "margin_percent", config["DEFAULT_MARGIN_PERCENT"]),
             "placement_scale": self._parse_float(form, "placement_scale", 100.0),
             "placement_offset_x": self._parse_float(form, "placement_offset_x", 0.0),
@@ -208,6 +211,9 @@ class ValidationService:
             "origin_offset_x_mm": self._parse_finite_float(form, "origin_offset_x_mm", 0.0, "Origin offset X"),
             "origin_offset_y_mm": self._parse_finite_float(form, "origin_offset_y_mm", 0.0, "Origin offset Y"),
             "sample_step_deg": self._parse_float(form, "sample_step_deg", config["DEFAULT_SAMPLE_STEP_DEG"]),
+            "ignore_printable_x_span_limit": self.validate_bool(
+                form.get("ignore_printable_x_span_limit", config.get("DEFAULT_IGNORE_PRINTABLE_X_SPAN_LIMIT", "0"))
+            ),
             "margin_percent": self._parse_float(form, "margin_percent", config["DEFAULT_MARGIN_PERCENT"]),
             "placement_scale": self._parse_float(form, "placement_scale", 100.0),
             "placement_offset_x": self._parse_float(form, "placement_offset_x", 0.0),

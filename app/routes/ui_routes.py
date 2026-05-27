@@ -16,6 +16,7 @@ _state_poll_count = 0
 
 def build_frontend_config(config) -> dict:
     return {
+        "ballDiameterMm": config["BALL_DIAMETER_MM"],
         "defaults": {
             "xMaxFeed": config["DEFAULT_X_MAX_FEED"],
             "yMaxFeed": config["DEFAULT_Y_MAX_FEED"],
@@ -37,6 +38,7 @@ def build_frontend_config(config) -> dict:
             "servoRampDelayMs": config["DEFAULT_SERVO_RAMP_DELAY_MS"],
             "sampleStepDeg": config["DEFAULT_SAMPLE_STEP_DEG"],
             "maxPrintXSpanDeg": config["DEFAULT_MAX_PRINT_X_SPAN_DEG"],
+            "ignorePrintableXSpanLimit": config["DEFAULT_IGNORE_PRINTABLE_X_SPAN_LIMIT"],
             "marginPercent": config["DEFAULT_MARGIN_PERCENT"],
             "rotationDeg": config["DEFAULT_ROTATION_DEG"],
             "wallCount": config["DEFAULT_WALL_COUNT"],

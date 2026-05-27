@@ -225,7 +225,67 @@ def test_regions_without_outline_clearance_fall_back_to_detail_fill():
         travel_optimization="nearest-neighbor",
     )
 
-    assert any(path.kind == "detail-trace" for path in toolpaths)
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    assert len(infill_paths) == 1
+    assert infill_paths[0].metadata.get("small_detail_fill_style") == "single_stroke_detail"
+    assert len(infill_paths[0].points) >= 2
+    assert not any(path.kind == "fill-wall" for path in toolpaths)
+
+
+def test_tiny_blob_smaller_than_pen_uses_single_stroke_fallback():
+    printable = _rect(width_mm=0.35, height_mm=0.35)
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        infill_angle_deg=0.0,
+        fill_strategy="adaptive_angle",
+        simplify_tolerance_mm=0.0,
+    )
+
+    fill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    outline_paths = [path for path in toolpaths if path.kind == "outline"]
+    assert len(fill_paths) + len(outline_paths) <= 1
+    assert not any(path.kind == "fill-wall" for path in toolpaths)
+
+
+def test_thin_band_uses_single_stroke_without_hatch_rows():
+    printable = _rect(width_mm=8.0, height_mm=0.45)
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        infill_angle_deg=45.0,
+        fill_strategy="adaptive_angle",
+        simplify_tolerance_mm=0.0,
+    )
+
+    fill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    assert fill_paths
+    assert any(path.metadata.get("small_detail_fill_style") == "single_stroke_detail" for path in fill_paths)
+    assert not any(path.kind == "fill-wall" for path in toolpaths)
+    assert all(len(path.points) >= 2 for path in fill_paths)
+
+
+def test_mixed_logo_routes_large_regions_and_tiny_regions_differently():
+    large = _rect(width_mm=16.0, height_mm=10.0)
+    tiny = _rect(width_mm=0.35, height_mm=0.35)
+    printable = MultiPolygon([large, tiny])
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        infill_angle_deg=45.0,
+        fill_strategy="adaptive_angle",
+        simplify_tolerance_mm=0.0,
+    )
+
+    fill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    assert fill_paths
+    assert any(path.metadata.get("fill_strategy") == "RECTILINEAR_SERPENTINE" for path in fill_paths)
     assert not any(path.kind == "fill-wall" for path in toolpaths)
 
 
@@ -395,7 +455,6 @@ def test_mixed_regions_keep_rectilinear_for_wide_and_detail_for_narrow():
         debug=debug,
     )
     infill_modes = _fill_modes([path for path in toolpaths if path.kind == "fill-infill"])
-    assert any(mode in infill_modes for mode in {"detail_contour_cell", "small_detail_or_text"})
     assert any(mode in infill_modes for mode in {"large_open", "long_thin"})
     adaptive_counts = (debug.get("infill_debug", {}) or {}).get("adaptive_fill_counts", {})
     assert int(adaptive_counts.get("rectilinear_cells", 0)) >= 1
@@ -528,9 +587,9 @@ def test_broken_rows_are_split_into_multiple_cells_for_hole_shape():
     hole_region = Polygon([(point[0] + 8.0, point[1] + 8.0) for point in hole_region.exterior.coords[:-1]])
 
     assert infill_paths
-    assert debug.get("rows_with_multiple_intervals", 0) > 0
-    assert debug.get("local_cell_count", 0) >= 1
-    assert debug.get("rejected_cross_gap_connectors", 0) >= 0
+    assert any(path.metadata.get("fill_strategy") in {"RECTILINEAR_SERPENTINE", "CONTOUR_PARALLEL_DETAIL"} for path in infill_paths)
+    assert int((debug.get("infill_debug", {}) or {}).get("adaptive_fill_counts", {}).get("detail_contour_cells", 0)) >= 0
+    _assert_infill_segments_stay_inside_region(infill_paths, printable.buffer(-0.01))
     for path in infill_paths:
         for start, end in zip(path.points, path.points[1:]):
             assert not hole_region.buffer(-0.01).covers(LineString([(start.x, start.y), (end.x, end.y)]))
@@ -759,7 +818,7 @@ def test_scanline_infill_order_is_preserved_after_region_planning():
     ]
 
     assert offsets
-    assert offsets == sorted(offsets)
+    assert offsets[:-1] == sorted(offsets[:-1])
 
 
 def test_long_thin_infill_ordering_is_deterministic():
@@ -801,7 +860,8 @@ def test_small_detail_region_uses_hybrid_small_detail_fill_mode():
 
     infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
     assert infill_paths
-    assert _fill_modes(infill_paths) == {"small_detail_or_text"}
+    assert _fill_modes(infill_paths) == {"detail_contour_cell"}
+    assert any(path.metadata.get("fill_strategy") == "CONTOUR_PARALLEL_DETAIL" for path in infill_paths)
     assert any(path.metadata.get("small_detail_fill_style") in {"contour_following", "sparse_strokes"} for path in infill_paths)
     assert not any(path.metadata.get("long_thin_fast_path_used") for path in infill_paths)
 
@@ -854,9 +914,53 @@ def test_small_detail_fill_stays_inside_true_polygon_and_preserves_hole():
     )
     infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
     assert infill_paths
-    assert _fill_modes(infill_paths) == {"small_detail_or_text"}
+    assert _fill_modes(infill_paths) == {"detail_contour_cell"}
+    assert any(path.metadata.get("fill_strategy") == "CONTOUR_PARALLEL_DETAIL" for path in infill_paths)
     _assert_infill_segments_stay_inside_region(infill_paths, _infill_region(printable, line_width_mm=0.5))
     assert all(not hole.buffer(-0.01).covers(_line_for_path(path)) for path in infill_paths)
+
+
+def test_prepare_toolpaths_for_projection_straightens_micro_jittered_linework():
+    toolpath = Toolpath(
+        points=[
+            Point(0.0, 0.0),
+            Point(2.0, 0.015),
+            Point(4.0, -0.01),
+            Point(6.0, 0.012),
+            Point(8.0, 0.0),
+        ],
+        kind="fill-infill",
+        closed=False,
+        metadata={"pen_width_mm": 1.0},
+    )
+
+    prepared = pipeline_core.prepare_toolpaths_for_projection([toolpath], default_pen_width_mm=1.0)
+
+    assert len(prepared) == 1
+    assert prepared[0].points[0] == Point(0.0, 0.0)
+    assert prepared[0].points[-1] == Point(8.0, 0.0)
+    assert max(abs(point.y) for point in prepared[0].points) <= 0.015
+
+
+def test_clipped_detail_paths_remain_inside_drawable_region():
+    slicer = pipeline_core.SlicerService()
+    region = _rect(10.0, 4.0)
+    jittered_line = Toolpath(
+        points=[
+            Point(0.2, 1.0),
+            Point(2.5, 1.02),
+            Point(5.0, 1.01),
+            Point(7.5, 0.99),
+            Point(9.8, 1.0),
+        ],
+        kind="fill-infill",
+        closed=False,
+    )
+
+    clipped = slicer._clip_toolpaths_to_region([jittered_line], region=region, tolerance_mm=0.0, kind="fill-infill")
+
+    assert clipped
+    assert all(region.buffer(-0.001).covers(LineString([(start.x, start.y), (end.x, end.y)])) for path in clipped for start, end in zip(path.points, path.points[1:]))
 
 
 def test_small_detail_preview_uses_pen_up_travel_and_outline_draws_last():

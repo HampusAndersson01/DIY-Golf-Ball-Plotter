@@ -299,6 +299,7 @@ export type AppDefaults = {
   servoRampDelayMs: number
   sampleStepDeg: number
   maxPrintXSpanDeg: number
+  ignorePrintableXSpanLimit?: boolean
   marginPercent: number
   rotationDeg: number
   wallCount: number
@@ -333,5 +334,6 @@ export type AppDefaults = {
 }
 
 export type AppConfig = {
+  ballDiameterMm: number
   defaults: AppDefaults
 }

@@ -14,17 +14,19 @@ type Props = {
   paths: PreviewPath[]
   machine: MachineState | null
   maxPrintXSpanDeg: number
+  ballDiameterMm: number
+  lineThicknessMm: number
   previewMode: PreviewMode
   progressFilter: 'all' | 'progress'
   showTravel: boolean
-  showCompare: boolean
+  showPenWidth: boolean
   imagePreviewUrl: string | null
   maskPreviewUrl: string | null
   viewPreset: ViewPreset
   onPreviewMode: (mode: PreviewMode) => void
   onProgressFilter: (filter: 'all' | 'progress') => void
   onShowTravel: (show: boolean) => void
-  onShowCompare: (show: boolean) => void
+  onShowPenWidth: (show: boolean) => void
   onViewPreset: (preset: ViewPreset) => void
   onZoomChange?: (zoomLabel: string) => void
   zoomLabel: string
@@ -71,12 +73,12 @@ export function PreviewWorkspace(props: Props) {
           onFit={fit}
           onModeChange={props.onPreviewMode}
           onReset={reset}
-          onShowCompare={props.onShowCompare}
+          onShowPenWidth={props.onShowPenWidth}
           onShowTravel={props.onShowTravel}
           onViewPreset={props.onViewPreset}
           previewMode={props.previewMode}
           progressFilter={props.progressFilter}
-          showCompare={props.showCompare}
+          showPenWidth={props.showPenWidth}
           showTravel={props.showTravel}
         />
       </div>
@@ -90,9 +92,12 @@ export function PreviewWorkspace(props: Props) {
               <Toolpath2DView
                 ref={twoDRef}
                 filter={props.progressFilter}
+                ballDiameterMm={props.ballDiameterMm}
+                lineThicknessMm={props.lineThicknessMm}
                 machine={props.machine}
                 maxPrintXSpanDeg={props.maxPrintXSpanDeg}
                 paths={props.paths}
+                showPenWidth={props.showPenWidth}
                 showTravel={props.showTravel}
               />
             ) : (
@@ -106,19 +111,6 @@ export function PreviewWorkspace(props: Props) {
                 showTravel={props.showTravel}
               />
             )}
-
-            {props.showCompare ? (
-              <aside className="compare-popover">
-                <div>
-                  <span>Original</span>
-                  {props.imagePreviewUrl ? <img alt="Original upload" src={props.imagePreviewUrl} /> : <div className="compare-empty">No source image</div>}
-                </div>
-                <div>
-                  <span>Mask</span>
-                  {props.maskPreviewUrl ? <img alt="Selected mask" src={props.maskPreviewUrl} /> : <div className="compare-empty">No generated mask</div>}
-                </div>
-              </aside>
-            ) : null}
 
             <div className="preview-floating-legend">
               <ToolpathLegend />

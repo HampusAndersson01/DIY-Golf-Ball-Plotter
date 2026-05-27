@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import math
+from io import BytesIO
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image
+import pytest
+from PIL import Image, ImageDraw
 from shapely.geometry import LineString, Polygon
 
 from app.models.machine_state import MachineState
@@ -53,6 +55,17 @@ def _selected_black_color_id(raster: RasterAnalysisService, image_bytes: bytes) 
     selected = next((color.id for color in analysis.colors if color.hex == "#000000"), analysis.colors[0].id if analysis.colors else None)
     assert selected is not None, "No selectable black color found in fixture image"
     return selected
+
+
+def _synthetic_logo_png_bytes() -> bytes:
+    canvas = Image.new("RGB", (1600, 1200), "white")
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle((80, 120, 1100, 980), fill="black")
+    draw.rectangle((1260, 120, 1263, 1040), fill="black")
+    draw.ellipse((1260, 1080, 1264, 1084), fill="black")
+    buffer = BytesIO()
+    canvas.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def _assert_connector_paths_stay_inside_mask(toolpaths: list[pipeline_core.Toolpath], validation: dict[str, object]) -> None:
@@ -248,3 +261,75 @@ def test_carolin_fixture_rejects_whitespace_crossing_connectors():
     assert diagnostics.get("rejected_outside_selected_color", 0) >= 0
     assert diagnostics.get("accepted_connectors", 0) == result["accepted_connector_count"]
     assert result["accepted_connector_count"] >= 0
+
+
+def test_synthetic_png_uses_single_stroke_fallback_and_shared_canonical_paths():
+    raster, geometry, toolpaths_service, gcode_service = _load_services()
+    image_bytes = _synthetic_logo_png_bytes()
+    selected = _selected_black_color_id(raster, image_bytes)
+    mask = raster.build_mask(
+        image_bytes,
+        [selected],
+        tolerance=24,
+        min_component_area_px=0,
+        open_radius_px=0,
+        close_radius_px=1,
+    )
+    regions = raster.extract_regions(mask, min_region_area_px=8, simplify_tolerance_px=1.0)
+    mapped = geometry.map_bundle_to_angles(regions.bundle, regions.bounds, "contain", True, 4.0)
+
+    debug: dict[str, object] = {}
+    toolpaths = toolpaths_service.generate_from_regions(
+        mapped,
+        pen_width_mm=0.6,
+        wall_count=1,
+        infill_pattern="hatch",
+        infill_spacing_mm=0.6,
+        infill_density=100.0,
+        infill_angle_deg=45.0,
+        fill_strategy="rotated_scanline",
+        min_region_area=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=True,
+        small_shape_mode="single-wall",
+        thin_detail_mode=True,
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+        allow_pen_down_infill_connectors=True,
+        infill_path_mode="rectilinear",
+        debug=debug,
+    )
+
+    assert any(path.metadata.get("small_detail_fill_style") == "single_stroke_detail" for path in toolpaths)
+
+    cleaned, _stats = pipeline_core.cleanup_surface_toolpaths(toolpaths, tolerance_mm=0.0, min_segment_length_mm=0.0)
+    prepared = pipeline_core.prepare_toolpaths_for_projection(cleaned, default_pen_width_mm=0.6)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(prepared, center_lon_deg=0.0, center_lat_deg=0.0)
+
+    gcode, preview = gcode_service.generate_from_toolpaths(
+        toolpaths=projected,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=True,
+        debug=debug,
+    )
+
+    preview_toolpaths = [path for path in pipeline_core.preview_entries_to_toolpaths(preview) if path.kind != "travel"]
+    gcode_toolpaths = [path for path in pipeline_core.parse_gcode_machine_motion_paths(gcode, pen_up_s=575, pen_down_s=700) if path.kind != "travel"]
+    assert len(preview_toolpaths) == len(projected)
+    assert len(gcode_toolpaths) == len(preview_toolpaths)
+    assert preview_toolpaths[0].points[0].x == pytest.approx(gcode_toolpaths[0].points[0].x, abs=1e-4)
+    assert preview_toolpaths[0].points[0].y == pytest.approx(gcode_toolpaths[0].points[0].y, abs=1e-4)
+    assert debug.get("invalidConnectorCount", 0) == 0

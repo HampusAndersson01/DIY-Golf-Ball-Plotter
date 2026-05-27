@@ -280,7 +280,14 @@ def generate_image_gcode_route():
             placed,
             max_x_span_deg=current_app.config["DEFAULT_MAX_PRINT_X_SPAN_DEG"],
             ball_diameter_mm=current_app.config["BALL_DIAMETER_MM"],
+            allow_overflow=options["ignore_printable_x_span_limit"],
         )
+        if x_span_debug.get("limit_overridden"):
+            current_app.logger.warning(
+                "Printable X-span limit override enabled: width_deg=%.2f limit_deg=%.2f",
+                float(x_span_debug["width_deg"]),
+                float(x_span_debug["max_width_deg"]),
+            )
         effective_settings = build_effective_settings(options)
         design_bounds = geometry.bounds_from_bundle(placed)
         final_polygon_count = len(pipeline_core.normalize_geometry(placed.printable_geometry)) if placed.printable_geometry is not None and not placed.printable_geometry.is_empty else 0

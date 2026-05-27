@@ -209,6 +209,26 @@ def test_validate_bundle_x_span_rejects_geometry_wider_than_120_degrees():
         pipeline_core.validate_bundle_x_span(bundle, max_x_span_deg=120.0)
 
 
+def test_validate_bundle_x_span_can_be_overridden_when_intentionally_oversized():
+    width_mm = pipeline_core.ball_degrees_to_mm(120.0) + 0.1
+    bundle = GeometryBundle(
+        outline_segments=[
+            Segment(
+                points=[
+                    Point(0.0, 0.0),
+                    Point(width_mm, 0.0),
+                ],
+                closed=False,
+            ),
+        ],
+    )
+
+    result = pipeline_core.validate_bundle_x_span(bundle, max_x_span_deg=120.0, allow_overflow=True)
+
+    assert result["width_deg"] > 120.0
+    assert result["limit_overridden"] is True
+
+
 def test_map_bundle_to_surface_mm_uses_120_degree_default_fit_width():
     geometry = GeometryService()
     bundle = GeometryBundle(

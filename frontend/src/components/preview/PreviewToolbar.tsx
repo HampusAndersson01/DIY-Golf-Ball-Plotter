@@ -4,11 +4,11 @@ type Props = {
   previewMode: PreviewMode
   progressFilter: 'all' | 'progress'
   showTravel: boolean
-  showCompare: boolean
+  showPenWidth: boolean
   onModeChange: (mode: PreviewMode) => void
   onFilterChange: (value: 'all' | 'progress') => void
   onShowTravel: (value: boolean) => void
-  onShowCompare: (value: boolean) => void
+  onShowPenWidth: (value: boolean) => void
   onFit: () => void
   onReset: () => void
   onViewPreset: (preset: 'printer' | 'front') => void
@@ -18,11 +18,11 @@ export function PreviewToolbar({
   previewMode,
   progressFilter,
   showTravel,
-  showCompare,
+  showPenWidth,
   onModeChange,
   onFilterChange,
   onShowTravel,
-  onShowCompare,
+  onShowPenWidth,
   onFit,
   onReset,
   onViewPreset,
@@ -35,9 +35,6 @@ export function PreviewToolbar({
         </button>
         <button className={previewMode === '3d' ? 'active' : ''} onClick={() => onModeChange('3d')} type="button">
           3D
-        </button>
-        <button className={showCompare ? 'active' : ''} onClick={() => onShowCompare(!showCompare)} type="button">
-          Mask
         </button>
       </div>
 
@@ -54,6 +51,11 @@ export function PreviewToolbar({
         <label className="toggle">
           <input checked={showTravel} onChange={(event) => onShowTravel(event.target.checked)} type="checkbox" />
           <span>Travel</span>
+        </label>
+
+        <label className="toggle">
+          <input checked={showPenWidth} onChange={(event) => onShowPenWidth(event.target.checked)} type="checkbox" />
+          <span>Pen width</span>
         </label>
       </div>
 

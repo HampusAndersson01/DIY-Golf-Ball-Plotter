@@ -48,6 +48,7 @@ export type SettingsState = {
   fillStrategy: 'horizontal_scanline' | 'rotated_scanline' | 'adaptive_angle' | 'crosshatch'
   alternateFillAngleDeg: number
   sampleStepDeg: number
+  ignorePrintableXSpanLimit: boolean
   marginPercent: number
   minFillAreaMm2: number
   minFillWidthMm: number
@@ -131,6 +132,7 @@ type AppStore = {
   previewMode: PreviewMode
   progressFilter: ProgressFilter
   showTravel: boolean
+  showPenWidth: boolean
   showCompare: boolean
   drawerTab: DrawerTab
   advancedOpen: boolean
@@ -145,6 +147,7 @@ type AppStore = {
   setPreviewMode: (mode: PreviewMode) => void
   setProgressFilter: (filter: ProgressFilter) => void
   setShowTravel: (show: boolean) => void
+  setShowPenWidth: (show: boolean) => void
   setShowCompare: (show: boolean) => void
   setDrawerTab: (tab: DrawerTab) => void
   setAdvancedOpen: (open: boolean) => void
@@ -207,12 +210,13 @@ function buildSettings(defaults: AppDefaults): SettingsState {
     lineThicknessMm,
     wallCount: defaults.wallCount,
     infillDensity: defaults.infillDensity,
-    infillSpacingMm: lineThicknessMm,
+    infillSpacingMm: defaults.infillSpacingMm,
     customInfillSpacingEnabled: defaults.customInfillSpacingEnabled ?? false,
     infillAngleDeg: defaults.infillAngleDeg,
     fillStrategy: defaults.fillStrategy ?? 'adaptive_angle',
     alternateFillAngleDeg: defaults.alternateFillAngleDeg ?? -45,
     sampleStepDeg: defaults.sampleStepDeg,
+    ignorePrintableXSpanLimit: defaults.ignorePrintableXSpanLimit ?? false,
     marginPercent: defaults.marginPercent,
     minFillAreaMm2: defaults.minFillAreaMm2,
     minFillWidthMm: defaults.minFillWidthMm,
@@ -272,6 +276,7 @@ export const useAppStore = create<AppStore>((set) => ({
   previewMode: '2d',
   progressFilter: 'all',
   showTravel: true,
+  showPenWidth: true,
   showCompare: false,
   drawerTab: 'advanced',
   advancedOpen: false,
@@ -334,6 +339,7 @@ export const useAppStore = create<AppStore>((set) => ({
   setPreviewMode: (previewMode) => set({ previewMode }),
   setProgressFilter: (progressFilter) => set({ progressFilter }),
   setShowTravel: (showTravel) => set({ showTravel }),
+  setShowPenWidth: (showPenWidth) => set({ showPenWidth }),
   setShowCompare: (showCompare) => set({ showCompare }),
   setDrawerTab: (drawerTab) => set({ drawerTab }),
   setAdvancedOpen: (advancedOpen) => set({ advancedOpen }),
@@ -361,14 +367,8 @@ export const useAppStore = create<AppStore>((set) => ({
       [key]: value,
     }
 
-    if (key === 'lineThicknessMm' && typeof value === 'number') {
-      if (!nextSettings.customInfillSpacingEnabled) {
-        nextSettings.infillSpacingMm = value
-      }
-    }
-
-    if (key === 'customInfillSpacingEnabled' && value === false) {
-      nextSettings.infillSpacingMm = nextSettings.lineThicknessMm
+    if (key === 'lineThicknessMm' && typeof value === 'number' && !nextSettings.customInfillSpacingEnabled) {
+      nextSettings.infillSpacingMm = state.settings.infillSpacingMm
     }
 
     return { settings: nextSettings }

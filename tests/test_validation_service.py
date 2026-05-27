@@ -91,6 +91,32 @@ def test_generate_raster_form_derives_fill_defaults_from_pen_thickness():
     assert options["min_fill_area_mm2"] == pytest.approx(0.36)
 
 
+def test_generate_gcode_form_accepts_printable_x_span_override_toggle():
+    service = ValidationService()
+    options = service.parse_generate_gcode_form(
+        {
+            "selected_colors": "[\"#000000\"]",
+            "ignore_printable_x_span_limit": "1",
+        },
+        make_config(),
+    )
+
+    assert options["ignore_printable_x_span_limit"] is True
+
+
+def test_generate_raster_form_accepts_printable_x_span_override_toggle():
+    service = ValidationService()
+    options = service.parse_generate_raster_form(
+        {
+            "selected_colors": "[\"#000000\"]",
+            "ignore_printable_x_span_limit": "1",
+        },
+        make_config(),
+    )
+
+    assert options["ignore_printable_x_span_limit"] is True
+
+
 def test_generate_raster_form_ignores_stale_infill_spacing_when_custom_spacing_is_disabled():
     service = ValidationService()
     options = service.parse_generate_raster_form(

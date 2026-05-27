@@ -132,6 +132,15 @@ class GcodeService:
 
     def generate_from_toolpaths(self, **kwargs):
         toolpaths = kwargs["toolpaths"]
+        debug = kwargs.get("debug")
+
+        def _update_path_debug(gcode: list[str], preview: list[dict[str, object]]) -> None:
+            if not isinstance(debug, dict):
+                return
+            projected_debug = pipeline_core.build_projected_path_debug(toolpaths, toolpaths, preview)
+            debug["preview_and_gcode_share_same_projected_paths"] = bool(projected_debug.get("preview_and_gcode_share_same_projected_paths", False))
+            debug["preview_gcode_path_mismatch_count"] = 0 if debug["preview_and_gcode_share_same_projected_paths"] else 1
+
         self.logger.info(
             "Generating G-code from %d toolpaths (mode=%s include_comments=%s placement=(%s,%s))",
             len(toolpaths),
@@ -166,6 +175,7 @@ class GcodeService:
                     debug["estimated_runtime_breakdown"] = runtime_estimate.as_dict()
                 except Exception as exc:  # pragma: no cover - diagnostics only
                     self.logger.debug("Unable to build runtime estimate: %s", exc)
+            _update_path_debug(gcode, preview)
             self.logger.info("Generated legacy angle G-code lines=%d preview_paths=%d", len(gcode), len(preview))
             return gcode, preview
         gcode, preview = pipeline_core.generate_gcode_from_toolpaths(
@@ -203,5 +213,6 @@ class GcodeService:
                 debug["estimated_runtime_breakdown"] = runtime_estimate.as_dict()
             except Exception as exc:  # pragma: no cover - diagnostics only
                 self.logger.debug("Unable to build runtime estimate: %s", exc)
+        _update_path_debug(gcode, preview)
         self.logger.info("Generated projected G-code lines=%d preview_paths=%d", len(gcode), len(preview))
         return gcode, preview

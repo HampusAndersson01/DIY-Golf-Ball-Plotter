@@ -1,4 +1,5 @@
 import pytest
+from shapely.geometry import LineString, Polygon
 
 from app.models.geometry import Point, Toolpath
 from app.services import pipeline_core
@@ -196,6 +197,176 @@ def test_preview_and_gcode_share_same_projected_paths_after_surface_anchor_place
     assert preview_toolpaths[0].points[0].y == pytest.approx(projected[0].points[0].y, abs=1e-4)
     assert gcode_toolpaths[0].points[0].x == pytest.approx(projected[0].points[0].x, abs=1e-4)
     assert gcode_toolpaths[0].points[0].y == pytest.approx(projected[0].points[0].y, abs=1e-4)
+
+
+@pytest.mark.parametrize(
+    ("line_width_mm", "infill_spacing_mm", "custom_spacing_enabled", "expected_spacing_mm"),
+    [
+        (0.2, None, False, 0.2),
+        (0.6, None, False, 0.6),
+        (0.6, 0.2, True, 0.2),
+    ],
+)
+def test_geometry_spacing_metrics_follow_normalized_config(line_width_mm, infill_spacing_mm, custom_spacing_enabled, expected_spacing_mm):
+    printable = Polygon([
+        (0.0, 0.0),
+        (20.0, 0.0),
+        (20.0, 10.0),
+        (0.0, 10.0),
+        (0.0, 0.0),
+    ])
+    toolpaths = pipeline_core.generate_toolpaths(
+        pipeline_core.GeometryBundle(printable_geometry=printable),
+        enable_fill=True,
+        line_width_mm=line_width_mm,
+        wall_count=1,
+        infill_density=100.0,
+        infill_spacing_mm=infill_spacing_mm if custom_spacing_enabled else line_width_mm,
+        infill_angle_deg=0.0,
+        outline_after_fill=True,
+        min_fill_area_mm2=0.15,
+        min_segment_length_mm=0.0,
+        min_fill_width_mm=line_width_mm,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=True,
+        small_shape_mode="single-wall",
+        fill_strategy="adaptive_angle",
+        alternate_fill_angle_deg=-45.0,
+        thin_detail_mode=True,
+        thin_detail_min_area_mm2=0.05,
+        thin_detail_simplify_mm=0.1,
+        thin_detail_overlap=True,
+        travel_optimization="nearest-neighbor",
+        allow_pen_down_infill_connectors=False,
+        infill_path_mode="rectilinear",
+    )
+    prepared = pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=line_width_mm)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(prepared, center_lon_deg=0.0, center_lat_deg=0.0, ball_diameter_mm=42.67)
+
+    gcode_service = GcodeService()
+    debug: dict[str, object] = {}
+    gcode, preview = gcode_service.generate_from_toolpaths(
+        toolpaths=projected,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=False,
+        debug=debug,
+    )
+
+    normalized = pipeline_core.normalize_geometry_config(
+        raw_line_width_mm=line_width_mm,
+        raw_infill_spacing_mm=infill_spacing_mm if custom_spacing_enabled else None,
+    )
+    preview_toolpaths = [path for path in pipeline_core.preview_entries_to_toolpaths(preview) if path.kind != "travel"]
+    gcode_toolpaths = [path for path in pipeline_core.parse_gcode_machine_motion_paths(gcode, pen_up_s=575, pen_down_s=700) if path.kind != "travel"]
+    metrics = pipeline_core.build_geometry_spacing_metrics(
+        projected,
+        normalized_config=normalized,
+        preview_toolpaths=preview_toolpaths,
+        gcode_toolpaths=gcode_toolpaths,
+    )
+
+    assert metrics.lineWidthMm == pytest.approx(line_width_mm, abs=1e-9)
+    assert metrics.previewStrokeWidthMm == pytest.approx(line_width_mm, abs=1e-9)
+    assert metrics.effectiveInfillSpacingMm == pytest.approx(expected_spacing_mm, abs=1e-9)
+    assert metrics.actualAverageInfillSpacingMm == pytest.approx(expected_spacing_mm, abs=0.05)
+    assert metrics.actualMaxInfillSpacingMm == pytest.approx(expected_spacing_mm, abs=0.05)
+    assert metrics.estimatedUncoveredGapMm <= 0.05
+    assert metrics.previewGcodePathMismatchCount == 0
+    assert debug.get("preview_gcode_path_mismatch_count") == 0
+    assert debug.get("preview_and_gcode_share_same_projected_paths") is True
+
+
+def test_contour_detail_spacing_uses_line_width_as_the_default_detail_spacing():
+    centerline = LineString([
+        (1.0, 8.5),
+        (3.0, 9.2),
+        (5.5, 8.3),
+        (7.2, 6.7),
+        (5.8, 5.0),
+        (3.1, 4.1),
+        (1.6, 2.4),
+        (3.5, 0.8),
+        (6.8, 1.0),
+    ])
+    printable = centerline.buffer(0.55, join_style=1, cap_style=1)
+    toolpaths = pipeline_core.generate_toolpaths(
+        pipeline_core.GeometryBundle(printable_geometry=printable),
+        enable_fill=True,
+        line_width_mm=0.6,
+        wall_count=1,
+        infill_density=100.0,
+        infill_spacing_mm=0.2,
+        infill_angle_deg=45.0,
+        outline_after_fill=True,
+        min_fill_area_mm2=0.15,
+        min_segment_length_mm=0.0,
+        min_fill_width_mm=0.6,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=True,
+        small_shape_mode="single-wall",
+        fill_strategy="adaptive_angle",
+        alternate_fill_angle_deg=-45.0,
+        thin_detail_mode=True,
+        thin_detail_min_area_mm2=0.05,
+        thin_detail_simplify_mm=0.1,
+        thin_detail_overlap=True,
+        travel_optimization="nearest-neighbor",
+        allow_pen_down_infill_connectors=False,
+        infill_path_mode="rectilinear",
+    )
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    assert any(path.metadata.get("small_detail_fill_style") == "contour_following" for path in infill_paths)
+
+    prepared = pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=0.6)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(prepared, center_lon_deg=0.0, center_lat_deg=0.0, ball_diameter_mm=42.67)
+    gcode_service = GcodeService()
+    debug: dict[str, object] = {}
+    gcode, preview = gcode_service.generate_from_toolpaths(
+        toolpaths=projected,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=False,
+        debug=debug,
+    )
+
+    normalized = pipeline_core.normalize_geometry_config(raw_line_width_mm=0.6, raw_infill_spacing_mm=0.2)
+    preview_toolpaths = [path for path in pipeline_core.preview_entries_to_toolpaths(preview) if path.kind != "travel"]
+    gcode_toolpaths = [path for path in pipeline_core.parse_gcode_machine_motion_paths(gcode, pen_up_s=575, pen_down_s=700) if path.kind != "travel"]
+    metrics = pipeline_core.build_geometry_spacing_metrics(
+        projected,
+        normalized_config=normalized,
+        preview_toolpaths=preview_toolpaths,
+        gcode_toolpaths=gcode_toolpaths,
+    )
+
+    assert metrics.effectiveDetailSpacingMm == pytest.approx(0.6, abs=1e-9)
+    assert metrics.actualAverageDetailOffsetSpacingMm == pytest.approx(0.6, abs=0.15)
+    assert metrics.actualMaxDetailOffsetSpacingMm == pytest.approx(0.6, abs=0.15)
+    assert metrics.previewGcodePathMismatchCount == 0
+    assert debug.get("preview_gcode_path_mismatch_count") == 0
 
 
 def test_read_next_grbl_line_reassembles_fragmented_ok_response():

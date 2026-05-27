@@ -14,16 +14,24 @@ type Props = {
   machine: MachineState | null
   filter: 'all' | 'progress'
   showTravel: boolean
+  showPenWidth: boolean
+  ballDiameterMm: number
+  lineThicknessMm: number
   maxPrintXSpanDeg: number
   onZoomChange?: (zoomLabel: string) => void
 }
 
 export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolpath2DView(
-  { paths, machine, filter, showTravel, maxPrintXSpanDeg, onZoomChange },
+  { paths, machine, filter, showTravel, showPenWidth, ballDiameterMm, lineThicknessMm, maxPrintXSpanDeg, onZoomChange },
   ref,
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const controllerRef = useRef<PanZoomCanvas | null>(null)
+  const renderOptionsRef = useRef({
+    showPenWidth,
+    ballDiameterMm,
+    lineThicknessMm,
+  })
   const renderStateRef = useRef<{ visiblePaths: PreviewPath[]; machine: MachineState | null }>({
     visiblePaths: [],
     machine: null,
@@ -34,9 +42,11 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
   )
 
   renderStateRef.current = { visiblePaths, machine }
+  renderOptionsRef.current = { showPenWidth, ballDiameterMm, lineThicknessMm }
 
   const renderCanvas = useCallback((ctx: CanvasRenderingContext2D, engine: PanZoomCanvas) => {
     const { visiblePaths: nextVisiblePaths, machine: nextMachine } = renderStateRef.current
+    const { showPenWidth: nextShowPenWidth, ballDiameterMm: nextBallDiameterMm, lineThicknessMm: nextLineThicknessMm } = renderOptionsRef.current
     const { width, height } = engine.getViewState()
     ctx.fillStyle = '#f7fbff'
     ctx.fillRect(0, 0, width * window.devicePixelRatio, height * window.devicePixelRatio)
@@ -56,7 +66,9 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
       ctx.setLineDash(previewPathDashed(path) ? [3 / engine.getScale(), 2 / engine.getScale()] : [])
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
-      ctx.lineWidth = (phase === 'current' ? 2.4 : 1.6) / engine.getScale()
+      const penWidthDegrees = mmToBallDegrees(nextLineThicknessMm, nextBallDiameterMm)
+      const shouldUsePenWidth = nextShowPenWidth && (path.kind !== 'travel' || path.pen_down === true)
+      ctx.lineWidth = shouldUsePenWidth ? penWidthDegrees : (phase === 'current' ? 2.4 : 1.6) / engine.getScale()
       ctx.strokeStyle = hexWithAlpha(phaseStroke(phase, visualKind), phaseOpacity(phase, visualKind))
       ctx.stroke()
 
@@ -119,7 +131,13 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
     const controller = controllerRef.current
     if (!controller) return
     controller.requestDraw()
-  }, [machine, filter, showTravel, visiblePaths])
+  }, [machine, filter, showPenWidth, showTravel, visiblePaths])
+
+  useEffect(() => {
+    const controller = controllerRef.current
+    if (!controller) return
+    controller.requestDraw()
+  }, [ballDiameterMm, lineThicknessMm, showPenWidth])
 
   return (
     <div className="toolpath-canvas-wrap">
@@ -194,4 +212,11 @@ function hexWithAlpha(hex: string, alpha: number) {
   const g = (value >> 8) & 255
   const b = value & 255
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
+function mmToBallDegrees(mm: number, ballDiameterMm: number) {
+  if (!Number.isFinite(mm) || mm <= 0) return 0
+  if (!Number.isFinite(ballDiameterMm) || ballDiameterMm <= 0) return mm
+  const circumferenceMm = Math.PI * ballDiameterMm
+  return (mm / circumferenceMm) * 360.0
 }

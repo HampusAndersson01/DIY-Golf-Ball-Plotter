@@ -90,7 +90,7 @@ function DashboardApp() {
   const previewMode = useAppStore((state) => state.previewMode)
   const progressFilter = useAppStore((state) => state.progressFilter)
   const showTravel = useAppStore((state) => state.showTravel)
-  const showCompare = useAppStore((state) => state.showCompare)
+  const showPenWidth = useAppStore((state) => state.showPenWidth)
   const drawerTab = useAppStore((state) => state.drawerTab)
   const advancedOpen = useAppStore((state) => state.advancedOpen)
   const viewPreset = useAppStore((state) => state.viewPreset)
@@ -103,7 +103,7 @@ function DashboardApp() {
   const setPreviewMode = useAppStore((state) => state.setPreviewMode)
   const setProgressFilter = useAppStore((state) => state.setProgressFilter)
   const setShowTravel = useAppStore((state) => state.setShowTravel)
-  const setShowCompare = useAppStore((state) => state.setShowCompare)
+  const setShowPenWidth = useAppStore((state) => state.setShowPenWidth)
   const setDrawerTab = useAppStore((state) => state.setDrawerTab)
   const setViewPreset = useAppStore((state) => state.setViewPreset)
   const setBusy = useAppStore((state) => state.setBusy)
@@ -208,9 +208,6 @@ function DashboardApp() {
         event.preventDefault()
         window.dispatchEvent(new Event('preview-reset'))
       }
-      if (event.key === 'Escape') {
-        setShowCompare(false)
-      }
       if (event.code === 'Space' && machine?.running) {
         event.preventDefault()
         void onKeyboardPause()
@@ -218,7 +215,7 @@ function DashboardApp() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [machine?.running, setShowCompare])
+  }, [machine?.running])
 
   const placementPreviewKey = readySettings
     ? [
@@ -734,19 +731,21 @@ function DashboardApp() {
 
           <main className="workspace-panel">
             <PreviewWorkspace
+              ballDiameterMm={config.ballDiameterMm}
               imagePreviewUrl={imagePreviewUrl}
               machine={machine}
               maskPreviewUrl={maskPreviewUrl}
               maxPrintXSpanDeg={config.defaults.maxPrintXSpanDeg}
+              lineThicknessMm={settingsState.lineThicknessMm}
               onPreviewMode={setPreviewMode}
               onProgressFilter={setProgressFilter}
-              onShowCompare={setShowCompare}
+              onShowPenWidth={setShowPenWidth}
               onShowTravel={setShowTravel}
               onViewPreset={setViewPreset}
               paths={preview}
               previewMode={previewMode}
               progressFilter={progressFilter}
-              showCompare={showCompare}
+              showPenWidth={showPenWidth}
               showTravel={showTravel}
               onZoomChange={setPreviewZoomLabel}
               zoomLabel={previewZoomLabel}
@@ -870,6 +869,7 @@ function buildGenerateFormData(file: File, settings: SettingsState, selectedColo
   formData.append('fill_strategy', settings.fillStrategy)
   formData.append('alternate_fill_angle_deg', String(settings.alternateFillAngleDeg))
   formData.append('sample_step_deg', String(settings.sampleStepDeg))
+  formData.append('ignore_printable_x_span_limit', settings.ignorePrintableXSpanLimit ? '1' : '0')
   formData.append('margin_percent', String(settings.marginPercent))
   formData.append('min_fill_area_mm2', String(settings.minFillAreaMm2))
   formData.append('min_fill_width_mm', String(settings.minFillWidthMm))
