@@ -90,7 +90,9 @@ from collections import deque
 import hashlib
 import json
 import logging
+import cv2
 from flask import Flask, request, jsonify, render_template_string
+import numpy as np
 import serial
 import time
 import threading
@@ -218,6 +220,10 @@ DEFAULT_SMALL_DETAIL_MIN_DIM_FLOOR_MM = 1.0
 DEFAULT_SMALL_DETAIL_AREA_FACTOR = 18.0
 DEFAULT_SHORT_INFILL_SEGMENT_FACTOR = 1.5
 DEFAULT_MAX_PEN_DOWN_CONNECTOR_SPACING_FACTOR = 1.4
+DEFAULT_THIN_REGION_SINGLE_STROKE_MAX_FACTOR = 1.5
+DEFAULT_NARROW_REGION_MAX_FACTOR = 3.0
+DEFAULT_COLLAPSE_OUTLINE_MAX_FACTOR = 2.0
+DEFAULT_TINY_DOT_AREA_FACTOR = 0.20
 DEFAULT_STREAMING_MODE = "buffered"
 DEFAULT_OUTLINE_PLACEMENT_MODE = "inside_edge_default"
 DEFAULT_PROJECTION_SAMPLING_MAX_SEGMENT_MM = 0.25
@@ -480,6 +486,10 @@ class HybridInfillConfig:
     thinRegionMode: ThinRegionMode = "singleStroke"
     allowOutlineOverlapForThinRegions: bool = True
     optimizePathOrder: bool = True
+    singleStrokeMaxWidthFactor: float = DEFAULT_THIN_REGION_SINGLE_STROKE_MAX_FACTOR
+    narrowRegionMaxWidthFactor: float = DEFAULT_NARROW_REGION_MAX_FACTOR
+    collapseOutlineMaxWidthFactor: float = DEFAULT_COLLAPSE_OUTLINE_MAX_FACTOR
+    tinyDotAreaFactor: float = DEFAULT_TINY_DOT_AREA_FACTOR
 
 
 @dataclass
@@ -701,13 +711,15 @@ def can_draw_connector(
 
 def choose_fill_strategy(metrics: RegionMetrics, config: HybridInfillConfig) -> FillStrategy:
     line_width_mm = max(config.lineWidthMm, 1e-9)
-    infill_spacing_mm = max(config.infillSpacingMm, line_width_mm)
-    single_stroke_width_max = line_width_mm * config.singleStrokeWidthMaxFactor
-    centerline_width_max = line_width_mm * config.centerlineWidthMaxFactor
-    detail_width_max = max(infill_spacing_mm * config.detailWidthMaxFactor, line_width_mm * config.detailMinWidthFactor)
+    single_stroke_width_max = line_width_mm * config.singleStrokeMaxWidthFactor
+    centerline_width_max = line_width_mm * config.collapseOutlineMaxWidthFactor
+    detail_width_max = line_width_mm * config.narrowRegionMaxWidthFactor
     min_usable_detail_area = max(config.minUsableDetailAreaMm2, line_width_mm * line_width_mm * 0.75)
     min_normal_fill_area = max(config.minNormalFillAreaMm2, line_width_mm * line_width_mm * 3.0)
+    tiny_dot_area_mm2 = max(1e-6, line_width_mm * line_width_mm * config.tinyDotAreaFactor)
 
+    if metrics.areaMm2 <= tiny_dot_area_mm2:
+        return "SINGLE_STROKE_DETAIL"
     if metrics.areaMm2 < min_usable_detail_area:
         return "SINGLE_STROKE_DETAIL"
     if metrics.maxLocalWidthMm <= single_stroke_width_max:
@@ -784,6 +796,55 @@ def validate_thin_region_stroke(
         except Exception:
             return False
     return True
+
+
+def estimate_toolpath_mask_coverage(
+    toolpaths: list[Toolpath],
+    *,
+    mask: Any,
+    current_to_source_matrix: tuple[float, float, float, float, float, float],
+    pen_radius_mm: float,
+    sample_step_mm: float,
+) -> dict[str, float]:
+    if mask is None:
+        return {}
+    mask_height, mask_width = mask.shape[:2]
+    selected_pixels = int(np.count_nonzero(mask))
+    if selected_pixels <= 0:
+        return {}
+    covered = np.zeros((mask_height, mask_width), dtype=np.uint8)
+    radius_px = max(1, int(round(max(0.5, pen_radius_mm))))
+    for path in toolpaths:
+        if path.kind not in {"fill-infill", "fill-wall", "outline", "detail-trace", "fill-infill-travel"} or len(path.points) < 2:
+            continue
+        for start, end in zip(path.points, path.points[1:]):
+            line = LineString([(start.x, start.y), (end.x, end.y)])
+            if line.length <= 1e-9:
+                continue
+            sample_count = max(2, int(math.ceil(line.length / max(0.01, sample_step_mm))) + 1)
+            for sample_index in range(sample_count):
+                distance_mm = min(line.length, (line.length * sample_index) / max(sample_count - 1, 1))
+                sample = line.interpolate(distance_mm)
+                source_point = apply_svg_matrix(Point(float(sample.x), float(sample.y)), current_to_source_matrix)
+                px = int(round(source_point.x))
+                py = int(round(source_point.y))
+                if 0 <= px < mask_width and 0 <= py < mask_height:
+                    cv = cv2.circle(covered, (px, py), radius_px, 255, -1)
+                    covered = cv
+    covered_pixels = int(np.count_nonzero(covered))
+    inside_covered = int(np.count_nonzero((covered > 0) & (mask > 0)))
+    outside_covered = int(np.count_nonzero((covered > 0) & (mask == 0)))
+    missed = max(0, selected_pixels - inside_covered)
+    return {
+        "selected_mask_pixels": float(selected_pixels),
+        "estimated_covered_pixels": float(inside_covered),
+        "missed_selected_pixels": float(missed),
+        "outside_mask_pixels": float(outside_covered),
+        "coverage_percent": (inside_covered / selected_pixels) * 100.0,
+        "missed_percent": (missed / selected_pixels) * 100.0,
+        "outside_overdraw_percent": (outside_covered / selected_pixels) * 100.0,
+        "covered_pixels_total": float(covered_pixels),
+    }
 
 
 @dataclass
@@ -4679,15 +4740,15 @@ def build_projected_path_debug(
         if entry.get("kind") == "travel":
             travel_preview_count += 1
         elif len(points) >= 2:
-            preview_toolpaths.append(Toolpath(
-                points=points,
-                kind=str(entry.get("kind") or "outline"),
-                closed=bool(entry.get("closed")),
-                coordinate_space="machine_deg",
-                path_id=entry.get("id"),
-                source=str(entry.get("source") or "gcode_preview"),
-                region_id=entry.get("region_id"),
-            ))
+                preview_toolpaths.append(Toolpath(
+                    points=points,
+                    kind=str(entry.get("kind") or "outline"),
+                    closed=bool(entry.get("closed")),
+                    coordinate_space=str(entry.get("coordinate_space") or "machine_deg"),
+                    path_id=entry.get("id"),
+                    source=str(entry.get("source") or "gcode_preview"),
+                    region_id=entry.get("region_id"),
+                ))
 
     rounded_projected_draw_toolpaths: list[Toolpath] = []
     for path in toolpaths_deg:
@@ -5942,6 +6003,10 @@ class SlicerService:
             thinRegionMode="singleStroke",
             allowOutlineOverlapForThinRegions=True,
             optimizePathOrder=True,
+            singleStrokeMaxWidthFactor=DEFAULT_THIN_REGION_SINGLE_STROKE_MAX_FACTOR,
+            narrowRegionMaxWidthFactor=DEFAULT_NARROW_REGION_MAX_FACTOR,
+            collapseOutlineMaxWidthFactor=DEFAULT_COLLAPSE_OUTLINE_MAX_FACTOR,
+            tinyDotAreaFactor=DEFAULT_TINY_DOT_AREA_FACTOR,
         )
 
     def _compute_region_metrics(
@@ -7816,6 +7881,34 @@ class SlicerService:
             return []
         return [Toolpath(points=points, kind=kind, closed=False)]
 
+    def _generate_tiny_dot_or_short_stroke(
+        self,
+        region: Any,
+        *,
+        line_width_mm: float,
+        tolerance_mm: float,
+        kind: str = "fill-infill",
+    ) -> list[Toolpath]:
+        if region is None or region.is_empty:
+            return []
+        center = region.representative_point()
+        cx = float(center.x)
+        cy = float(center.y)
+        probe = LineString([(cx - line_width_mm, cy), (cx + line_width_mm, cy)])
+        clipped = region.intersection(probe)
+        lines = sorted(extract_lines(clipped), key=lambda line: line.length, reverse=True)
+        if lines:
+            points = simplify_segment_points([Point(float(x), float(y)) for x, y in lines[0].coords], tolerance_mm, False)
+            if len(points) >= 2:
+                return [Toolpath(points=points, kind=kind, closed=False, metadata={"small_detail_fill_style": "tiny_short_stroke"})]
+        dot_half = max(0.03, line_width_mm * 0.15)
+        return [Toolpath(
+            points=[Point(cx - dot_half, cy), Point(cx + dot_half, cy)],
+            kind=kind,
+            closed=False,
+            metadata={"small_detail_fill_style": "tiny_dot"},
+        )]
+
     def _generate_outline_only_fallback(
         self,
         component: Any,
@@ -8266,6 +8359,14 @@ class SlicerService:
             debug["rows_with_multiple_intervals"] = int(debug.get("rows_with_multiple_intervals", 0)) + multi_interval_rows
             debug["local_cell_count"] = int(debug.get("local_cell_count", 0)) + max(1, multi_interval_rows)
         strategy = choose_fill_strategy(region_metrics, hybrid_config)
+        width_pen_units = region_metrics.maxLocalWidthMm / max(line_width_mm, 1e-9)
+        coverage_class = "wide"
+        if width_pen_units < hybrid_config.singleStrokeMaxWidthFactor:
+            coverage_class = "thin"
+        elif width_pen_units < hybrid_config.narrowRegionMaxWidthFactor:
+            coverage_class = "narrow"
+        if region_metrics.areaMm2 <= max(1e-6, line_width_mm * line_width_mm * hybrid_config.tinyDotAreaFactor):
+            coverage_class = "tiny"
         if collapsed_drawable_region and strategy != "OUTLINE_ONLY":
             strategy = "SINGLE_STROKE_DETAIL"
         if small_shape_mode == "skip" and strategy != "OUTLINE_ONLY":
@@ -8285,6 +8386,8 @@ class SlicerService:
             }.get(strategy, strategy),
             "fill_strategy": strategy,
             "classification_reason": strategy,
+            "coverage_class": coverage_class,
+            "coverage_width_pen_units": width_pen_units,
             "region_metrics": asdict(region_metrics),
             "hybrid_config": asdict(hybrid_config),
         }
@@ -8644,6 +8747,10 @@ class SlicerService:
             "adaptive_narrow_cells_detected": 0,
             "adaptive_switched_too_few_rows": 0,
             "adaptive_switched_connector_ratio": 0,
+            "thin_region_count": 0,
+            "narrow_region_count": 0,
+            "wide_region_count": 0,
+            "tiny_region_count": 0,
         }
         infill_region_debug: list[dict[str, Any]] = []
         for region_index, printable_region in enumerate(printable_regions):
@@ -8667,19 +8774,52 @@ class SlicerService:
                 min_segment_length_mm=min_segment_length_resolved_mm,
             )
             preview_region_strategy = choose_fill_strategy(preview_region_metrics, hybrid_config)
-            suppress_outline_walls = preview_region_strategy == "SINGLE_STROKE_DETAIL" and hybrid_config.thinRegionMode in {"singleStroke", "outlineOnly"}
+            measured_local_width_mm = float(preview_region_metrics.maxLocalWidthMm)
+            too_thin_for_dual_outline = measured_local_width_mm < (2.0 * line_width_mm)
+            drawable_collapsed_at_pen_radius = preview_drawable_region is None or preview_drawable_region.is_empty
+            collapse_candidate = (
+                hybrid_config.thinRegionMode in {"singleStroke", "outlineOnly"}
+                and (too_thin_for_dual_outline or drawable_collapsed_at_pen_radius)
+            )
+            outline_decision = "normal_outline"
+            outline_reason = "region_supports_dual_outline"
+            suppress_outline_walls = False
             if preview_drawable_region is None or preview_drawable_region.is_empty:
                 slicer_counts["collapsed_drawable_region_count"] += 1
-            if suppress_outline_walls:
-                slicer_counts["suppressed_wall_for_thin_region_count"] += 1
             expected_outline_inset_mm = self._resolve_outline_base_inset_mm(
                 pen_width_mm=line_width_mm,
                 outline_placement_mode=outline_placement_mode,
             )
             printable_outline_region = self._offset_polygon_into_printable_area(polygon, inset_mm=expected_outline_inset_mm)
             can_fit_outline = not printable_outline_region.is_empty
+            force_keep_outline = (
+                can_fit_outline
+                and preview_region_metrics.areaMm2 >= max(line_width_mm * line_width_mm * 6.0, 1.5)
+            )
+            suppress_outline_walls = bool(collapse_candidate and not force_keep_outline)
+            if suppress_outline_walls:
+                slicer_counts["suppressed_wall_for_thin_region_count"] += 1
+                outline_decision = "centerline_collapse"
+                if too_thin_for_dual_outline:
+                    outline_reason = "local_width_lt_2x_pen"
+                elif drawable_collapsed_at_pen_radius:
+                    outline_reason = "inset_collapse_pen_radius"
+            elif collapse_candidate and force_keep_outline:
+                outline_decision = "normal_outline"
+                outline_reason = "force_keep_drawable_non_tiny"
             if not can_fit_outline:
                 slicer_counts["outline_buffer_empty_region_count"] += 1
+                if outline_decision == "normal_outline":
+                    outline_decision = "tiny_dot"
+                    outline_reason = "outline_offset_collapses"
+            if debug is not None:
+                debug.setdefault("outline_component_decisions", []).append({
+                    "component_id": source_polygon_id,
+                    "measured_local_width_mm": measured_local_width_mm,
+                    "line_width_mm": float(line_width_mm),
+                    "decision": outline_decision,
+                    "reason": outline_reason,
+                })
             if not can_fit_outline and not thin_detail_mode:
                 continue
 
@@ -8811,6 +8951,15 @@ class SlicerService:
                     **angle_debug,
                     **hybrid_region_debug,
                 }
+                coverage_class = str(hybrid_region_debug.get("coverage_class", "wide"))
+                if coverage_class == "thin":
+                    slicer_counts["thin_region_count"] += 1
+                elif coverage_class == "narrow":
+                    slicer_counts["narrow_region_count"] += 1
+                elif coverage_class == "tiny":
+                    slicer_counts["tiny_region_count"] += 1
+                else:
+                    slicer_counts["wide_region_count"] += 1
                 debug_append_geometry(debug, "infill_regions", infill_region, "infill-region")
                 infill_paths = [
                     clone_toolpath(
@@ -8910,7 +9059,11 @@ class SlicerService:
                     )
             region_paths.extend(infill_paths)
 
-            if outline_after_fill and cleanup_outline_only_paths:
+            skip_cleanup_outline = any(
+                str(path.metadata.get("small_detail_fill_style")) in {"single_stroke_detail", "tiny_dot", "tiny_short_stroke"}
+                for path in infill_paths
+            )
+            if outline_after_fill and cleanup_outline_only_paths and not skip_cleanup_outline:
                 cleanup_paths = [
                     clone_toolpath(path, region_id=region_index)
                     for path in cleanup_outline_only_paths
@@ -8993,6 +9146,11 @@ class SlicerService:
             non_detail_paths = filter_toolpaths_by_length(non_detail_paths, min_segment_length_resolved_mm)
         thin_detail_paths = filter_toolpaths_by_length(thin_detail_paths, min_segment_length_resolved_mm)
         ordered = merge_connected_toolpaths(non_detail_paths + thin_detail_paths)
+        ordered = [
+            path
+            for path in ordered
+            if len(path.points) >= 2 and segment_length(path.points) > 1e-6
+        ]
         logger.debug(
             "Generated fill toolpaths: wall_paths=%d infill_paths=%d infill_segments=%d spacing_mm=%.4f",
             sum(1 for path in ordered if path.kind == "fill-wall"),
@@ -9030,6 +9188,18 @@ class SlicerService:
                     "small_detail_or_text": slicer_counts["small_detail_region_count"],
                     "detail_contour_cell": slicer_counts["adaptive_detail_contour_cells"],
                 },
+                "coverage_thresholds": {
+                    "single_stroke_max_width_factor": DEFAULT_THIN_REGION_SINGLE_STROKE_MAX_FACTOR,
+                    "narrow_region_max_width_factor": DEFAULT_NARROW_REGION_MAX_FACTOR,
+                    "collapse_outline_max_width_factor": DEFAULT_COLLAPSE_OUTLINE_MAX_FACTOR,
+                    "tiny_dot_area_factor": DEFAULT_TINY_DOT_AREA_FACTOR,
+                },
+                "coverage_region_counts": {
+                    "thin": slicer_counts["thin_region_count"],
+                    "narrow": slicer_counts["narrow_region_count"],
+                    "wide": slicer_counts["wide_region_count"],
+                    "tiny": slicer_counts["tiny_region_count"],
+                },
                 "adaptive_fill_counts": {
                     "total_cells": slicer_counts["adaptive_total_cells"],
                     "rectilinear_cells": slicer_counts["adaptive_rectilinear_cells"],
@@ -9041,6 +9211,22 @@ class SlicerService:
                 },
                 "regions": infill_region_debug,
             }
+            if connector_validation and isinstance(connector_validation, dict):
+                mask = connector_validation.get("mask")
+                matrix = connector_validation.get("current_to_source_matrix")
+                if mask is not None and isinstance(matrix, (tuple, list)) and len(matrix) == 6:
+                    try:
+                        coverage = estimate_toolpath_mask_coverage(
+                            ordered,
+                            mask=mask,
+                            current_to_source_matrix=tuple(float(value) for value in matrix),
+                            pen_radius_mm=max(0.01, line_width_mm * 0.5),
+                            sample_step_mm=max(0.01, min(line_width_mm * 0.35, 0.05)),
+                        )
+                    except Exception:
+                        coverage = {}
+                    if coverage:
+                        debug["coverage_validation"] = coverage
             if not debug.get("infill_connector_diagnostics"):
                 average_segments_per_cell = (float(total_candidate_segments) / float(hybrid_local_cell_count)) if hybrid_local_cell_count > 0 else 0.0
                 debug["total_infill_rows"] = max(total_estimated_rows, int(debug.get("rows_with_multiple_intervals", 0)))

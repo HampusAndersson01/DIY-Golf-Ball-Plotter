@@ -64,7 +64,18 @@ class GcodeService:
                     ))
                     current_servo = pen_down_s
                     current_pen_down = True
-                preview.append({"kind": toolpath.kind, "closed": toolpath.closed, "pen_down": True, "travel_mode": "pen_down", "points": [asdict(point) for point in pts]})
+                rounded_points = [asdict(pipeline_core._rounded_gcode_point(point)) for point in pts]
+                preview.append({
+                    "id": toolpath.path_id,
+                    "kind": toolpath.kind,
+                    "closed": toolpath.closed,
+                    "region_id": toolpath.region_id,
+                    "source": toolpath.source,
+                    "coordinate_space": toolpath.coordinate_space,
+                    "pen_down": True,
+                    "travel_mode": "pen_down",
+                    "points": rounded_points,
+                })
                 comment(f"Internal travel to {toolpath.kind} path {index}")
                 for point in pts[1:]:
                     gcode.append(f"G1 X{point.x:.4f} Y{point.y:.4f} F{travel_feed:.3f}")
@@ -96,7 +107,16 @@ class GcodeService:
                 ))
                 current_servo = pen_down_s
                 current_pen_down = True
-            preview.append({"kind": toolpath.kind, "closed": toolpath.closed, "points": [asdict(point) for point in pts]})
+            rounded_points = [asdict(pipeline_core._rounded_gcode_point(point)) for point in pts]
+            preview.append({
+                "id": toolpath.path_id,
+                "kind": toolpath.kind,
+                "closed": toolpath.closed,
+                "region_id": toolpath.region_id,
+                "source": toolpath.source,
+                "coordinate_space": toolpath.coordinate_space,
+                "points": rounded_points,
+            })
             comment(f"{toolpath.kind} path {index}, {len(pts)} points")
             for point in pts[1:]:
                 gcode.append(f"G1 X{point.x:.4f} Y{point.y:.4f} F{draw_feed:.3f}")

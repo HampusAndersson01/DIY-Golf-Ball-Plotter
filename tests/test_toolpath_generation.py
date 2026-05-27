@@ -284,9 +284,34 @@ def test_mixed_logo_routes_large_regions_and_tiny_regions_differently():
     )
 
     fill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    outline_paths = [path for path in toolpaths if path.kind == "outline"]
     assert fill_paths
+    assert outline_paths
     assert any(path.metadata.get("fill_strategy") == "RECTILINEAR_SERPENTINE" for path in fill_paths)
     assert not any(path.kind == "fill-wall" for path in toolpaths)
+
+
+def test_outline_collapse_is_conditional_not_global():
+    line_width = 0.6
+    wide = _rect(width_mm=12.0, height_mm=8.0)
+    thin = _rect(width_mm=8.0, height_mm=0.8)
+    tiny = _rect(width_mm=0.35, height_mm=0.35)
+    printable = MultiPolygon([wide, thin, tiny])
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=line_width,
+        infill_spacing_mm=line_width,
+        infill_angle_deg=0.0,
+        fill_strategy="adaptive_angle",
+        simplify_tolerance_mm=0.0,
+    )
+
+    outlines = [p for p in toolpaths if p.kind == "outline"]
+    fills = [p for p in toolpaths if p.kind == "fill-infill"]
+    assert outlines, "normal/wide regions should keep outlines"
+    assert any(p.metadata.get("small_detail_fill_style") == "single_stroke_detail" for p in fills), "thin regions should collapse to centerline"
+    assert len(outlines) < len(toolpaths), "not all regions should become outline-only"
 
 
 def test_simple_rectangle_infill_is_rectilinear_without_zigzag_connectors():

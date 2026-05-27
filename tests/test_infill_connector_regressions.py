@@ -257,6 +257,7 @@ def test_carolin_fixture_rejects_whitespace_crossing_connectors():
     result = _run_fixture(CAROLIN_FIXTURE)
     diagnostics = result["diagnostics"]
 
+    assert any(path.kind == "outline" for path in result["toolpaths"]), "Carolin should retain drawable outlines"
     assert diagnostics.get("rejected_raster_mask_sampling", 0) >= 0
     assert diagnostics.get("rejected_outside_selected_color", 0) >= 0
     assert diagnostics.get("accepted_connectors", 0) == result["accepted_connector_count"]
