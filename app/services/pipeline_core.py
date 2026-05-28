@@ -12357,7 +12357,13 @@ def generate_toolpaths(
         covered_geom = _stroke_coverage_geometry(coverage_seed, line_width_mm)
         residual_target = bundle.printable_geometry
         if covered_geom is not None and bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
-            residual_target = bundle.printable_geometry.difference(covered_geom)
+            try:
+                residual_target = bundle.printable_geometry.difference(covered_geom)
+            except Exception:
+                # Rare topology conflicts on complex mixed regions; repair and retry.
+                repaired_printable = bundle.printable_geometry.buffer(0)
+                repaired_covered = covered_geom.buffer(0)
+                residual_target = repaired_printable.difference(repaired_covered)
         if residual_target is not None and not residual_target.is_empty:
             try:
                 residual_target = residual_target.buffer(0)
@@ -12368,6 +12374,7 @@ def generate_toolpaths(
         residual_detail_candidates: list[Toolpath] = []
         min_residual_area = max(1e-6, line_width_mm * line_width_mm * 0.03)
         narrow_width_limit = line_width_mm * 1.6
+        residual_components_for_detail: list[Any] = []
         if residual_target is not None and not residual_target.is_empty:
             for residual_component in normalize_geometry(residual_target):
                 area = float(residual_component.area)
@@ -12377,10 +12384,66 @@ def generate_toolpaths(
                 local_width = min(max_x - min_x, max_y - min_y)
                 if local_width > narrow_width_limit:
                     continue
+                residual_components_for_detail.append(residual_component)
                 residual_detail_candidates.extend(_extract_centerline_for_residual(residual_component))
 
         # Also keep raster-derived detail candidates, but only if they add real residual coverage.
         residual_detail_candidates.extend(detail_paths)
+
+        component_boundary_cache: list[Any] = [component.boundary for component in residual_components_for_detail]
+
+        def _candidate_component_index(path: Toolpath) -> int | None:
+            if len(path.points) < 2:
+                return None
+            shp = LineString([(point.x, point.y) for point in path.points])
+            if shp.is_empty:
+                return None
+            best_idx: int | None = None
+            best_overlap = 0.0
+            for idx, component in enumerate(residual_components_for_detail):
+                try:
+                    overlap = float(shp.intersection(component).length)
+                except Exception:
+                    overlap = 0.0
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_idx = idx
+            return best_idx
+
+        def _candidate_centeredness(path: Toolpath, component_idx: int | None) -> float:
+            if component_idx is None or component_idx < 0 or component_idx >= len(component_boundary_cache):
+                return 0.0
+            boundary = component_boundary_cache[component_idx]
+            if boundary is None or boundary.is_empty:
+                return 0.0
+            if len(path.points) < 2:
+                return 0.0
+            samples = path.points
+            if len(samples) > 16:
+                step = max(1, int(len(samples) / 16))
+                samples = [samples[i] for i in range(0, len(samples), step)]
+            distances: list[float] = []
+            for pt in samples:
+                try:
+                    distances.append(float(ShapelyPoint(pt.x, pt.y).distance(boundary)))
+                except Exception:
+                    continue
+            if not distances:
+                return 0.0
+            return float(sum(distances) / max(1, len(distances)))
+
+        # Coverage-aware ordering: prefer centered centerline candidates first so
+        # later overlaps are treated as duplicates, not independent fragments.
+        scored_candidates: list[tuple[float, float, float, Toolpath]] = []
+        for candidate in residual_detail_candidates:
+            comp_idx = _candidate_component_index(candidate)
+            centeredness = _candidate_centeredness(candidate, comp_idx)
+            length = segment_length(candidate.points) if len(candidate.points) >= 2 else 0.0
+            src = str(candidate.source or "")
+            source_bias = 1.0 if src == "residual_centerline" else 0.0
+            scored_candidates.append((source_bias, centeredness, length, candidate))
+        scored_candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        residual_detail_candidates = [item[3] for item in scored_candidates]
 
         accepted_detail_paths: list[Toolpath] = []
         accepted_detail_footprints: list[Any] = []
@@ -12429,6 +12492,18 @@ def generate_toolpaths(
             if gain_ratio < min_detail_coverage_gain_ratio:
                 rejected_detail_paths.append(candidate)
                 continue
+            overlap_area = float(stroke.intersection(accepted_detail_coverage).area) if accepted_detail_coverage is not None and not accepted_detail_coverage.is_empty else 0.0
+            overlap_ratio = overlap_area / max(1e-9, float(stroke.area))
+            component_idx = _candidate_component_index(candidate)
+            centeredness = _candidate_centeredness(candidate, component_idx)
+            # Suppress redundant near-parallel traces in narrow corridors when a
+            # single pen-width-aware centerline already covers the area.
+            candidate_source = str(candidate.source or "")
+            is_narrow_component = component_idx is not None
+            is_centerline_like = candidate_source in {"residual_centerline", "detail_merge_connector", "detail_continuation"} or bool(candidate.metadata.get("detail_source") == "residual_centerline")
+            if is_narrow_component and is_centerline_like and overlap_ratio >= 0.82 and centeredness <= (line_width_mm * 0.42):
+                rejected_detail_paths.append(candidate)
+                continue
             if validate_detail_with_pen_footprint:
                 overspill_ok = overspill_ratio <= max_detail_overspill_area_ratio and protrusion_mm <= max_detail_overspill_mm
                 if not overspill_ok:
@@ -12459,6 +12534,8 @@ def generate_toolpaths(
                     "detail_overspill_area_mm2": overspill_area,
                     "detail_overspill_area_ratio": overspill_ratio,
                     "detail_max_protrusion_mm": protrusion_mm,
+                    "detail_overlap_ratio_with_accepted": overlap_ratio,
+                    "detail_centeredness_mm": centeredness,
                 },
             ))
             accepted_detail_coverage = accepted_detail_coverage.union(stroke)
