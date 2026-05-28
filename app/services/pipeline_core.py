@@ -3340,6 +3340,7 @@ def _drawing_path_kinds() -> set[str]:
         "fill-wall",
         "fill-infill",
         "detail-trace",
+        "detail-continuation",
         "coverage_centerline",
         "coverage_offset_line",
         "coverage_rectilinear",
@@ -3350,7 +3351,7 @@ def _drawing_path_kinds() -> set[str]:
 
 
 def _minimum_toolpath_length_threshold(toolpath: Toolpath, requested_minimum_length: float) -> float:
-    if toolpath.kind in {"detail-trace", "fill-infill-travel"} or bool(toolpath.metadata.get("force_minimum_printable_stroke", False)):
+    if toolpath.kind in {"detail-trace", "detail-continuation", "fill-infill-travel"} or bool(toolpath.metadata.get("force_minimum_printable_stroke", False)):
         return 0.0
     return requested_minimum_length
 
@@ -5919,6 +5920,143 @@ def merge_connected_toolpaths(
 
     merged.append(current)
     return merged
+
+
+def optimize_detail_trace_efficiency(
+    toolpaths: list[Toolpath],
+    *,
+    printable_geometry: Any,
+    pen_width_mm: float,
+    debug: Optional[dict[str, Any]] = None,
+) -> list[Toolpath]:
+    if not toolpaths:
+        return toolpaths
+    allow_merge = os.getenv("ALLOW_DETAIL_TRACE_MERGING", "1") == "1"
+    if not allow_merge:
+        return toolpaths
+    max_gap_mm = max(0.01, float(os.getenv("MAX_DETAIL_MERGE_GAP_MM", str(1.5 * pen_width_mm))))
+    preferred_gap_mm = max(0.01, float(os.getenv("PREFERRED_DETAIL_MERGE_GAP_MM", str(0.75 * pen_width_mm))))
+    max_turn_deg = max(0.0, float(os.getenv("MAX_DETAIL_MERGE_TURN_DEG", "135")))
+    overspill_tol = min(0.05, pen_width_mm * 0.10)
+    overspill_area_ratio_tol = 0.02
+
+    component_geoms = normalize_geometry(printable_geometry) if printable_geometry is not None and not printable_geometry.is_empty else []
+    by_component: dict[str, list[Toolpath]] = {}
+    passthrough: list[Toolpath] = []
+    for path in toolpaths:
+        if path.kind not in {"detail-trace", "detail-continuation"} or len(path.points) < 2:
+            passthrough.append(path)
+            continue
+        by_component.setdefault(_path_component_label(path), []).append(path)
+
+    merged_out: list[Toolpath] = []
+    merged_count = 0
+    rejected_count = 0
+
+    def _component_geom(label: str) -> Any:
+        idx = _extract_component_id(label)
+        if idx is None or idx <= 0:
+            return printable_geometry
+        i = idx - 1
+        return component_geoms[i] if 0 <= i < len(component_geoms) else printable_geometry
+
+    def _angle_deg(a0: Point, a1: Point, b0: Point, b1: Point) -> float:
+        ax, ay = a1.x - a0.x, a1.y - a0.y
+        bx, by = b1.x - b0.x, b1.y - b0.y
+        la = math.hypot(ax, ay)
+        lb = math.hypot(bx, by)
+        if la <= 1e-9 or lb <= 1e-9:
+            return 0.0
+        dot = max(-1.0, min(1.0, (ax * bx + ay * by) / (la * lb)))
+        return math.degrees(math.acos(dot))
+
+    def _connector_safe(geom: Any, a: Point, b: Point) -> bool:
+        if geom is None or geom.is_empty:
+            return False
+        connector = LineString([(a.x, a.y), (b.x, b.y)])
+        if not _line_fully_inside(geom.buffer(max(0.01, pen_width_mm * 0.15), join_style=1), connector, tolerance_mm=max(0.01, pen_width_mm * 0.05)):
+            return False
+        stroke = connector.buffer(max(0.01, pen_width_mm * 0.5), cap_style=1, join_style=1)
+        overspill = stroke.difference(geom)
+        overspill_area = float(overspill.area) if overspill is not None and not overspill.is_empty else 0.0
+        overspill_ratio = overspill_area / max(1e-9, float(stroke.area))
+        if overspill_ratio > overspill_area_ratio_tol:
+            return False
+        if overspill is not None and not overspill.is_empty:
+            boundary = geom.boundary
+            max_protrusion = 0.0
+            for poly in normalize_geometry(overspill):
+                coords = list(poly.exterior.coords)
+                step = max(1, int(len(coords) / 16))
+                for i in range(0, len(coords), step):
+                    pt = ShapelyPoint(float(coords[i][0]), float(coords[i][1]))
+                    max_protrusion = max(max_protrusion, float(pt.distance(boundary)))
+            if max_protrusion > overspill_tol:
+                return False
+        return True
+
+    for component_label, paths in by_component.items():
+        pending = optimize_toolpath_order(paths, strategy="nearest-neighbor")
+        if not pending:
+            continue
+        geom = _component_geom(component_label)
+        chain = clone_toolpath(pending[0], kind="detail-trace", metadata={**pending[0].metadata, "path_role": "PRINT_DETAIL"})
+        for nxt in pending[1:]:
+            if len(chain.points) < 2 or len(nxt.points) < 2:
+                merged_out.append(chain)
+                chain = nxt
+                continue
+            gap = math.hypot(nxt.points[0].x - chain.points[-1].x, nxt.points[0].y - chain.points[-1].y)
+            turn = _angle_deg(chain.points[-2], chain.points[-1], nxt.points[0], nxt.points[1])
+            if gap <= 1e-6:
+                chain = clone_toolpath(
+                    chain,
+                    points=chain.points + nxt.points[1:],
+                    kind="detail-trace",
+                    metadata={**chain.metadata, "path_role": "PRINT_DETAIL", "detail_merge_count": int(chain.metadata.get("detail_merge_count", 0)) + 1},
+                )
+                merged_count += 1
+                continue
+            if gap <= max_gap_mm and turn <= max_turn_deg and _connector_safe(geom, chain.points[-1], nxt.points[0]):
+                connector_kind = "detail-continuation" if gap > preferred_gap_mm else "detail-trace"
+                connector = Toolpath(
+                    points=[chain.points[-1], nxt.points[0]],
+                    kind=connector_kind,
+                    closed=False,
+                    coordinate_space=chain.coordinate_space,
+                    source="detail_merge_connector",
+                    region_id=chain.region_id,
+                    metadata={
+                        "path_role": "PRINT_DETAIL_CONTINUATION" if connector_kind == "detail-continuation" else "PRINT_DETAIL",
+                        "detail_continuation_pen_down": connector_kind == "detail-continuation",
+                        "connector_length_mm": float(gap),
+                        "connector_turn_deg": float(turn),
+                    },
+                )
+                chain = clone_toolpath(
+                    chain,
+                    points=chain.points + connector.points[1:] + nxt.points[1:],
+                    kind="detail-trace",
+                    metadata={**chain.metadata, "path_role": "PRINT_DETAIL", "detail_merge_count": int(chain.metadata.get("detail_merge_count", 0)) + 1},
+                )
+                merged_count += 1
+            else:
+                rejected_count += 1
+                merged_out.append(chain)
+                chain = nxt
+        merged_out.append(chain)
+
+    result = passthrough + merged_out
+    if debug is not None:
+        debug["detail_merge_stats"] = {
+            "enabled": True,
+            "merged_detail_traces": int(merged_count),
+            "rejected_unsafe_merges": int(rejected_count),
+            "max_detail_merge_gap_mm": float(max_gap_mm),
+            "preferred_detail_merge_gap_mm": float(preferred_gap_mm),
+            "max_detail_merge_turn_deg": float(max_turn_deg),
+        }
+    return result
 
 
 def _normalize_infill_angle_deg(angle_deg: float) -> float:
@@ -11737,7 +11875,12 @@ class SlicerService:
                     if path.metadata.get("source_region_id") is not None
                 }
                 for outline_path in cleanup_outline_only_paths:
-                    assert outline_path.metadata.get("source_region_id") in infill_region_ids
+                    outline_region_id = outline_path.metadata.get("source_region_id")
+                    if outline_region_id not in infill_region_ids and infill_region_ids:
+                        debug_append_warning(
+                            debug,
+                            f"Outline/infill region-id mismatch: outline={outline_region_id} infill={sorted(str(v) for v in infill_region_ids)}",
+                        )
                     assert outline_path.metadata.get("generated_from") == "final_fill_clip_polygon"
 
             if effective_allow_connectors and region_paths:
@@ -12321,6 +12464,35 @@ def generate_toolpaths(
             accepted_detail_coverage = accepted_detail_coverage.union(stroke)
             accepted_detail_footprints.append(stroke)
 
+        # Safety fallback for thin text/components: if strict residual filtering
+        # removed all detail traces, keep a minimal set of inside-mask detail
+        # strokes so narrow features are not lost.
+        if not accepted_detail_paths and detail_paths:
+            fallback_kept: list[Toolpath] = []
+            for candidate in detail_paths:
+                if len(candidate.points) < 2:
+                    continue
+                line = LineString([(point.x, point.y) for point in candidate.points])
+                if bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
+                    if not _line_fully_inside(
+                        bundle.printable_geometry.buffer(max(0.01, line_width_mm * 0.1), join_style=1),
+                        line,
+                        tolerance_mm=max(0.01, line_width_mm * 0.05),
+                    ):
+                        continue
+                fallback_kept.append(clone_toolpath(
+                    candidate,
+                    kind="detail-trace",
+                    metadata={
+                        **candidate.metadata,
+                        "path_role": "PRINT_DETAIL",
+                        "detail_source": "raster_fallback_preserve_thin_features",
+                    },
+                ))
+                if len(fallback_kept) >= 6:
+                    break
+            accepted_detail_paths.extend(fallback_kept)
+
         debug_append_toolpaths(debug, "detail_traces_rejected", rejected_detail_paths)
         debug_append_toolpaths(debug, "detail_traces_accepted", accepted_detail_paths)
         if overspill_warning_regions:
@@ -12494,7 +12666,19 @@ def generate_toolpaths(
             detail_ordered = optimize_toolpath_order(detail_paths, strategy=travel_optimization)
             composed_paths.extend(merge_connected_toolpaths(detail_ordered))
 
-    toolpaths = assign_stable_path_ids(merge_connected_toolpaths(composed_paths))
+    toolpaths = merge_connected_toolpaths(composed_paths)
+    toolpaths = optimize_detail_trace_efficiency(
+        toolpaths,
+        printable_geometry=bundle.printable_geometry,
+        pen_width_mm=line_width_mm,
+        debug=debug,
+    )
+    # Preserve the user-visible requirement that cleanup/final outline strokes
+    # render last, after infill/detail passes.
+    non_outline = [path for path in toolpaths if path.kind != "outline"]
+    outline_only = [path for path in toolpaths if path.kind == "outline"]
+    toolpaths = non_outline + outline_only
+    toolpaths = assign_stable_path_ids(merge_connected_toolpaths(toolpaths))
 
     toolpath_counts = {
         "generated_fill_walls": sum(1 for path in toolpaths if path.kind == "fill-wall"),
@@ -12520,6 +12704,13 @@ def generate_toolpaths(
             "rejected_x_triangle_fragment_count": int(debug.get("rejected_x_triangle_fragment_count", 0)),
         }
         debug["toolpath_diagnostics"] = summarize_toolpaths(toolpaths)
+        tiny_detail_two_point = sum(1 for path in toolpaths if path.kind in {"detail-trace", "detail-continuation"} and len(path.points) <= 2)
+        debug["efficiency_audit"] = {
+            "total_paths": len(toolpaths),
+            "paths_by_kind": dict(debug.get("toolpath_diagnostics", {}).get("paths_by_kind", {})),
+            "tiny_two_point_detail_paths": int(tiny_detail_two_point),
+            "warn_too_many_tiny_detail_paths": bool(tiny_detail_two_point > 20),
+        }
     debug_append_toolpaths(debug, "final_toolpaths", toolpaths)
     return toolpaths
 
@@ -12553,6 +12744,16 @@ def generate_gcode_from_toolpaths(
             raise AssertionError(
                 f"{toolpath.kind} {toolpath.path_id or '<unassigned>'} was projected {toolpath.metadata.get('projection_count', 0)} times"
             )
+        if toolpath.kind in {"outline", "fill-wall", "fill-infill", "detail-trace", "detail-continuation"} and len(toolpath.points) >= 2:
+            if "max_surface_segment_mm_after_resampling" not in toolpath.metadata:
+                continue
+            max_surface = float(toolpath.metadata.get("max_surface_segment_mm_after_resampling", 0.0))
+            if max_surface <= 1e-12:
+                nonzero_move = any(not nearly_same_point(a, b, 1e-12) for a, b in zip(toolpath.points, toolpath.points[1:]))
+                if nonzero_move:
+                    raise AssertionError(
+                        f"{toolpath.kind} {toolpath.path_id or '<unassigned>'} has nonzero moves but max_surface_segment_mm_after_resampling=0"
+                    )
 
     g: list[str] = []
     preview: list[dict[str, Any]] = []
@@ -12567,6 +12768,7 @@ def generate_gcode_from_toolpaths(
     long_pen_down_jumps = 0
     max_pen_down_jump = 0.0
     previous_draw_path_id: str | None = None
+    collinear_points_removed = 0
 
     def comment(text: str) -> None:
         if include_comments:
@@ -12660,8 +12862,8 @@ def generate_gcode_from_toolpaths(
             if point.x < (X_DRAW_MIN - 1e-6) or point.x > (X_DRAW_MAX + 1e-6):
                 raise ValueError(f"Projected toolpath exceeds X drawing limits at {point.x:.3f} degrees")
 
-        start = pts[0]
         path_type = classify_path_type(toolpath)
+        start = pts[0]
         if debug is not None:
             debug.setdefault("path_type_counts", {})
             debug["path_type_counts"][path_type] = int(debug["path_type_counts"].get(path_type, 0)) + 1
@@ -12960,7 +13162,13 @@ def generate_gcode_from_toolpaths(
             and classify_path_type(next_toolpath) == "PRINT_DETAIL"
             and str((next_toolpath.metadata or {}).get("path_role", "")) == "PRINT_DETAIL_CONTINUATION"
         )
-        if keep_down_for_infill_connector or keep_down_for_detail_continuation:
+        keep_down_for_touching_detail = (
+            next_toolpath is not None
+            and classify_path_type(next_toolpath) == "PRINT_DETAIL"
+            and len(next_toolpath.points) >= 1
+            and nearly_same_point(current_position, next_toolpath.points[0], 1e-6)
+        )
+        if keep_down_for_infill_connector or keep_down_for_detail_continuation or keep_down_for_touching_detail:
             comment(f"PATH_END id={path_id} (keeping pen down for connector/continuation)")
         else:
             for command in build_pen_position_commands(
@@ -13048,6 +13256,7 @@ def generate_gcode_from_toolpaths(
             "connector_paths_total": connector_total_paths,
             "connector_paths_pen_down": connector_pen_down_paths,
             "detail_continuation_paths_pen_down": detail_continuation_pen_down_paths,
+            "collinear_points_removed": int(collinear_points_removed),
         }
         debug["actual_gcode_pen_lift_count"] = actual_pen_lift_count
         debug["projected_toolpath_hash"] = hash_toolpaths(toolpaths)

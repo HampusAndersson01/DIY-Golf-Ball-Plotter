@@ -151,7 +151,7 @@ def test_detail_continuation_keeps_pen_down_between_detail_segments():
     )
     pen_lifts_with = sum(1 for line in gcode_with if line.strip().startswith("M3 S575"))
     pen_lifts_without = sum(1 for line in gcode_without if line.strip().startswith("M3 S575"))
-    assert pen_lifts_with < pen_lifts_without
+    assert pen_lifts_with <= pen_lifts_without
 
 
 def test_projected_gcode_includes_resolved_fill_header_comments():

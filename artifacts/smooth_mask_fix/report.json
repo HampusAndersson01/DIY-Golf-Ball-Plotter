@@ -1,0 +1,24 @@
+{
+  "runtime_s": {
+    "raster_extract": 0.128,
+    "toolpath": 68.24,
+    "projection": 0.007,
+    "gcode": 0.026,
+    "total": 68.4
+  },
+  "pen_lifts": 63,
+  "geometry_quality": {
+    "source_mode": "raster",
+    "trace_supersample": 4,
+    "contour_smoothing_px": 0.75,
+    "curve_fit_tolerance_px": 0.35,
+    "input_simplify_tolerance_px": 0.5,
+    "effective_simplify_tolerance_px": 0.35,
+    "contour_vertices_raw": 6111,
+    "contour_vertices_smoothed": 285,
+    "trace_chain_mode": "CHAIN_APPROX_NONE",
+    "preview_source": "smoothed_printable_geometry"
+  },
+  "detail_continuation_accepted": 14,
+  "outline_last": true
+}
