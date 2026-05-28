@@ -1360,6 +1360,32 @@ def test_narrow_c_like_residual_prefers_clean_centerline_detail_trace():
         if chord <= 1e-6:
             continue
         assert segment_length(path.points) / chord < 3.0
+    if detail_paths:
+        assert any((path.metadata or {}).get("path_role") in {"PRINT_DETAIL", "PRINT_DETAIL_EDGE"} for path in detail_paths)
+
+
+def test_detail_trace_footprint_validation_limits_overspill_and_allows_outline_overlap():
+    outer = Polygon([(0.0, 0.0), (14.0, 0.0), (14.0, 8.0), (0.0, 8.0)])
+    cut = Polygon([(4.0, 1.0), (14.0, 1.0), (14.0, 7.0), (4.0, 7.0)])
+    printable = outer.difference(cut)
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        infill_angle_deg=0.0,
+        fill_strategy="adaptive_angle",
+        outline_after_fill=True,
+        simplify_tolerance_mm=0.02,
+    )
+    detail_paths = [p for p in toolpaths if p.kind == "detail-trace"]
+    for path in detail_paths:
+        md = path.metadata or {}
+        if "detail_overspill_area_ratio" in md:
+            assert float(md["detail_overspill_area_ratio"]) <= 0.05
+        if "detail_max_protrusion_mm" in md:
+            assert float(md["detail_max_protrusion_mm"]) <= 0.08
+
+
 
 
 def test_straight_horizontal_bar_uses_simple_long_strokes_with_few_pen_lifts():

@@ -66,6 +66,7 @@ RUNTIME_KEYS = [
     "DEFAULT_MIN_SEGMENT_LENGTH_MM",
     "DEFAULT_TRAVEL_OPTIMIZATION",
     "DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS",
+    "DEFAULT_ALLOW_DETAIL_PEN_DOWN_CONTINUATION",
     "DEFAULT_INFILL_PATH_MODE",
     "DEFAULT_THIN_REGION_SINGLE_STROKE_MAX_FACTOR",
     "DEFAULT_NARROW_REGION_MAX_FACTOR",
@@ -222,6 +223,7 @@ DEFAULT_THIN_DETAIL_OVERLAP = True
 DEFAULT_MIN_SEGMENT_LENGTH_MM = 0.5
 DEFAULT_TRAVEL_OPTIMIZATION = "nearest-neighbor"
 DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS = False
+DEFAULT_ALLOW_DETAIL_PEN_DOWN_CONTINUATION = True
 DEFAULT_INFILL_PATH_MODE = "rectilinear"
 DEFAULT_LONG_THIN_INFILL_ASPECT_RATIO = 3.0
 DEFAULT_SMALL_DETAIL_MIN_DIM_FACTOR = 4.0
@@ -236,6 +238,10 @@ DEFAULT_TINY_DOT_AREA_FACTOR = 0.20
 DEFAULT_SINGLE_STROKE_WIDTH_MAX_FACTOR = 1.15
 DEFAULT_CENTERLINE_WIDTH_MAX_FACTOR = 1.5
 DEFAULT_DETAIL_WIDTH_MAX_FACTOR = 2.5
+DEFAULT_MAX_DETAIL_CONTINUATION_LENGTH_FACTOR = 4.0
+DEFAULT_PREFERRED_DETAIL_CONTINUATION_LENGTH_FACTOR = 2.0
+DEFAULT_MAX_DETAIL_CONTINUATION_OVERSPILL_AREA_RATIO = 0.02
+DEFAULT_MAX_DETAIL_CONTINUATION_TURN_DEG = 120.0
 DEFAULT_STREAMING_MODE = "buffered"
 DEFAULT_OUTLINE_PLACEMENT_MODE = "inside_edge_default"
 DEFAULT_PROJECTION_SAMPLING_MAX_SEGMENT_MM = 0.25
@@ -12195,9 +12201,16 @@ def generate_toolpaths(
                 metadata={"path_role": "PRINT_DETAIL", "detail_source": "residual_centerline"},
             )]
 
-        # Residual target for detail traces: target - coverage(outline + infill).
+        allow_detail_overlap_outline = os.getenv("ALLOW_DETAIL_OVERLAP_OUTLINE", "1") == "1"
+        validate_detail_with_pen_footprint = os.getenv("DETAIL_VALIDATE_WITH_PEN_FOOTPRINT", "1") == "1"
+        max_detail_overspill_mm = min(0.05, line_width_mm * 0.10, max(0.0, float(os.getenv("MAX_DETAIL_OVERSPILL_MM", "0.05"))))
+        max_detail_overspill_area_ratio = max(0.0, float(os.getenv("MAX_DETAIL_OVERSPILL_AREA_RATIO", "0.03")))
+        min_detail_coverage_gain_ratio = max(0.0, float(os.getenv("MIN_DETAIL_COVERAGE_GAIN_RATIO", "0.15")))
+
+        # Residual target for detail traces: target - coverage(main infill only).
+        # Outline is not a hard boundary for detail traces.
         final_outline_paths = _build_clean_final_outline_paths()
-        coverage_seed = list(interior_paths) + list(final_outline_paths)
+        coverage_seed = [path for path in interior_paths if path.kind == "fill-infill"]
         covered_geom = _stroke_coverage_geometry(coverage_seed, line_width_mm)
         residual_target = bundle.printable_geometry
         if covered_geom is not None and bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
@@ -12227,11 +12240,14 @@ def generate_toolpaths(
         residual_detail_candidates.extend(detail_paths)
 
         accepted_detail_paths: list[Toolpath] = []
+        accepted_detail_footprints: list[Any] = []
         accepted_detail_coverage = _stroke_coverage_geometry([], line_width_mm)
         if accepted_detail_coverage is None:
             accepted_detail_coverage = Polygon()
         rejected_detail_paths: list[Toolpath] = []
         base_coverage = covered_geom if covered_geom is not None else Polygon()
+        base_boundary = bundle.printable_geometry.boundary if (bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty) else None
+        overspill_warning_regions: list[Any] = []
         for candidate in residual_detail_candidates:
             if len(candidate.points) < 2:
                 continue
@@ -12240,28 +12256,234 @@ def generate_toolpaths(
                 continue
             line = LineString([(point.x, point.y) for point in candidate.points])
             stroke = line.buffer(max(0.01, line_width_mm * 0.5), cap_style=1, join_style=1)
+            overspill = None
+            overspill_area = 0.0
+            overspill_ratio = 0.0
+            protrusion_mm = 0.0
+            if bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
+                overspill = stroke.difference(bundle.printable_geometry)
+                overspill_area = float(overspill.area) if overspill is not None and not overspill.is_empty else 0.0
+                denom = max(1e-9, float(stroke.area))
+                overspill_ratio = overspill_area / denom
+                if overspill is not None and not overspill.is_empty and base_boundary is not None:
+                    max_d = 0.0
+                    for poly in normalize_geometry(overspill):
+                        coords = list(poly.exterior.coords)
+                        sample_step = max(1, int(len(coords) / 32))
+                        for idx in range(0, len(coords), sample_step):
+                                pt = ShapelyPoint(float(coords[idx][0]), float(coords[idx][1]))
+                                max_d = max(max_d, float(pt.distance(base_boundary)))
+                    protrusion_mm = max_d
             uncovered_gain = stroke.difference(base_coverage.union(accepted_detail_coverage))
             gain_area = float(uncovered_gain.area) if uncovered_gain is not None and not uncovered_gain.is_empty else 0.0
             if gain_area < max(min_residual_area, line_width_mm * line_width_mm * 0.06):
                 rejected_detail_paths.append(candidate)
                 continue
+            if gain_area <= 1e-9:
+                rejected_detail_paths.append(candidate)
+                continue
+            gain_ratio = gain_area / max(1e-9, float(stroke.area))
+            if gain_ratio < min_detail_coverage_gain_ratio:
+                rejected_detail_paths.append(candidate)
+                continue
+            if validate_detail_with_pen_footprint:
+                overspill_ok = overspill_ratio <= max_detail_overspill_area_ratio and protrusion_mm <= max_detail_overspill_mm
+                if not overspill_ok:
+                    if overspill is not None and not overspill.is_empty:
+                        overspill_warning_regions.append(overspill)
+                    rejected_detail_paths.append(candidate)
+                    continue
             # Reject noisy zig-zag-like tiny loops.
             chord = math.hypot(candidate.points[-1].x - candidate.points[0].x, candidate.points[-1].y - candidate.points[0].y)
             if chord > 1e-6 and (segment_length(candidate.points) / chord) > 4.0 and len(candidate.points) > 12:
                 rejected_detail_paths.append(candidate)
                 continue
+            is_edge_detail = False
+            if allow_detail_overlap_outline and base_boundary is not None:
+                try:
+                    is_edge_detail = float(line.distance(base_boundary)) <= (line_width_mm * 0.7)
+                except Exception:
+                    is_edge_detail = False
             accepted_detail_paths.append(clone_toolpath(
                 candidate,
                 kind="detail-trace",
-                metadata={**candidate.metadata, "path_role": "PRINT_DETAIL", "residual_gain_area_mm2": gain_area},
+                metadata={
+                    **candidate.metadata,
+                    "path_role": "PRINT_DETAIL_EDGE" if is_edge_detail else "PRINT_DETAIL",
+                    "detail_overlap_outline_allowed": bool(allow_detail_overlap_outline),
+                    "detail_validate_with_pen_footprint": bool(validate_detail_with_pen_footprint),
+                    "residual_gain_area_mm2": gain_area,
+                    "detail_overspill_area_mm2": overspill_area,
+                    "detail_overspill_area_ratio": overspill_ratio,
+                    "detail_max_protrusion_mm": protrusion_mm,
+                },
             ))
             accepted_detail_coverage = accepted_detail_coverage.union(stroke)
+            accepted_detail_footprints.append(stroke)
 
         debug_append_toolpaths(debug, "detail_traces_rejected", rejected_detail_paths)
         debug_append_toolpaths(debug, "detail_traces_accepted", accepted_detail_paths)
+        if overspill_warning_regions:
+            debug_append_geometry(debug, "detail_overspill_warning_regions", unary_union(overspill_warning_regions), "detail-overspill-warning")
+        if accepted_detail_footprints:
+            debug_append_geometry(debug, "detail_pen_footprints", unary_union(accepted_detail_footprints), "detail-pen-footprint")
+
+        allow_detail_pen_down_continuation = os.getenv("ALLOW_DETAIL_PEN_DOWN_CONTINUATION", "1") == "1"
+        max_detail_continuation_length_mm = max(
+            line_width_mm * 0.5,
+            float(os.getenv("MAX_DETAIL_CONTINUATION_LENGTH_MM", str(4.0 * line_width_mm))),
+        )
+        preferred_detail_continuation_length_mm = max(
+            line_width_mm * 0.25,
+            float(os.getenv("PREFERRED_DETAIL_CONTINUATION_LENGTH_MM", str(2.0 * line_width_mm))),
+        )
+        max_detail_continuation_overspill_mm = min(
+            max_detail_overspill_mm,
+            max(0.0, float(os.getenv("MAX_DETAIL_CONTINUATION_OVERSPILL_MM", str(max_detail_overspill_mm)))),
+        )
+        max_detail_continuation_overspill_area_ratio = max(
+            0.0,
+            float(os.getenv("MAX_DETAIL_CONTINUATION_OVERSPILL_AREA_RATIO", "0.02")),
+        )
+        max_detail_continuation_turn_deg = max(
+            0.0,
+            float(os.getenv("MAX_DETAIL_CONTINUATION_TURN_DEG", "120")),
+        )
+
+        detail_ordered = optimize_toolpath_order(accepted_detail_paths, strategy=travel_optimization) if accepted_detail_paths else []
+        if allow_detail_pen_down_continuation and len(detail_ordered) > 1 and bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
+            component_geoms = normalize_geometry(bundle.printable_geometry)
+
+            def _component_index_for_point(pt: Point) -> int | None:
+                shp = ShapelyPoint(pt.x, pt.y)
+                for idx, geom in enumerate(component_geoms):
+                    try:
+                        if geom.covers(shp):
+                            return idx
+                    except Exception:
+                        continue
+                return None
+
+            def _path_component_index(path: Toolpath) -> int | None:
+                md_component = path.metadata.get("source_component_id")
+                parsed = _extract_component_id(md_component)
+                if parsed is not None:
+                    return max(0, parsed - 1)
+                return _component_index_for_point(path.points[0])
+
+            def _turn_angle_deg(prev: list[Point], nxt: list[Point]) -> float:
+                if len(prev) < 2 or len(nxt) < 2:
+                    return 0.0
+                ax = prev[-1].x - prev[-2].x
+                ay = prev[-1].y - prev[-2].y
+                bx = nxt[1].x - nxt[0].x
+                by = nxt[1].y - nxt[0].y
+                la = math.hypot(ax, ay)
+                lb = math.hypot(bx, by)
+                if la <= 1e-9 or lb <= 1e-9:
+                    return 0.0
+                dot = max(-1.0, min(1.0, (ax * bx + ay * by) / (la * lb)))
+                return math.degrees(math.acos(dot))
+
+            def _connector_pen_safe(connector: LineString, component_idx: int | None) -> tuple[bool, float, float]:
+                stroke = connector.buffer(max(0.01, line_width_mm * 0.5), cap_style=1, join_style=1)
+                target = component_geoms[component_idx] if component_idx is not None and 0 <= component_idx < len(component_geoms) else bundle.printable_geometry
+                if target is None or target.is_empty:
+                    return False, 1.0, max_detail_continuation_overspill_mm + 1.0
+                overspill = stroke.difference(target)
+                overspill_area = float(overspill.area) if overspill is not None and not overspill.is_empty else 0.0
+                overspill_ratio = overspill_area / max(1e-9, float(stroke.area))
+                protrusion_mm = 0.0
+                if overspill is not None and not overspill.is_empty:
+                    boundary = target.boundary
+                    for poly in normalize_geometry(overspill):
+                        coords = list(poly.exterior.coords)
+                        sample_step = max(1, int(len(coords) / 24))
+                        for idx in range(0, len(coords), sample_step):
+                            pt = ShapelyPoint(float(coords[idx][0]), float(coords[idx][1]))
+                            protrusion_mm = max(protrusion_mm, float(pt.distance(boundary)))
+                safe = (
+                    overspill_ratio <= max_detail_continuation_overspill_area_ratio
+                    and protrusion_mm <= max_detail_continuation_overspill_mm
+                    and _line_fully_inside(target.buffer(max(0.01, line_width_mm * 0.15), join_style=1), connector, tolerance_mm=max(0.01, line_width_mm * 0.05))
+                )
+                return safe, overspill_ratio, protrusion_mm
+
+            chained_paths: list[Toolpath] = []
+            accepted_continuations: list[Toolpath] = []
+            rejected_continuations: list[Toolpath] = []
+            continuation_pen_footprints: list[Any] = []
+            for idx, path in enumerate(detail_ordered):
+                if not chained_paths:
+                    chained_paths.append(path)
+                    continue
+                current = chained_paths[-1]
+                next_path = path
+                same_component = _path_component_index(current) == _path_component_index(next_path)
+                if not same_component:
+                    chained_paths.append(next_path)
+                    continue
+                end = current.points[-1]
+                start = next_path.points[0]
+                gap = math.hypot(start.x - end.x, start.y - end.y)
+                if gap <= 1e-6:
+                    chained_paths.append(next_path)
+                    continue
+                connector = LineString([(end.x, end.y), (start.x, start.y)])
+                angle = _turn_angle_deg(current.points, next_path.points)
+                short_enough = gap <= max_detail_continuation_length_mm + 1e-9
+                smooth_enough = angle <= max_detail_continuation_turn_deg + 1e-9
+                safe, overspill_ratio, protrusion_mm = _connector_pen_safe(connector, _path_component_index(current))
+                score = (
+                    1.0
+                    - (gap / max(1e-9, preferred_detail_continuation_length_mm))
+                    - (angle / 180.0)
+                    - (overspill_ratio * 10.0)
+                )
+                if short_enough and smooth_enough and safe and score > -1.2:
+                    connector_tp = Toolpath(
+                        points=[end, start],
+                        kind="detail-continuation",
+                        closed=False,
+                        source="detail_continuation",
+                        metadata={
+                            "path_role": "PRINT_DETAIL_CONTINUATION",
+                            "detail_continuation_pen_down": True,
+                            "connector_length_mm": float(gap),
+                            "connector_turn_deg": float(angle),
+                            "connector_overspill_area_ratio": float(overspill_ratio),
+                            "connector_max_protrusion_mm": float(protrusion_mm),
+                            "connector_score": float(score),
+                        },
+                    )
+                    accepted_continuations.append(connector_tp)
+                    continuation_pen_footprints.append(connector.buffer(max(0.01, line_width_mm * 0.5), cap_style=1, join_style=1))
+                    chained_paths.append(connector_tp)
+                    chained_paths.append(next_path)
+                else:
+                    rejected_continuations.append(Toolpath(
+                        points=[end, start],
+                        kind="travel",
+                        closed=False,
+                        source="detail_continuation_rejected",
+                        metadata={
+                            "path_role": "TRAVEL",
+                            "detail_continuation_rejected": True,
+                            "connector_length_mm": float(gap),
+                            "connector_turn_deg": float(angle),
+                            "connector_overspill_area_ratio": float(overspill_ratio),
+                            "connector_max_protrusion_mm": float(protrusion_mm),
+                            "connector_safe": bool(safe),
+                        },
+                    ))
+                    chained_paths.append(next_path)
+            detail_ordered = chained_paths
+            debug_append_toolpaths(debug, "detail_continuation_accepted", accepted_continuations)
+            debug_append_toolpaths(debug, "detail_continuation_rejected", rejected_continuations)
+            if continuation_pen_footprints:
+                debug_append_geometry(debug, "detail_continuation_pen_footprints", unary_union(continuation_pen_footprints), "detail-continuation-pen-footprint")
 
         # Detail traces first, then infill, outline last.
-        detail_ordered = optimize_toolpath_order(accepted_detail_paths, strategy=travel_optimization) if accepted_detail_paths else []
         composed_paths.extend(merge_connected_toolpaths(detail_ordered))
         composed_paths.extend(interior_paths)
         # Final clean outline last.
@@ -12402,6 +12624,7 @@ def generate_gcode_from_toolpaths(
         "fill-wall",
         "fill-infill",
         "detail-trace",
+        "detail-continuation",
         "coverage_contour",
         "coverage_offset_line",
         "coverage_rectilinear",
@@ -12421,7 +12644,7 @@ def generate_gcode_from_toolpaths(
         if toolpath.kind in printable_kinds:
             if toolpath.kind in {"outline", "fill-wall", "coverage_contour", "outline_cleanup"}:
                 return "PRINT_OUTLINE"
-            if toolpath.kind == "detail-trace":
+            if toolpath.kind in {"detail-trace", "detail-continuation"}:
                 return "PRINT_DETAIL"
             return "PRINT_INFILL"
         return "DEBUG_ONLY"
@@ -12724,14 +12947,21 @@ def generate_gcode_from_toolpaths(
         preview_points = [Point(point.x, point.y) for point in emitted_points]
 
         # Decide whether to lift the pen at path end. If the next toolpath
-        # is a pen-down infill connector (`fill-infill-travel`) we must keep
-        # the pen down to avoid unnecessary pen lifts between the infill
-        # stroke and its connector (the connector itself will be emitted
-        # with pen down). This preserves the user's acceptance rule that
-        # internal connector travel may be pen-down.
+        # is an approved pen-down connector we keep the pen down to avoid
+        # unnecessary lifts between consecutive printable strokes.
         next_toolpath = toolpaths[index] if index < len(toolpaths) else None
-        if next_toolpath is not None and classify_path_type(next_toolpath) == "PRINT_INFILL" and getattr(next_toolpath, "kind", None) in connector_kinds:
-            comment(f"PATH_END id={path_id} (keeping pen down for connector)")
+        keep_down_for_infill_connector = (
+            next_toolpath is not None
+            and classify_path_type(next_toolpath) == "PRINT_INFILL"
+            and getattr(next_toolpath, "kind", None) in connector_kinds
+        )
+        keep_down_for_detail_continuation = (
+            next_toolpath is not None
+            and classify_path_type(next_toolpath) == "PRINT_DETAIL"
+            and str((next_toolpath.metadata or {}).get("path_role", "")) == "PRINT_DETAIL_CONTINUATION"
+        )
+        if keep_down_for_infill_connector or keep_down_for_detail_continuation:
+            comment(f"PATH_END id={path_id} (keeping pen down for connector/continuation)")
         else:
             for command in build_pen_position_commands(
                 current_servo,
@@ -12794,12 +13024,20 @@ def generate_gcode_from_toolpaths(
         actual_pen_lift_count = sum(1 for line in g if line.strip().startswith(f"M3 S{int(pen_up_s)}"))
         connector_pen_down_paths = 0
         connector_total_paths = 0
+        detail_continuation_pen_down_paths = 0
+        toolpath_by_id = {tp.path_id: tp for tp in toolpaths if tp.path_id}
         for entry in preview:
             src_kind = str(entry.get("source_path_kind") or entry.get("kind") or "")
             if src_kind in {"fill-infill-travel", "coverage_connector"}:
                 connector_total_paths += 1
                 if bool(entry.get("pen_down", False)):
                     connector_pen_down_paths += 1
+            if src_kind in {"detail-trace", "detail-continuation"} and bool(entry.get("pen_down", False)):
+                src_path_id = entry.get("source_path_id") or entry.get("id")
+                if src_path_id:
+                    matched = toolpath_by_id.get(str(src_path_id))
+                    if matched is not None and str((matched.metadata or {}).get("path_role", "")) == "PRINT_DETAIL_CONTINUATION":
+                        detail_continuation_pen_down_paths += 1
         debug["pen_state_debug"] = pen_state_debug
         debug["pen_state_summary"] = {
             "travel_moves_with_pen_down": travel_moves_with_pen_down,
@@ -12809,6 +13047,7 @@ def generate_gcode_from_toolpaths(
             "actual_gcode_pen_lift_count": actual_pen_lift_count,
             "connector_paths_total": connector_total_paths,
             "connector_paths_pen_down": connector_pen_down_paths,
+            "detail_continuation_paths_pen_down": detail_continuation_pen_down_paths,
         }
         debug["actual_gcode_pen_lift_count"] = actual_pen_lift_count
         debug["projected_toolpath_hash"] = hash_toolpaths(toolpaths)

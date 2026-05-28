@@ -85,6 +85,75 @@ def test_summarize_toolpaths_reports_required_diagnostics():
     assert summary["points_by_kind"] == {"detail-trace": 2, "fill-infill": 3}
 
 
+def test_detail_continuation_keeps_pen_down_between_detail_segments():
+    service = GcodeService()
+    toolpaths_with_continuation = [
+        Toolpath(
+            points=[Point(0.0, 0.0), Point(1.0, 0.0)],
+            kind="detail-trace",
+            closed=False,
+            coordinate_space="machine_deg",
+                metadata={"path_role": "PRINT_DETAIL", "projection_count": 1},
+        ),
+        Toolpath(
+            points=[Point(1.0, 0.0), Point(1.4, 0.0)],
+            kind="detail-continuation",
+            closed=False,
+            coordinate_space="machine_deg",
+            metadata={"path_role": "PRINT_DETAIL_CONTINUATION", "detail_continuation_pen_down": True, "projection_count": 1},
+        ),
+        Toolpath(
+            points=[Point(1.4, 0.0), Point(2.2, 0.0)],
+            kind="detail-trace",
+            closed=False,
+            coordinate_space="machine_deg",
+                metadata={"path_role": "PRINT_DETAIL", "projection_count": 1},
+        ),
+    ]
+    toolpaths_with_continuation = pipeline_core.assign_stable_path_ids(toolpaths_with_continuation)
+    gcode_with, _preview = service.generate_from_toolpaths(
+        toolpaths=toolpaths_with_continuation,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=True,
+    )
+    toolpaths_without_continuation = [
+        pipeline_core.clone_toolpath(path, metadata={**path.metadata, "path_role": "PRINT_DETAIL"})
+        for path in toolpaths_with_continuation
+    ]
+    gcode_without, _preview = service.generate_from_toolpaths(
+        toolpaths=toolpaths_without_continuation,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=True,
+    )
+    pen_lifts_with = sum(1 for line in gcode_with if line.strip().startswith("M3 S575"))
+    pen_lifts_without = sum(1 for line in gcode_without if line.strip().startswith("M3 S575"))
+    assert pen_lifts_with < pen_lifts_without
+
+
 def test_projected_gcode_includes_resolved_fill_header_comments():
     service = GcodeService()
     toolpaths = [Toolpath(points=[Point(0.0, 0.0), Point(5.0, 0.0)], kind="fill-infill", closed=False)]

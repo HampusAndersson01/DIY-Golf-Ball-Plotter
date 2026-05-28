@@ -588,7 +588,9 @@ def generate_image_gcode_route():
                 {"key": "outer_walls", "label": "outline centerline before projection", "color": "orange-dashed"},
                 {"key": "clipped_infill_lines", "label": "infill centerlines", "color": "cyan"},
                 {"key": "detail_traces_accepted", "label": "accepted detail traces", "color": "magenta"},
+                {"key": "detail_pen_footprints", "label": "detail pen footprints", "color": "magenta-fill"},
                 {"key": "detail_traces_rejected", "label": "rejected detail traces", "color": "red-dashed"},
+                {"key": "detail_overspill_warning_regions", "label": "detail overspill warnings", "color": "red-fill"},
                 {"key": "projected_machine_deg_toolpaths", "label": "outline centerline after projection", "color": "orange-solid"},
                 {"key": "gcode_preview", "label": "reconstructed G-code path", "color": "purple"},
             ]
