@@ -1,0 +1,18 @@
+{
+  "timings_s": {
+    "input_loading": 0.1121,
+    "vector_extraction_tracing": 0.0905,
+    "polygon_cleanup": 0.0008,
+    "fill_path_generation": 0.5015,
+    "path_ordering": 0.0081,
+    "gcode_writing": 0.0477,
+    "preview_rendering": 0.0,
+    "total": 0.7608
+  },
+  "counts": {
+    "toolpaths": 15,
+    "preview_paths": 20,
+    "mask_overlay_paths": 2,
+    "gcode_lines": 2053
+  }
+}

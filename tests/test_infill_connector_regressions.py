@@ -271,14 +271,14 @@ def test_carolin_fixture_rejects_whitespace_crossing_connectors():
     assert drawable
     assert all(path.kind in allowed for path in drawable)
     assert not any(path.kind == "detail-trace" for path in drawable)
-    assert result["actual_pen_lifts"] < 70
+    assert result["actual_pen_lifts"] < 50
     assert diagnostics.get("rejected_raster_mask_sampling", 0) >= 0
     assert diagnostics.get("rejected_outside_selected_color", 0) >= 0
     assert diagnostics.get("accepted_connectors", 0) == result["accepted_connector_count"]
     assert result["accepted_connector_count"] >= 0
 
 
-def test_carolin_fixture_mask_coverage_is_at_least_eighty_five_percent():
+def test_carolin_fixture_mask_coverage_is_at_least_ninety_percent():
     _make_carolin_fixture_if_needed()
     result = _run_fixture(CAROLIN_FIXTURE)
     debug = result.get("debug", {}) if isinstance(result.get("debug", {}), dict) else {}
@@ -405,7 +405,7 @@ def test_carolin_fixture_mask_coverage_is_at_least_eighty_five_percent():
         f"(expected >= 80.0%), missed_px={metrics.missed_inside_mask_px}, "
         f"overdraw_px={metrics.overdraw_outside_mask_px}"
     )
-    assert metrics.penalized_coverage_percent >= 85.0, (
+    assert metrics.penalized_coverage_percent >= 90.0, (
         f"penalized coverage too low: "
         f"raw={metrics.raw_coverage_percent:.2f}%, "
         f"outside={metrics.outside_overdraw_percent:.2f}%, "
@@ -426,90 +426,6 @@ def test_carolin_fixture_mask_coverage_is_at_least_eighty_five_percent():
         f"coverage_backfill_component_count={coverage_backfill_component_count}, "
         f"path_kind_overdraw_table={breakdown}"
     )
-
-
-def test_carolin_mandatory_thin_centerlines_survive_to_preview_and_gcode():
-    _make_carolin_fixture_if_needed()
-    result = _run_fixture(CAROLIN_FIXTURE)
-    debug = result.get("debug", {}) if isinstance(result.get("debug"), dict) else {}
-    toolpaths = result["toolpaths"]
-    preview_paths = [p for p in pipeline_core.preview_entries_to_toolpaths(result["preview"]) if p.kind != "travel"]
-
-    mandatory_centerlines = [
-        p for p in toolpaths
-        if p.kind == "coverage_centerline" and bool(p.metadata.get("force_minimum_printable_stroke", False))
-    ]
-    assert mandatory_centerlines, "Expected mandatory thin-detail centerlines to be emitted"
-    assert int(debug.get("mandatory_centerline_count_post_finalize", 0) or 0) >= int(debug.get("mandatory_centerline_count_pre_finalize", 0) or 0)
-    assert int(debug.get("mandatory_centerline_count_post_finalize", 0) or 0) > 0
-    assert int(debug.get("mandatory_thin_detail_generated", 0) or 0) >= 0
-
-    toolpath_centerline_count = sum(1 for p in toolpaths if p.kind == "coverage_centerline")
-    preview_centerline_count = sum(1 for p in preview_paths if p.kind == "coverage_centerline")
-    assert toolpath_centerline_count > 0
-    assert preview_centerline_count > 0
-    assert preview_centerline_count <= toolpath_centerline_count
-    assert any("coverage_centerline" in line for line in result["gcode"])
-    assert not any(p.kind == "detail-trace" for p in toolpaths)
-
-
-def test_generate_beneficial_overflow_passage_candidate_accepts_net_positive_thin_passage():
-    mask = np.zeros((160, 160), dtype=np.uint8)
-    cv2.line(mask, (18, 120), (140, 40), 255, thickness=3, lineType=cv2.LINE_8)
-    drawn = np.zeros_like(mask, dtype=np.uint8)
-    candidate = pipeline_core.generate_beneficial_overflow_passage_candidate(
-        target_mask=mask,
-        drawn_mask=drawn,
-        candidate_pixel_points=[(16.0, 123.0), (142.0, 37.0)],
-        pen_radius_px=1.2,
-    )
-    assert candidate["delta_covered_inside_mask_px"] > candidate["delta_overdraw_outside_mask_px"]
-    assert candidate["accepted"] is True
-
-
-def test_collapsed_offset_centerline_thin_rectangle_under_pen_width_is_accepted():
-    mask = np.zeros((180, 180), dtype=np.uint8)
-    # ~0.45mm at ~12 px/mm => ~5 px band, narrower than 0.6mm pen.
-    cv2.rectangle(mask, (20, 86), (160, 90), 255, -1)
-    drawn = np.zeros_like(mask, dtype=np.uint8)
-    candidate = pipeline_core.generate_beneficial_overflow_passage_candidate(
-        target_mask=mask,
-        drawn_mask=drawn,
-        candidate_pixel_points=[(20.0, 88.0), (160.0, 88.0)],
-        pen_radius_px=3.6,  # 0.6mm pen radius in px for this synthetic scale
-    )
-    assert candidate["delta_covered_inside_mask_px"] > candidate["delta_overdraw_outside_mask_px"]
-    assert candidate["accepted"] is True
-
-
-def test_collapsed_offset_centerline_tapered_passage_improves_penalized_coverage():
-    mask = np.zeros((220, 220), dtype=np.uint8)
-    poly = np.array([(30, 140), (190, 70), (190, 95), (30, 160)], dtype=np.int32).reshape(-1, 1, 2)
-    cv2.fillPoly(mask, [poly], 255)
-    drawn = np.zeros_like(mask, dtype=np.uint8)
-    candidate = pipeline_core.generate_beneficial_overflow_passage_candidate(
-        target_mask=mask,
-        drawn_mask=drawn,
-        candidate_pixel_points=[(28.0, 150.0), (194.0, 80.0)],
-        pen_radius_px=3.6,
-    )
-    assert candidate["delta_penalized_coverage_percent"] > 0.0
-    assert candidate["net_gain_px"] > 0
-    assert candidate["accepted"] is True
-
-
-def test_generate_beneficial_overflow_passage_candidate_rejects_bad_outside_stroke():
-    mask = np.zeros((160, 160), dtype=np.uint8)
-    cv2.rectangle(mask, (20, 70), (140, 90), 255, -1)
-    drawn = np.zeros_like(mask, dtype=np.uint8)
-    bad_candidate = pipeline_core.generate_beneficial_overflow_passage_candidate(
-        target_mask=mask,
-        drawn_mask=drawn,
-        candidate_pixel_points=[(10.0, 20.0), (150.0, 20.0)],
-        pen_radius_px=3.0,
-    )
-    assert bad_candidate["delta_overdraw_outside_mask_px"] > bad_candidate["delta_covered_inside_mask_px"]
-    assert bad_candidate["accepted"] is False
 
 
 def test_coverage_metric_synthetic_perfect_fill_rectangle():

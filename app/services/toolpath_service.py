@@ -33,6 +33,7 @@ class ToolpathService:
         travel_optimization: str = "nearest-neighbor",
         allow_pen_down_infill_connectors: bool = False,
         infill_path_mode: str = "rectilinear",
+        expensive_coverage_repair: bool = True,
         debug=None,
     ):
         if infill_pattern not in {"zigzag", "hatch"}:
@@ -61,5 +62,6 @@ class ToolpathService:
             travel_optimization=travel_optimization,
             allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
             infill_path_mode=infill_path_mode,
+            expensive_coverage_repair=expensive_coverage_repair,
             debug=debug,
         )

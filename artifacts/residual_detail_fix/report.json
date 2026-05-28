@@ -1,0 +1,25 @@
+{
+  "timings_s": {
+    "input_loading": 0.011,
+    "vector_extraction": 0.064,
+    "polygon_cleanup": 0.002,
+    "fill_detail_outline_gen": 0.195,
+    "path_ordering_projection": 0.008,
+    "gcode_writing": 0.025,
+    "total": 0.305
+  },
+  "counts": {
+    "toolpaths": 45,
+    "preview_paths": 91,
+    "gcode_lines": 684,
+    "pen_lifts": 47,
+    "outline_paths": 22,
+    "infill_paths": 3,
+    "detail_paths": 20,
+    "accepted_detail_debug": 20,
+    "rejected_detail_debug": 48
+  },
+  "outline_last": true,
+  "connector_pen_down": 0,
+  "max_detail_wobble_ratio": 1.0
+}

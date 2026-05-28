@@ -1,0 +1,31 @@
+{
+  "run_dir": "C:\\Users\\hampe\\Documents\\GIT\\Golfball Printer\\artifacts\\carolin_autotune\\20260528_154950",
+  "coarse_count": 6,
+  "fine_count": 4,
+  "valid_count": 7,
+  "best": {
+    "candidate_id": "F0158",
+    "pen_width_mm": 0.6,
+    "curve_flatten_tolerance_mm": 0.0375,
+    "fill_strategy": "offset",
+    "fill_spacing_mm": 0.45,
+    "outline_pass_enabled": true,
+    "min_feature_size_mm": 0.225,
+    "hatch_angle_deg": 0.0,
+    "simplify_tolerance_mm": 0.0375,
+    "score": 0.8692516509666965,
+    "error": "",
+    "iou": 0.8200754928002237,
+    "recall": 0.9208791208791208,
+    "precision": 0.8822379305158671,
+    "outside_overdraw_percent": 12.291993720565149,
+    "raw_coverage_percent": 92.08791208791209,
+    "penalized_coverage_percent": 79.79591836734694,
+    "edge_alignment_score": 0.7907283229240847,
+    "path_cleanliness_score": 0.9751660341555978
+  },
+  "results_csv": "C:\\Users\\hampe\\Documents\\GIT\\Golfball Printer\\artifacts\\carolin_autotune\\20260528_154950\\tuning_results.csv",
+  "best_gcode": "C:\\Users\\hampe\\Documents\\GIT\\Golfball Printer\\artifacts\\carolin_autotune\\20260528_154950\\final.gcode",
+  "best_pen_preview": "C:\\Users\\hampe\\Documents\\GIT\\Golfball Printer\\artifacts\\carolin_autotune\\20260528_154950\\best_pen_preview.png",
+  "best_trace_preview": "C:\\Users\\hampe\\Documents\\GIT\\Golfball Printer\\artifacts\\carolin_autotune\\20260528_154950\\best_trace_preview.png"
+}

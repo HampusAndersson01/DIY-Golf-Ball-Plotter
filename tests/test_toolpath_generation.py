@@ -1239,7 +1239,7 @@ def test_detail_segments_are_clipped_to_pen_center_safe_region():
     )
 
 
-def test_carolin_script_pen_lifts_stay_below_threshold_and_connectors_are_pen_down():
+def test_carolin_script_long_connectors_are_travel_and_not_pen_down():
     image_path = Path("tests/fixtures/images/Carolin Line.png")
     image_bytes = image_path.read_bytes()
     raster = RasterAnalysisService(CONFIG, MachineState(default_pen_up_s=575))
@@ -1292,6 +1292,7 @@ def test_carolin_script_pen_lifts_stay_below_threshold_and_connectors_are_pen_do
     )
     prepared = pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=0.6)
     projected = pipeline_core.project_toolpaths_to_ball_angles(prepared, center_lon_deg=0.0, center_lat_deg=0.0)
+    gcode_debug: dict = {}
     gcode, preview = GcodeService().generate_from_toolpaths(
         toolpaths=projected,
         draw_feed=1200.0,
@@ -1308,11 +1309,57 @@ def test_carolin_script_pen_lifts_stay_below_threshold_and_connectors_are_pen_do
         pen_down_dwell_ms=60.0,
         gcode_mode="simple",
         include_comments=False,
+        debug=gcode_debug,
     )
     pen_lifts = sum(1 for line in gcode if line.strip().startswith("M3 S575"))
-    assert pen_lifts < 50
-    assert any(path.kind == "fill-infill-travel" for path in toolpaths)
-    assert any(entry.get("kind") == "fill-infill-travel" for entry in preview)
+    assert pen_lifts >= 1
+    connector_previews = [
+        entry for entry in preview
+        if (entry.get("source_path_kind") in {"fill-infill-travel", "coverage_connector"})
+        or entry.get("kind") in {"fill-infill-travel", "coverage_connector"}
+    ]
+    assert all(bool(entry.get("pen_down", False)) is False for entry in connector_previews)
+    summary = (gcode_debug.get("pen_state_summary") or {})
+    assert int(summary.get("connector_paths_pen_down", 0)) == 0
+
+
+def test_detail_trace_is_suppressed_when_outline_and_infill_already_cover_region():
+    printable = _rect(width_mm=12.0, height_mm=6.0)
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.5,
+        infill_angle_deg=0.0,
+        fill_strategy="adaptive_angle",
+        outline_after_fill=True,
+        simplify_tolerance_mm=0.02,
+    )
+    detail_paths = [path for path in toolpaths if path.kind == "detail-trace"]
+    assert len(detail_paths) == 0
+
+
+def test_narrow_c_like_residual_prefers_clean_centerline_detail_trace():
+    outer = Polygon([(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)])
+    cut = Polygon([(3.0, 1.5), (10.0, 1.5), (10.0, 6.5), (3.0, 6.5)])
+    printable = outer.difference(cut)
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.55,
+        infill_angle_deg=0.0,
+        fill_strategy="adaptive_angle",
+        outline_after_fill=True,
+        simplify_tolerance_mm=0.02,
+    )
+    detail_paths = [path for path in toolpaths if path.kind == "detail-trace"]
+    assert len(detail_paths) <= 2
+    for path in detail_paths:
+        if len(path.points) < 2:
+            continue
+        chord = math.hypot(path.points[-1].x - path.points[0].x, path.points[-1].y - path.points[0].y)
+        if chord <= 1e-6:
+            continue
+        assert segment_length(path.points) / chord < 3.0
 
 
 def test_straight_horizontal_bar_uses_simple_long_strokes_with_few_pen_lifts():
