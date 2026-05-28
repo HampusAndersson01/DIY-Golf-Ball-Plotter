@@ -1,13 +1,18 @@
 import math
+from pathlib import Path
 
 import pytest
-from shapely.geometry import LineString, MultiPolygon, Polygon
+from shapely.geometry import LineString, MultiPolygon, Point as ShapelyPoint, Polygon
 
 from app.models.geometry import Point, Segment, Toolpath
+from app.models.machine_state import MachineState
 from app.services import pipeline_core
 from app.services.gcode_service import GcodeService
+from app.services.geometry_service import GeometryService
+from app.services.raster_analysis_service import RasterAnalysisService
 from app.services.pipeline_core import GeometryBundle, generate_toolpaths
 from app.services.toolpath_service import ToolpathService
+from tests.test_svg_parser import CONFIG
 
 
 def _rect(width_mm: float, height_mm: float) -> Polygon:
@@ -22,10 +27,10 @@ def _rect(width_mm: float, height_mm: float) -> Polygon:
 def _generate_fill_toolpaths(printable_geometry, **overrides):
     params = {
         "enable_fill": True,
-        "line_width_mm": 1.0,
+        "line_width_mm": 0.6,
         "wall_count": 1,
         "infill_density": 100.0,
-        "infill_spacing_mm": 1.0,
+        "infill_spacing_mm": 0.6,
         "infill_angle_deg": 0.0,
         "outline_after_fill": False,
         "min_fill_area_mm2": 0.0,
@@ -42,7 +47,7 @@ def _generate_fill_toolpaths(printable_geometry, **overrides):
     return generate_toolpaths(GeometryBundle(printable_geometry=printable_geometry), **params)
 
 
-def _infill_region(printable_geometry, line_width_mm=1.0, wall_count=1):
+def _infill_region(printable_geometry, line_width_mm=0.6, wall_count=1):
     return printable_geometry.buffer(-(line_width_mm * 0.5), join_style=1)
 
 
@@ -924,6 +929,58 @@ def test_small_detail_fill_uses_fewer_more_meaningful_strokes_than_hatch():
     assert max(_path_lengths(hybrid)) >= max(_path_lengths(hatch)) * 0.8
 
 
+def test_adaptive_cell_mode_switches_to_single_stroke_for_narrow_fragmented_cell():
+    slicer = pipeline_core.SlicerService()
+    segments = [
+        pipeline_core.InfillSegment(
+            id="cell:r0:i0",
+            component_id="component_000",
+            row_index=0,
+            interval_index=0,
+            cell_id="component_000:cell_0000",
+            scanline_offset=0.0,
+            low_u=Point(0.0, 0.0),
+            high_u=Point(0.6, 0.0),
+            min_u=0.0,
+            max_u=0.6,
+            center=Point(0.3, 0.0),
+            length=0.6,
+            coords=[(0.0, 0.0), (0.6, 0.0)],
+        ),
+    ]
+
+    decision = slicer._evaluate_adaptive_cell_mode(
+        cell_segments=segments,
+        spacing_mm=0.6,
+        line_width_mm=0.6,
+        cover_region=_rect(2.0, 2.0),
+    )
+    assert decision.mode == "single_stroke"
+    assert "only_one_useful_hatch_row" in decision.reasons or "width_lte_1p5x_pen" in decision.reasons
+
+
+def test_infill_debug_reports_single_stroke_and_switch_diagnostics():
+    debug: dict = {}
+    printable = Polygon([
+        (0.0, 0.0),
+        (12.0, 0.0),
+        (12.0, 0.9),
+        (0.0, 0.9),
+    ])
+    _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        infill_angle_deg=0.0,
+        fill_strategy="adaptive_angle",
+        debug=debug,
+    )
+    infill_debug = debug.get("infill_debug", {})
+    assert "diagnostics" in infill_debug
+    assert "single_stroke_cells" in infill_debug.get("adaptive_fill_counts", {})
+    assert "switched_single_stroke_width" in infill_debug.get("adaptive_fill_counts", {})
+
+
 def test_small_detail_fill_stays_inside_true_polygon_and_preserves_hole():
     outer = _rect(5.0, 4.0)
     hole = Polygon([(x + 1.5, y + 1.0) for x, y in _rect(2.0, 2.0).exterior.coords[:-1]])
@@ -943,6 +1000,82 @@ def test_small_detail_fill_stays_inside_true_polygon_and_preserves_hole():
     assert any(path.metadata.get("fill_strategy") == "CONTOUR_PARALLEL_DETAIL" for path in infill_paths)
     _assert_infill_segments_stay_inside_region(infill_paths, _infill_region(printable, line_width_mm=0.5))
     assert all(not hole.buffer(-0.01).covers(_line_for_path(path)) for path in infill_paths)
+
+
+def test_tiny_dot_uses_interior_stroke_not_outline_border_trace():
+    tiny_dot = ShapelyPoint(0.0, 0.0).buffer(0.18, resolution=32)
+
+    toolpaths = _generate_fill_toolpaths(
+        tiny_dot,
+        line_width_mm=0.5,
+        infill_spacing_mm=0.5,
+        infill_angle_deg=0.0,
+        fill_strategy="adaptive_angle",
+        outline_after_fill=False,
+        simplify_tolerance_mm=0.0,
+    )
+
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    assert infill_paths
+    assert not any(path.kind == "outline" for path in toolpaths)
+    assert all(path.metadata.get("fill_strategy") == "SINGLE_STROKE_DETAIL" for path in infill_paths)
+    _assert_infill_segments_stay_inside_region(infill_paths, tiny_dot, epsilon=1e-4)
+
+
+def test_thin_script_like_stroke_is_not_dropped():
+    thin_connector = Polygon([
+        (-4.0, -0.35),
+        (4.0, -0.35),
+        (4.0, 0.35),
+        (-4.0, 0.35),
+    ])
+
+    toolpaths = _generate_fill_toolpaths(
+        thin_connector,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        infill_angle_deg=30.0,
+        fill_strategy="adaptive_angle",
+        outline_after_fill=False,
+        simplify_tolerance_mm=0.0,
+    )
+    drawing_paths = [path for path in toolpaths if path.kind in {"fill-infill", "detail-trace", "outline", "fill-wall"}]
+    assert drawing_paths
+    assert any(path.kind == "fill-infill" for path in drawing_paths)
+
+
+def test_region_narrower_than_two_pen_width_forces_minimum_stroke_fallback():
+    printable = Polygon([
+        (0.0, 0.0),
+        (6.0, 0.0),
+        (6.0, 0.7),
+        (0.0, 0.7),
+    ])
+    line_width_mm = 0.6
+    debug: dict = {}
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=line_width_mm,
+        infill_spacing_mm=line_width_mm,
+        infill_angle_deg=0.0,
+        fill_strategy="adaptive_angle",
+        min_fill_area_mm2=10.0,
+        thin_detail_mode=True,
+        thin_detail_min_area_mm2=10.0,
+        min_segment_length_mm=0.5,
+        debug=debug,
+    )
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    assert infill_paths
+    assert any(
+        bool(path.metadata.get("force_minimum_printable_stroke", False))
+        or str(path.metadata.get("fill_mode", "")) in {"single_stroke_fallback_region", "single_stroke_cell", "single_stroke_detail"}
+        for path in infill_paths
+    )
+    diagnostics = (debug.get("infill_debug") or {}).get("diagnostics") or {}
+    assert diagnostics.get("narrower_than_2x_pen_regions", 0) >= 1
+    assert diagnostics.get("narrower_than_2x_pen_with_centerline", 0) >= 1
 
 
 def test_prepare_toolpaths_for_projection_straightens_micro_jittered_linework():
@@ -1026,7 +1159,7 @@ def test_small_detail_preview_uses_pen_up_travel_and_outline_draws_last():
     assert [entry["kind"] for entry in preview if entry["kind"] != "travel"][-1] == "outline"
 
 
-def test_raster_area_fill_suppresses_injected_detail_segments():
+def test_raster_area_fill_preserves_detail_segments_for_thin_detail_recovery():
     printable = _rect(20.0, 20.0)
     bundle = GeometryBundle(
         printable_geometry=printable,
@@ -1062,7 +1195,203 @@ def test_raster_area_fill_suppresses_injected_detail_segments():
         travel_optimization="nearest-neighbor",
     )
 
-    assert not any(path.kind == "detail-trace" for path in toolpaths)
+    assert any(path.kind == "detail-trace" for path in toolpaths)
+
+
+def test_detail_segments_are_clipped_to_pen_center_safe_region():
+    printable = _rect(8.0, 4.0)
+    bundle = GeometryBundle(
+        printable_geometry=printable,
+        detail_segments=[
+            Segment(points=[Point(-2.0, 2.0), Point(10.0, 2.0)], closed=False),
+        ],
+    )
+    line_width_mm = 0.6
+
+    toolpaths = ToolpathService().generate_from_regions(
+        bundle,
+        pen_width_mm=line_width_mm,
+        wall_count=1,
+        infill_pattern="zigzag",
+        infill_spacing_mm=line_width_mm,
+        infill_density=100.0,
+        infill_angle_deg=0.0,
+        min_region_area=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=False,
+        small_shape_mode="single-wall",
+        thin_detail_mode=True,
+        thin_detail_min_area_mm2=0.0,
+        thin_detail_simplify_mm=0.0,
+        thin_detail_overlap=True,
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+    )
+
+    detail_paths = [path for path in toolpaths if path.kind == "detail-trace"]
+    assert detail_paths
+    safe_region = _infill_region(printable, line_width_mm=line_width_mm)
+    _assert_infill_segments_stay_inside_region(
+        [Toolpath(points=path.points, kind="fill-infill", closed=path.closed) for path in detail_paths],
+        safe_region,
+        epsilon=1e-4,
+    )
+
+
+def test_carolin_script_pen_lifts_stay_below_threshold_and_connectors_are_pen_down():
+    image_path = Path("tests/fixtures/images/Carolin Line.png")
+    image_bytes = image_path.read_bytes()
+    raster = RasterAnalysisService(CONFIG, MachineState(default_pen_up_s=575))
+    analysis = raster.analyze_image(image_bytes, max_colors=32)
+    selected = next((entry.id for entry in analysis.colors if entry.hex == "#000000"), analysis.colors[0].id)
+    mask = raster.build_mask(
+        image_bytes,
+        [selected],
+        tolerance=24,
+        min_component_area_px=0,
+        open_radius_px=0,
+        close_radius_px=1,
+    )
+    regions = raster.extract_regions(mask, min_region_area_px=1, simplify_tolerance_px=0.5)
+    geometry = GeometryService()
+    mapped = geometry.map_bundle_to_surface_mm(regions.bundle, regions.bounds, "contain", True, 4.0)
+    placed = geometry.apply_origin_anchor_placement(
+        geometry.apply_surface_placement_transform(
+            geometry.apply_surface_artwork_scale(mapped, 100.0),
+            100.0,
+            0.0,
+        ),
+        origin_anchor="center",
+        origin_offset_x_mm=0.0,
+        origin_offset_y_mm=0.0,
+    )
+    debug: dict = {}
+    toolpaths = ToolpathService().generate_from_regions(
+        placed,
+        pen_width_mm=0.6,
+        wall_count=1,
+        infill_pattern="hatch",
+        infill_spacing_mm=0.6,
+        infill_density=100.0,
+        infill_angle_deg=45.0,
+        fill_strategy="adaptive_angle",
+        outline_after_fill=False,
+        min_region_area=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.05,
+        thin_detail_mode=True,
+        thin_detail_min_area_mm2=0.01,
+        thin_detail_simplify_mm=0.05,
+        thin_detail_overlap=True,
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+        allow_pen_down_infill_connectors=True,
+        infill_path_mode="serpentine_optimized",
+        debug=debug,
+    )
+    prepared = pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=0.6)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(prepared, center_lon_deg=0.0, center_lat_deg=0.0)
+    gcode, preview = GcodeService().generate_from_toolpaths(
+        toolpaths=projected,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=False,
+    )
+    pen_lifts = sum(1 for line in gcode if line.strip().startswith("M3 S575"))
+    assert pen_lifts < 50
+    assert any(path.kind == "fill-infill-travel" for path in toolpaths)
+    assert any(entry.get("kind") == "fill-infill-travel" for entry in preview)
+
+
+def test_straight_horizontal_bar_uses_simple_long_strokes_with_few_pen_lifts():
+    printable = Polygon([
+        (0.0, 0.0),
+        (30.0, 0.0),
+        (30.0, 1.8),
+        (0.0, 1.8),
+    ])
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        infill_angle_deg=0.0,
+        fill_strategy="adaptive_angle",
+        outline_after_fill=False,
+        simplify_tolerance_mm=0.0,
+    )
+    prepared = pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=0.6)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(prepared, center_lon_deg=0.0, center_lat_deg=0.0)
+    gcode, preview = GcodeService().generate_from_toolpaths(
+        toolpaths=projected,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=False,
+    )
+    pen_lifts = sum(1 for line in gcode if line.strip().startswith("M3 S575"))
+    assert pen_lifts < 5
+    draw_paths = [entry for entry in preview if entry.get("kind") in {"fill-infill", "fill-wall", "outline", "detail-trace"}]
+    assert draw_paths
+    for entry in draw_paths:
+        points = entry.get("points") or []
+        if len(points) < 2:
+            continue
+        dy_total = sum(abs(points[index]["y"] - points[index - 1]["y"]) for index in range(1, len(points)))
+        dx_total = sum(abs(points[index]["x"] - points[index - 1]["x"]) for index in range(1, len(points)))
+        if dx_total > 0.5:
+            assert dy_total <= dx_total * 0.35
+
+
+def test_medium_width_straight_bar_uses_clean_parallel_strokes_without_crisscross():
+    printable = Polygon([
+        (0.0, 0.0),
+        (30.0, 0.0),
+        (30.0, 2.8),
+        (0.0, 2.8),
+    ])
+    debug: dict = {}
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        infill_angle_deg=0.0,
+        fill_strategy="adaptive_angle",
+        outline_after_fill=False,
+        simplify_tolerance_mm=0.0,
+        debug=debug,
+    )
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    assert 2 <= len(infill_paths) <= 6
+    for path in infill_paths:
+        points = path.points
+        assert len(points) >= 2
+        dx_total = sum(abs(points[index].x - points[index - 1].x) for index in range(1, len(points)))
+        dy_total = sum(abs(points[index].y - points[index - 1].y) for index in range(1, len(points)))
+        if dx_total > 0.5:
+            assert dy_total <= dx_total * 0.35
+    assert int(debug.get("mesh_like_paths_rejected", 0)) >= 0
 
 
 def test_area_fill_suppresses_direct_source_outline_segments():
@@ -1749,3 +2078,72 @@ def test_merge_motion_profiles_counts_axis_and_blended_segments_across_paths():
     assert profile["total_segments"] == 4
     assert profile["max_consecutive_blended_xy_segments"] == 2
     assert abs(float(profile["blended_xy_ratio"]) - 0.5) < 1e-9
+
+
+def _count_pen_lifts_from_gcode(gcode: list[str], pen_up_s: int) -> int:
+    needle = f"M3 S{pen_up_s}"
+    return sum(1 for line in gcode if line.strip().startswith(needle))
+
+
+def _is_tiny_x_like(path: Toolpath, line_width_mm: float) -> bool:
+    if not (3 <= len(path.points) <= 10):
+        return False
+    xs = [p.x for p in path.points]
+    ys = [p.y for p in path.points]
+    width = max(xs) - min(xs)
+    height = max(ys) - min(ys)
+    if max(width, height) > line_width_mm * 2.2:
+        return False
+    turns = 0
+    angles: list[float] = []
+    for start, end in zip(path.points, path.points[1:]):
+        dx = end.x - start.x
+        dy = end.y - start.y
+        if abs(dx) <= 1e-9 and abs(dy) <= 1e-9:
+            continue
+        angles.append(math.degrees(math.atan2(dy, dx)))
+    for prev, cur in zip(angles, angles[1:]):
+        delta = abs(((cur - prev + 180.0) % 360.0) - 180.0)
+        if 35.0 <= delta <= 170.0:
+            turns += 1
+    return turns >= 2
+
+
+def test_horizontal_bar_uses_simple_coverage_paths_without_mesh():
+    printable = _rect(20.0, 1.2)
+    toolpaths = _generate_fill_toolpaths(printable, line_width_mm=0.6, infill_spacing_mm=0.6, infill_angle_deg=0.0)
+    draw_paths = [p for p in toolpaths if p.kind != "travel"]
+    assert draw_paths
+    assert all(p.kind in {"coverage_centerline", "coverage_offset_line", "coverage_rectilinear", "coverage_contour", "coverage_connector", "outline_cleanup"} for p in draw_paths)
+    assert not any(p.kind == "detail-trace" for p in draw_paths)
+    assert not any(_is_tiny_x_like(p, 0.6) for p in draw_paths)
+
+
+def test_tiny_dot_uses_internal_mark_not_outline_trace():
+    printable = _rect(0.25, 0.25)
+    toolpaths = _generate_fill_toolpaths(printable, line_width_mm=0.6, infill_spacing_mm=0.6)
+    marks = [p for p in toolpaths if p.kind in {"coverage_centerline", "coverage_offset_line", "coverage_rectilinear"}]
+    outlines = [p for p in toolpaths if p.kind == "outline_cleanup"]
+    assert len(marks) <= 1
+    assert len(outlines) <= 1
+    assert len(toolpaths) <= 2
+
+
+def test_c_shape_detail_contour_gets_centerline_backstop_when_core_uncovered():
+    outer = ShapelyPoint(0.0, 0.0).buffer(5.0, resolution=64)
+    inner = ShapelyPoint(0.0, 0.0).buffer(3.4, resolution=64)
+    ring = outer.difference(inner)
+    cut = Polygon([(0.2, -8.0), (8.0, -8.0), (8.0, 8.0), (0.2, 8.0)])
+    c_shape = ring.difference(cut)
+
+    toolpaths = _generate_fill_toolpaths(
+        c_shape,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        infill_angle_deg=0.0,
+        fill_strategy="adaptive_angle",
+        simplify_tolerance_mm=0.0,
+    )
+    infill = [p for p in toolpaths if p.kind in {"coverage_centerline", "coverage_contour", "coverage_offset_line", "coverage_rectilinear"}]
+    assert infill
+    assert any(bool(p.metadata.get("coverage_backstop", False)) for p in infill)

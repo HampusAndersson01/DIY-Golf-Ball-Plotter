@@ -5,6 +5,13 @@ export type PreviewPoint = {
   y: number
 }
 
+export type MaskProjectionQuad = {
+  top_left: PreviewPoint
+  top_right: PreviewPoint
+  bottom_right: PreviewPoint
+  bottom_left: PreviewPoint
+}
+
 export type PreviewPath = {
   id?: string
   kind: PreviewKind
@@ -238,6 +245,8 @@ export type GenerateResponse = {
   gcode: string[]
   preview: PreviewPath[]
   mask_preview: string | null
+  mask_projection_quad?: MaskProjectionQuad | null
+  mask_projected_preview?: PreviewPath[]
   selected_colors: string[]
   summary: JobSummary
   stage_counts: Record<string, unknown>

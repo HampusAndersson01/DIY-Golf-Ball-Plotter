@@ -83,6 +83,8 @@ function DashboardApp() {
   const selectedColors = useAppStore((state) => state.selectedColors)
   const preview = useAppStore((state) => state.preview)
   const maskPreviewUrl = useAppStore((state) => state.maskPreviewUrl)
+  const maskProjectionQuad = useAppStore((state) => state.maskProjectionQuad)
+  const maskProjectedPreview = useAppStore((state) => state.maskProjectedPreview)
   const gcode = useAppStore((state) => state.gcode)
   const summary = useAppStore((state) => state.summary)
   const logs = useAppStore((state) => state.logs)
@@ -91,6 +93,7 @@ function DashboardApp() {
   const progressFilter = useAppStore((state) => state.progressFilter)
   const showTravel = useAppStore((state) => state.showTravel)
   const showPenWidth = useAppStore((state) => state.showPenWidth)
+  const showMask = useAppStore((state) => state.showMask)
   const drawerTab = useAppStore((state) => state.drawerTab)
   const advancedOpen = useAppStore((state) => state.advancedOpen)
   const viewPreset = useAppStore((state) => state.viewPreset)
@@ -104,6 +107,7 @@ function DashboardApp() {
   const setProgressFilter = useAppStore((state) => state.setProgressFilter)
   const setShowTravel = useAppStore((state) => state.setShowTravel)
   const setShowPenWidth = useAppStore((state) => state.setShowPenWidth)
+  const setShowMask = useAppStore((state) => state.setShowMask)
   const setDrawerTab = useAppStore((state) => state.setDrawerTab)
   const setViewPreset = useAppStore((state) => state.setViewPreset)
   const setBusy = useAppStore((state) => state.setBusy)
@@ -163,6 +167,8 @@ function DashboardApp() {
     setPreviewPayload({
       preview: hydratedPreview,
       maskPreviewUrl: null,
+      maskProjectionQuad: null,
+      maskProjectedPreview: [],
       gcode: hydratedGcode,
       summary: hydratedSummary,
       calibrationPattern: null,
@@ -317,6 +323,8 @@ function DashboardApp() {
       setPreviewPayload({
         preview,
         maskPreviewUrl: payload.mask_preview,
+        maskProjectionQuad: payload.mask_projection_quad ?? null,
+        maskProjectedPreview: payload.mask_projected_preview ?? [],
         gcode: payload.gcode,
         summary: payload.summary,
         calibrationPattern: payload.calibrationPattern ?? null,
@@ -360,6 +368,8 @@ function DashboardApp() {
       setPreviewPayload({
         preview,
         maskPreviewUrl: null,
+        maskProjectionQuad: null,
+        maskProjectedPreview: [],
         gcode: payload.gcode,
         summary: payload.summary,
         calibrationPattern: payload.calibrationPattern ?? null,
@@ -389,6 +399,8 @@ function DashboardApp() {
       setPreviewPayload({
         preview,
         maskPreviewUrl: null,
+        maskProjectionQuad: null,
+        maskProjectedPreview: [],
         gcode: payload.gcode,
         summary: payload.summary,
         calibrationPattern: payload.calibrationPattern ?? null,
@@ -735,17 +747,21 @@ function DashboardApp() {
               imagePreviewUrl={imagePreviewUrl}
               machine={machine}
               maskPreviewUrl={maskPreviewUrl}
+              maskProjectionQuad={maskProjectionQuad}
+              maskProjectedPreview={maskProjectedPreview}
               maxPrintXSpanDeg={config.defaults.maxPrintXSpanDeg}
               lineThicknessMm={settingsState.lineThicknessMm}
               onPreviewMode={setPreviewMode}
               onProgressFilter={setProgressFilter}
               onShowPenWidth={setShowPenWidth}
+              onShowMask={setShowMask}
               onShowTravel={setShowTravel}
               onViewPreset={setViewPreset}
               paths={preview}
               previewMode={previewMode}
               progressFilter={progressFilter}
               showPenWidth={showPenWidth}
+              showMask={showMask}
               showTravel={showTravel}
               onZoomChange={setPreviewZoomLabel}
               zoomLabel={previewZoomLabel}

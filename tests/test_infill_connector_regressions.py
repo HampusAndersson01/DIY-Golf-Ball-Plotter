@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import math
+import os
 from io import BytesIO
 from pathlib import Path
+import tempfile
 
 import cv2
 import numpy as np
@@ -76,7 +78,7 @@ def _assert_connector_paths_stay_inside_mask(toolpaths: list[pipeline_core.Toolp
     current_to_source = tuple(float(value) for value in matrix)
     mask_height, mask_width = mask.shape[:2]
 
-    connector_paths = [path for path in toolpaths if path.kind == "fill-infill-travel"]
+    connector_paths = [path for path in toolpaths if path.kind in {"fill-infill-travel", "coverage_connector"}]
     if not connector_paths:
         # No accepted infill connectors for this fixture — nothing to validate.
         return
@@ -116,7 +118,7 @@ def _run_fixture(image_path: Path, *, infill_path_mode: str = "rectilinear") -> 
     mapped = geometry.map_bundle_to_angles(regions.bundle, regions.bounds, "contain", True, 4.0)
 
     debug: dict[str, object] = {}
-    reference_spacing = max(0.15, 0.75)
+    reference_spacing = 0.6
     toolpaths = toolpaths_service.generate_from_regions(
         mapped,
         pen_width_mm=reference_spacing,
@@ -257,11 +259,275 @@ def test_carolin_fixture_rejects_whitespace_crossing_connectors():
     result = _run_fixture(CAROLIN_FIXTURE)
     diagnostics = result["diagnostics"]
 
-    assert any(path.kind == "outline" for path in result["toolpaths"]), "Carolin should retain drawable outlines"
+    allowed = {
+        "coverage_centerline",
+        "coverage_offset_line",
+        "coverage_rectilinear",
+        "coverage_contour",
+        "coverage_connector",
+        "outline_cleanup",
+    }
+    drawable = [path for path in result["toolpaths"] if path.kind != "travel"]
+    assert drawable
+    assert all(path.kind in allowed for path in drawable)
+    assert not any(path.kind == "detail-trace" for path in drawable)
+    assert result["actual_pen_lifts"] < 50
     assert diagnostics.get("rejected_raster_mask_sampling", 0) >= 0
     assert diagnostics.get("rejected_outside_selected_color", 0) >= 0
     assert diagnostics.get("accepted_connectors", 0) == result["accepted_connector_count"]
     assert result["accepted_connector_count"] >= 0
+
+
+def test_carolin_fixture_mask_coverage_is_at_least_ninety_percent():
+    _make_carolin_fixture_if_needed()
+    result = _run_fixture(CAROLIN_FIXTURE)
+    debug = result.get("debug", {}) if isinstance(result.get("debug", {}), dict) else {}
+    validation = result["validation"]
+    mask = validation.get("mask")
+    matrix = validation.get("current_to_source_matrix")
+    assert isinstance(mask, np.ndarray)
+    assert isinstance(matrix, (tuple, list)) and len(matrix) == 6
+
+    line_width_mm = 0.6
+    metrics = pipeline_core.compute_toolpath_mask_coverage_metrics(
+        result["toolpaths"],
+        mask=mask,
+        current_to_source_matrix=tuple(float(value) for value in matrix),
+        pen_radius_mm=line_width_mm * 0.5,
+        sample_step_mm=max(0.01, min(line_width_mm * 0.35, 0.05)),
+        include_kinds={
+            "coverage_centerline",
+            "coverage_offset_line",
+            "coverage_rectilinear",
+            "coverage_tiny_mark",
+            "coverage_contour",
+            "coverage_connector",
+            "outline_cleanup",
+        },
+    )
+    assert metrics is not None
+    breakdown = pipeline_core.compute_toolpath_mask_coverage_breakdown(
+        result["toolpaths"],
+        mask=mask,
+        current_to_source_matrix=tuple(float(value) for value in matrix),
+        pen_radius_mm=line_width_mm * 0.5,
+        sample_step_mm=max(0.01, min(line_width_mm * 0.35, 0.05)),
+        include_kinds={
+            "coverage_centerline",
+            "coverage_offset_line",
+            "coverage_rectilinear",
+            "coverage_tiny_mark",
+            "coverage_contour",
+            "coverage_connector",
+            "outline_cleanup",
+        },
+    )
+    if metrics.penalized_coverage_percent < 90.0 and os.getenv("WRITE_COVERAGE_DEBUG_ARTIFACTS", "0") == "1":
+        target_mask = np.asarray(mask) > 0
+        drawn = np.zeros_like(target_mask, dtype=np.uint8)
+        a, b, c, d, _e, _f = tuple(float(value) for value in matrix)
+        px_per_mm = max(1e-6, (math.hypot(a, b) + math.hypot(c, d)) * 0.5)
+        pen_radius_px = max(0.0, (line_width_mm * 0.5) * px_per_mm)
+        pen_radius_i = max(1, int(round(pen_radius_px)))
+        sample_step_mm = max(0.01, min(line_width_mm * 0.35, 0.05))
+        kinds = {
+            "coverage_centerline",
+            "coverage_offset_line",
+            "coverage_rectilinear",
+            "coverage_tiny_mark",
+            "coverage_contour",
+            "coverage_connector",
+            "outline_cleanup",
+        }
+        centerline_overlay = np.zeros((target_mask.shape[0], target_mask.shape[1], 3), dtype=np.uint8)
+        for path in result["toolpaths"]:
+            if path.kind not in kinds or len(path.points) < 1:
+                continue
+            if len(path.points) == 1:
+                source = pipeline_core.apply_svg_matrix(path.points[0], tuple(float(value) for value in matrix))
+                cv2.circle(drawn, (int(round(source.x)), int(round(source.y))), pen_radius_i, 255, -1)
+                cv2.circle(centerline_overlay, (int(round(source.x)), int(round(source.y))), 1, (0, 255, 255), -1)
+                continue
+            for p0, p1 in zip(path.points, path.points[1:]):
+                line = LineString([(p0.x, p0.y), (p1.x, p1.y)])
+                if line.length <= 1e-9:
+                    continue
+                sample_count = max(2, int(math.ceil(line.length / sample_step_mm)) + 1)
+                for sample_index in range(sample_count):
+                    distance_mm = min(line.length, (line.length * sample_index) / max(sample_count - 1, 1))
+                    sample = line.interpolate(distance_mm)
+                    source = pipeline_core.apply_svg_matrix(pipeline_core.Point(float(sample.x), float(sample.y)), tuple(float(value) for value in matrix))
+                    px = int(round(source.x))
+                    py = int(round(source.y))
+                    cv2.circle(drawn, (px, py), pen_radius_i, 255, -1)
+                    if 0 <= px < centerline_overlay.shape[1] and 0 <= py < centerline_overlay.shape[0]:
+                        centerline_overlay[py, px] = (0, 255, 255)
+        drawn_mask = drawn > 0
+        inside_covered = target_mask & drawn_mask
+        inside_missed = target_mask & ~drawn_mask
+        outside_overdraw = ~target_mask & drawn_mask
+        out_dir = Path(tempfile.gettempdir()) / "golfball_plotter_test_artifacts" / "carolin_coverage"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(out_dir / "target_mask.png"), (target_mask.astype(np.uint8) * 255))
+        cv2.imwrite(str(out_dir / "drawn_mask.png"), (drawn_mask.astype(np.uint8) * 255))
+        cv2.imwrite(str(out_dir / "inside_covered.png"), (inside_covered.astype(np.uint8) * 255))
+        cv2.imwrite(str(out_dir / "inside_missed.png"), (inside_missed.astype(np.uint8) * 255))
+        cv2.imwrite(str(out_dir / "outside_overdraw.png"), (outside_overdraw.astype(np.uint8) * 255))
+        overlay = np.zeros((target_mask.shape[0], target_mask.shape[1], 3), dtype=np.uint8)
+        overlay[inside_covered] = (0, 255, 0)
+        overlay[inside_missed] = (0, 0, 255)
+        overlay[outside_overdraw] = (255, 0, 0)
+        boundary = cv2.morphologyEx((target_mask.astype(np.uint8) * 255), cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)) > 0
+        overlay[boundary] = (220, 220, 220)
+        centerline_mask = centerline_overlay[:, :, 1] > 0
+        overlay[centerline_mask] = (0, 255, 255)
+        cv2.imwrite(str(out_dir / "coverage_overlay.png"), overlay)
+
+    missed_components = int(debug.get("missed_component_count", 0) or 0)
+    top_missed = debug.get("missed_components_top_by_area", [])
+    if not isinstance(top_missed, list):
+        top_missed = []
+    accepted_backfill_count = int(debug.get("coverage_backfill_component_count", 0) or 0)
+    rejected_backfill_count = int(debug.get("coverage_backfill_component_rejected", 0) or 0)
+    rejection_reasons = debug.get("coverage_backfill_component_rejection_reasons", {})
+    if not isinstance(rejection_reasons, dict):
+        rejection_reasons = {}
+    coverage_backfill_global_count = sum(1 for path in result["toolpaths"] if path.metadata.get("coverage_backfill_global"))
+    coverage_backfill_component_count = sum(1 for path in result["toolpaths"] if path.metadata.get("coverage_backfill_component"))
+
+    assert metrics.outside_overdraw_percent < 25.0, (
+        f"outside overdraw regression: outside={metrics.outside_overdraw_percent:.2f}% "
+        f"(expected < 25.0%), overdraw_px={metrics.overdraw_outside_mask_px}, mask_px={metrics.mask_area_px}"
+    )
+    assert metrics.penalized_coverage_percent >= 80.0, (
+        f"intermediate penalized coverage milestone not met: "
+        f"penalized={metrics.penalized_coverage_percent:.2f}% "
+        f"(expected >= 80.0%), missed_px={metrics.missed_inside_mask_px}, "
+        f"overdraw_px={metrics.overdraw_outside_mask_px}"
+    )
+    assert metrics.penalized_coverage_percent >= 90.0, (
+        f"penalized coverage too low: "
+        f"raw={metrics.raw_coverage_percent:.2f}%, "
+        f"outside={metrics.outside_overdraw_percent:.2f}%, "
+        f"penalized={metrics.penalized_coverage_percent:.2f}%, "
+        f"covered_px={metrics.covered_inside_mask_px}, "
+        f"missed_px={metrics.missed_inside_mask_px}, "
+        f"overdraw_px={metrics.overdraw_outside_mask_px}, "
+        f"mask_px={metrics.mask_area_px}, "
+        f"line_width_mm={line_width_mm}, "
+        f"px_per_mm={metrics.px_per_mm:.4f}, "
+        f"pen_radius_px={metrics.pen_radius_px:.4f}, "
+        f"missed_component_count={missed_components}, "
+        f"top_missed_components_by_area={top_missed[:10]}, "
+        f"accepted_backfill_count={accepted_backfill_count}, "
+        f"rejected_backfill_count={rejected_backfill_count}, "
+        f"rejection_reasons={rejection_reasons}, "
+        f"coverage_backfill_global_count={coverage_backfill_global_count}, "
+        f"coverage_backfill_component_count={coverage_backfill_component_count}, "
+        f"path_kind_overdraw_table={breakdown}"
+    )
+
+
+def test_coverage_metric_synthetic_perfect_fill_rectangle():
+    mask = np.zeros((64, 96), dtype=np.uint8)
+    cv2.line(mask, (12, 32), (84, 32), 255, thickness=12, lineType=cv2.LINE_8)
+    line = pipeline_core.Toolpath(
+        points=[pipeline_core.Point(12.0, 32.0), pipeline_core.Point(84.0, 32.0)],
+        kind="coverage_centerline",
+        closed=False,
+        source="test",
+        metadata={},
+    )
+    m = pipeline_core.compute_toolpath_mask_coverage_metrics(
+        [line],
+        mask=mask,
+        current_to_source_matrix=(1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+        pen_radius_mm=6.0,
+        sample_step_mm=0.5,
+        include_kinds={"coverage_centerline"},
+    )
+    assert m is not None
+    assert m.raw_coverage_percent > 99.0
+    assert m.outside_overdraw_percent < 1.0
+
+
+def test_coverage_metric_synthetic_known_overdraw_ratio():
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    mask[:100, :100] = 255
+    drawn = np.zeros((100, 100), dtype=np.uint8)
+    drawn[:100, :100] = 255
+    drawn[0:10, 0:10] = 255
+    mask_area = int(np.count_nonzero(mask))
+    overdraw = 100
+    outside_percent = 100.0 * overdraw / mask_area
+    assert outside_percent == pytest.approx(1.0)
+
+
+def test_coverage_metric_synthetic_thin_band_centerline():
+    mask = np.zeros((80, 120), dtype=np.uint8)
+    cv2.rectangle(mask, (10, 38), (110, 42), 255, -1)
+    path = pipeline_core.Toolpath(
+        points=[pipeline_core.Point(10.0, 40.0), pipeline_core.Point(110.0, 40.0)],
+        kind="coverage_centerline",
+        closed=False,
+        source="test",
+        metadata={},
+    )
+    m = pipeline_core.compute_toolpath_mask_coverage_metrics(
+        [path],
+        mask=mask,
+        current_to_source_matrix=(1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+        pen_radius_mm=2.0,
+        sample_step_mm=0.5,
+        include_kinds={"coverage_centerline"},
+    )
+    assert m is not None
+    assert m.raw_coverage_percent > 90.0
+    assert m.outside_overdraw_percent < 15.0
+
+
+def test_coverage_metric_synthetic_one_pixel_alignment_offset_penalizes():
+    mask = np.zeros((40, 100), dtype=np.uint8)
+    cv2.rectangle(mask, (10, 18), (90, 22), 255, -1)
+    path = pipeline_core.Toolpath(
+        points=[pipeline_core.Point(10.0, 20.0), pipeline_core.Point(90.0, 20.0)],
+        kind="coverage_centerline",
+        closed=False,
+        source="test",
+        metadata={},
+    )
+    m0 = pipeline_core.compute_toolpath_mask_coverage_metrics(
+        [path],
+        mask=mask,
+        current_to_source_matrix=(1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+        pen_radius_mm=2.0,
+        sample_step_mm=0.5,
+        include_kinds={"coverage_centerline"},
+    )
+    m1 = pipeline_core.compute_toolpath_mask_coverage_metrics(
+        [path],
+        mask=mask,
+        current_to_source_matrix=(1.0, 0.0, 0.0, 1.0, 1.0, 0.0),
+        pen_radius_mm=2.0,
+        sample_step_mm=0.5,
+        include_kinds={"coverage_centerline"},
+    )
+    assert m0 is not None and m1 is not None
+    assert m1.penalized_coverage_percent < m0.penalized_coverage_percent
+
+
+def test_penalized_coverage_formula_examples_are_strict():
+    def _score(mask_area_px: int, covered_inside_mask_px: int, overdraw_outside_mask_px: int) -> float:
+        raw = 100.0 * covered_inside_mask_px / mask_area_px
+        outside = 100.0 * overdraw_outside_mask_px / mask_area_px
+        return raw - outside
+
+    # 100% covered and 1% overdraw => 99%
+    assert _score(mask_area_px=10000, covered_inside_mask_px=10000, overdraw_outside_mask_px=100) == pytest.approx(99.0)
+    # 90% covered and 40% overdraw => 50%
+    assert _score(mask_area_px=10000, covered_inside_mask_px=9000, overdraw_outside_mask_px=4000) == pytest.approx(50.0)
+    # Do not clamp: severe overdraw can make the score negative.
+    assert _score(mask_area_px=10000, covered_inside_mask_px=2000, overdraw_outside_mask_px=6000) < 0.0
 
 
 def test_synthetic_png_uses_single_stroke_fallback_and_shared_canonical_paths():

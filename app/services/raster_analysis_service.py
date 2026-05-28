@@ -620,17 +620,6 @@ class RasterAnalysisService:
 
     def _component_detail_segments(self, component_mask: np.ndarray) -> list[pipeline_core.Segment]:
         segments: list[pipeline_core.Segment] = []
-
-        contours, _ = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        for contour in contours:
-            ring = self._contour_ring(contour)
-            if len(ring) < 3:
-                continue
-            points = [pipeline_core.Point(x, y) for x, y in ring]
-            if points[0] != points[-1]:
-                points.append(points[0])
-            segments.append(pipeline_core.Segment(points=points, closed=True))
-
         skeleton = self._skeletonize_component(component_mask)
         skeleton_segments = self._skeleton_to_segments(skeleton)
         if skeleton_segments:
