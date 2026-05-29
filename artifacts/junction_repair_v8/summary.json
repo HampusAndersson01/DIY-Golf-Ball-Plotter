@@ -1,0 +1,110 @@
+{
+  "toolpath_counts": {
+    "fill-infill": 12,
+    "junction-centerline": 2,
+    "outline": 2
+  },
+  "outline_last_actual": true,
+  "last_two_roles": [
+    "FINAL_OUTER_OUTLINE",
+    "FINAL_INNER_OUTLINE"
+  ],
+  "contour_offset_debug": {
+    "outline_offset_mm": 0.3,
+    "contour_overlap_spacing_factor": 0.7,
+    "offset_step_mm": 0.42,
+    "levels": [
+      {
+        "offset_mm": 0.3,
+        "path_role": "PRINT_OUTLINE_FINAL",
+        "loop_count": 2,
+        "collapse_centerline_count": 0,
+        "stopped": false,
+        "reason": "ok"
+      },
+      {
+        "offset_mm": 0.72,
+        "path_role": "PRINT_CONTOUR_INFILL",
+        "loop_count": 2,
+        "collapse_centerline_count": 0,
+        "stopped": false,
+        "reason": "ok"
+      },
+      {
+        "offset_mm": 1.14,
+        "path_role": "PRINT_CONTOUR_INFILL",
+        "loop_count": 2,
+        "collapse_centerline_count": 0,
+        "stopped": false,
+        "reason": "ok"
+      },
+      {
+        "offset_mm": 1.56,
+        "path_role": "PRINT_CONTOUR_INFILL",
+        "loop_count": 1,
+        "collapse_centerline_count": 0,
+        "stopped": false,
+        "reason": "ok"
+      },
+      {
+        "offset_mm": 1.98,
+        "path_role": "PRINT_CONTOUR_INFILL",
+        "loop_count": 4,
+        "collapse_centerline_count": 0,
+        "stopped": false,
+        "reason": "ok"
+      },
+      {
+        "offset_mm": 2.4,
+        "path_role": "PRINT_CONTOUR_INFILL",
+        "loop_count": 3,
+        "collapse_centerline_count": 0,
+        "stopped": false,
+        "reason": "ok"
+      },
+      {
+        "offset_mm": 2.82,
+        "path_role": "PRINT_CONTOUR_INFILL",
+        "loop_count": 0,
+        "collapse_centerline_count": 0,
+        "stopped": true,
+        "reason": "collapsed_or_empty"
+      }
+    ],
+    "infill_path_count": 12,
+    "crossed_contour_infill_path_count": 0,
+    "junction_centerline_count": 2,
+    "outline_path_count": 2,
+    "outer_outline_path_count": 1,
+    "inner_outline_path_count": 1,
+    "hole_count_before_cleanup": 1,
+    "hole_count_after_cleanup": 1,
+    "detail_trace_enabled": false,
+    "legacy_fill_disabled": true,
+    "max_overspill_mm": 0.05,
+    "max_overspill_area_ratio": 0.02,
+    "junction_repair_enabled": true,
+    "junction_residual_count_before_repair": 771,
+    "junction_residual_count_after_repair": 770,
+    "junction_rejected_candidate_count": 44,
+    "gap_residual_count_before_cleanup": 771,
+    "gap_residual_count_after_cleanup": 770,
+    "remaining_uncovered_area_mm2_before": 3.732150460951427,
+    "remaining_uncovered_area_mm2_after": 3.2224467447566543,
+    "remaining_uncovered_area_ratio_before": 0.01203466092651269,
+    "remaining_uncovered_area_ratio_after": 0.010391074618413045,
+    "hole_overspill_ratio": 0.0010212939642174712
+  },
+  "gcode_generation_audit": {
+    "legacy_kinds_forbidden_count": 0,
+    "contour_infill_path_count": 12,
+    "crossed_contour_infill_count": 0,
+    "junction_centerline_count": 2,
+    "collapse_centerline_count": 0,
+    "gap_repair_centerline_count": 0,
+    "gap_repair_dab_count": 0,
+    "outer_outline_count": 1,
+    "inner_outline_count": 1,
+    "outline_path_count": 2
+  }
+}
