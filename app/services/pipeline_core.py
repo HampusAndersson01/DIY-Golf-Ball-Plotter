@@ -12265,9 +12265,18 @@ def generate_toolpaths(
         offset_step_mm = pen_width_mm * contour_overlap_spacing_factor
         contour_simplify_tolerance_mm = min(0.03, pen_width_mm / 10.0)
         simplify_mm = max(simplify_tolerance_mm_value, contour_simplify_tolerance_mm)
+        # Keep inner contour loops nearly unsimplified; aggressive simplification
+        # at tight junctions can create self-crossing/collapsed artifacts.
+        infill_loop_simplify_mm = max(0.001, min(simplify_mm, pen_width_mm * 0.01))
         max_overspill_mm = min(0.05, pen_width_mm * 0.10)
         max_overspill_area_ratio = 0.02
-        junction_repair_enabled = True
+        coverage_repair_enabled = str(os.getenv("COVERAGE_REPAIR_ENABLED", "1")).strip().lower() not in {"0", "false", "no"}
+        min_visible_gap_area_mm2 = max(0.01, 0.03 * pen_width_mm * pen_width_mm)
+        min_visible_gap_width_mm = 0.10 * pen_width_mm
+        min_gap_repair_coverage_gain_ratio = 0.20
+        # Disable legacy centerline-based junction fallback in contour-only mode.
+        # Residual repair below is the only allowed post-pass.
+        junction_repair_enabled = False
         junction_residual_area_min_mm2 = max(0.002, 0.01 * pen_width_mm * pen_width_mm)
         junction_residual_area_max_mm2 = 8.0 * pen_width_mm * pen_width_mm
         junction_search_radius_mm = 2.5 * pen_width_mm
@@ -12482,15 +12491,17 @@ def generate_toolpaths(
                 if level == 0:
                     paths = _level0_outline_paths(level_geom, offset_mm, int(info["component_idx"]))
                 else:
-                    paths = geometry_to_closed_toolpaths(level_geom, "fill-infill", simplify_mm)
+                    # Keep contour loops conservative at sharp junctions to avoid
+                    # simplify-induced self-intersections/collapses.
+                    paths = geometry_to_closed_toolpaths(level_geom, "fill-infill", infill_loop_simplify_mm)
                 for loop_idx, path in enumerate(paths, start=1):
                     if len(path.points) < 4:
                         continue
                     role = "PRINT_OUTLINE_FINAL" if level == 0 else "PRINT_CONTOUR_INFILL"
                     path_kind = path.kind
                     if level > 0:
-                        shp = LineString([(point.x, point.y) for point in path.points])
-                        if not shp.is_simple:
+                        loop_line = LineString([(point.x, point.y) for point in path.points])
+                        if not loop_line.is_simple:
                             path_kind = "crossed-contour-infill"
                             role = "PRINT_CROSSED_CONTOUR_INFILL"
                     else:
@@ -12514,120 +12525,50 @@ def generate_toolpaths(
                             "crossed_contour": bool(path_kind == "crossed-contour-infill"),
                         },
                     )
+                    # If simplification still produced a non-simple contour, decompose into
+                    # local partial contour loops instead of drawing collapsed crossing lines.
+                    if level > 0 and clone.kind == "crossed-contour-infill":
+                        decomp_accepted = False
+                        try:
+                            base_line = LineString([(pt.x, pt.y) for pt in clone.points])
+                            noded = unary_union(base_line)
+                            local_polys = list(polygonize(noded))
+                        except Exception:
+                            local_polys = []
+                        for poly_idx, poly in enumerate(local_polys, start=1):
+                            pts = simplify_segment_points([Point(float(x), float(y)) for x, y in poly.exterior.coords], infill_loop_simplify_mm, True)
+                            if len(pts) < 4:
+                                continue
+                            sub = clone_toolpath(
+                                clone,
+                                points=pts,
+                                kind="fill-infill",
+                                closed=True,
+                                metadata={
+                                    **clone.metadata,
+                                    "path_role": "PARTIAL_CONTOUR_INFILL",
+                                    "crossed_contour_decomposed": True,
+                                    "crossed_contour_poly_index": int(poly_idx),
+                                },
+                            )
+                            if _accept_path_with_coverage(sub, min_gain_ratio=0.0, strict_hole_void_exclusion=True):
+                                infill_paths.append(sub)
+                                decomp_accepted = True
+                        if decomp_accepted:
+                            level_loop_count += 1
+                            continue
+                        # Do not emit unresolved crossed loops directly; they create
+                        # centerline-like collapse artifacts. Residual repair handles
+                        # any remaining printable islands after coverage analysis.
+                        level_collapse_count += 1
+                        continue
+
                     accepted = _accept_outline_path(clone) if level == 0 else _accept_path_with_coverage(clone)
                     if accepted:
                         if level == 0:
                             outline_paths.append(clone)
                         else:
-                            # For crossed/tangled contours, split into drawable graph edges
-                            # so G-code emission stays robust at junctions.
-                            if clone.kind == "crossed-contour-infill":
-                                try:
-                                    l = LineString([(pt.x, pt.y) for pt in clone.points])
-                                    dissolved = unary_union(l)
-                                    crossed_parts = extract_lines(dissolved)
-                                except Exception:
-                                    crossed_parts = []
-                                emitted = False
-                                for part_idx, part in enumerate(crossed_parts, start=1):
-                                    # Preserve mirrored crossed contours; aggressive simplification can
-                                    # collapse the tiny crossing geometry and reintroduce sliver gaps.
-                                    part_simplify_mm = min(simplify_mm, max(0.002, pen_width_mm * 0.03))
-                                    pts = simplify_segment_points([Point(float(x), float(y)) for x, y in part.coords], part_simplify_mm, False)
-                                    if len(pts) < 2:
-                                        continue
-                                    sub = clone_toolpath(
-                                        clone,
-                                        points=pts,
-                                        closed=False,
-                                        kind="crossed-contour-infill",
-                                        metadata={
-                                            **clone.metadata,
-                                            "crossed_split_part_index": int(part_idx),
-                                            "crossed_split_emitted": True,
-                                        },
-                                    )
-                                    infill_paths.append(sub)
-                                    emitted = True
-                                # Crossing-node repair: derive local centerline at high-degree nodes
-                                # in the noded crossed graph so final contour-offset self-intersections
-                                # get explicit fill through the middle.
-                                try:
-                                    endpoint_degree: dict[tuple[int, int], int] = {}
-                                    endpoint_xy: dict[tuple[int, int], tuple[float, float]] = {}
-                                    quant = max(1e-6, pen_width_mm * 0.05)
-                                    for part in crossed_parts:
-                                        coords = list(part.coords)
-                                        if len(coords) < 2:
-                                            continue
-                                        for cx, cy in (coords[0], coords[-1]):
-                                            key = (int(round(float(cx) / quant)), int(round(float(cy) / quant)))
-                                            endpoint_degree[key] = int(endpoint_degree.get(key, 0)) + 1
-                                            endpoint_xy[key] = (float(cx), float(cy))
-                                    for node_key, degree in endpoint_degree.items():
-                                        if degree < 4:
-                                            continue
-                                        nx, ny = endpoint_xy[node_key]
-                                        incident_vecs: list[tuple[float, float]] = []
-                                        for part in crossed_parts:
-                                            coords = list(part.coords)
-                                            if len(coords) < 2:
-                                                continue
-                                            sx, sy = float(coords[0][0]), float(coords[0][1])
-                                            ex, ey = float(coords[-1][0]), float(coords[-1][1])
-                                            if abs(sx - nx) <= quant and abs(sy - ny) <= quant:
-                                                incident_vecs.append((float(coords[1][0]) - sx, float(coords[1][1]) - sy))
-                                            elif abs(ex - nx) <= quant and abs(ey - ny) <= quant:
-                                                incident_vecs.append((float(coords[-2][0]) - ex, float(coords[-2][1]) - ey))
-                                        if not incident_vecs:
-                                            continue
-                                        sum_abs_x = sum(abs(vx) for vx, _vy in incident_vecs)
-                                        sum_abs_y = sum(abs(vy) for _vx, vy in incident_vecs)
-                                        if (sum_abs_x + sum_abs_y) <= 1e-9:
-                                            continue
-                                        if sum_abs_x >= sum_abs_y:
-                                            ux, uy = 1.0, 0.0
-                                        else:
-                                            ux, uy = 0.0, 1.0
-                                        half_len = min(junction_centerline_max_length_mm * 0.5, max(pen_width_mm * 1.6, 0.40))
-                                        probe = LineString([
-                                            (float(nx - ux * half_len), float(ny - uy * half_len)),
-                                            (float(nx + ux * half_len), float(ny + uy * half_len)),
-                                        ])
-                                        clipped = probe.intersection(printable_geometry)
-                                        for part in extract_lines(clipped):
-                                            coords = list(part.coords)
-                                            if len(coords) < 2:
-                                                continue
-                                            line = LineString(coords)
-                                            if line.length < max(0.08, pen_width_mm * 0.10):
-                                                continue
-                                            repair = Toolpath(
-                                                points=[Point(float(x), float(y)) for x, y in coords],
-                                                kind="junction-centerline",
-                                                closed=False,
-                                                source="crossed_contour_node_centerline",
-                                                metadata={
-                                                    "path_role": "JUNCTION_CENTERLINE",
-                                                    "fill_strategy": "contour_offset",
-                                                    "generated_from": "crossed_contour_node",
-                                                    "crossed_split_emitted": True,
-                                                    "crossed_node_degree": int(degree),
-                                                },
-                                            )
-                                            if _accept_path_with_coverage(
-                                                repair,
-                                                min_gain_ratio=0.0,
-                                                strict_hole_void_exclusion=True,
-                                            ):
-                                                infill_paths.append(repair)
-                                                break
-                                except Exception:
-                                    pass
-                                if not emitted:
-                                    infill_paths.append(clone)
-                            else:
-                                infill_paths.append(clone)
+                            infill_paths.append(clone)
                         level_loop_count += 1
 
             per_level.append({
@@ -13286,7 +13227,212 @@ def generate_toolpaths(
                             break
         infill_paths.extend(junction_paths)
         infill_paths = optimize_toolpath_order(infill_paths, strategy=travel_ordering)
+        coverage_residual_before_repair = printable_geometry if covered_geom is None or covered_geom.is_empty else printable_geometry.difference(covered_geom)
+        coverage_residual_before_components = normalize_geometry(coverage_residual_before_repair) if coverage_residual_before_repair is not None and not coverage_residual_before_repair.is_empty else []
+        gap_repair_paths: list[Toolpath] = []
+        rejected_gap_repair_geom = []
+
+        def _append_rejected_gap_candidate(candidate: Toolpath, reason: str) -> None:
+            if not isinstance(debug_obj, dict) or len(candidate.points) < 2:
+                return
+            try:
+                line = LineString([(point.x, point.y) for point in candidate.points])
+                if line.is_empty:
+                    return
+                rejected_gap_repair_geom.append((line.buffer(max(0.01, pen_width_mm * 0.5), cap_style=1, join_style=1), reason))
+            except Exception:
+                return
+
+        if coverage_repair_enabled and coverage_residual_before_repair is not None and not coverage_residual_before_repair.is_empty:
+            meaningful = []
+            for comp in coverage_residual_before_components:
+                area = float(comp.area)
+                min_x, min_y, max_x, max_y = comp.bounds
+                width = float(max_x - min_x)
+                height = float(max_y - min_y)
+                min_dim = max(0.0, min(width, height))
+                # Keep components that are either area-meaningful or clearly visible
+                # in one narrow dimension (triangular/sliver junction islands).
+                if area < (min_visible_gap_area_mm2 * 0.45) and min_dim < (min_visible_gap_width_mm * 0.45):
+                    continue
+                meaningful.append(comp)
+            for comp in sorted(meaningful, key=lambda geom: float(geom.area), reverse=True):
+                centroid = comp.centroid
+                if centroid is None or centroid.is_empty:
+                    continue
+                min_x, min_y, max_x, max_y = comp.bounds
+                width = float(max_x - min_x)
+                height = float(max_y - min_y)
+                area = float(comp.area)
+                bbox_area = max(1e-9, width * height)
+                aspect = max(width, height) / max(1e-9, min(width, height))
+                is_sliver = aspect >= 3.0
+                is_spot = area <= (2.5 * min_visible_gap_area_mm2)
+                is_triangular = (area / bbox_area) < 0.55 and not is_spot
+
+                candidates: list[Toolpath] = []
+                if is_spot:
+                    seg_len = max(0.06, pen_width_mm * 0.35)
+                    candidates.append(Toolpath(
+                        points=[
+                            Point(float(centroid.x - seg_len * 0.5), float(centroid.y)),
+                            Point(float(centroid.x + seg_len * 0.5), float(centroid.y)),
+                        ],
+                        kind="gap-repair-stroke",
+                        closed=False,
+                        source="coverage_gap_repair_spot_stroke",
+                        metadata={"path_role": "GAP_REPAIR_STROKE", "repair_gap_shape": "small_isolated_spot"},
+                    ))
+                else:
+                    # A) Prefer local contour repair first.
+                    core = _offset_geometry(comp, -(pen_width_mm * 0.30))
+                    if core is not None and not core.is_empty and len(normalize_geometry(core)) > 0:
+                        rep_poly = normalize_geometry(core)[0]
+                    else:
+                        rep_poly = None
+                    if rep_poly is not None and len(rep_poly.exterior.coords) >= 4:
+                        pts = simplify_segment_points([Point(float(x), float(y)) for x, y in rep_poly.exterior.coords], max(0.005, simplify_mm * 0.8), True)
+                        if len(pts) >= 4:
+                            candidates.append(Toolpath(
+                                points=pts,
+                                kind="fill-infill",
+                                closed=True,
+                                source="coverage_residual_contour_repair",
+                                metadata={"path_role": "RESIDUAL_CONTOUR_REPAIR", "repair_gap_shape": "local_contour"},
+                            ))
+                    major_line = None
+                    try:
+                        mrr = comp.minimum_rotated_rectangle
+                        corners = list(mrr.exterior.coords)[:-1] if mrr is not None and not mrr.is_empty else []
+                        if len(corners) == 4:
+                            e0 = ((corners[0][0] + corners[1][0]) * 0.5, (corners[0][1] + corners[1][1]) * 0.5)
+                            e1 = ((corners[2][0] + corners[3][0]) * 0.5, (corners[2][1] + corners[3][1]) * 0.5)
+                            e2 = ((corners[1][0] + corners[2][0]) * 0.5, (corners[1][1] + corners[2][1]) * 0.5)
+                            e3 = ((corners[3][0] + corners[0][0]) * 0.5, (corners[3][1] + corners[0][1]) * 0.5)
+                            l_a = LineString([e0, e1])
+                            l_b = LineString([e2, e3])
+                            major_line = l_a if l_a.length >= l_b.length else l_b
+                    except Exception:
+                        major_line = None
+                    if major_line is not None and not major_line.is_empty and major_line.length > 1e-9:
+                        core_for_stroke = _offset_geometry(comp, -(pen_width_mm * 0.20))
+                        if core_for_stroke is None or core_for_stroke.is_empty:
+                            core_for_stroke = comp
+                        clipped = major_line.intersection(core_for_stroke.buffer(0.10 * pen_width_mm, join_style=1))
+                        for part in extract_lines(clipped):
+                            coords = list(part.coords)
+                            if len(coords) < 2:
+                                continue
+                            candidates.append(Toolpath(
+                                points=[Point(float(x), float(y)) for x, y in coords],
+                                kind="gap-repair-stroke",
+                                closed=False,
+                                source="coverage_gap_repair_stroke",
+                                metadata={
+                                    "path_role": "GAP_REPAIR_STROKE",
+                                    "repair_gap_shape": "thin_sliver" if is_sliver else ("triangular_junction_gap" if is_triangular else "wider_local_island"),
+                                },
+                            ))
+                accepted = False
+                for cand in candidates:
+                    footprint = _path_footprint(cand)
+                    if footprint is None:
+                        _append_rejected_gap_candidate(cand, "empty_footprint")
+                        continue
+                    valid, _overspill_ratio, _protrusion = _is_footprint_valid(footprint, strict_hole_void_exclusion=True)
+                    if not valid:
+                        _append_rejected_gap_candidate(cand, "overspill_or_hole_intrusion")
+                        continue
+                    gain = footprint if covered_geom is None or covered_geom.is_empty else footprint.difference(covered_geom)
+                    gain_area = 0.0 if gain is None or gain.is_empty else float(gain.area)
+                    footprint_area = max(1e-9, float(footprint.area))
+                    gain_ratio = gain_area / footprint_area
+                    residual_cover = footprint.intersection(comp)
+                    residual_cover_area = 0.0 if residual_cover is None or residual_cover.is_empty else float(residual_cover.area)
+                    residual_cover_ratio = residual_cover_area / max(1e-9, area)
+                    # Allow overlap-heavy local repairs when they still cover a large part
+                    # of the actual residual island.
+                    if gain_ratio < min_gap_repair_coverage_gain_ratio and residual_cover_ratio < 0.45:
+                        _append_rejected_gap_candidate(cand, "negligible_coverage_gain")
+                        continue
+                    if _accept_path_with_coverage(cand, min_gain_ratio=0.0, strict_hole_void_exclusion=True):
+                        gap_repair_paths.append(cand)
+                        accepted = True
+                        break
+                # Last-chance local stroke for visibly meaningful unresolved residuals.
+                if (not accepted) and area >= (min_visible_gap_area_mm2 * 0.85):
+                    try:
+                        mrr = comp.minimum_rotated_rectangle
+                        corners = list(mrr.exterior.coords)[:-1] if mrr is not None and not mrr.is_empty else []
+                    except Exception:
+                        corners = []
+                    if len(corners) == 4:
+                        e0 = ((corners[0][0] + corners[1][0]) * 0.5, (corners[0][1] + corners[1][1]) * 0.5)
+                        e1 = ((corners[2][0] + corners[3][0]) * 0.5, (corners[2][1] + corners[3][1]) * 0.5)
+                        e2 = ((corners[1][0] + corners[2][0]) * 0.5, (corners[1][1] + corners[2][1]) * 0.5)
+                        e3 = ((corners[3][0] + corners[0][0]) * 0.5, (corners[3][1] + corners[0][1]) * 0.5)
+                        l_a = LineString([e0, e1])
+                        l_b = LineString([e2, e3])
+                        major_line = l_a if l_a.length >= l_b.length else l_b
+                        clipped = major_line.intersection(comp.buffer(0.35 * pen_width_mm, join_style=1))
+                        for part in extract_lines(clipped):
+                            coords = list(part.coords)
+                            if len(coords) < 2:
+                                continue
+                            fallback_stroke = Toolpath(
+                                points=[Point(float(x), float(y)) for x, y in coords],
+                                kind="gap-repair-stroke",
+                                closed=False,
+                                source="coverage_gap_repair_last_chance",
+                                metadata={"path_role": "GAP_REPAIR_STROKE", "repair_gap_shape": "last_chance_local_stroke"},
+                            )
+                            fp = _path_footprint(fallback_stroke)
+                            ok = False
+                            if fp is not None:
+                                valid, _o, _p = _is_footprint_valid(fp, strict_hole_void_exclusion=True)
+                                if valid:
+                                    cover = fp.intersection(comp)
+                                    cover_ratio = 0.0 if cover is None or cover.is_empty else float(cover.area) / max(1e-9, area)
+                                    ok = cover_ratio >= 0.35
+                            if ok and _accept_path_with_coverage(fallback_stroke, min_gain_ratio=0.0, strict_hole_void_exclusion=True):
+                                gap_repair_paths.append(fallback_stroke)
+                                accepted = True
+                                break
+                if not accepted and candidates:
+                    _append_rejected_gap_candidate(candidates[0], "no_candidate_accepted")
+
+        infill_paths.extend(gap_repair_paths)
+        infill_paths = optimize_toolpath_order(infill_paths, strategy=travel_ordering)
         result = merge_connected_toolpaths(infill_paths + outline_paths)
+        normalized_result: list[Toolpath] = []
+        for path in result:
+            role = str((path.metadata or {}).get("path_role", ""))
+            kind = str(path.kind)
+            if kind in {"collapse-centerline", "detail-trace", "detail-continuation", "hatch", "adaptive", "fill-infill-travel", "coverage_connector", "gap-repair-centerline"}:
+                # Hard-ban legacy kinds in contour-only mode.
+                continue
+            if kind == "junction-centerline":
+                normalized_result.append(clone_toolpath(
+                    path,
+                    kind="gap-repair-stroke",
+                    metadata={**path.metadata, "path_role": "GAP_REPAIR_STROKE", "repair_source": "junction_residual"},
+                ))
+                continue
+            if kind == "gap-repair-dab":
+                normalized_result.append(clone_toolpath(
+                    path,
+                    kind="gap-repair-stroke",
+                    metadata={**path.metadata, "path_role": "GAP_REPAIR_STROKE", "repair_gap_shape": "tiny_sliver"},
+                ))
+                continue
+            if kind == "crossed-contour-infill" and role != "CROSSED_CONTOUR_INFILL":
+                normalized_result.append(clone_toolpath(path, metadata={**path.metadata, "path_role": "CROSSED_CONTOUR_INFILL"}))
+                continue
+            if kind == "fill-infill" and role not in {"PRINT_CONTOUR_INFILL", "PARTIAL_CONTOUR_INFILL", "RESIDUAL_CONTOUR_REPAIR"}:
+                normalized_result.append(clone_toolpath(path, metadata={**path.metadata, "path_role": "PRINT_CONTOUR_INFILL"}))
+                continue
+            normalized_result.append(path)
+        result = normalized_result
         residual = printable_geometry if covered_geom is None or covered_geom.is_empty else printable_geometry.difference(covered_geom)
         residual_components = normalize_geometry(residual) if residual is not None and not residual.is_empty else []
         uncovered_before_area = float(residual_before_junction.area) if residual_before_junction is not None and not residual_before_junction.is_empty else 0.0
@@ -13324,8 +13470,14 @@ def generate_toolpaths(
                 "junction_residual_count_before_repair": int(len(residual_before_components)),
                 "junction_residual_count_after_repair": int(len(residual_components)),
                 "junction_rejected_candidate_count": int(rejected_junction_candidates),
+                "coverage_repair_enabled": bool(coverage_repair_enabled),
                 "gap_residual_count_before_cleanup": int(len(residual_before_components)),
                 "gap_residual_count_after_cleanup": int(len(residual_components)),
+                "gap_residual_count_before_repair": int(len(coverage_residual_before_components)),
+                "gap_residual_count_after_repair": int(len(residual_components)),
+                "gap_repair_stroke_count": int(sum(1 for path in result if str((path.metadata or {}).get("path_role", "")) == "GAP_REPAIR_STROKE")),
+                "gap_repair_dab_count": int(sum(1 for path in result if str((path.metadata or {}).get("path_role", "")) == "GAP_REPAIR_DAB")),
+                "residual_contour_repair_count": int(sum(1 for path in result if str((path.metadata or {}).get("path_role", "")) == "RESIDUAL_CONTOUR_REPAIR")),
                 "remaining_uncovered_area_mm2_before": float(uncovered_before_area),
                 "remaining_uncovered_area_mm2_after": float(uncovered_after_area),
                 "remaining_uncovered_area_ratio_before": float(uncovered_before_ratio),
@@ -13334,6 +13486,9 @@ def generate_toolpaths(
             }
             debug_append_geometry(debug_obj, "gap_residuals_before_cleanup", residual_before_junction, "gap-residual-before")
             debug_append_geometry(debug_obj, "gap_residuals_after_cleanup", residual, "gap-residual-after")
+            debug_append_geometry(debug_obj, "coverage_repair_residual_gaps", coverage_residual_before_repair, "gap-residual-detected")
+            for rejected_geom, rejected_reason in rejected_gap_repair_geom:
+                debug_append_geometry(debug_obj, "rejected_gap_repair_candidates", rejected_geom, f"gap-repair-rejected-{rejected_reason}")
 
         return result
 
@@ -13378,23 +13533,67 @@ def generate_toolpaths(
             debug_obj=debug,
         )
         toolpaths = assign_stable_path_ids(merge_connected_toolpaths(toolpaths))
-        legacy_kinds = {"detail-trace", "detail-continuation", "hatch", "adaptive", "fill-infill-travel", "coverage_connector", "collapse-centerline", "gap-repair-centerline", "gap-repair-dab"}
+        legacy_kinds = {"detail-trace", "detail-continuation", "hatch", "adaptive", "fill-infill-travel", "coverage_connector", "collapse-centerline", "gap-repair-centerline"}
+        has_holes = bool(any(len(poly.interiors) > 0 for poly in normalize_geometry(bundle.printable_geometry)))
         legacy_count = sum(1 for path in toolpaths if path.kind in legacy_kinds)
+        zero_length_metric_nonzero_move_count = 0
+        for path in toolpaths:
+            if len(path.points) < 2:
+                continue
+            max_surface = float((path.metadata or {}).get("max_surface_segment_mm_after_resampling", 0.0))
+            if max_surface <= 1e-12:
+                max_surface = max(_segment_lengths_mm(path.points, closed=path.closed), default=0.0)
+                path.metadata["max_surface_segment_mm_after_resampling"] = float(max_surface)
+            if max_surface > 1e-12:
+                continue
+            if any(not nearly_same_point(a, b, 1e-12) for a, b in zip(path.points, path.points[1:])):
+                zero_length_metric_nonzero_move_count += 1
+        contour_dbg = (debug or {}).get("contour_offset_debug", {}) if isinstance(debug, dict) else {}
+        remaining_uncovered_area_mm2 = float(contour_dbg.get("remaining_uncovered_area_mm2_after", 0.0) or 0.0)
+        remaining_uncovered_area_ratio = float(contour_dbg.get("remaining_uncovered_area_ratio_after", 0.0) or 0.0)
+        remaining_uncovered_area_tolerance_ratio = float(os.getenv("CONTOUR_REMAINING_UNCOVERED_TOLERANCE_RATIO", "0.02"))
+        path_role_counts: dict[str, int] = {}
+        for path in toolpaths:
+            role = str((path.metadata or {}).get("path_role", ""))
+            if role:
+                path_role_counts[role] = int(path_role_counts.get(role, 0)) + 1
+        outline_last = bool(
+            len(toolpaths) > 0
+            and str((toolpaths[-1].metadata or {}).get("path_role", "")).startswith("FINAL_")
+        )
         if isinstance(debug, dict):
             debug["gcode_generation_audit"] = {
                 "legacy_kinds_forbidden_count": int(legacy_count),
+                "legacy_detail_trace_count": int(sum(1 for path in toolpaths if path.kind in {"detail-trace", "detail-continuation"})),
+                "collapse_centerline_count": int(sum(1 for path in toolpaths if path.kind == "collapse-centerline")),
+                "hatch_count": int(sum(1 for path in toolpaths if path.kind == "hatch")),
+                "adaptive_count": int(sum(1 for path in toolpaths if path.kind == "adaptive")),
+                "legacy_connector_count": int(sum(1 for path in toolpaths if path.kind in {"fill-infill-travel", "coverage_connector", "gap-repair-centerline"})),
+                "zero_length_metric_nonzero_move_count": int(zero_length_metric_nonzero_move_count),
                 "contour_infill_path_count": int(sum(1 for path in toolpaths if path.kind == "fill-infill")),
                 "crossed_contour_infill_count": int(sum(1 for path in toolpaths if path.kind == "crossed-contour-infill")),
-                "junction_centerline_count": int(sum(1 for path in toolpaths if path.kind == "junction-centerline")),
-                "collapse_centerline_count": int(sum(1 for path in toolpaths if path.kind == "collapse-centerline")),
-                "gap_repair_centerline_count": int(sum(1 for path in toolpaths if path.kind == "gap-repair-centerline")),
-                "gap_repair_dab_count": int(sum(1 for path in toolpaths if path.kind == "gap-repair-dab")),
+                "gap_repair_stroke_count": int(sum(1 for path in toolpaths if str((path.metadata or {}).get("path_role", "")) == "GAP_REPAIR_STROKE")),
+                "residual_repair_count": int(sum(1 for path in toolpaths if str((path.metadata or {}).get("path_role", "")) in {"RESIDUAL_CONTOUR_REPAIR", "GAP_REPAIR_STROKE"})),
+                "remaining_uncovered_area_mm2": float(remaining_uncovered_area_mm2),
+                "remaining_uncovered_area_ratio": float(remaining_uncovered_area_ratio),
                 "outer_outline_count": int(sum(1 for path in toolpaths if path.kind == "outline" and str(path.metadata.get("path_role", "")) == "FINAL_OUTER_OUTLINE")),
                 "inner_outline_count": int(sum(1 for path in toolpaths if path.kind == "outline" and str(path.metadata.get("path_role", "")) == "FINAL_INNER_OUTLINE")),
                 "outline_path_count": int(sum(1 for path in toolpaths if path.kind == "outline")),
+                "outline_last": bool(outline_last),
+                "path_role_counts": path_role_counts,
             }
         if legacy_count > 0:
             raise AssertionError("Contour-only mode violation: legacy path kinds present in toolpath output")
+        if zero_length_metric_nonzero_move_count > 0:
+            raise AssertionError("Contour-only mode violation: nonzero move path has zero max_surface_segment_mm_after_resampling")
+        if not outline_last:
+            raise AssertionError("Contour-only mode violation: final outline is not last")
+        if has_holes and int(sum(1 for path in toolpaths if path.kind == "outline" and str(path.metadata.get("path_role", "")) == "FINAL_INNER_OUTLINE")) <= 0:
+            raise AssertionError("Contour-only mode violation: missing FINAL_INNER_OUTLINE for geometry with holes")
+        if remaining_uncovered_area_ratio > remaining_uncovered_area_tolerance_ratio:
+            raise AssertionError(
+                f"Contour-only mode violation: remaining uncovered area ratio {remaining_uncovered_area_ratio:.6f} exceeds tolerance {remaining_uncovered_area_tolerance_ratio:.6f}"
+            )
         return toolpaths
 
     detail_clip_region = None
@@ -14031,10 +14230,11 @@ def generate_gcode_from_toolpaths(
             raise AssertionError(
                 f"{toolpath.kind} {toolpath.path_id or '<unassigned>'} was projected {toolpath.metadata.get('projection_count', 0)} times"
             )
-        if toolpath.kind in {"outline", "fill-wall", "fill-infill", "collapse-centerline", "gap-repair-centerline", "gap-repair-dab", "detail-trace", "detail-continuation"} and len(toolpath.points) >= 2:
-            if "max_surface_segment_mm_after_resampling" not in toolpath.metadata:
-                continue
+        if toolpath.kind in {"outline", "fill-wall", "fill-infill", "crossed-contour-infill", "junction-centerline", "gap-repair-stroke", "gap-repair-dab"} and len(toolpath.points) >= 2:
             max_surface = float(toolpath.metadata.get("max_surface_segment_mm_after_resampling", 0.0))
+            if max_surface <= 1e-12:
+                max_surface = max(_segment_lengths_mm(toolpath.points, closed=toolpath.closed), default=0.0)
+                toolpath.metadata["max_surface_segment_mm_after_resampling"] = float(max_surface)
             if max_surface <= 1e-12:
                 nonzero_move = any(not nearly_same_point(a, b, 1e-12) for a, b in zip(toolpath.points, toolpath.points[1:]))
                 if nonzero_move:
@@ -14114,17 +14314,8 @@ def generate_gcode_from_toolpaths(
         "fill-infill",
         "crossed-contour-infill",
         "junction-centerline",
-        "collapse-centerline",
-        "gap-repair-centerline",
+        "gap-repair-stroke",
         "gap-repair-dab",
-        "detail-trace",
-        "detail-continuation",
-        "coverage_contour",
-        "coverage_offset_line",
-        "coverage_rectilinear",
-        "coverage_centerline",
-        "coverage_tiny_mark",
-        "outline_cleanup",
     }
     connector_kinds = {"fill-infill-travel", "coverage_connector"}
 

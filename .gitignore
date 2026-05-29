@@ -35,6 +35,9 @@ Thumbs.db
 # Logs
 *.log
 
+# Local generation artifacts
+artifacts/
+
 # Local source media for README GIF generation
 docs/videos/
 docs/assets/*-source.mp4
