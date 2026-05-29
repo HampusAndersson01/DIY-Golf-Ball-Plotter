@@ -214,6 +214,23 @@ def test_wide_c_shape_generates_nested_contour_infill_without_detail():
     )
 
 
+def test_holes_preserve_inner_final_outline():
+    outer = ShapelyPoint(0.0, 0.0).buffer(8.0, quad_segs=96)
+    inner = ShapelyPoint(0.0, 0.0).buffer(4.0, quad_segs=96)
+    donut = outer.difference(inner)
+    toolpaths = _generate_fill_toolpaths(
+        donut,
+        line_width_mm=0.6,
+        fill_strategy="contour_offset",
+        allow_pen_down_infill_connectors=False,
+    )
+    outer_outlines = [p for p in toolpaths if p.kind == "outline" and str((p.metadata or {}).get("path_role", "")) == "FINAL_OUTER_OUTLINE"]
+    inner_outlines = [p for p in toolpaths if p.kind == "outline" and str((p.metadata or {}).get("path_role", "")) == "FINAL_INNER_OUTLINE"]
+    assert outer_outlines
+    assert inner_outlines
+    assert not any(p.kind in {"detail-trace", "detail-continuation"} for p in toolpaths)
+
+
 def test_final_outline_preserves_outer_and_inner_hole_boundaries():
     outer = _rect(width_mm=10.0, height_mm=10.0)
     hole = Polygon([(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0)])

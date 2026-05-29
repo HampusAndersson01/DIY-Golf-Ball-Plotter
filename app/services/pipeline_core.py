@@ -12269,6 +12269,7 @@ def generate_toolpaths(
         max_overspill_area_ratio = 0.02
 
         per_level: list[dict[str, Any]] = []
+        hole_count_before = sum(len(poly.interiors) for poly in normalize_geometry(printable_geometry))
         covered_geom: Any = Polygon()
 
         def _path_footprint(path: Toolpath) -> Any:
@@ -12282,7 +12283,8 @@ def generate_toolpaths(
         def _is_footprint_valid(footprint: Any) -> tuple[bool, float, float]:
             if footprint is None or footprint.is_empty:
                 return False, 1.0, max_overspill_mm + 1.0
-            overspill = footprint.difference(printable_geometry)
+            allowed_region = printable_geometry.buffer(max_overspill_mm, join_style=1)
+            overspill = footprint.difference(allowed_region)
             overspill_area = float(overspill.area) if overspill is not None and not overspill.is_empty else 0.0
             overspill_ratio = overspill_area / max(1e-9, float(footprint.area))
             protrusion_mm = 0.0
@@ -12373,6 +12375,51 @@ def generate_toolpaths(
             })
             return valid
 
+        def _level0_outline_paths(level_geom: Any, offset_mm: float, component_idx: int) -> list[Toolpath]:
+            out: list[Toolpath] = []
+            for poly in normalize_geometry(level_geom):
+                ext = simplify_segment_points([Point(float(x), float(y)) for x, y in poly.exterior.coords], simplify_mm, True)
+                if len(ext) >= 4:
+                    out.append(Toolpath(
+                        points=ext,
+                        kind="outline",
+                        closed=True,
+                        source="final_outline_offset_outer",
+                        metadata={
+                            "path_role": "FINAL_OUTER_OUTLINE",
+                            "ring_role": "outer",
+                            "offset_mm": float(offset_mm),
+                            "offset_level": 0,
+                            "fill_strategy": "contour_offset",
+                            "generated_from": "final_fill_clip_polygon",
+                            "source_region_id": f"component_{int(component_idx):03d}",
+                            "source_polygon_matches_infill_clip_polygon": True,
+                            "outline_uses_infill_clip_polygon": True,
+                        },
+                    ))
+                for ring in poly.interiors:
+                    pts = simplify_segment_points([Point(float(x), float(y)) for x, y in ring.coords], simplify_mm, True)
+                    if len(pts) >= 4:
+                        out.append(Toolpath(
+                            points=pts,
+                            kind="outline",
+                            closed=True,
+                            source="final_outline_offset_inner",
+                            metadata={
+                                "path_role": "FINAL_INNER_OUTLINE",
+                                "ring_role": "hole",
+                                "offset_mm": float(offset_mm),
+                                "offset_level": 0,
+                                "fill_strategy": "contour_offset",
+                                "generated_from": "final_fill_clip_polygon",
+                                "source_region_id": f"component_{int(component_idx):03d}",
+                                "source_polygon_matches_infill_clip_polygon": True,
+                                "outline_uses_infill_clip_polygon": True,
+                                "is_hole": True,
+                            },
+                        ))
+            return out
+
         # Component-aware progression: each component advances independently.
         component_infos: list[dict[str, Any]] = []
         for component_idx, component in enumerate(normalize_geometry(printable_geometry), start=1):
@@ -12398,8 +12445,10 @@ def generate_toolpaths(
                     info["active"] = False
                     continue
 
-                polygons_for_level = normalize_geometry(level_geom)
-                paths = geometry_to_closed_toolpaths(level_geom, "outline" if level == 0 else "fill-infill", simplify_mm)
+                if level == 0:
+                    paths = _level0_outline_paths(level_geom, offset_mm, int(info["component_idx"]))
+                else:
+                    paths = geometry_to_closed_toolpaths(level_geom, "fill-infill", simplify_mm)
                 for loop_idx, path in enumerate(paths, start=1):
                     if len(path.points) < 4:
                         continue
@@ -12410,6 +12459,8 @@ def generate_toolpaths(
                         if not shp.is_simple:
                             path_kind = "crossed-contour-infill"
                             role = "PRINT_CROSSED_CONTOUR_INFILL"
+                    else:
+                        role = str(path.metadata.get("path_role", "PRINT_OUTLINE_FINAL"))
                     clone = clone_toolpath(
                         path,
                         kind=path_kind,
@@ -12427,7 +12478,6 @@ def generate_toolpaths(
                             "source_polygon_matches_infill_clip_polygon": True,
                             "outline_uses_infill_clip_polygon": bool(level == 0),
                             "crossed_contour": bool(path_kind == "crossed-contour-infill"),
-                            "ring_role": ("outer" if loop_idx <= max(1, len(polygons_for_level)) else "hole") if level == 0 else "fill",
                         },
                     )
                     accepted = _accept_outline_path(clone) if level == 0 else _accept_path_with_coverage(clone)
@@ -12480,6 +12530,40 @@ def generate_toolpaths(
                 break
 
         infill_paths = optimize_toolpath_order(infill_paths, strategy=travel_ordering)
+        # Local junction helper: narrow residuals can get one clean centerline.
+        junction_paths: list[Toolpath] = []
+        residual_junction = printable_geometry if covered_geom is None or covered_geom.is_empty else printable_geometry.difference(covered_geom)
+        if residual_junction is not None and not residual_junction.is_empty:
+            slicer = SlicerService()
+            for j_idx, comp in enumerate(normalize_geometry(residual_junction), start=1):
+                if float(comp.area) < max(1e-6, pen_width_mm * pen_width_mm * 0.03):
+                    continue
+                min_x, min_y, max_x, max_y = comp.bounds
+                if min(max_x - min_x, max_y - min_y) > (pen_width_mm * 1.15):
+                    continue
+                cands = slicer._generate_centerline_fallback(
+                    comp,
+                    angle_deg=0.0,
+                    min_segment_length_mm=max(0.01, pen_width_mm * 0.25),
+                    tolerance_mm=max(0.01, simplify_mm),
+                    kind="junction-centerline",
+                )
+                for c_idx, cand in enumerate(cands, start=1):
+                    tagged = clone_toolpath(
+                        cand,
+                        metadata={
+                            **cand.metadata,
+                            "path_role": "JUNCTION_CENTERLINE",
+                            "fill_strategy": "contour_offset",
+                            "generated_from": "junction_residual",
+                            "junction_index": int(j_idx),
+                            "junction_candidate_index": int(c_idx),
+                        },
+                    )
+                    if _accept_path_with_coverage(tagged):
+                        junction_paths.append(tagged)
+        infill_paths.extend(junction_paths)
+        infill_paths = optimize_toolpath_order(infill_paths, strategy=travel_ordering)
         result = merge_connected_toolpaths(infill_paths + outline_paths)
         residual = printable_geometry if covered_geom is None or covered_geom.is_empty else printable_geometry.difference(covered_geom)
         residual_components = normalize_geometry(residual) if residual is not None and not residual.is_empty else []
@@ -12497,7 +12581,12 @@ def generate_toolpaths(
                 "levels": per_level,
                 "infill_path_count": int(sum(1 for path in result if path.kind == "fill-infill")),
                 "crossed_contour_infill_path_count": int(sum(1 for path in result if path.kind == "crossed-contour-infill")),
+                "junction_centerline_count": int(sum(1 for path in result if path.kind == "junction-centerline")),
                 "outline_path_count": int(sum(1 for path in result if path.kind == "outline")),
+                "outer_outline_path_count": int(sum(1 for path in result if path.kind == "outline" and str(path.metadata.get("path_role", "")) == "FINAL_OUTER_OUTLINE")),
+                "inner_outline_path_count": int(sum(1 for path in result if path.kind == "outline" and str(path.metadata.get("path_role", "")) == "FINAL_INNER_OUTLINE")),
+                "hole_count_before_cleanup": int(hole_count_before),
+                "hole_count_after_cleanup": int(sum(len(poly.interiors) for poly in normalize_geometry(_offset_geometry(printable_geometry, -outline_offset_mm) or printable_geometry))),
                 "detail_trace_enabled": False,
                 "legacy_fill_disabled": True,
                 "max_overspill_mm": float(max_overspill_mm),
@@ -12555,16 +12644,19 @@ def generate_toolpaths(
             debug_obj=debug,
         )
         toolpaths = assign_stable_path_ids(merge_connected_toolpaths(toolpaths))
-        legacy_kinds = {"detail-trace", "detail-continuation", "hatch", "adaptive", "fill-infill-travel", "coverage_connector"}
+        legacy_kinds = {"detail-trace", "detail-continuation", "hatch", "adaptive", "fill-infill-travel", "coverage_connector", "collapse-centerline", "gap-repair-centerline", "gap-repair-dab"}
         legacy_count = sum(1 for path in toolpaths if path.kind in legacy_kinds)
         if isinstance(debug, dict):
             debug["gcode_generation_audit"] = {
                 "legacy_kinds_forbidden_count": int(legacy_count),
                 "contour_infill_path_count": int(sum(1 for path in toolpaths if path.kind == "fill-infill")),
                 "crossed_contour_infill_count": int(sum(1 for path in toolpaths if path.kind == "crossed-contour-infill")),
+                "junction_centerline_count": int(sum(1 for path in toolpaths if path.kind == "junction-centerline")),
                 "collapse_centerline_count": int(sum(1 for path in toolpaths if path.kind == "collapse-centerline")),
                 "gap_repair_centerline_count": int(sum(1 for path in toolpaths if path.kind == "gap-repair-centerline")),
                 "gap_repair_dab_count": int(sum(1 for path in toolpaths if path.kind == "gap-repair-dab")),
+                "outer_outline_count": int(sum(1 for path in toolpaths if path.kind == "outline" and str(path.metadata.get("path_role", "")) == "FINAL_OUTER_OUTLINE")),
+                "inner_outline_count": int(sum(1 for path in toolpaths if path.kind == "outline" and str(path.metadata.get("path_role", "")) == "FINAL_INNER_OUTLINE")),
                 "outline_path_count": int(sum(1 for path in toolpaths if path.kind == "outline")),
             }
         if legacy_count > 0:
@@ -13287,6 +13379,7 @@ def generate_gcode_from_toolpaths(
         "fill-wall",
         "fill-infill",
         "crossed-contour-infill",
+        "junction-centerline",
         "collapse-centerline",
         "gap-repair-centerline",
         "gap-repair-dab",
