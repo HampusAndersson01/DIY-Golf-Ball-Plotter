@@ -10764,6 +10764,100 @@ class SlicerService:
         )
         return fill_paths, region_debug, region_metrics, strategy
 
+    def _generate_contour_offset_fill(
+        self,
+        region: Any,
+        *,
+        line_width_mm: float,
+        spacing_mm: float,
+        angle_deg: float,
+        min_segment_length_mm: float,
+        tolerance_mm: float,
+    ) -> tuple[list[Toolpath], list[Toolpath], dict[str, Any]]:
+        if region is None or region.is_empty:
+            return [], [], {"fill_mode": "CONTOUR_OFFSET", "offset_ring_count": 0, "collapsed_residual_count": 0}
+
+        base_inset_mm = max(0.0, line_width_mm * 0.5)
+        step_mm = max(0.01, spacing_mm if spacing_mm > 0 else line_width_mm)
+        infill_paths: list[Toolpath] = []
+        ring_count = 0
+
+        for ring_index in range(1, 2049):
+            inset_mm = base_inset_mm + (ring_index * step_mm)
+            ring_geometry = _offset_geometry(region, -inset_mm)
+            if ring_geometry is None or ring_geometry.is_empty:
+                break
+            ring_paths = geometry_to_closed_toolpaths(ring_geometry, "fill-infill", tolerance_mm)
+            ring_paths = [path for path in ring_paths if segment_length(path.points) >= max(0.01, min_segment_length_mm)]
+            if not ring_paths:
+                continue
+            ring_count += 1
+            for path in ring_paths:
+                infill_paths.append(clone_toolpath(
+                    path,
+                    metadata={
+                        **path.metadata,
+                        "fill_mode": "contour_offset",
+                        "fill_strategy": "contour_offset",
+                        "scanline_offset_mm": inset_mm,
+                        "contour_offset_mm": inset_mm,
+                        "contour_offset_index": ring_index,
+                        "path_role": "PRINT_INFILL",
+                    },
+                ))
+
+        residual_detail_paths: list[Toolpath] = []
+        if infill_paths:
+            stroke_parts: list[Any] = []
+            stroke_radius = max(0.01, line_width_mm * 0.5)
+            for path in infill_paths:
+                if len(path.points) < 2:
+                    continue
+                line = LineString([(point.x, point.y) for point in path.points])
+                if line.is_empty or line.length <= 1e-9:
+                    continue
+                stroke_parts.append(line.buffer(stroke_radius, cap_style=1, join_style=1))
+            covered = unary_union(stroke_parts) if stroke_parts else None
+            residual = region if covered is None else region.difference(covered)
+        else:
+            residual = region
+
+        collapsed_residual_count = 0
+        if residual is not None and not residual.is_empty:
+            for component in normalize_geometry(residual):
+                min_x, min_y, max_x, max_y = component.bounds
+                local_width = min(max_x - min_x, max_y - min_y)
+                if local_width > (line_width_mm * 1.6):
+                    continue
+                detail = self._generate_centerline_fallback(
+                    component,
+                    angle_deg=angle_deg,
+                    min_segment_length_mm=max(0.01, min_segment_length_mm * 0.5),
+                    tolerance_mm=max(0.01, tolerance_mm),
+                    kind="detail-trace",
+                )
+                if not detail:
+                    detail = self._generate_tiny_dot_or_short_stroke(
+                        component,
+                        line_width_mm=line_width_mm,
+                        tolerance_mm=max(0.01, tolerance_mm),
+                        angle_deg=angle_deg,
+                        kind="detail-trace",
+                    )
+                if detail:
+                    collapsed_residual_count += 1
+                    residual_detail_paths.extend(detail)
+
+        debug_info = {
+            "fill_mode": "CONTOUR_OFFSET",
+            "fill_strategy": "contour_offset",
+            "offset_ring_count": int(ring_count),
+            "collapsed_residual_count": int(collapsed_residual_count),
+            "offset_base_inset_mm": float(base_inset_mm),
+            "offset_step_mm": float(step_mm),
+        }
+        return infill_paths, residual_detail_paths, debug_info
+
     def _augment_detail_contour_with_centerline_backstop(
         self,
         paths: list[Toolpath],
@@ -11512,24 +11606,56 @@ class SlicerService:
                     line_width_mm=line_width_mm,
                     region_index=region_index,
                 )
-                infill_paths, hybrid_region_debug, region_metrics, fill_strategy_name = self._generate_hybrid_region_fill(
-                    fill_region_source,
-                    line_width_mm=line_width_mm,
-                    scanline_spacing_mm=scanline_spacing_mm,
-                    angle_deg=resolved_infill_angle_deg,
-                    min_segment_length_mm=min_segment_length_resolved_mm,
-                    tolerance_mm=simplify_tolerance_resolved_mm,
-                    detail_tolerance_mm=thin_detail_tolerance_mm,
-                    small_shape_mode=small_shape_mode,
-                    thin_detail_overlap=thin_detail_overlap,
-                    allow_pen_down_infill_connectors=effective_allow_connectors,
-                    infill_path_mode=resolved_infill_path_mode,
-                    connector_validation=connector_validation,
-                    travel_optimization=travel_optimization,
-                    region_index=region_index,
-                    source_polygon_id=source_polygon_id,
-                    debug=debug,
-                )
+                use_contour_offset_fill = str(effective_fill_strategy).strip().lower() in {
+                    "adaptive_angle",
+                    "offset",
+                    "offset_fill",
+                    "contour",
+                    "contour_fill",
+                    "contour_offset",
+                }
+                if use_contour_offset_fill:
+                    contour_infill_paths, contour_detail_paths, contour_debug = self._generate_contour_offset_fill(
+                        fill_region_source,
+                        line_width_mm=line_width_mm,
+                        spacing_mm=scanline_spacing_mm,
+                        angle_deg=resolved_infill_angle_deg,
+                        min_segment_length_mm=min_segment_length_resolved_mm,
+                        tolerance_mm=max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
+                    )
+                    infill_paths = contour_infill_paths + contour_detail_paths
+                    region_metrics = self._compute_region_metrics(
+                        fill_region_source,
+                        spacing_mm=scanline_spacing_mm,
+                        line_width_mm=line_width_mm,
+                        preferred_angle_deg=resolved_infill_angle_deg,
+                        min_segment_length_mm=min_segment_length_resolved_mm,
+                    )
+                    hybrid_region_debug = {
+                        **contour_debug,
+                        "classification_reason": "contour_offset_fill_from_target_mask",
+                        "coverage_class": "offset_contour",
+                    }
+                    fill_strategy_name = "CONTOUR_OFFSET"
+                else:
+                    infill_paths, hybrid_region_debug, region_metrics, fill_strategy_name = self._generate_hybrid_region_fill(
+                        fill_region_source,
+                        line_width_mm=line_width_mm,
+                        scanline_spacing_mm=scanline_spacing_mm,
+                        angle_deg=resolved_infill_angle_deg,
+                        min_segment_length_mm=min_segment_length_resolved_mm,
+                        tolerance_mm=simplify_tolerance_resolved_mm,
+                        detail_tolerance_mm=thin_detail_tolerance_mm,
+                        small_shape_mode=small_shape_mode,
+                        thin_detail_overlap=thin_detail_overlap,
+                        allow_pen_down_infill_connectors=effective_allow_connectors,
+                        infill_path_mode=resolved_infill_path_mode,
+                        connector_validation=connector_validation,
+                        travel_optimization=travel_optimization,
+                        region_index=region_index,
+                        source_polygon_id=source_polygon_id,
+                        debug=debug,
+                    )
                 if fill_strategy_name == "RECTILINEAR_SERPENTINE":
                     slicer_counts["large_open_region_count"] += 1
                     slicer_counts["adaptive_total_cells"] += 1
@@ -12126,6 +12252,268 @@ def generate_toolpaths(
     expensive_coverage_repair: bool = True,
     debug: Optional[dict[str, Any]] = None,
 ) -> list[Toolpath]:
+    def _contour_only_fill_paths(
+        printable_geometry: Any,
+        *,
+        pen_width_mm: float,
+        simplify_tolerance_mm_value: float,
+        travel_ordering: str,
+        debug_obj: Optional[dict[str, Any]],
+    ) -> list[Toolpath]:
+        outline_offset_mm = pen_width_mm * 0.5
+        contour_overlap_spacing_factor = min(0.80, max(0.60, float(os.getenv("CONTOUR_OVERLAP_SPACING_FACTOR", "0.70"))))
+        offset_step_mm = pen_width_mm * contour_overlap_spacing_factor
+        contour_simplify_tolerance_mm = min(0.03, pen_width_mm / 10.0)
+        simplify_mm = max(simplify_tolerance_mm_value, contour_simplify_tolerance_mm)
+        max_overspill_mm = min(0.05, pen_width_mm * 0.10)
+        max_overspill_area_ratio = 0.02
+
+        per_level: list[dict[str, Any]] = []
+        covered_geom: Any = Polygon()
+
+        def _path_footprint(path: Toolpath) -> Any:
+            if len(path.points) < 2:
+                return None
+            line = LineString([(point.x, point.y) for point in path.points])
+            if line.is_empty or line.length <= 1e-9:
+                return None
+            return line.buffer(max(0.01, pen_width_mm * 0.5), cap_style=1, join_style=1)
+
+        def _is_footprint_valid(footprint: Any) -> tuple[bool, float, float]:
+            if footprint is None or footprint.is_empty:
+                return False, 1.0, max_overspill_mm + 1.0
+            overspill = footprint.difference(printable_geometry)
+            overspill_area = float(overspill.area) if overspill is not None and not overspill.is_empty else 0.0
+            overspill_ratio = overspill_area / max(1e-9, float(footprint.area))
+            protrusion_mm = 0.0
+            if overspill is not None and not overspill.is_empty:
+                boundary = printable_geometry.boundary
+                for poly in normalize_geometry(overspill):
+                    coords = list(poly.exterior.coords)
+                    step = max(1, int(len(coords) / 24))
+                    for idx in range(0, len(coords), step):
+                        protrusion_mm = max(
+                            protrusion_mm,
+                            float(ShapelyPoint(float(coords[idx][0]), float(coords[idx][1])).distance(boundary)),
+                        )
+            ok = overspill_ratio <= max_overspill_area_ratio and protrusion_mm <= max_overspill_mm
+            return ok, overspill_ratio, protrusion_mm
+
+        def _coverage_gain_ok(footprint: Any, min_gain_ratio: float = 0.05) -> bool:
+            nonlocal covered_geom
+            if footprint is None or footprint.is_empty:
+                return False
+            gain = footprint if covered_geom is None or covered_geom.is_empty else footprint.difference(covered_geom)
+            gain_area = 0.0 if gain is None or gain.is_empty else float(gain.area)
+            return gain_area >= max(1e-6, pen_width_mm * pen_width_mm * min_gain_ratio)
+
+        def _accept_path_with_coverage(path: Toolpath) -> bool:
+            nonlocal covered_geom
+            footprint = _path_footprint(path)
+            if footprint is None:
+                return False
+            valid, _ratio, _protrusion = _is_footprint_valid(footprint)
+            if not valid or not _coverage_gain_ok(footprint):
+                return False
+            covered_geom = footprint if covered_geom is None or covered_geom.is_empty else covered_geom.union(footprint)
+            return True
+
+        def _accept_outline_path(path: Toolpath) -> bool:
+            # Final outlines (outer + holes) must be preserved even if they don't add
+            # much new area coverage over infill. Validate footprint bounds only.
+            nonlocal covered_geom
+            footprint = _path_footprint(path)
+            if footprint is None:
+                return False
+            valid, _ratio, _protrusion = _is_footprint_valid(footprint)
+            if not valid:
+                return False
+            covered_geom = footprint if covered_geom is None or covered_geom.is_empty else covered_geom.union(footprint)
+            return True
+
+        def _paths_for_offset_level(*, offset_mm: float, path_role: str, kind: str) -> list[Toolpath]:
+            level_geom = _offset_geometry(printable_geometry, -offset_mm)
+            if level_geom is None or level_geom.is_empty:
+                per_level.append({
+                    "offset_mm": float(offset_mm),
+                    "path_role": path_role,
+                    "loop_count": 0,
+                    "stopped": True,
+                    "reason": "collapsed_or_empty",
+                })
+                return []
+            loops = geometry_to_closed_toolpaths(level_geom, kind, simplify_mm)
+            valid: list[Toolpath] = []
+            for loop_idx, loop in enumerate(loops, start=1):
+                if len(loop.points) < 4:
+                    continue
+                clone = clone_toolpath(
+                    loop,
+                    metadata={
+                        **loop.metadata,
+                        "path_role": path_role,
+                        "offset_mm": float(offset_mm),
+                        "offset_level_loop_index": int(loop_idx),
+                        "fill_mode": "contour_offset_only",
+                        "fill_strategy": "contour_offset",
+                        "coordinate_space_at_creation": "surface_mm",
+                        "generated_from": "final_fill_clip_polygon",
+                        "source_region_id": "component_001",
+                        "source_polygon_matches_infill_clip_polygon": True,
+                        "outline_uses_infill_clip_polygon": bool(kind == "outline"),
+                    },
+                )
+                valid.append(clone)
+            per_level.append({
+                "offset_mm": float(offset_mm),
+                "path_role": path_role,
+                "loop_count": int(len(valid)),
+                "stopped": False,
+                "reason": "ok",
+            })
+            return valid
+
+        # Component-aware progression: each component advances independently.
+        component_infos: list[dict[str, Any]] = []
+        for component_idx, component in enumerate(normalize_geometry(printable_geometry), start=1):
+            component_infos.append({
+                "component_idx": component_idx,
+                "base": component,
+                "active": True,
+            })
+
+        infill_paths: list[Toolpath] = []
+        outline_paths: list[Toolpath] = []
+        max_levels = 4096
+        for level in range(0, max_levels + 1):
+            offset_mm = outline_offset_mm if level == 0 else (outline_offset_mm + (level * offset_step_mm))
+            level_loop_count = 0
+            level_collapse_count = 0
+            for info in component_infos:
+                if not info["active"]:
+                    continue
+                component = info["base"]
+                level_geom = _offset_geometry(component, -offset_mm)
+                if level_geom is None or level_geom.is_empty:
+                    info["active"] = False
+                    continue
+
+                polygons_for_level = normalize_geometry(level_geom)
+                paths = geometry_to_closed_toolpaths(level_geom, "outline" if level == 0 else "fill-infill", simplify_mm)
+                for loop_idx, path in enumerate(paths, start=1):
+                    if len(path.points) < 4:
+                        continue
+                    role = "PRINT_OUTLINE_FINAL" if level == 0 else "PRINT_CONTOUR_INFILL"
+                    path_kind = path.kind
+                    if level > 0:
+                        shp = LineString([(point.x, point.y) for point in path.points])
+                        if not shp.is_simple:
+                            path_kind = "crossed-contour-infill"
+                            role = "PRINT_CROSSED_CONTOUR_INFILL"
+                    clone = clone_toolpath(
+                        path,
+                        kind=path_kind,
+                        metadata={
+                            **path.metadata,
+                            "path_role": role,
+                            "offset_mm": float(offset_mm),
+                            "offset_level_loop_index": int(loop_idx),
+                            "offset_level": int(level),
+                            "fill_mode": "contour_offset_only",
+                            "fill_strategy": "contour_offset",
+                            "coordinate_space_at_creation": "surface_mm",
+                            "generated_from": "final_fill_clip_polygon",
+                            "source_region_id": f"component_{int(info['component_idx']):03d}",
+                            "source_polygon_matches_infill_clip_polygon": True,
+                            "outline_uses_infill_clip_polygon": bool(level == 0),
+                            "crossed_contour": bool(path_kind == "crossed-contour-infill"),
+                            "ring_role": ("outer" if loop_idx <= max(1, len(polygons_for_level)) else "hole") if level == 0 else "fill",
+                        },
+                    )
+                    accepted = _accept_outline_path(clone) if level == 0 else _accept_path_with_coverage(clone)
+                    if accepted:
+                        if level == 0:
+                            outline_paths.append(clone)
+                        else:
+                            # For crossed/tangled contours, split into drawable graph edges
+                            # so G-code emission stays robust at junctions.
+                            if clone.kind == "crossed-contour-infill":
+                                try:
+                                    l = LineString([(pt.x, pt.y) for pt in clone.points])
+                                    dissolved = unary_union(l)
+                                    crossed_parts = extract_lines(dissolved)
+                                except Exception:
+                                    crossed_parts = []
+                                emitted = False
+                                for part_idx, part in enumerate(crossed_parts, start=1):
+                                    pts = simplify_segment_points([Point(float(x), float(y)) for x, y in part.coords], simplify_mm, False)
+                                    if len(pts) < 2:
+                                        continue
+                                    sub = clone_toolpath(
+                                        clone,
+                                        points=pts,
+                                        closed=False,
+                                        kind="crossed-contour-infill",
+                                        metadata={
+                                            **clone.metadata,
+                                            "crossed_split_part_index": int(part_idx),
+                                            "crossed_split_emitted": True,
+                                        },
+                                    )
+                                    infill_paths.append(sub)
+                                    emitted = True
+                                if not emitted:
+                                    infill_paths.append(clone)
+                            else:
+                                infill_paths.append(clone)
+                        level_loop_count += 1
+
+            per_level.append({
+                "offset_mm": float(offset_mm),
+                "path_role": "PRINT_OUTLINE_FINAL" if level == 0 else "PRINT_CONTOUR_INFILL",
+                "loop_count": int(level_loop_count),
+                "collapse_centerline_count": int(level_collapse_count),
+                "stopped": bool(level > 0 and level_loop_count == 0 and all(not info["active"] for info in component_infos)),
+                "reason": "ok" if (level_loop_count > 0 or level_collapse_count > 0) else "collapsed_or_empty",
+            })
+            if level > 0 and level_loop_count == 0 and all(not info["active"] for info in component_infos):
+                break
+
+        infill_paths = optimize_toolpath_order(infill_paths, strategy=travel_ordering)
+        result = merge_connected_toolpaths(infill_paths + outline_paths)
+        residual = printable_geometry if covered_geom is None or covered_geom.is_empty else printable_geometry.difference(covered_geom)
+        residual_components = normalize_geometry(residual) if residual is not None and not residual.is_empty else []
+        uncovered_before_area = float(residual.area) if residual is not None and not residual.is_empty else 0.0
+        uncovered_after_area = uncovered_before_area
+        mask_area = max(1e-9, float(printable_geometry.area))
+        uncovered_before_ratio = uncovered_before_area / mask_area
+        uncovered_after_ratio = uncovered_before_ratio
+
+        if isinstance(debug_obj, dict):
+            debug_obj["contour_offset_debug"] = {
+                "outline_offset_mm": float(outline_offset_mm),
+                "contour_overlap_spacing_factor": float(contour_overlap_spacing_factor),
+                "offset_step_mm": float(offset_step_mm),
+                "levels": per_level,
+                "infill_path_count": int(sum(1 for path in result if path.kind == "fill-infill")),
+                "crossed_contour_infill_path_count": int(sum(1 for path in result if path.kind == "crossed-contour-infill")),
+                "outline_path_count": int(sum(1 for path in result if path.kind == "outline")),
+                "detail_trace_enabled": False,
+                "legacy_fill_disabled": True,
+                "max_overspill_mm": float(max_overspill_mm),
+                "max_overspill_area_ratio": float(max_overspill_area_ratio),
+                "gap_residual_count_before_cleanup": int(len(residual_components)),
+                "gap_residual_count_after_cleanup": int(len(residual_components)),
+                "remaining_uncovered_area_mm2_before": float(uncovered_before_area),
+                "remaining_uncovered_area_mm2_after": float(uncovered_after_area),
+                "remaining_uncovered_area_ratio_before": float(uncovered_before_ratio),
+                "remaining_uncovered_area_ratio_after": float(uncovered_after_ratio),
+            }
+            debug_append_geometry(debug_obj, "gap_residuals_before_cleanup", residual, "gap-residual-before")
+            debug_append_geometry(debug_obj, "gap_residuals_after_cleanup", residual, "gap-residual-after")
+
+        return result
+
     toolpaths: list[Toolpath] = []
     simplify_tolerance_resolved_mm = simplify_tolerance_mm
     detail_tolerance_mm = max(simplify_tolerance_mm, thin_detail_simplify_mm)
@@ -12158,34 +12546,30 @@ def generate_toolpaths(
         ))
 
     if enable_fill and bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
-        slicer = SlicerService()
-        toolpaths.extend(slicer.slice_one_layer(
+        # Hard-switch to contour-only slicer path for normal generation.
+        toolpaths = _contour_only_fill_paths(
             bundle.printable_geometry,
-            line_width_mm=line_width_mm,
-            wall_count=wall_count,
-            infill_density=infill_density,
-            infill_angle_deg=infill_angle_deg,
-            fill_strategy=fill_strategy,
-            alternate_fill_angle_deg=alternate_fill_angle_deg,
-            outline_after_fill=outline_after_fill,
-            min_fill_area_mm2=min_fill_area_mm2,
-            min_segment_length_mm=min_segment_length_mm,
-            infill_spacing_mm=infill_spacing_mm,
-            min_fill_width_mm=min_fill_width_mm,
-            simplify_tolerance_mm=simplify_tolerance_mm,
-            remove_duplicate_paths=remove_duplicate_paths,
-            small_shape_mode=small_shape_mode,
-            thin_detail_mode=thin_detail_mode,
-            thin_detail_min_area_mm2=thin_detail_min_area_mm2,
-            thin_detail_simplify_mm=thin_detail_simplify_mm,
-            thin_detail_overlap=thin_detail_overlap,
-            travel_optimization=travel_optimization,
-            allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
-            infill_path_mode=infill_path_mode,
-            expensive_coverage_repair=expensive_coverage_repair,
-            connector_validation=bundle.metadata.get("connector_validation"),
-            debug=debug,
-        ))
+            pen_width_mm=line_width_mm,
+            simplify_tolerance_mm_value=simplify_tolerance_resolved_mm,
+            travel_ordering=travel_optimization,
+            debug_obj=debug,
+        )
+        toolpaths = assign_stable_path_ids(merge_connected_toolpaths(toolpaths))
+        legacy_kinds = {"detail-trace", "detail-continuation", "hatch", "adaptive", "fill-infill-travel", "coverage_connector"}
+        legacy_count = sum(1 for path in toolpaths if path.kind in legacy_kinds)
+        if isinstance(debug, dict):
+            debug["gcode_generation_audit"] = {
+                "legacy_kinds_forbidden_count": int(legacy_count),
+                "contour_infill_path_count": int(sum(1 for path in toolpaths if path.kind == "fill-infill")),
+                "crossed_contour_infill_count": int(sum(1 for path in toolpaths if path.kind == "crossed-contour-infill")),
+                "collapse_centerline_count": int(sum(1 for path in toolpaths if path.kind == "collapse-centerline")),
+                "gap_repair_centerline_count": int(sum(1 for path in toolpaths if path.kind == "gap-repair-centerline")),
+                "gap_repair_dab_count": int(sum(1 for path in toolpaths if path.kind == "gap-repair-dab")),
+                "outline_path_count": int(sum(1 for path in toolpaths if path.kind == "outline")),
+            }
+        if legacy_count > 0:
+            raise AssertionError("Contour-only mode violation: legacy path kinds present in toolpath output")
+        return toolpaths
 
     detail_clip_region = None
     if enable_fill and bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
@@ -12821,7 +13205,7 @@ def generate_gcode_from_toolpaths(
             raise AssertionError(
                 f"{toolpath.kind} {toolpath.path_id or '<unassigned>'} was projected {toolpath.metadata.get('projection_count', 0)} times"
             )
-        if toolpath.kind in {"outline", "fill-wall", "fill-infill", "detail-trace", "detail-continuation"} and len(toolpath.points) >= 2:
+        if toolpath.kind in {"outline", "fill-wall", "fill-infill", "collapse-centerline", "gap-repair-centerline", "gap-repair-dab", "detail-trace", "detail-continuation"} and len(toolpath.points) >= 2:
             if "max_surface_segment_mm_after_resampling" not in toolpath.metadata:
                 continue
             max_surface = float(toolpath.metadata.get("max_surface_segment_mm_after_resampling", 0.0))
@@ -12902,6 +13286,10 @@ def generate_gcode_from_toolpaths(
         "outline",
         "fill-wall",
         "fill-infill",
+        "crossed-contour-infill",
+        "collapse-centerline",
+        "gap-repair-centerline",
+        "gap-repair-dab",
         "detail-trace",
         "detail-continuation",
         "coverage_contour",

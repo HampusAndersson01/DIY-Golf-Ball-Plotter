@@ -1,0 +1,98 @@
+{
+  "counts": {
+    "fill-infill": 3,
+    "outline": 1
+  },
+  "preview_kinds": {
+    "travel": 5,
+    "fill-infill": 3,
+    "outline": 1
+  },
+  "legacy_count": 0,
+  "outline_last": true,
+  "contour_offset_debug": {
+    "outline_offset_mm": 0.3,
+    "contour_overlap_spacing_factor": 0.7,
+    "offset_step_mm": 0.42,
+    "levels": [
+      {
+        "offset_mm": 0.3,
+        "path_role": "PRINT_OUTLINE_FINAL",
+        "loop_count": 1,
+        "collapse_centerline_count": 0,
+        "stopped": false,
+        "reason": "ok"
+      },
+      {
+        "offset_mm": 0.72,
+        "path_role": "PRINT_CONTOUR_INFILL",
+        "loop_count": 1,
+        "collapse_centerline_count": 0,
+        "stopped": false,
+        "reason": "ok"
+      },
+      {
+        "offset_mm": 1.14,
+        "path_role": "PRINT_CONTOUR_INFILL",
+        "loop_count": 1,
+        "collapse_centerline_count": 0,
+        "stopped": false,
+        "reason": "ok"
+      },
+      {
+        "offset_mm": 1.56,
+        "path_role": "PRINT_CONTOUR_INFILL",
+        "loop_count": 1,
+        "collapse_centerline_count": 0,
+        "stopped": false,
+        "reason": "ok"
+      },
+      {
+        "offset_mm": 1.98,
+        "path_role": "PRINT_CONTOUR_INFILL",
+        "loop_count": 0,
+        "collapse_centerline_count": 0,
+        "stopped": true,
+        "reason": "collapsed_or_empty"
+      }
+    ],
+    "infill_path_count": 3,
+    "collapse_centerline_path_count": 0,
+    "gap_repair_centerline_count": 0,
+    "gap_repair_dab_count": 0,
+    "outline_path_count": 1,
+    "detail_trace_enabled": false,
+    "legacy_fill_disabled": true,
+    "max_overspill_mm": 0.05,
+    "max_overspill_area_ratio": 0.02,
+    "gap_residual_count_before_cleanup": 3,
+    "gap_residual_count_after_cleanup": 3,
+    "ignored_noise_gap_count": 0,
+    "remaining_uncovered_area_mm2_before": 0.2875823283681805,
+    "remaining_uncovered_area_mm2_after": 0.2875823283681805,
+    "remaining_uncovered_area_ratio_before": 0.0036250479136137395,
+    "remaining_uncovered_area_ratio_after": 0.0036250479136137395
+  },
+  "gcode_audit": {
+    "legacy_kinds_forbidden_count": 0,
+    "contour_infill_path_count": 3,
+    "collapse_centerline_count": 0,
+    "gap_repair_centerline_count": 0,
+    "gap_repair_dab_count": 0,
+    "outline_path_count": 1
+  },
+  "pen_lifts": 6,
+  "gcode_lines": 881,
+  "preview_paths": 9,
+  "pen_state_summary": {
+    "travel_moves_with_pen_down": 0,
+    "drawing_moves_with_pen_up": 0,
+    "long_pen_down_jumps": 0,
+    "max_pen_down_jump_mm_or_deg": 0.6905411444700997,
+    "actual_gcode_pen_lift_count": 6,
+    "connector_paths_total": 0,
+    "connector_paths_pen_down": 0,
+    "detail_continuation_paths_pen_down": 0,
+    "collinear_points_removed": 0
+  }
+}
