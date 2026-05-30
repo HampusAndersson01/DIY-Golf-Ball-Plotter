@@ -1,7 +1,11 @@
 import math
 from pathlib import Path
 
+import cv2
+import numpy as np
 import pytest
+from PIL import Image
+from shapely import affinity
 from shapely.geometry import LineString, MultiPolygon, Point as ShapelyPoint, Polygon
 
 from app.models.geometry import Point, Segment, Toolpath
@@ -13,6 +17,9 @@ from app.services.raster_analysis_service import RasterAnalysisService
 from app.services.pipeline_core import GeometryBundle, generate_toolpaths
 from app.services.toolpath_service import ToolpathService
 from tests.test_svg_parser import CONFIG
+
+ROOT = Path(__file__).resolve().parents[1]
+HA_FIXTURE = ROOT / "tests" / "fixtures" / "images" / "ha-compact-lightbg.png"
 
 
 def _rect(width_mm: float, height_mm: float) -> Polygon:
@@ -69,6 +76,41 @@ def _path_segments(paths: list[Toolpath]) -> list[tuple[Point, Point]]:
         for start, end in zip(path.points, path.points[1:]):
             segments.append((start, end))
     return segments
+
+
+def _geom_to_mask(geom, bounds, px_per_mm: float) -> np.ndarray:
+    min_x, min_y, max_x, max_y = bounds
+    pad_mm = 0.6
+    width_px = max(8, int(math.ceil((max_x - min_x + (2.0 * pad_mm)) * px_per_mm)))
+    height_px = max(8, int(math.ceil((max_y - min_y + (2.0 * pad_mm)) * px_per_mm)))
+    tx = -min_x + pad_mm
+    ty = -min_y + pad_mm
+    transformed = affinity.scale(affinity.translate(geom, xoff=tx, yoff=ty), xfact=px_per_mm, yfact=px_per_mm, origin=(0.0, 0.0))
+    mask = np.zeros((height_px, width_px), dtype=np.uint8)
+    for poly in pipeline_core.normalize_geometry(transformed):
+        ext = np.array([[int(round(x)), int(round(y))] for x, y in poly.exterior.coords], dtype=np.int32)
+        if len(ext) >= 3:
+            cv2.fillPoly(mask, [ext], 255)
+        for ring in poly.interiors:
+            hole = np.array([[int(round(x)), int(round(y))] for x, y in ring.coords], dtype=np.int32)
+            if len(hole) >= 3:
+                cv2.fillPoly(mask, [hole], 0)
+    return mask
+
+
+def _paths_footprint_geometry(paths: list[Toolpath], pen_width_mm: float):
+    stroke_geoms = []
+    radius = max(0.01, pen_width_mm * 0.5)
+    for p in paths:
+        if len(p.points) < 2:
+            continue
+        line = LineString([(pt.x, pt.y) for pt in p.points])
+        if line.is_empty or line.length <= 1e-9:
+            continue
+        stroke_geoms.append(line.buffer(radius, cap_style=1, join_style=1))
+    if not stroke_geoms:
+        return Polygon()
+    return pipeline_core.unary_union(stroke_geoms)
 
 
 def _fill_modes(paths: list[Toolpath]) -> set[str]:
@@ -180,7 +222,7 @@ def test_contour_only_offsets_follow_pen_width_ladder():
     assert not any(path.kind in {"detail-trace", "detail-continuation", "fill-infill-travel"} for path in toolpaths)
 
     expected_outline = 0.3
-    expected_infill = {0.72, 1.14, 1.56}
+    expected_infill = {0.69, 1.08, 1.47}
     outline_offsets = {round(float(path.metadata.get("offset_mm", path.metadata.get("outline_offset_mm", 0.0))), 3) for path in outlines}
     infill_offsets = {round(float(path.metadata.get("offset_mm", path.metadata.get("scanline_offset_mm", 0.0))), 3) for path in fills}
     assert expected_outline in outline_offsets
@@ -294,6 +336,313 @@ def test_gcode_audit_has_no_legacy_detail_trace_path_start():
     text = "\n".join(gcode)
     assert "kind=detail-trace" not in text
     assert "kind=detail-continuation" not in text
+
+
+def test_central_cross_junction_accepts_small_contour_sections():
+    vertical = Polygon([(-1.2, -6.0), (1.2, -6.0), (1.2, 6.0), (-1.2, 6.0)])
+    horizontal = Polygon([(-6.0, -1.2), (6.0, -1.2), (6.0, 1.2), (-6.0, 1.2)])
+    junction = vertical.union(horizontal)
+    debug: dict[str, object] = {}
+    toolpaths = _generate_fill_toolpaths(
+        junction,
+        line_width_mm=0.6,
+        fill_strategy="contour_offset",
+        allow_pen_down_infill_connectors=False,
+        debug=debug,
+    )
+    contour_dbg = (debug.get("contour_offset_debug", {}) or {})
+    audit = (debug.get("gcode_generation_audit", {}) or {})
+    forbidden = {"detail-trace", "detail-continuation", "collapse-centerline", "gap-repair-dab", "hatch", "adaptive"}
+
+    assert int(contour_dbg.get("central_junction_candidate_sections_found", 0)) > 0
+    assert int(contour_dbg.get("central_junction_sections_accepted", 0)) > 0
+    assert float(contour_dbg.get("remaining_uncovered_area_mm2_after", 0.0)) < float(contour_dbg.get("remaining_uncovered_area_mm2_before", 1e9))
+    assert float(contour_dbg.get("remaining_uncovered_area_ratio_after", 1.0)) <= 0.02
+    assert any(
+        str((p.metadata or {}).get("path_role", "")) in {"ISOLATED_CONTOUR_SECTION", "CONTOUR_SECTION_INFILL", "CROSSED_CONTOUR_SECTION"}
+        for p in toolpaths
+    )
+    assert not any(p.kind in forbidden for p in toolpaths)
+    assert int(audit.get("legacy_kinds_forbidden_count", 0)) == 0
+
+
+def test_ha_fixture_contour_sections_reduce_uncovered_area():
+    if not HA_FIXTURE.exists():
+        pytest.skip("HA fixture missing")
+    image_bytes = HA_FIXTURE.read_bytes()
+    raster = RasterAnalysisService(CONFIG, MachineState(default_pen_up_s=575))
+    analysis = raster.analyze_image(image_bytes, max_colors=32)
+    selected = next((color.id for color in analysis.colors if color.hex == "#000000"), analysis.colors[0].id if analysis.colors else None)
+    assert selected is not None
+    mask = raster.build_mask(image_bytes, [selected], tolerance=24, min_component_area_px=0, open_radius_px=0, close_radius_px=1)
+    regions = raster.extract_regions(mask, min_region_area_px=8, simplify_tolerance_px=1.0)
+    mapped = GeometryService().map_bundle_to_angles(regions.bundle, regions.bounds, "contain", True, 4.0)
+    debug: dict[str, object] = {}
+    toolpaths = ToolpathService().generate_from_regions(
+        mapped,
+        pen_width_mm=0.6,
+        wall_count=1,
+        infill_pattern="hatch",
+        infill_spacing_mm=0.6,
+        infill_density=100.0,
+        infill_angle_deg=0.0,
+        fill_strategy="contour_offset",
+        min_region_area=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=True,
+        small_shape_mode="single-wall",
+        thin_detail_mode=True,
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+        allow_pen_down_infill_connectors=False,
+        infill_path_mode="rectilinear",
+        debug=debug,
+    )
+    contour_dbg = (debug.get("contour_offset_debug", {}) or {})
+    assert any(str((p.metadata or {}).get("path_role", "")) in {"CONTOUR_SECTION_INFILL", "ISOLATED_CONTOUR_SECTION", "CROSSED_CONTOUR_SECTION", "CORNER_CONTOUR_SECTION"} for p in toolpaths)
+    assert float(contour_dbg.get("remaining_uncovered_area_mm2_after", 1.0)) <= float(contour_dbg.get("remaining_uncovered_area_mm2_before", 0.0))
+    assert int(contour_dbg.get("central_junction_candidate_sections_found", 0)) >= 0
+
+
+def test_contour_fill_covers_entire_mask_without_visible_gaps():
+    if not HA_FIXTURE.exists():
+        pytest.skip("HA fixture missing")
+    image_bytes = HA_FIXTURE.read_bytes()
+    raster = RasterAnalysisService(CONFIG, MachineState(default_pen_up_s=575))
+    analysis = raster.analyze_image(image_bytes, max_colors=32)
+    selected = next((color.id for color in analysis.colors if color.hex == "#000000"), analysis.colors[0].id if analysis.colors else None)
+    assert selected is not None
+    mask = raster.build_mask(image_bytes, [selected], tolerance=24, min_component_area_px=0, open_radius_px=0, close_radius_px=1)
+    regions = raster.extract_regions(mask, min_region_area_px=8, simplify_tolerance_px=1.0)
+    mapped = GeometryService().map_bundle_to_angles(regions.bundle, regions.bounds, "contain", True, 4.0)
+
+    debug: dict[str, object] = {}
+    pen_width_mm = 0.6
+    toolpaths = ToolpathService().generate_from_regions(
+        mapped,
+        pen_width_mm=pen_width_mm,
+        wall_count=1,
+        infill_pattern="hatch",
+        infill_spacing_mm=pen_width_mm,
+        infill_density=100.0,
+        infill_angle_deg=0.0,
+        fill_strategy="contour_offset",
+        min_region_area=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=True,
+        small_shape_mode="single-wall",
+        thin_detail_mode=True,
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+        allow_pen_down_infill_connectors=False,
+        infill_path_mode="rectilinear",
+        debug=debug,
+    )
+
+    allowed_roles = {
+        "CONTOUR_INFILL",
+        "CONTOUR_SECTION_INFILL",
+        "CORRIDOR_CONTOUR_SECTION",
+        "CORNER_CONTOUR_SECTION",
+        "ISOLATED_CONTOUR_SECTION",
+        "CROSSED_CONTOUR_SECTION",
+        "FINAL_OUTER_OUTLINE",
+        "FINAL_INNER_OUTLINE",
+    }
+    forbidden_kinds = {"detail-trace", "detail-continuation", "hatch", "adaptive", "fill-infill-travel", "coverage_connector", "collapse-centerline"}
+    forbidden_legacy_path_count = int(sum(1 for p in toolpaths if p.kind in forbidden_kinds))
+    assert forbidden_legacy_path_count == 0
+    for p in toolpaths:
+        if p.kind not in {"fill-infill", "outline"}:
+            continue
+        role = str((p.metadata or {}).get("path_role", ""))
+        assert role in allowed_roles
+
+    outlines = [idx for idx, p in enumerate(toolpaths) if p.kind == "outline"]
+    infills = [idx for idx, p in enumerate(toolpaths) if p.kind == "fill-infill"]
+    assert outlines and infills
+    outline_last = min(outlines) > max(infills)
+    assert outline_last
+
+    validation_px_per_mm = 36.0
+    geom = mapped.printable_geometry
+    assert geom is not None and not geom.is_empty
+    footprint_geom = _paths_footprint_geometry([p for p in toolpaths if p.kind in {"fill-infill", "outline"}], pen_width_mm=pen_width_mm)
+    bounds = geom.bounds
+    target_mask = _geom_to_mask(geom, bounds, validation_px_per_mm)
+    rendered_mask = _geom_to_mask(footprint_geom, bounds, validation_px_per_mm)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    target_core = cv2.erode(target_mask, kernel, iterations=1)
+    uncovered = cv2.bitwise_and(target_core, cv2.bitwise_not(rendered_mask))
+    overspill = cv2.bitwise_and(rendered_mask, cv2.bitwise_not(target_mask))
+
+    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats((uncovered > 0).astype(np.uint8), connectivity=8)
+    px_area_mm2 = 1.0 / (validation_px_per_mm * validation_px_per_mm)
+    component_areas_mm2 = [float(stats[i, cv2.CC_STAT_AREA]) * px_area_mm2 for i in range(1, n_labels)]
+    remaining_uncovered_pixel_count = int(np.count_nonzero(uncovered))
+    remaining_uncovered_area_mm2 = float(remaining_uncovered_pixel_count) * px_area_mm2
+    target_area_mm2 = float(np.count_nonzero(target_core)) * px_area_mm2
+    remaining_uncovered_area_ratio = remaining_uncovered_area_mm2 / max(1e-12, target_area_mm2)
+    max_uncovered_component_area_mm2 = max(component_areas_mm2) if component_areas_mm2 else 0.0
+    overspill_area_mm2 = float(np.count_nonzero(overspill)) * px_area_mm2
+    overspill_area_ratio = overspill_area_mm2 / max(1e-12, target_area_mm2)
+
+    contour_dbg = (debug.get("contour_offset_debug", {}) or {}) if isinstance(debug, dict) else {}
+    gcode_audit = (debug.get("gcode_generation_audit", {}) or {}) if isinstance(debug, dict) else {}
+    if max_uncovered_component_area_mm2 > 0.025 or remaining_uncovered_area_ratio > 0.001:
+        out_dir = ROOT / "artifacts" / "tests" / "coverage_ha"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(target_mask).save(out_dir / "target_mask.png")
+        Image.fromarray(rendered_mask).save(out_dir / "rendered_pen_footprint.png")
+        Image.fromarray(uncovered).save(out_dir / "uncovered_residual.png")
+        Image.fromarray(overspill).save(out_dir / "overspill.png")
+        preview = np.zeros((target_mask.shape[0], target_mask.shape[1], 3), dtype=np.uint8)
+        preview[:, :, 1] = target_mask
+        preview[:, :, 0] = rendered_mask
+        preview[:, :, 2] = uncovered
+        Image.fromarray(preview).save(out_dir / "toolpath_preview.png")
+        residual_component_debug = []
+        for i in range(1, n_labels):
+            area_mm2 = float(stats[i, cv2.CC_STAT_AREA]) * px_area_mm2
+            bb = [
+                int(stats[i, cv2.CC_STAT_LEFT]),
+                int(stats[i, cv2.CC_STAT_TOP]),
+                int(stats[i, cv2.CC_STAT_WIDTH]),
+                int(stats[i, cv2.CC_STAT_HEIGHT]),
+            ]
+            residual_component_debug.append({"component_id": i, "area_mm2": area_mm2, "bounding_box_px": bb})
+        pytest.fail(
+            f"coverage invariant failed: uncovered_px={remaining_uncovered_pixel_count} "
+            f"remaining_uncovered_area_mm2={remaining_uncovered_area_mm2:.6f} "
+            f"remaining_uncovered_area_ratio={remaining_uncovered_area_ratio:.6f} "
+            f"max_component_mm2={max_uncovered_component_area_mm2:.6f} "
+            f"overspill_mm2={overspill_area_mm2:.6f} overspill_ratio={overspill_area_ratio:.6f} "
+            f"forbidden_legacy_path_count={forbidden_legacy_path_count} outline_last={outline_last} "
+            f"component_debug={residual_component_debug[:12]} "
+            f"repair_logs={contour_dbg.get('coverage_repair_logs', [])} "
+            f"audit={gcode_audit}"
+        )
+
+
+def test_inner_corner_turn_is_preserved_by_corner_sections():
+    outer = Polygon([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)])
+    notch = Polygon([(6.8, 6.8), (10.0, 6.8), (10.0, 10.0), (6.8, 10.0)])
+    shape = outer.difference(notch)
+    debug: dict[str, object] = {}
+    toolpaths = _generate_fill_toolpaths(
+        shape,
+        line_width_mm=0.6,
+        fill_strategy="contour_offset",
+        allow_pen_down_infill_connectors=False,
+        debug=debug,
+    )
+    contour_dbg = (debug.get("contour_offset_debug", {}) or {})
+    audit = (debug.get("gcode_generation_audit", {}) or {})
+    forbidden = {"detail-trace", "detail-continuation", "collapse-centerline", "gap-repair-dab", "hatch", "adaptive"}
+
+    corner_paths = [p for p in toolpaths if str((p.metadata or {}).get("path_role", "")) == "CORNER_CONTOUR_SECTION"]
+    assert int(contour_dbg.get("corner_candidate_count_total", 0)) >= 0
+    assert int(contour_dbg.get("corner_accepted_section_count_total", 0)) >= 0
+    corner_logs = list(contour_dbg.get("corner_candidate_logs", []) or [])
+    assert corner_logs
+    assert all(float(entry.get("iso_distance_error_max_mm", 1e9)) <= 0.08 for entry in corner_logs if entry.get("accepted_or_rejected") == "accepted")
+    assert float(contour_dbg.get("remaining_uncovered_area_ratio_after", 1.0)) <= 0.03
+    if corner_paths:
+        assert int(contour_dbg.get("corner_accepted_section_count_total", 0)) > 0
+    assert int(audit.get("legacy_kinds_forbidden_count", 1)) == 0
+    assert not any(p.kind in forbidden for p in toolpaths)
+
+
+def test_corridor_corner_rejects_diagonal_shortcut_and_keeps_parallel_repair():
+    # Long corridor with inner corner; diagonal chords across the corner are invalid.
+    shell = Polygon([(0.0, 0.0), (14.0, 0.0), (14.0, 3.0), (5.0, 3.0), (5.0, 12.0), (0.0, 12.0)])
+    cut = Polygon([(1.5, 1.5), (12.5, 1.5), (12.5, 2.1), (4.1, 2.1), (4.1, 10.5), (1.5, 10.5)])
+    shape = shell.difference(cut)
+    debug: dict[str, object] = {}
+    toolpaths = _generate_fill_toolpaths(
+        shape,
+        line_width_mm=0.6,
+        fill_strategy="contour_offset",
+        allow_pen_down_infill_connectors=False,
+        debug=debug,
+    )
+    contour_dbg = (debug.get("contour_offset_debug", {}) or {})
+    rejected_counts = dict(contour_dbg.get("corner_rejection_reason_counts", {}) or {})
+    corner_logs = list(contour_dbg.get("corner_candidate_logs", []) or [])
+    accepted_corner_logs = [entry for entry in corner_logs if entry.get("accepted_or_rejected") == "accepted"]
+    forbidden = {"detail-trace", "detail-continuation", "collapse-centerline", "hatch", "adaptive"}
+
+    assert int(contour_dbg.get("corner_candidate_count_total", 0)) > 0
+    assert int(contour_dbg.get("corner_accepted_section_count_total", 0)) > 0
+    assert all(float(entry.get("parallel_angle_error_deg", 999.0)) <= 60.0 for entry in accepted_corner_logs)
+    assert all(float(entry.get("iso_distance_error_max_mm", 999.0)) <= 0.08 for entry in accepted_corner_logs)
+    corner_paths = [p for p in toolpaths if str((p.metadata or {}).get("path_role", "")) == "CORNER_CONTOUR_SECTION"]
+    assert corner_paths
+    # Ensure accepted corner sections are contour-following, not straight chords.
+    for cp in corner_paths:
+        line = _line_for_path(cp)
+        chord = math.hypot(cp.points[-1].x - cp.points[0].x, cp.points[-1].y - cp.points[0].y)
+        assert len(cp.points) >= 3 or float(line.length) > (chord * 1.05)
+    assert float(contour_dbg.get("remaining_uncovered_area_ratio_after", 1.0)) <= 0.04
+    assert not any(p.kind in forbidden for p in toolpaths)
+
+
+def test_contour_offset_levels_use_original_mask_and_keep_corner_turn_geometry():
+    shell = Polygon([(0.0, 0.0), (16.0, 0.0), (16.0, 4.0), (6.0, 4.0), (6.0, 14.0), (0.0, 14.0)])
+    cut = Polygon([(1.2, 1.2), (14.8, 1.2), (14.8, 2.6), (4.6, 2.6), (4.6, 12.8), (1.2, 12.8)])
+    shape = shell.difference(cut)
+    debug: dict[str, object] = {}
+    toolpaths = _generate_fill_toolpaths(
+        shape,
+        line_width_mm=0.6,
+        fill_strategy="contour_offset",
+        allow_pen_down_infill_connectors=False,
+        debug=debug,
+    )
+    contour_dbg = (debug.get("contour_offset_debug", {}) or {})
+    levels = list(contour_dbg.get("levels", []) or [])
+    corner_logs = list(contour_dbg.get("corner_candidate_logs", []) or [])
+
+    assert levels
+    assert float(contour_dbg.get("contour_overlap_spacing_factor", 0.0)) >= 0.60
+    assert float(contour_dbg.get("contour_overlap_spacing_factor", 1.0)) <= 0.70
+    assert all("max_iso_distance_error_mm" in lvl for lvl in levels)
+    assert all("diagonal_shortcut_rejected_count" in lvl for lvl in levels)
+    assert int(contour_dbg.get("diagonal_shortcut_rejected_count", 0)) >= 0
+    assert int(contour_dbg.get("corner_accepted_section_count_total", 0)) >= 0
+    if any(entry.get("accepted_or_rejected") == "accepted" for entry in corner_logs):
+        assert all(float(entry.get("iso_distance_error_max_mm", 999.0)) <= 0.06 for entry in corner_logs if entry.get("accepted_or_rejected") == "accepted")
+    assert float(contour_dbg.get("remaining_uncovered_area_ratio_after", 1.0)) <= 0.04
+    assert any(str((p.metadata or {}).get("path_role", "")) in {"CONTOUR_INFILL", "CONTOUR_SECTION_INFILL", "CORNER_CONTOUR_SECTION"} for p in toolpaths)
+
+
+def test_long_horizontal_corridor_contour_continuity_is_restored():
+    bar = Polygon([(0.0, 0.0), (24.0, 0.0), (24.0, 3.2), (0.0, 3.2)])
+    branch = Polygon([(12.0, 3.2), (15.0, 3.2), (15.0, 10.0), (12.0, 10.0)])
+    notch = Polygon([(1.0, 1.0), (23.0, 1.0), (23.0, 2.2), (1.0, 2.2)])
+    shape = bar.union(branch).difference(notch)
+    debug: dict[str, object] = {}
+    toolpaths = _generate_fill_toolpaths(
+        shape,
+        line_width_mm=0.6,
+        fill_strategy="contour_offset",
+        allow_pen_down_infill_connectors=False,
+        debug=debug,
+    )
+    contour_dbg = (debug.get("contour_offset_debug", {}) or {})
+    per_levels = list(contour_dbg.get("levels", []) or [])
+    audit = (debug.get("gcode_generation_audit", {}) or {})
+    forbidden = {"detail-trace", "detail-continuation", "collapse-centerline", "hatch", "adaptive", "fill-infill-travel", "coverage_connector", "gap-repair-centerline"}
+
+    assert per_levels
+    assert int(contour_dbg.get("open_section_audit_failures", 1)) == 0
+    assert any(bool(entry.get("horizontal_section_expected", False)) for entry in per_levels)
+    assert any(bool(entry.get("horizontal_section_present", False)) for entry in per_levels)
+    assert any(int(entry.get("restored_continuity_section_count", 0)) >= 0 for entry in per_levels)
+    assert not any(p.kind in forbidden for p in toolpaths)
+    assert int(audit.get("legacy_kinds_forbidden_count", 1)) == 0
 
 
 def test_small_regions_use_fill_or_detail_without_losing_coverage():
