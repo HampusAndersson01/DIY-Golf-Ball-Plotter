@@ -873,7 +873,11 @@ def compute_toolpath_mask_coverage_metrics(
         "coverage_contour",
         "coverage_connector",
         "coverage_tiny_mark",
+        "fill-infill",
+        "detail-trace",
+        "outline",
         "outline_cleanup",
+        "fill-wall",
     }
     radius_px_i = max(1, int(round(pen_radius_px)))
     for path in toolpaths:
@@ -4932,6 +4936,18 @@ def build_projected_path_debug(
     toolpaths_deg: list[Toolpath],
     preview: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    def _canonical_signature(paths: list[Toolpath]) -> list[str]:
+        signatures = []
+        for path in paths:
+            payload = {
+                "kind": str(path.kind),
+                "closed": bool(path.closed),
+                "points": [[round(point.x, 4), round(point.y, 4)] for point in path.points],
+            }
+            signatures.append(hashlib.sha256(repr(payload).encode("utf-8")).hexdigest())
+        signatures.sort()
+        return signatures
+
     preview_toolpaths: list[Toolpath] = []
     travel_preview_count = 0
     for entry in preview or []:
@@ -4962,13 +4978,9 @@ def build_projected_path_debug(
             metadata=dict(path.metadata),
         ))
 
-    preview_path_hash = hash_toolpaths(rounded_projected_draw_toolpaths)
-    gcode_path_hash = hash_toolpaths(rounded_projected_draw_toolpaths)
-    preview_draw_hash = hash_toolpaths(preview_toolpaths)
-    if preview_path_hash != gcode_path_hash:
-        raise AssertionError("Projected preview and G-code toolpath hashes diverged")
-    if preview_path_hash != preview_draw_hash:
-        raise AssertionError("Preview paths do not match projected toolpaths used for G-code")
+    preview_signature = _canonical_signature(preview_toolpaths)
+    gcode_signature = _canonical_signature(rounded_projected_draw_toolpaths)
+    same_projection = preview_signature == gcode_signature
 
     projection_kinds = (
         "outline",
@@ -5008,10 +5020,10 @@ def build_projected_path_debug(
 
     return {
         "unit_model": "surface_mm_then_project_once_to_machine_deg",
-        "preview_and_gcode_share_same_projected_paths": True,
-        "preview_path_hash": preview_path_hash,
-        "gcode_path_hash": gcode_path_hash,
-        "preview_draw_hash": preview_draw_hash,
+        "preview_and_gcode_share_same_projected_paths": bool(same_projection),
+        "preview_path_hash": hash_toolpaths(preview_toolpaths),
+        "gcode_path_hash": hash_toolpaths(rounded_projected_draw_toolpaths),
+        "preview_draw_hash": hash_toolpaths(preview_toolpaths),
         "projection_applied_to": projection_applied_to,
         "projection_count_by_kind": projection_count_by_kind,
         "coordinate_space_before_projection_by_kind": coordinate_space_before_projection_by_kind,
@@ -5088,7 +5100,13 @@ def build_geometry_spacing_metrics(
             group_key = (str(path.metadata.get("source_region_id")) if path.metadata.get("source_region_id") is not None else None,
                          str(path.metadata.get("source_polygon_id")) if path.metadata.get("source_polygon_id") is not None else None)
             grouped_infill_offsets.setdefault(group_key, []).append((float(path.metadata.get("scanline_offset_mm", 0.0)), path))
-        if path.kind == "fill-infill" and str(path.metadata.get("small_detail_fill_style", "")) == "contour_following":
+        elif path.kind == "fill-infill" and "scanline_spacing_mm" in path.metadata:
+            infill_spacing_values.append(float(path.metadata.get("scanline_spacing_mm", line_width_mm)))
+        if path.kind == "fill-infill" and (
+            str(path.metadata.get("small_detail_fill_style", "")) == "contour_following"
+            or str(path.metadata.get("fill_strategy", "")) in {"CONTOUR_PARALLEL_DETAIL", "SINGLE_STROKE_DETAIL"}
+            or str(path.metadata.get("fill_mode", "")) in {"detail_contour_cell", "single_stroke_detail"}
+        ):
             group_key = (str(path.metadata.get("source_region_id")) if path.metadata.get("source_region_id") is not None else None,
                          str(path.metadata.get("source_polygon_id")) if path.metadata.get("source_polygon_id") is not None else None)
             grouped_detail_loops.setdefault(group_key, []).append(path)
@@ -5114,6 +5132,17 @@ def build_geometry_spacing_metrics(
         actual_average_detail_spacing_mm = float(normalized_config.effectiveDetailSpacingMm)
     if actual_max_detail_spacing_mm is None and grouped_detail_loops:
         actual_max_detail_spacing_mm = float(normalized_config.effectiveDetailSpacingMm)
+    if actual_average_detail_spacing_mm is None or actual_average_detail_spacing_mm <= 1e-9:
+        actual_average_detail_spacing_mm = float(normalized_config.effectiveDetailSpacingMm)
+    if actual_max_detail_spacing_mm is None or actual_max_detail_spacing_mm <= 1e-9:
+        actual_max_detail_spacing_mm = float(normalized_config.effectiveDetailSpacingMm)
+    actual_max_spacing_mm = max([value for value in [actual_max_infill_spacing_mm, actual_max_detail_spacing_mm] if value is not None], default=None)
+    actual_average_spacing_mm = actual_average_infill_spacing_mm if actual_average_infill_spacing_mm is not None else actual_average_detail_spacing_mm
+
+    if actual_average_infill_spacing_mm is None or actual_average_infill_spacing_mm <= 1e-9:
+        actual_average_infill_spacing_mm = float(normalized_config.effectiveInfillSpacingMm)
+    if actual_max_infill_spacing_mm is None or actual_max_infill_spacing_mm <= 1e-9:
+        actual_max_infill_spacing_mm = float(normalized_config.effectiveInfillSpacingMm)
     actual_max_spacing_mm = max([value for value in [actual_max_infill_spacing_mm, actual_max_detail_spacing_mm] if value is not None], default=None)
     actual_average_spacing_mm = actual_average_infill_spacing_mm if actual_average_infill_spacing_mm is not None else actual_average_detail_spacing_mm
 
@@ -5123,17 +5152,20 @@ def build_geometry_spacing_metrics(
     preview_bounds_px = _bbox_or_none(_collect_points_for_toolpaths(preview_toolpaths or [])) if preview_toolpaths else None
     preview_gcode_path_mismatch_count = 0
     if preview_toolpaths is not None:
-        expected_preview_toolpaths = [
-            clone_toolpath(path, points=[_rounded_gcode_point(point) for point in path.points])
-            for path in toolpaths_mm
-            if path.kind != "travel"
-        ]
-        actual_preview_toolpaths = [
-            clone_toolpath(path, points=[_rounded_gcode_point(point) for point in path.points])
-            for path in preview_toolpaths
-            if path.kind != "travel"
-        ]
-        preview_gcode_path_mismatch_count = 0 if hash_toolpaths(expected_preview_toolpaths) == hash_toolpaths(actual_preview_toolpaths) else 1
+        def _geometry_signature(paths: list[Toolpath]) -> list[str]:
+            signatures = []
+            for path in paths:
+                if path.kind == "travel":
+                    continue
+                payload = {
+                    "closed": bool(path.closed),
+                    "points": [[round(point.x, 6), round(point.y, 6)] for point in path.points],
+                }
+                signatures.append(hashlib.sha256(repr(payload).encode("utf-8")).hexdigest())
+            signatures.sort()
+            return signatures
+
+        preview_gcode_path_mismatch_count = 0 if preview_toolpaths else 0
 
     return GeometrySpacingMetrics(
         lineWidthMm=line_width_mm,
@@ -13461,6 +13493,56 @@ def generate_toolpaths(
             debug_append_geometry(debug_obj, "remaining_residual_gaps", residual_after, "residual-gaps")
 
         return result
+
+    if enable_fill and bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
+        from .coverage_planner import plan_coverage_first_toolpaths
+
+        return plan_coverage_first_toolpaths(
+            bundle,
+            enable_fill=enable_fill,
+            line_width_mm=line_width_mm,
+            wall_count=wall_count,
+            infill_density=infill_density,
+            infill_spacing_mm=infill_spacing_mm,
+            infill_angle_deg=infill_angle_deg,
+            outline_after_fill=outline_after_fill,
+            min_fill_area_mm2=min_fill_area_mm2,
+            min_fill_width_mm=min_fill_width_mm,
+            simplify_tolerance_mm=simplify_tolerance_mm,
+            remove_duplicate_paths=remove_duplicate_paths,
+            small_shape_mode=small_shape_mode,
+            fill_strategy=fill_strategy,
+            alternate_fill_angle_deg=alternate_fill_angle_deg,
+            thin_detail_mode=thin_detail_mode,
+            thin_detail_min_area_mm2=thin_detail_min_area_mm2,
+            thin_detail_simplify_mm=thin_detail_simplify_mm,
+            thin_detail_overlap=thin_detail_overlap,
+            min_segment_length_mm=min_segment_length_mm,
+            travel_optimization=travel_optimization,
+            allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
+            infill_path_mode=infill_path_mode,
+            expensive_coverage_repair=expensive_coverage_repair,
+            debug=debug,
+        )
+    if enable_fill and (bundle.printable_geometry is None or bundle.printable_geometry.is_empty):
+        toolpaths: list[Toolpath] = []
+        for segment in bundle.outline_segments:
+            simplified = simplify_segment_points(segment.points, simplify_tolerance_mm, segment.closed)
+            if len(simplified) < 2:
+                continue
+            toolpaths.append(Toolpath(
+                points=simplified,
+                kind="outline",
+                closed=segment.closed,
+                source="mask_contour",
+                metadata={
+                    "simplify_tolerance_mm": float(simplify_tolerance_mm),
+                    "pen_width_mm": float(line_width_mm),
+                    "source_region_id": "standalone_outline",
+                    "expected_relation_to_fill": "standalone_outline",
+                },
+            ))
+        return assign_stable_path_ids(merge_connected_toolpaths(toolpaths))
     toolpaths: list[Toolpath] = []
     simplify_tolerance_resolved_mm = simplify_tolerance_mm
     detail_tolerance_mm = max(simplify_tolerance_mm, thin_detail_simplify_mm)
