@@ -324,6 +324,7 @@ def _scanline_fill_paths(
                                 "coverage_connector": True,
                                 "component_id": int(component_id),
                                 "connector_kind": "serpentine_row",
+                                "connector_pen_down_allowed": True,
                             },
                         )
                         toolpaths.append(connector_path)
@@ -515,6 +516,40 @@ def _render_paths_overlay(
         if len(coords) >= 2:
             cv2.polylines(canvas, [coords], bool(path.closed), color, 1, lineType=cv2.LINE_AA)
     return canvas
+
+
+def _chain_pen_down_infill_connectors(paths: list[Toolpath], *, printable_geometry: Any | None = None) -> list[Toolpath]:
+    if not paths:
+        return paths
+    del printable_geometry
+
+    result: list[Toolpath] = []
+    i = 0
+    while i < len(paths):
+        path = paths[i]
+        if path.kind == "fill-infill" and len(path.points) >= 2:
+            chain_points = list(path.points)
+            chain_meta = dict(path.metadata or {})
+            j = i + 1
+            merged = False
+            while j < len(paths):
+                nxt = paths[j]
+                if nxt.kind == "fill-infill-travel" and nxt.metadata.get("connector_pen_down_allowed") and len(nxt.points) >= 2:
+                    if pipeline_core.nearly_same_point(chain_points[-1], nxt.points[0]):
+                        chain_points = chain_points + nxt.points[1:]
+                        merged = True
+                        j += 1
+                        continue
+                    break
+                break
+            if merged:
+                chain_meta["chained_infill"] = True
+                result.append(Toolpath(points=chain_points, kind="fill-infill", closed=False, source="coverage_chained_fill", region_id=path.region_id, metadata=chain_meta))
+                i = j
+                continue
+        result.append(path)
+        i += 1
+    return result
 
 
 def _painted_metrics(
@@ -776,10 +811,13 @@ def _generate_debug_artifacts(
     repair_candidates: list[dict[str, Any]],
     accepted_repair_paths: list[Toolpath],
     current_to_source_matrix: tuple[float, float, float, float, float, float],
+    line_width_mm: float,
     pen_radius_px: int,
     px_per_mm: float,
     allowed_mask: np.ndarray,
+    debug: dict[str, Any] | None = None,
 ) -> None:
+    debug = debug or {}
     output_dir.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(output_dir / "01_target_mask.png"), (target_mask > 0).astype(np.uint8) * 255)
     cv2.imwrite(str(output_dir / "02_components.png"), components_mask)
@@ -814,6 +852,16 @@ def _generate_debug_artifacts(
         "total_draw_length_mm": float(sum(pipeline_core.segment_length(path.points) for path in final_paths if len(path.points) >= 2 and path.kind != "fill-infill-travel")),
         "total_travel_length_mm": float(sum(pipeline_core.segment_length(path.points) for path in final_paths if path.kind == "fill-infill-travel")),
     })
+    # Additional diagnostics and metadata
+    coverage_report["pen_diameter_mm"] = float(line_width_mm)
+    coverage_report["effective_infill_spacing_mm"] = float(debug.get("infill_debug", {}).get("spacing_mm", 0.0))
+    coverage_report["number_of_raw_infill_segments"] = int(sum(1 for path in initial_paths if path.kind == "fill-infill"))
+    coverage_report["number_of_chained_infill_paths"] = int(sum(1 for path in final_paths if path.kind == "fill-infill" and bool((path.metadata or {}).get("chained_infill", False))))
+    coverage_report["number_of_pen_lifts_before_optimization"] = int(debug.get("pen_lifts_before_optimization", 0))
+    coverage_report["number_of_pen_lifts_after_optimization"] = int(debug.get("pen_lifts_after_optimization", 0) or 0)
+    coverage_report["outline_added_after_fill"] = bool(debug.get("infill_debug", {}).get("diagnostics", {}).get("outline_after_fill", False))
+    coverage_report["coverage_before_outline_percent"] = float(debug.get("coverage_before_outline_percent", 0.0))
+    coverage_report["coverage_after_outline_percent"] = float(debug.get("coverage_after_outline_percent", coverage_report.get("coverage_percent", 0.0)))
     with open(output_dir / "coverage_report.json", "w", encoding="utf-8") as handle:
         json.dump(coverage_report, handle, indent=2)
     with open(output_dir / "repair_candidates.json", "w", encoding="utf-8") as handle:
@@ -827,6 +875,16 @@ def _generate_debug_artifacts(
             "paths_by_kind": dict(stats),
             "total_draw_length_mm": coverage_report["total_draw_length_mm"],
             "total_travel_length_mm": coverage_report["total_travel_length_mm"],
+            "pen_diameter_mm": float(line_width_mm),
+            "infill_overlap_percent": float(debug.get("infill_debug", {}).get("infill_overlap_percent", 0.0)),
+            "effective_infill_spacing_mm": float(debug.get("infill_debug", {}).get("spacing_mm", 0.0)),
+            "number_of_raw_infill_segments": int(sum(1 for path in initial_paths if path.kind == "fill-infill")),
+            "number_of_chained_infill_paths": int(sum(1 for path in final_paths if path.kind == "fill-infill" and bool((path.metadata or {}).get("chained_infill", False)))),
+            "number_of_pen_lifts_before_optimization": int(debug.get("pen_lifts_before_optimization", 0)),
+            "number_of_pen_lifts_after_optimization": int(debug.get("pen_lifts_after_optimization", 0)),
+            "coverage_before_outline_percent": float(debug.get("coverage_before_outline_percent", 0.0)),
+            "coverage_after_outline_percent": float(debug.get("coverage_after_outline_percent", coverage_report.get("coverage_percent", 0.0))),
+            "accepted_connectors": int(sum(1 for path in final_paths if path.kind == "fill-infill-travel")),
         }, handle, indent=2)
 
 
@@ -855,6 +913,7 @@ def plan_coverage_first_toolpaths(
     travel_optimization: str = pipeline_core.DEFAULT_TRAVEL_OPTIMIZATION,
     allow_pen_down_infill_connectors: bool = pipeline_core.DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS,
     infill_path_mode: str = pipeline_core.DEFAULT_INFILL_PATH_MODE,
+    infill_overlap_percent: float = pipeline_core.DEFAULT_INFILL_OVERLAP_PERCENT,
     expensive_coverage_repair: bool = True,
     debug: dict[str, Any] | None = None,
 ) -> list[Toolpath]:
@@ -935,10 +994,12 @@ def plan_coverage_first_toolpaths(
                 fill_geometry = component_geometry
             has_holes = bool(component_geometry is not None and getattr(component_geometry, "interiors", None) and len(getattr(component_geometry, "interiors", [])) > 0)
             fill_mode_label = "detail_contour_cell" if has_holes and width_mm <= max(line_width_mm * 4.0, infill_spacing_mm * 4.0) else "serpentine"
+            # compute fallback spacing using overlap percent when explicit spacing not provided
+            fallback_spacing = max(0.0, line_width_mm * (1.0 - float(infill_overlap_percent) / 100.0))
             fill_paths, fill_stats = _scanline_fill_paths(
                 fill_geometry,
                 angle_deg=angle_deg if math.isfinite(angle_deg) else infill_angle_deg,
-                spacing_mm=min(max(0.25, infill_spacing_mm if infill_spacing_mm > 0 else 0.35), max(0.35, line_width_mm)),
+                spacing_mm=min(max(0.25, infill_spacing_mm if infill_spacing_mm > 0 else fallback_spacing), max(0.35, line_width_mm)),
                 line_width_mm=line_width_mm,
                 origin_x=origin_x,
                 origin_y=origin_y,
@@ -1018,7 +1079,8 @@ def plan_coverage_first_toolpaths(
                 "fill_strategy": str(fill_strategy),
                 "infill_path_mode": str(infill_path_mode),
                 "allow_pen_down_infill_connectors": bool(allow_pen_down_infill_connectors),
-                "spacing_mm": float(infill_spacing_mm),
+                "infill_overlap_percent": float(infill_overlap_percent),
+                "spacing_mm": float(infill_spacing_mm if infill_spacing_mm > 0 else fallback_spacing),
                 "pen_width_mm": float(line_width_mm),
             "diagnostics": {
                 "narrower_than_2x_pen_regions": thin_region_count,
@@ -1051,7 +1113,7 @@ def plan_coverage_first_toolpaths(
                     pen_lifts += 1
             previous_end = path.points[-1]
         debug["total_pen_up_travel_distance_mm"] = float(pen_up_travel)
-        debug["number_of_pen_lifts"] = int(pen_lifts)
+        debug["pen_lifts_before_optimization"] = int(pen_lifts)
         debug["infill_connector_diagnostics"] = {
             "total_infill_rows": int(sum(int(item.get("row_count", 0)) for item in component_debug)),
             "accepted_connectors": int(sum(1 for path in all_paths if path.kind == "fill-infill-travel")),
@@ -1063,6 +1125,10 @@ def plan_coverage_first_toolpaths(
 
     if expensive_coverage_repair:
         current_painted = _path_points_to_mask(all_paths, shape=target_mask.shape, current_to_source_matrix=current_to_source, pen_radius_px=max(1, int(round(line_width_mm * px_per_mm / 2.0))))
+        # Record coverage before any outline/repair operations
+        metrics_before = _painted_metrics(target_mask=target_mask, painted_mask=current_painted, allowed_mask=allowed_mask, px_per_mm=px_per_mm)
+        if debug is not None:
+            debug["coverage_before_outline_percent"] = float(metrics_before.get("coverage_percent", 0.0))
         missed_mask = ((target_mask > 0) & ~(current_painted > 0)).astype(np.uint8) * 255
         allowed = allowed_mask > 0
         if np.count_nonzero(missed_mask) > 0:
@@ -1133,6 +1199,8 @@ def plan_coverage_first_toolpaths(
         ordered_fill = pipeline_core.optimize_toolpath_order([path for path in all_paths if path.kind != "outline"], strategy=travel_optimization)
         final_paths = [path for path in all_paths if path.kind == "outline"] + ordered_fill
 
+    # Attempt to chain safe pen-down infill connectors into continuous infill strokes
+    final_paths = _chain_pen_down_infill_connectors(final_paths, printable_geometry=printable_geometry)
     final_paths = pipeline_core.merge_connected_toolpaths(final_paths)
     final_paths = pipeline_core.assign_stable_path_ids(final_paths)
 
@@ -1173,6 +1241,7 @@ def plan_coverage_first_toolpaths(
             "largest_missed_blob_mm": float(largest_missed_blob_mm),
         }
         debug["coverage_report"] = coverage_report
+        debug["pen_lifts_after_optimization"] = int(pen_lifts)
         debug["repair_candidates"] = [{key: value for key, value in row.items() if key != "candidate"} for row in repair_candidate_rows]
         debug["path_stats"] = {
             "total_paths": len(final_paths),
@@ -1189,6 +1258,7 @@ def plan_coverage_first_toolpaths(
         debug["coverage_final_allowed_mask"] = allowed_mask
         debug["coverage_planner_resolution_mm"] = float(resolution_mm)
         debug["coverage_planner_px_per_mm"] = float(px_per_mm)
+        debug["coverage_after_outline_percent"] = float(coverage_report.get("coverage_percent", 0.0))
         if os.getenv("WRITE_COVERAGE_DEBUG_ARTIFACTS", "1") != "0":
             artifact_dir = Path(os.getenv("COVERAGE_DEBUG_ARTIFACT_DIR", str(Path(tempfile.gettempdir()) / "golfball_plotter_coverage_debug")))
             _generate_debug_artifacts(
@@ -1203,8 +1273,10 @@ def plan_coverage_first_toolpaths(
                 repair_candidates=repair_candidate_rows,
                 accepted_repair_paths=accepted_repairs,
                 current_to_source_matrix=current_to_source,
+                line_width_mm=line_width_mm,
                 pen_radius_px=max(1, int(round(line_width_mm * px_per_mm / 2.0))),
                 px_per_mm=px_per_mm,
                 allowed_mask=allowed_mask,
+                debug=debug,
             )
     return final_paths

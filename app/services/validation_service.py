@@ -40,8 +40,10 @@ class ValidationService:
         return value
 
     def _derived_pen_defaults(self, line_thickness_mm: float) -> dict[str, float]:
+        infill_overlap_percent = 20.0
         return {
-            "infill_spacing_mm": line_thickness_mm,
+            "infill_spacing_mm": line_thickness_mm * (1.0 - infill_overlap_percent / 100.0),
+            "infill_overlap_percent": infill_overlap_percent,
             "min_fill_width_mm": line_thickness_mm,
             "min_fill_area_mm2": line_thickness_mm * line_thickness_mm,
         }
@@ -106,6 +108,7 @@ class ValidationService:
                 "Infill spacing",
                 maximum=10,
             ),
+            "infill_overlap_percent": derived_defaults["infill_overlap_percent"],
             "infill_angle_deg": self._parse_float(form, "infill_angle_deg", config["DEFAULT_INFILL_ANGLE_DEG"]),
             "fill_strategy": self._normalize_fill_strategy(
                 form.get("fill_strategy", config.get("DEFAULT_FILL_STRATEGY", "adaptive_angle"))
@@ -243,6 +246,7 @@ class ValidationService:
                 "Infill spacing",
                 maximum=10,
             ),
+            "infill_overlap_percent": derived_defaults["infill_overlap_percent"],
             "infill_angle_deg": self._parse_float(form, "infill_angle_deg", config["DEFAULT_INFILL_ANGLE_DEG"]),
             "fill_strategy": self._normalize_fill_strategy(
                 form.get("fill_strategy", config.get("DEFAULT_FILL_STRATEGY", "adaptive_angle"))

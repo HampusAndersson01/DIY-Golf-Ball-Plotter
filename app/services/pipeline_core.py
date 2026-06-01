@@ -207,6 +207,7 @@ DEFAULT_WALL_COUNT = 1
 DEFAULT_INFILL_PATTERN = "hatch"
 DEFAULT_INFILL_DENSITY = 100.0
 DEFAULT_INFILL_SPACING_MM = DEFAULT_LINE_THICKNESS_MM
+DEFAULT_INFILL_OVERLAP_PERCENT = 20.0
 DEFAULT_INFILL_ANGLE_DEG = 45.0
 DEFAULT_FILL_STRATEGY = "adaptive_angle"
 DEFAULT_ALTERNATE_FILL_ANGLE_DEG = -45.0
@@ -222,7 +223,7 @@ DEFAULT_THIN_DETAIL_SIMPLIFY_MM = 0.1
 DEFAULT_THIN_DETAIL_OVERLAP = True
 DEFAULT_MIN_SEGMENT_LENGTH_MM = 0.5
 DEFAULT_TRAVEL_OPTIMIZATION = "nearest-neighbor"
-DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS = False
+DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS = True
 DEFAULT_ALLOW_DETAIL_PEN_DOWN_CONTINUATION = True
 DEFAULT_INFILL_PATH_MODE = "rectilinear"
 DEFAULT_LONG_THIN_INFILL_ASPECT_RATIO = 3.0
@@ -546,6 +547,7 @@ def normalize_geometry_config(
     *,
     raw_line_width_mm: float,
     raw_infill_spacing_mm: float | None = None,
+    raw_infill_overlap_percent: float | None = None,
     raw_detail_spacing_mm: float | None = None,
     raw_wall_spacing_mm: float | None = None,
     raw_preview_stroke_width_mm: float | None = None,
@@ -554,7 +556,13 @@ def normalize_geometry_config(
 ) -> NormalizedGeometryConfig:
     line_width_mm = max(0.0, float(raw_line_width_mm))
     pen_radius_mm = line_width_mm / 2.0
-    effective_infill_spacing_mm = line_width_mm if raw_infill_spacing_mm is None else max(0.0, float(raw_infill_spacing_mm))
+    # Determine infill overlap percent (default fallback)
+    infill_overlap_percent = float(raw_infill_overlap_percent) if raw_infill_overlap_percent is not None else float(DEFAULT_INFILL_OVERLAP_PERCENT)
+    # If explicit spacing not provided, compute effective spacing using overlap percent
+    if raw_infill_spacing_mm is None:
+        effective_infill_spacing_mm = max(0.0, line_width_mm * (1.0 - infill_overlap_percent / 100.0))
+    else:
+        effective_infill_spacing_mm = max(0.0, float(raw_infill_spacing_mm))
     effective_detail_spacing_mm = line_width_mm if raw_detail_spacing_mm is None else max(0.0, float(raw_detail_spacing_mm))
     effective_wall_spacing_mm = line_width_mm if raw_wall_spacing_mm is None else max(0.0, float(raw_wall_spacing_mm))
     preview_stroke_width_mm = line_width_mm if raw_preview_stroke_width_mm is None else max(0.0, float(raw_preview_stroke_width_mm))
@@ -571,6 +579,7 @@ def normalize_geometry_config(
         source={
             "rawLineWidthMm": float(raw_line_width_mm),
             "rawInfillSpacingMm": None if raw_infill_spacing_mm is None else float(raw_infill_spacing_mm),
+            "rawInfillOverlapPercent": None if raw_infill_overlap_percent is None else float(raw_infill_overlap_percent),
             "rawDetailSpacingMm": None if raw_detail_spacing_mm is None else float(raw_detail_spacing_mm),
             "rawPreviewStrokeWidthMm": None if raw_preview_stroke_width_mm is None else float(raw_preview_stroke_width_mm),
         },
@@ -5897,6 +5906,9 @@ def optimize_toolpath_order(
     start_point: Optional[Point] = None,
 ) -> list[Toolpath]:
     if strategy != "nearest-neighbor" or len(toolpaths) <= 1:
+        return toolpaths
+    # Preserve scanline infill ordering when the planner already encoded row order.
+    if _preserve_infill_path_order(toolpaths):
         return toolpaths
 
     pending = list(toolpaths)
@@ -14387,7 +14399,11 @@ def generate_gcode_from_toolpaths(
         if toolpath.kind in connector_kinds:
             connector_ok = bool(toolpath.metadata.get("connector_pen_down_allowed", False))
             connector_opt_in = os.getenv("ALLOW_PEN_DOWN_CONNECTORS", "0") == "1"
-            return "PRINT_INFILL" if (connector_ok and connector_opt_in) else "TRAVEL"
+            # If connector metadata explicitly marks pen-down as allowed, treat as infill (default)
+            if connector_ok:
+                return "PRINT_INFILL"
+            # Otherwise fall back to legacy opt-in via environment variable
+            return "PRINT_INFILL" if connector_opt_in else "TRAVEL"
         if toolpath.kind in printable_kinds:
             if toolpath.kind in {"outline", "fill-wall", "coverage_contour", "outline_cleanup"}:
                 return "PRINT_OUTLINE"

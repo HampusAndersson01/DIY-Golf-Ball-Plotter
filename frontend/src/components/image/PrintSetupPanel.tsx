@@ -58,7 +58,7 @@ export function PrintSetupPanel({
   )
   const firstSelectedColor = selectedColorRows[0] ?? null
   const readyToGenerate = Boolean(imageFile && selectedColors.length)
-  const effectiveInfillSpacingMm = settings.customInfillSpacingEnabled ? settings.infillSpacingMm : settings.lineThicknessMm
+  const effectiveInfillSpacingMm = settings.customInfillSpacingEnabled ? settings.infillSpacingMm : settings.lineThicknessMm * 0.8
   const runtimeText = summary ? formatDuration(summary.estimated_runtime_seconds) : '--'
   const lineCount = summary?.gcode_line_count ?? gcode.length
   const rotate90Enabled = Math.abs(settings.rotationDeg - 90) < 1e-9
@@ -243,7 +243,7 @@ export function PrintSetupPanel({
           </label>
         </div>
 
-        <p className="panel-note">Infill spacing: {settings.customInfillSpacingEnabled ? `${effectiveInfillSpacingMm.toFixed(2)} mm` : `Auto ${effectiveInfillSpacingMm.toFixed(2)} mm`}.</p>
+        <p className="panel-note">Infill spacing: {settings.customInfillSpacingEnabled ? `${effectiveInfillSpacingMm.toFixed(2)} mm` : `Auto ${effectiveInfillSpacingMm.toFixed(2)} mm (20% overlap)`}.</p>
       </section>
 
       <section className="print-setup-section print-setup-section--generate">

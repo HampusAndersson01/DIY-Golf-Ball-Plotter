@@ -51,7 +51,7 @@ const SERVER_DEFAULTS = window.SERVER_DEFAULTS || {
 };
 
 const DERIVED_PEN_FIELDS = {
-  infillSpacingMm: (penThickness) => penThickness,
+  infillSpacingMm: (penThickness) => penThickness * 0.8,
   minFillWidthMm: (penThickness) => penThickness,
   minFillAreaMm2: (penThickness) => penThickness * penThickness,
 };
@@ -143,7 +143,7 @@ function syncDerivedPenFields(force = false) {
   const infillSpacing = roundTo(DERIVED_PEN_FIELDS.infillSpacingMm(penThickness), 3);
   const minFillWidth = roundTo(DERIVED_PEN_FIELDS.minFillWidthMm(penThickness), 3);
   const minFillArea = roundTo(DERIVED_PEN_FIELDS.minFillAreaMm2(penThickness), 3);
-  summary.textContent = `Auto defaults: outline inset ${outlineInset} mm, infill spacing ${infillSpacing} mm, min fill width ${minFillWidth} mm, min fill area ${minFillArea} mm^2.`;
+  summary.textContent = `Auto defaults: outline inset ${outlineInset} mm, infill spacing ${infillSpacing} mm (20% overlap), min fill width ${minFillWidth} mm, min fill area ${minFillArea} mm^2.`;
 }
 
 function setupDerivedPenFieldSync() {

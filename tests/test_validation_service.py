@@ -86,7 +86,8 @@ def test_generate_raster_form_derives_fill_defaults_from_pen_thickness():
         make_config(),
     )
 
-    assert options["infill_spacing_mm"] == pytest.approx(0.6)
+    assert options["infill_spacing_mm"] == pytest.approx(0.48)
+    assert options["infill_overlap_percent"] == pytest.approx(20.0)
     assert options["min_fill_width_mm"] == pytest.approx(0.6)
     assert options["min_fill_area_mm2"] == pytest.approx(0.36)
 
@@ -130,8 +131,8 @@ def test_generate_raster_form_ignores_stale_infill_spacing_when_custom_spacing_i
     )
 
     assert options["custom_infill_spacing"] is False
-    assert options["infill_spacing_mm"] == pytest.approx(0.3)
-    assert options["effective_infill_spacing_mm"] == pytest.approx(0.3)
+    assert options["infill_spacing_mm"] == pytest.approx(0.24)
+    assert options["effective_infill_spacing_mm"] == pytest.approx(0.24)
 
 
 def test_generate_raster_form_supports_locale_decimals_and_custom_infill_spacing():

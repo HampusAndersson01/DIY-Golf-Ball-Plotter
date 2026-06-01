@@ -14,7 +14,7 @@ export function AdvancedDrawer({ activeTab, onTab }: Props) {
   const advancedOpen = useAppStore((state) => state.advancedOpen)
   const setAdvancedOpen = useAppStore((state) => state.setAdvancedOpen)
   const updateSetting = useAppStore((state) => state.updateSetting)
-  const effectiveInfillSpacingMm = settings.customInfillSpacingEnabled ? settings.infillSpacingMm : settings.lineThicknessMm
+  const effectiveInfillSpacingMm = settings.customInfillSpacingEnabled ? settings.infillSpacingMm : settings.lineThicknessMm * 0.8
   const labels: Record<DrawerTab, string> = {
     advanced: 'Print tuning',
     gcode: 'G-code',
@@ -116,7 +116,7 @@ export function AdvancedDrawer({ activeTab, onTab }: Props) {
                 <input onChange={(event) => updateSetting('minSegmentLengthMm', Number(event.target.value))} step="0.01" type="number" value={settings.minSegmentLengthMm} />
               </label>
             </div>
-            <p className="panel-note">Current infill spacing: {settings.customInfillSpacingEnabled ? `${effectiveInfillSpacingMm.toFixed(2)} mm (custom)` : `${effectiveInfillSpacingMm.toFixed(2)} mm (auto from pen width)`}</p>
+            <p className="panel-note">Current infill spacing: {settings.customInfillSpacingEnabled ? `${effectiveInfillSpacingMm.toFixed(2)} mm (custom)` : `${effectiveInfillSpacingMm.toFixed(2)} mm (auto, 20% overlap)`}</p>
           </details>
 
           <details className="details-panel">

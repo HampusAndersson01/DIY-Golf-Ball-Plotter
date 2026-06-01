@@ -243,7 +243,7 @@ function buildSettings(defaults: AppDefaults): SettingsState {
     removeDuplicatePaths: defaults.removeDuplicatePaths,
     thinDetailMode: defaults.thinDetailMode,
     thinDetailOverlap: defaults.thinDetailOverlap,
-    allowPenDownInfillConnectors: defaults.allowPenDownInfillConnectors,
+    allowPenDownInfillConnectors: defaults.allowPenDownInfillConnectors ?? true,
     penUpS: defaults.penUpS,
     penDownS: defaults.penDownS,
     penUpDwellMs: defaults.penUpDwellMs,

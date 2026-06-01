@@ -30,7 +30,7 @@ export function PenSettingsCard({ canGenerate, onGenerate }: Props) {
   const imageFile = useAppStore((state) => state.imageFile)
   const selectedColors = useAppStore((state) => state.selectedColors)
   const updateSetting = useAppStore((state) => state.updateSetting)
-  const effectiveInfillSpacingMm = settings.customInfillSpacingEnabled ? settings.infillSpacingMm : settings.lineThicknessMm
+  const effectiveInfillSpacingMm = settings.customInfillSpacingEnabled ? settings.infillSpacingMm : settings.lineThicknessMm * 0.8
   const readyToGenerate = Boolean(imageFile && selectedColors.length)
   const rotate90Enabled = Math.abs(settings.rotationDeg - 90) < 1e-9
 
@@ -56,7 +56,7 @@ export function PenSettingsCard({ canGenerate, onGenerate }: Props) {
       </div>
 
       <p className="panel-note">
-        Infill spacing: {settings.customInfillSpacingEnabled ? `${effectiveInfillSpacingMm.toFixed(2)} mm` : `Auto ${effectiveInfillSpacingMm.toFixed(2)} mm`}.
+        Infill spacing: {settings.customInfillSpacingEnabled ? `${effectiveInfillSpacingMm.toFixed(2)} mm` : `Auto ${effectiveInfillSpacingMm.toFixed(2)} mm (20% overlap)`}.
       </p>
 
       <div className="generate-row">
