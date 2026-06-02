@@ -1,6 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react'
 
-import type { MachineState, PreviewPath } from '../../api/types'
+import type { MachineState, MaskProjectionQuad, PreviewPath } from '../../api/types'
 import { PanZoomCanvas } from './PanZoomCanvas'
 import { WORLD_BOUNDS, classifyPath, derivePreviewBounds, getCurrentMarker, pathColor, phaseOpacity, phaseStroke, previewPathDashed, previewVisualKind, printableXBounds, shouldRenderPath } from './previewMath'
 
@@ -15,6 +15,10 @@ type Props = {
   filter: 'all' | 'progress'
   showTravel: boolean
   showPenWidth: boolean
+  showMask: boolean
+  maskPreviewUrl: string | null
+  maskProjectionQuad: MaskProjectionQuad | null
+  maskProjectedPreview: PreviewPath[]
   ballDiameterMm: number
   lineThicknessMm: number
   maxPrintXSpanDeg: number
@@ -22,16 +26,20 @@ type Props = {
 }
 
 export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolpath2DView(
-  { paths, machine, filter, showTravel, showPenWidth, ballDiameterMm, lineThicknessMm, maxPrintXSpanDeg, onZoomChange },
+  { paths, machine, filter, showTravel, showPenWidth, showMask, maskPreviewUrl, maskProjectionQuad, maskProjectedPreview, ballDiameterMm, lineThicknessMm, maxPrintXSpanDeg, onZoomChange },
   ref,
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const controllerRef = useRef<PanZoomCanvas | null>(null)
   const renderOptionsRef = useRef({
     showPenWidth,
+    showMask,
+    maskProjectionQuad,
+    maskProjectedPreview,
     ballDiameterMm,
     lineThicknessMm,
   })
+  const maskImageRef = useRef<HTMLImageElement | null>(null)
   const renderStateRef = useRef<{ visiblePaths: PreviewPath[]; machine: MachineState | null }>({
     visiblePaths: [],
     machine: null,
@@ -42,17 +50,50 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
   )
 
   renderStateRef.current = { visiblePaths, machine }
-  renderOptionsRef.current = { showPenWidth, ballDiameterMm, lineThicknessMm }
+  renderOptionsRef.current = { showPenWidth, showMask, maskProjectionQuad, maskProjectedPreview, ballDiameterMm, lineThicknessMm }
 
   const renderCanvas = useCallback((ctx: CanvasRenderingContext2D, engine: PanZoomCanvas) => {
     const { visiblePaths: nextVisiblePaths, machine: nextMachine } = renderStateRef.current
-    const { showPenWidth: nextShowPenWidth, ballDiameterMm: nextBallDiameterMm, lineThicknessMm: nextLineThicknessMm } = renderOptionsRef.current
+    const { showPenWidth: nextShowPenWidth, showMask: nextShowMask, maskProjectionQuad: nextMaskProjectionQuad, maskProjectedPreview: nextMaskProjectedPreview, ballDiameterMm: nextBallDiameterMm, lineThicknessMm: nextLineThicknessMm } = renderOptionsRef.current
     const { width, height } = engine.getViewState()
     ctx.fillStyle = '#f7fbff'
     ctx.fillRect(0, 0, width * window.devicePixelRatio, height * window.devicePixelRatio)
 
     engine.applyTransform(ctx)
     drawGrid(ctx, engine, maxPrintXSpanDeg)
+    if (nextShowMask && nextMaskProjectedPreview.length > 0) {
+      ctx.save()
+      ctx.strokeStyle = 'rgba(107, 114, 128, 0.45)'
+      ctx.lineWidth = 1.1 / engine.getScale()
+      for (const overlayPath of nextMaskProjectedPreview) {
+        const points = overlayPath.points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+        if (points.length < 2) continue
+        ctx.beginPath()
+        ctx.moveTo(points[0].x, -points[0].y)
+        for (let index = 1; index < points.length; index += 1) {
+          ctx.lineTo(points[index].x, -points[index].y)
+        }
+        if (overlayPath.closed) ctx.closePath()
+        ctx.stroke()
+      }
+      ctx.restore()
+    } else if (nextShowMask && maskImageRef.current) {
+      ctx.save()
+      ctx.globalAlpha = 0.32
+      ctx.imageSmoothingEnabled = false
+      if (nextMaskProjectionQuad) {
+        drawImageInQuad(ctx, maskImageRef.current, nextMaskProjectionQuad)
+      } else {
+        ctx.drawImage(
+          maskImageRef.current,
+          WORLD_BOUNDS.minX,
+          -WORLD_BOUNDS.maxY,
+          WORLD_BOUNDS.maxX - WORLD_BOUNDS.minX,
+          WORLD_BOUNDS.maxY - WORLD_BOUNDS.minY,
+        )
+      }
+      ctx.restore()
+    }
     for (const path of nextVisiblePaths) {
       const phase = classifyPath(path, nextMachine)
       const points = path.points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
@@ -131,13 +172,32 @@ export const Toolpath2DView = forwardRef<Toolpath2DHandle, Props>(function Toolp
     const controller = controllerRef.current
     if (!controller) return
     controller.requestDraw()
-  }, [machine, filter, showPenWidth, showTravel, visiblePaths])
+  }, [machine, filter, showMask, showPenWidth, showTravel, visiblePaths, maskProjectionQuad, maskProjectedPreview])
 
   useEffect(() => {
     const controller = controllerRef.current
     if (!controller) return
     controller.requestDraw()
-  }, [ballDiameterMm, lineThicknessMm, showPenWidth])
+  }, [ballDiameterMm, lineThicknessMm, showPenWidth, showMask])
+
+  useEffect(() => {
+    const controller = controllerRef.current
+    if (!maskPreviewUrl) {
+      maskImageRef.current = null
+      controller?.requestDraw()
+      return
+    }
+    const image = new Image()
+    image.onload = () => {
+      maskImageRef.current = image
+      controller?.requestDraw()
+    }
+    image.onerror = () => {
+      maskImageRef.current = null
+      controller?.requestDraw()
+    }
+    image.src = maskPreviewUrl
+  }, [maskPreviewUrl])
 
   return (
     <div className="toolpath-canvas-wrap">
@@ -219,4 +279,24 @@ function mmToBallDegrees(mm: number, ballDiameterMm: number) {
   if (!Number.isFinite(ballDiameterMm) || ballDiameterMm <= 0) return mm
   const circumferenceMm = Math.PI * ballDiameterMm
   return (mm / circumferenceMm) * 360.0
+}
+
+function drawImageInQuad(ctx: CanvasRenderingContext2D, image: HTMLImageElement, quad: MaskProjectionQuad) {
+  const tl = { x: quad.top_left.x, y: -quad.top_left.y }
+  const tr = { x: quad.top_right.x, y: -quad.top_right.y }
+  const bl = { x: quad.bottom_left.x, y: -quad.bottom_left.y }
+
+  const width = Math.max(1, image.width)
+  const height = Math.max(1, image.height)
+  const a = (tr.x - tl.x) / width
+  const b = (tr.y - tl.y) / width
+  const c = (bl.x - tl.x) / height
+  const d = (bl.y - tl.y) / height
+  const e = tl.x
+  const f = tl.y
+
+  ctx.save()
+  ctx.transform(a, b, c, d, e, f)
+  ctx.drawImage(image, 0, 0, width, height)
+  ctx.restore()
 }

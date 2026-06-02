@@ -45,6 +45,7 @@ def build_frontend_config(config) -> dict:
             "infillDensity": config["DEFAULT_INFILL_DENSITY"],
             "infillSpacingMm": config["DEFAULT_INFILL_SPACING_MM"],
             "customInfillSpacingEnabled": False,
+            "infillOverlapPercent": 20.0,
             "infillAngleDeg": config["DEFAULT_INFILL_ANGLE_DEG"],
             "fillStrategy": config["DEFAULT_FILL_STRATEGY"],
             "alternateFillAngleDeg": config["DEFAULT_ALTERNATE_FILL_ANGLE_DEG"],

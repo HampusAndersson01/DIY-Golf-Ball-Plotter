@@ -65,6 +65,7 @@ class RegionGeometryResult:
     polygon_count: int
     printable_area_px: float
     boundary_preview_url: str
+    geometry_quality: dict[str, Any] | None = None
 
 
 @dataclass
@@ -245,7 +246,22 @@ class RasterAnalysisService:
             mask = mask_result
             height, width = mask.shape[:2]
 
-        contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+        trace_supersample = max(1, int(self._config.get("RASTER_MASK_TRACE_SUPERSAMPLE", 4)))
+        contour_smoothing_px = max(0.0, float(self._config.get("RASTER_CONTOUR_SMOOTHING_PX", 0.75)))
+        curve_fit_tolerance_px = max(0.0, float(self._config.get("RASTER_CURVE_FIT_TOLERANCE_PX", 0.35)))
+        trace_mask = mask.astype(np.uint8)
+        trace_scale = float(trace_supersample)
+        if trace_supersample > 1:
+            trace_mask = cv2.resize(
+                trace_mask,
+                (int(width * trace_supersample), int(height * trace_supersample)),
+                interpolation=cv2.INTER_CUBIC,
+            )
+            # Anti-alias the binary edge at high resolution before contour extraction.
+            trace_mask = cv2.GaussianBlur(trace_mask, (0, 0), sigmaX=0.6 * trace_supersample, sigmaY=0.6 * trace_supersample)
+            trace_mask = (trace_mask >= 127).astype(np.uint8) * 255
+
+        contours, hierarchy = cv2.findContours(trace_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
         if hierarchy is None or not contours:
             empty_bundle = pipeline_core.GeometryBundle()
             return RegionGeometryResult(
@@ -261,36 +277,62 @@ class RasterAnalysisService:
                 polygon_count=0,
                 printable_area_px=0.0,
                 boundary_preview_url=_image_to_data_url(np.full((height, width, 3), 255, dtype=np.uint8)),
+                geometry_quality={
+                    "source_mode": "raster",
+                    "trace_supersample": int(trace_supersample),
+                    "contour_vertices_raw": 0,
+                    "contour_vertices_smoothed": 0,
+                },
             )
 
         hierarchy = hierarchy[0]
         polygons: list[Polygon] = []
+        contour_vertices_raw = 0
+        contour_vertices_smoothed = 0
         hole_count = 0
         for index, entry in enumerate(hierarchy):
             parent_index = int(entry[3])
             if parent_index != -1:
                 continue
-            shell = self._contour_ring(contours[index])
+            shell = self._contour_ring(contours[index], scale=trace_scale)
+            contour_vertices_raw += len(shell)
             if len(shell) < 3:
                 continue
 
             holes: list[list[tuple[float, float]]] = []
             child_index = int(entry[2])
             while child_index != -1:
-                hole_ring = self._contour_ring(contours[child_index])
+                hole_ring = self._contour_ring(contours[child_index], scale=trace_scale)
+                contour_vertices_raw += len(hole_ring)
                 if len(hole_ring) >= 3:
                     holes.append(hole_ring)
                     hole_count += 1
                 child_index = int(hierarchy[child_index][0])
 
             polygon = Polygon(shell, holes)
-            if simplify_tolerance_px > 0:
-                polygon = polygon.simplify(simplify_tolerance_px, preserve_topology=True)
+            local_smoothing_px = 0.0
+            if contour_smoothing_px > 0:
+                min_x, min_y, max_x, max_y = polygon.bounds
+                min_dim = max(0.0, min(max_x - min_x, max_y - min_y))
+                local_smoothing_px = min(contour_smoothing_px, max(0.05, min_dim * 0.08))
+            if local_smoothing_px > 0:
+                try:
+                    polygon = polygon.buffer(local_smoothing_px, join_style=1).buffer(-local_smoothing_px, join_style=1)
+                except Exception:
+                    pass
+            local_simplify = max(0.0, min(simplify_tolerance_px, curve_fit_tolerance_px if curve_fit_tolerance_px > 0 else simplify_tolerance_px))
+            if local_simplify > 0:
+                polygon = polygon.simplify(local_simplify, preserve_topology=True)
             if not polygon.is_valid:
                 polygon = polygon.buffer(0)
             if polygon.is_empty:
                 continue
-            polygons.extend(pipeline_core.normalize_geometry(polygon))
+            normalized_polys = pipeline_core.normalize_geometry(polygon)
+            for poly in normalized_polys:
+                contour_vertices_smoothed += max(0, len(poly.exterior.coords) - 1)
+                for ring in poly.interiors:
+                    contour_vertices_smoothed += max(0, len(ring.coords) - 1)
+            polygons.extend(normalized_polys)
 
         filtered = [poly for poly in polygons if poly.area >= float(min_region_area_px)]
         printable_geometry = unary_union(filtered) if filtered else None
@@ -325,9 +367,25 @@ class RasterAnalysisService:
         )
 
         preview_rgb = np.full((height, width, 3), 255, dtype=np.uint8)
-        if mask.any():
+        if normalized:
+            contour_ints: list[np.ndarray] = []
+            hole_ints: list[np.ndarray] = []
+            for poly in normalized:
+                ext = np.array([[int(round(x)), int(round(y))] for x, y in poly.exterior.coords], dtype=np.int32).reshape((-1, 1, 2))
+                if len(ext) >= 3:
+                    contour_ints.append(ext)
+                for ring in poly.interiors:
+                    hole = np.array([[int(round(x)), int(round(y))] for x, y in ring.coords], dtype=np.int32).reshape((-1, 1, 2))
+                    if len(hole) >= 3:
+                        hole_ints.append(hole)
+            if contour_ints:
+                cv2.fillPoly(preview_rgb, contour_ints, color=(226, 232, 240), lineType=cv2.LINE_AA)
+                cv2.polylines(preview_rgb, contour_ints, isClosed=True, color=(37, 99, 235), thickness=1, lineType=cv2.LINE_AA)
+            if hole_ints:
+                cv2.fillPoly(preview_rgb, hole_ints, color=(255, 255, 255), lineType=cv2.LINE_AA)
+                cv2.polylines(preview_rgb, hole_ints, isClosed=True, color=(37, 99, 235), thickness=1, lineType=cv2.LINE_AA)
+        elif mask.any():
             preview_rgb[mask > 0] = np.array([226, 232, 240], dtype=np.uint8)
-        cv2.drawContours(preview_rgb, contours, -1, (37, 99, 235), 1)
 
         bundle = pipeline_core.GeometryBundle(
             outline_segments=[],
@@ -347,6 +405,18 @@ class RasterAnalysisService:
             "current_to_source_matrix": (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
             "sample_step_mm_default": 0.05,
         }
+        bundle.metadata["geometry_quality"] = {
+            "source_mode": "raster",
+            "trace_supersample": int(trace_supersample),
+            "contour_smoothing_px": float(contour_smoothing_px),
+            "curve_fit_tolerance_px": float(curve_fit_tolerance_px),
+            "input_simplify_tolerance_px": float(simplify_tolerance_px),
+            "effective_simplify_tolerance_px": float(max(0.0, min(simplify_tolerance_px, curve_fit_tolerance_px if curve_fit_tolerance_px > 0 else simplify_tolerance_px))),
+            "contour_vertices_raw": int(contour_vertices_raw),
+            "contour_vertices_smoothed": int(contour_vertices_smoothed),
+            "trace_chain_mode": "CHAIN_APPROX_NONE",
+            "preview_source": "smoothed_printable_geometry",
+        }
         selected_component_count = 0
         if mask.any():
             component_count, _, _, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
@@ -364,6 +434,7 @@ class RasterAnalysisService:
             polygon_count=len(filtered),
             printable_area_px=float(printable_geometry.area) if printable_geometry is not None and not printable_geometry.is_empty else 0.0,
             boundary_preview_url=_image_to_data_url(preview_rgb),
+            geometry_quality=bundle.metadata.get("geometry_quality"),
         )
 
     @staticmethod
@@ -405,6 +476,7 @@ class RasterAnalysisService:
             "polygon_count": result.polygon_count,
             "printable_area_px": result.printable_area_px,
             "boundary_preview_url": result.boundary_preview_url,
+            "geometry_quality": result.geometry_quality or {},
         }
 
     @staticmethod
@@ -620,17 +692,6 @@ class RasterAnalysisService:
 
     def _component_detail_segments(self, component_mask: np.ndarray) -> list[pipeline_core.Segment]:
         segments: list[pipeline_core.Segment] = []
-
-        contours, _ = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        for contour in contours:
-            ring = self._contour_ring(contour)
-            if len(ring) < 3:
-                continue
-            points = [pipeline_core.Point(x, y) for x, y in ring]
-            if points[0] != points[-1]:
-                points.append(points[0])
-            segments.append(pipeline_core.Segment(points=points, closed=True))
-
         skeleton = self._skeletonize_component(component_mask)
         skeleton_segments = self._skeleton_to_segments(skeleton)
         if skeleton_segments:
@@ -800,8 +861,9 @@ class RasterAnalysisService:
         )
 
     @staticmethod
-    def _contour_ring(contour: np.ndarray) -> list[tuple[float, float]]:
+    def _contour_ring(contour: np.ndarray, *, scale: float = 1.0) -> list[tuple[float, float]]:
         ring = contour.reshape(-1, 2)
         if len(ring) >= 2 and np.array_equal(ring[0], ring[-1]):
             ring = ring[:-1]
-        return [(float(x), float(y)) for x, y in ring]
+        inv = 1.0 / max(1e-9, float(scale))
+        return [(float(x) * inv, float(y) * inv) for x, y in ring]

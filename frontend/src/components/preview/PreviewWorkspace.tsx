@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 
-import type { MachineState, PreviewPath } from '../../api/types'
+import type { MachineState, MaskProjectionQuad, PreviewPath } from '../../api/types'
 import type { PreviewMode, ViewPreset } from '../../store/appStore'
 import type { Ball3DHandle } from './Ball3DView'
 import { Ball3DView } from './Ball3DView'
@@ -20,13 +20,17 @@ type Props = {
   progressFilter: 'all' | 'progress'
   showTravel: boolean
   showPenWidth: boolean
+  showMask: boolean
   imagePreviewUrl: string | null
   maskPreviewUrl: string | null
+  maskProjectionQuad: MaskProjectionQuad | null
+  maskProjectedPreview: PreviewPath[]
   viewPreset: ViewPreset
   onPreviewMode: (mode: PreviewMode) => void
   onProgressFilter: (filter: 'all' | 'progress') => void
   onShowTravel: (show: boolean) => void
   onShowPenWidth: (show: boolean) => void
+  onShowMask: (show: boolean) => void
   onViewPreset: (preset: ViewPreset) => void
   onZoomChange?: (zoomLabel: string) => void
   zoomLabel: string
@@ -74,11 +78,13 @@ export function PreviewWorkspace(props: Props) {
           onModeChange={props.onPreviewMode}
           onReset={reset}
           onShowPenWidth={props.onShowPenWidth}
+          onShowMask={props.onShowMask}
           onShowTravel={props.onShowTravel}
           onViewPreset={props.onViewPreset}
           previewMode={props.previewMode}
           progressFilter={props.progressFilter}
           showPenWidth={props.showPenWidth}
+          showMask={props.showMask}
           showTravel={props.showTravel}
         />
       </div>
@@ -96,7 +102,11 @@ export function PreviewWorkspace(props: Props) {
                 lineThicknessMm={props.lineThicknessMm}
                 machine={props.machine}
                 maxPrintXSpanDeg={props.maxPrintXSpanDeg}
+                maskPreviewUrl={props.maskPreviewUrl}
+                maskProjectionQuad={props.maskProjectionQuad}
+                maskProjectedPreview={props.maskProjectedPreview}
                 paths={props.paths}
+                showMask={props.showMask}
                 showPenWidth={props.showPenWidth}
                 showTravel={props.showTravel}
               />

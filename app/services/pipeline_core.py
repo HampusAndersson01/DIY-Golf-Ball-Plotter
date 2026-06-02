@@ -66,7 +66,15 @@ RUNTIME_KEYS = [
     "DEFAULT_MIN_SEGMENT_LENGTH_MM",
     "DEFAULT_TRAVEL_OPTIMIZATION",
     "DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS",
+    "DEFAULT_ALLOW_DETAIL_PEN_DOWN_CONTINUATION",
     "DEFAULT_INFILL_PATH_MODE",
+    "DEFAULT_THIN_REGION_SINGLE_STROKE_MAX_FACTOR",
+    "DEFAULT_NARROW_REGION_MAX_FACTOR",
+    "DEFAULT_COLLAPSE_OUTLINE_MAX_FACTOR",
+    "DEFAULT_TINY_DOT_AREA_FACTOR",
+    "DEFAULT_SINGLE_STROKE_WIDTH_MAX_FACTOR",
+    "DEFAULT_CENTERLINE_WIDTH_MAX_FACTOR",
+    "DEFAULT_DETAIL_WIDTH_MAX_FACTOR",
     "DEFAULT_STREAMING_MODE",
     "SVG_DARK_FILL_LUMINANCE_THRESHOLD",
     "SVG_LIGHT_CUTOUT_LUMINANCE_THRESHOLD",
@@ -86,11 +94,13 @@ def configure_runtime(config, state_dict, serial_lock_obj):
     serial_lock = serial_lock_obj
 
 
-from collections import deque
+from collections import Counter, deque
 import hashlib
 import json
 import logging
+import cv2
 from flask import Flask, request, jsonify, render_template_string
+import numpy as np
 import serial
 import time
 import threading
@@ -99,7 +109,9 @@ import os
 import re
 import statistics
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from dataclasses import dataclass, asdict, field
 from typing import Optional, Any, Callable, Literal
 
@@ -195,6 +207,7 @@ DEFAULT_WALL_COUNT = 1
 DEFAULT_INFILL_PATTERN = "hatch"
 DEFAULT_INFILL_DENSITY = 100.0
 DEFAULT_INFILL_SPACING_MM = DEFAULT_LINE_THICKNESS_MM
+DEFAULT_INFILL_OVERLAP_PERCENT = 20.0
 DEFAULT_INFILL_ANGLE_DEG = 45.0
 DEFAULT_FILL_STRATEGY = "adaptive_angle"
 DEFAULT_ALTERNATE_FILL_ANGLE_DEG = -45.0
@@ -211,6 +224,7 @@ DEFAULT_THIN_DETAIL_OVERLAP = True
 DEFAULT_MIN_SEGMENT_LENGTH_MM = 0.5
 DEFAULT_TRAVEL_OPTIMIZATION = "nearest-neighbor"
 DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS = True
+DEFAULT_ALLOW_DETAIL_PEN_DOWN_CONTINUATION = True
 DEFAULT_INFILL_PATH_MODE = "rectilinear"
 DEFAULT_LONG_THIN_INFILL_ASPECT_RATIO = 3.0
 DEFAULT_SMALL_DETAIL_MIN_DIM_FACTOR = 4.0
@@ -218,6 +232,17 @@ DEFAULT_SMALL_DETAIL_MIN_DIM_FLOOR_MM = 1.0
 DEFAULT_SMALL_DETAIL_AREA_FACTOR = 18.0
 DEFAULT_SHORT_INFILL_SEGMENT_FACTOR = 1.5
 DEFAULT_MAX_PEN_DOWN_CONNECTOR_SPACING_FACTOR = 1.4
+DEFAULT_THIN_REGION_SINGLE_STROKE_MAX_FACTOR = 1.5
+DEFAULT_NARROW_REGION_MAX_FACTOR = 3.0
+DEFAULT_COLLAPSE_OUTLINE_MAX_FACTOR = 2.0
+DEFAULT_TINY_DOT_AREA_FACTOR = 0.20
+DEFAULT_SINGLE_STROKE_WIDTH_MAX_FACTOR = 1.15
+DEFAULT_CENTERLINE_WIDTH_MAX_FACTOR = 1.5
+DEFAULT_DETAIL_WIDTH_MAX_FACTOR = 2.5
+DEFAULT_MAX_DETAIL_CONTINUATION_LENGTH_FACTOR = 4.0
+DEFAULT_PREFERRED_DETAIL_CONTINUATION_LENGTH_FACTOR = 2.0
+DEFAULT_MAX_DETAIL_CONTINUATION_OVERSPILL_AREA_RATIO = 0.02
+DEFAULT_MAX_DETAIL_CONTINUATION_TURN_DEG = 120.0
 DEFAULT_STREAMING_MODE = "buffered"
 DEFAULT_OUTLINE_PLACEMENT_MODE = "inside_edge_default"
 DEFAULT_PROJECTION_SAMPLING_MAX_SEGMENT_MM = 0.25
@@ -480,6 +505,10 @@ class HybridInfillConfig:
     thinRegionMode: ThinRegionMode = "singleStroke"
     allowOutlineOverlapForThinRegions: bool = True
     optimizePathOrder: bool = True
+    singleStrokeMaxWidthFactor: float = DEFAULT_THIN_REGION_SINGLE_STROKE_MAX_FACTOR
+    narrowRegionMaxWidthFactor: float = DEFAULT_NARROW_REGION_MAX_FACTOR
+    collapseOutlineMaxWidthFactor: float = DEFAULT_COLLAPSE_OUTLINE_MAX_FACTOR
+    tinyDotAreaFactor: float = DEFAULT_TINY_DOT_AREA_FACTOR
 
 
 @dataclass
@@ -518,6 +547,7 @@ def normalize_geometry_config(
     *,
     raw_line_width_mm: float,
     raw_infill_spacing_mm: float | None = None,
+    raw_infill_overlap_percent: float | None = None,
     raw_detail_spacing_mm: float | None = None,
     raw_wall_spacing_mm: float | None = None,
     raw_preview_stroke_width_mm: float | None = None,
@@ -526,7 +556,13 @@ def normalize_geometry_config(
 ) -> NormalizedGeometryConfig:
     line_width_mm = max(0.0, float(raw_line_width_mm))
     pen_radius_mm = line_width_mm / 2.0
-    effective_infill_spacing_mm = line_width_mm if raw_infill_spacing_mm is None else max(0.0, float(raw_infill_spacing_mm))
+    # Determine infill overlap percent (default fallback)
+    infill_overlap_percent = float(raw_infill_overlap_percent) if raw_infill_overlap_percent is not None else float(DEFAULT_INFILL_OVERLAP_PERCENT)
+    # If explicit spacing not provided, compute effective spacing using overlap percent
+    if raw_infill_spacing_mm is None:
+        effective_infill_spacing_mm = max(0.0, line_width_mm * (1.0 - infill_overlap_percent / 100.0))
+    else:
+        effective_infill_spacing_mm = max(0.0, float(raw_infill_spacing_mm))
     effective_detail_spacing_mm = line_width_mm if raw_detail_spacing_mm is None else max(0.0, float(raw_detail_spacing_mm))
     effective_wall_spacing_mm = line_width_mm if raw_wall_spacing_mm is None else max(0.0, float(raw_wall_spacing_mm))
     preview_stroke_width_mm = line_width_mm if raw_preview_stroke_width_mm is None else max(0.0, float(raw_preview_stroke_width_mm))
@@ -543,6 +579,7 @@ def normalize_geometry_config(
         source={
             "rawLineWidthMm": float(raw_line_width_mm),
             "rawInfillSpacingMm": None if raw_infill_spacing_mm is None else float(raw_infill_spacing_mm),
+            "rawInfillOverlapPercent": None if raw_infill_overlap_percent is None else float(raw_infill_overlap_percent),
             "rawDetailSpacingMm": None if raw_detail_spacing_mm is None else float(raw_detail_spacing_mm),
             "rawPreviewStrokeWidthMm": None if raw_preview_stroke_width_mm is None else float(raw_preview_stroke_width_mm),
         },
@@ -636,6 +673,21 @@ class InfillConnectorValidationResult:
     sample_failures: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass
+class MaskCoverageMetrics:
+    mask_area_px: int
+    covered_inside_mask_px: int
+    missed_inside_mask_px: int
+    overdraw_outside_mask_px: int
+    covered_pixels_total_px: int
+    raw_coverage_percent: float
+    outside_overdraw_percent: float
+    penalized_coverage_percent: float
+    missed_inside_mask_percent: float
+    px_per_mm: float
+    pen_radius_px: float
+
+
 def _connector_meta_value(meta: dict[str, Any] | None, *keys: str) -> Any:
     if not meta:
         return None
@@ -646,10 +698,22 @@ def _connector_meta_value(meta: dict[str, Any] | None, *keys: str) -> Any:
     return None
 
 
-def _offset_geometry(geometry: Any, offset_mm: float) -> Any:
+def _offset_geometry(
+    geometry: Any,
+    offset_mm: float,
+    *,
+    join_style: int = 1,
+    miter_limit: float = 3.0,
+    quad_segs: int = 16,
+) -> Any:
     if geometry is None or geometry.is_empty or abs(offset_mm) <= 1e-12:
         return geometry
-    offset = geometry.buffer(offset_mm, join_style=1)
+    offset = geometry.buffer(
+        offset_mm,
+        join_style=max(1, min(3, int(join_style))),
+        mitre_limit=max(1.0, float(miter_limit)),
+        quad_segs=max(4, int(quad_segs)),
+    )
     if offset is not None and not offset.is_empty and not offset.is_valid:
         offset = make_valid(offset) if make_valid is not None else offset.buffer(0)
     return offset
@@ -701,13 +765,15 @@ def can_draw_connector(
 
 def choose_fill_strategy(metrics: RegionMetrics, config: HybridInfillConfig) -> FillStrategy:
     line_width_mm = max(config.lineWidthMm, 1e-9)
-    infill_spacing_mm = max(config.infillSpacingMm, line_width_mm)
-    single_stroke_width_max = line_width_mm * config.singleStrokeWidthMaxFactor
-    centerline_width_max = line_width_mm * config.centerlineWidthMaxFactor
-    detail_width_max = max(infill_spacing_mm * config.detailWidthMaxFactor, line_width_mm * config.detailMinWidthFactor)
+    single_stroke_width_max = line_width_mm * max(config.singleStrokeMaxWidthFactor, config.singleStrokeWidthMaxFactor)
+    centerline_width_max = line_width_mm * max(config.centerlineWidthMaxFactor, config.collapseOutlineMaxWidthFactor)
+    detail_width_max = line_width_mm * max(config.detailWidthMaxFactor, config.narrowRegionMaxWidthFactor)
     min_usable_detail_area = max(config.minUsableDetailAreaMm2, line_width_mm * line_width_mm * 0.75)
     min_normal_fill_area = max(config.minNormalFillAreaMm2, line_width_mm * line_width_mm * 3.0)
+    tiny_dot_area_mm2 = max(1e-6, line_width_mm * line_width_mm * config.tinyDotAreaFactor)
 
+    if metrics.areaMm2 <= tiny_dot_area_mm2:
+        return "SINGLE_STROKE_DETAIL"
     if metrics.areaMm2 < min_usable_detail_area:
         return "SINGLE_STROKE_DETAIL"
     if metrics.maxLocalWidthMm <= single_stroke_width_max:
@@ -784,6 +850,201 @@ def validate_thin_region_stroke(
         except Exception:
             return False
     return True
+
+
+def compute_toolpath_mask_coverage_metrics(
+    toolpaths: list[Toolpath],
+    *,
+    mask: Any,
+    current_to_source_matrix: tuple[float, float, float, float, float, float],
+    pen_radius_mm: float,
+    sample_step_mm: float,
+    include_kinds: set[str] | None = None,
+) -> MaskCoverageMetrics | None:
+    if mask is None:
+        return None
+    mask_height, mask_width = mask.shape[:2]
+    target_mask = np.asarray(mask) > 0
+    mask_area_px = int(np.count_nonzero(target_mask))
+    if mask_area_px <= 0:
+        return None
+    drawn_mask = np.zeros((mask_height, mask_width), dtype=np.uint8)
+    a, b, c, d, _e, _f = current_to_source_matrix
+    # Convert toolpath-space mm radius to source-image pixels via affine scale.
+    scale_x = math.hypot(a, b)
+    scale_y = math.hypot(c, d)
+    px_per_mm = max(1e-6, (scale_x + scale_y) * 0.5)
+    pen_radius_px = max(0.0, float(pen_radius_mm) * px_per_mm)
+    coverage_draw_kinds = include_kinds if include_kinds is not None else {
+        "coverage_centerline",
+        "coverage_offset_line",
+        "coverage_rectilinear",
+        "coverage_contour",
+        "coverage_connector",
+        "coverage_tiny_mark",
+        "fill-infill",
+        "detail-trace",
+        "outline",
+        "outline_cleanup",
+        "fill-wall",
+    }
+    radius_px_i = max(1, int(round(pen_radius_px)))
+    for path in toolpaths:
+        if path.kind not in coverage_draw_kinds or len(path.points) < 1:
+            continue
+        if len(path.points) == 1:
+            source_point = apply_svg_matrix(path.points[0], current_to_source_matrix)
+            cv2.circle(drawn_mask, (int(round(source_point.x)), int(round(source_point.y))), radius_px_i, 255, -1)
+            continue
+        for start, end in zip(path.points, path.points[1:]):
+            line = LineString([(start.x, start.y), (end.x, end.y)])
+            if line.length <= 1e-9:
+                continue
+            sample_count = max(2, int(math.ceil(line.length / max(0.01, sample_step_mm))) + 1)
+            for sample_index in range(sample_count):
+                distance_mm = min(line.length, (line.length * sample_index) / max(sample_count - 1, 1))
+                sample = line.interpolate(distance_mm)
+                source_point = apply_svg_matrix(Point(float(sample.x), float(sample.y)), current_to_source_matrix)
+                cv2.circle(drawn_mask, (int(round(source_point.x)), int(round(source_point.y))), radius_px_i, 255, -1)
+    drawn_bool = drawn_mask > 0
+    inside_covered_mask = target_mask & drawn_bool
+    inside_missed_mask = target_mask & ~drawn_bool
+    outside_overdraw_mask = ~target_mask & drawn_bool
+    covered_inside_mask_px = int(np.count_nonzero(inside_covered_mask))
+    missed_inside_mask_px = int(np.count_nonzero(inside_missed_mask))
+    overdraw_outside_mask_px = int(np.count_nonzero(outside_overdraw_mask))
+    raw_coverage_percent = (100.0 * covered_inside_mask_px / mask_area_px) if mask_area_px > 0 else 0.0
+    outside_overdraw_percent = (100.0 * overdraw_outside_mask_px / mask_area_px) if mask_area_px > 0 else 0.0
+    # Penalized score intentionally allows negative values for severe overdraw.
+    penalized_coverage_percent = raw_coverage_percent - outside_overdraw_percent
+    missed_inside_mask_percent = (100.0 * missed_inside_mask_px / mask_area_px) if mask_area_px > 0 else 0.0
+    return MaskCoverageMetrics(
+        mask_area_px=mask_area_px,
+        covered_inside_mask_px=covered_inside_mask_px,
+        missed_inside_mask_px=missed_inside_mask_px,
+        overdraw_outside_mask_px=overdraw_outside_mask_px,
+        covered_pixels_total_px=int(np.count_nonzero(drawn_bool)),
+        raw_coverage_percent=raw_coverage_percent,
+        outside_overdraw_percent=outside_overdraw_percent,
+        penalized_coverage_percent=penalized_coverage_percent,
+        missed_inside_mask_percent=missed_inside_mask_percent,
+        px_per_mm=px_per_mm,
+        pen_radius_px=pen_radius_px,
+    )
+
+
+def compute_toolpath_mask_coverage_breakdown(
+    toolpaths: list[Toolpath],
+    *,
+    mask: Any,
+    current_to_source_matrix: tuple[float, float, float, float, float, float],
+    pen_radius_mm: float,
+    sample_step_mm: float,
+    include_kinds: set[str] | None = None,
+) -> list[dict[str, float | int | str]]:
+    include = include_kinds if include_kinds is not None else {
+        "coverage_centerline",
+        "coverage_offset_line",
+        "coverage_rectilinear",
+        "coverage_contour",
+        "coverage_connector",
+        "coverage_tiny_mark",
+        "outline_cleanup",
+    }
+    selected = [p for p in toolpaths if p.kind in include and len(p.points) >= 1]
+    groups: dict[str, list[Toolpath]] = {}
+    for path in selected:
+        source = str(path.source or path.metadata.get("source") or "unknown")
+        key = f"{path.kind}|{source}"
+        groups.setdefault(key, []).append(path)
+    cumulative: list[Toolpath] = []
+    baseline = compute_toolpath_mask_coverage_metrics(
+        cumulative,
+        mask=mask,
+        current_to_source_matrix=current_to_source_matrix,
+        pen_radius_mm=pen_radius_mm,
+        sample_step_mm=sample_step_mm,
+        include_kinds=include,
+    )
+    rows: list[dict[str, float | int | str]] = []
+    prev = baseline
+    for key in sorted(groups.keys()):
+        cumulative.extend(groups[key])
+        cur = compute_toolpath_mask_coverage_metrics(
+            cumulative,
+            mask=mask,
+            current_to_source_matrix=current_to_source_matrix,
+            pen_radius_mm=pen_radius_mm,
+            sample_step_mm=sample_step_mm,
+            include_kinds=include,
+        )
+        if cur is None:
+            continue
+        prev_raw = prev.raw_coverage_percent if prev is not None else 0.0
+        prev_out = prev.outside_overdraw_percent if prev is not None else 0.0
+        prev_pen = prev.penalized_coverage_percent if prev is not None else 0.0
+        rows.append(
+            {
+                "path_kind_source": key,
+                "path_count": len(groups[key]),
+                "draw_length_mm": float(sum(segment_length(p.points) for p in groups[key])),
+                "covered_inside_mask_px": int(cur.covered_inside_mask_px),
+                "missed_inside_mask_px": int(cur.missed_inside_mask_px),
+                "overdraw_outside_mask_px": int(cur.overdraw_outside_mask_px),
+                "net_score_px": int(cur.covered_inside_mask_px - cur.overdraw_outside_mask_px),
+                "raw_coverage_delta": float(cur.raw_coverage_percent - prev_raw),
+                "outside_overdraw_delta": float(cur.outside_overdraw_percent - prev_out),
+                "penalized_delta": float(cur.penalized_coverage_percent - prev_pen),
+            }
+        )
+        prev = cur
+    return rows
+
+
+def estimate_toolpath_mask_coverage(
+    toolpaths: list[Toolpath],
+    *,
+    mask: Any,
+    current_to_source_matrix: tuple[float, float, float, float, float, float],
+    pen_radius_mm: float,
+    sample_step_mm: float,
+    include_kinds: set[str] | None = None,
+) -> dict[str, float]:
+    metrics = compute_toolpath_mask_coverage_metrics(
+        toolpaths,
+        mask=mask,
+        current_to_source_matrix=current_to_source_matrix,
+        pen_radius_mm=pen_radius_mm,
+        sample_step_mm=sample_step_mm,
+        include_kinds=include_kinds,
+    )
+    if metrics is None:
+        return {}
+    return {
+        "selected_mask_pixels": float(metrics.mask_area_px),
+        "estimated_covered_pixels": float(metrics.covered_inside_mask_px),
+        "missed_selected_pixels": float(metrics.missed_inside_mask_px),
+        "outside_mask_pixels": float(metrics.overdraw_outside_mask_px),
+        "coverage_percent": metrics.raw_coverage_percent,
+        "raw_coverage_percent": metrics.raw_coverage_percent,
+        "missed_percent": metrics.missed_inside_mask_percent,
+        "outside_overdraw_percent": metrics.outside_overdraw_percent,
+        "penalized_coverage_percent": metrics.penalized_coverage_percent,
+        "covered_pixels_total": float(metrics.covered_pixels_total_px),
+        "px_per_mm": metrics.px_per_mm,
+        "pen_radius_px": metrics.pen_radius_px,
+    }
+
+
+def should_accept_thin_region_stroke(
+    delta_covered_inside_mask_px: int,
+    delta_overdraw_outside_mask_px: int,
+    delta_penalized_coverage_percent: float,
+) -> bool:
+    return (
+        int(delta_covered_inside_mask_px) > int(delta_overdraw_outside_mask_px)
+        and float(delta_penalized_coverage_percent) > 0.0
+    )
 
 
 @dataclass
@@ -3099,11 +3360,23 @@ def normalize_straight_segments(points: list[Point], options: StraighteningOptio
 
 
 def _drawing_path_kinds() -> set[str]:
-    return {"outline", "fill-wall", "fill-infill", "detail-trace"}
+    return {
+        "outline",
+        "fill-wall",
+        "fill-infill",
+        "detail-trace",
+        "detail-continuation",
+        "coverage_centerline",
+        "coverage_offset_line",
+        "coverage_rectilinear",
+        "coverage_contour",
+        "coverage_connector",
+        "outline_cleanup",
+    }
 
 
 def _minimum_toolpath_length_threshold(toolpath: Toolpath, requested_minimum_length: float) -> float:
-    if toolpath.kind in {"detail-trace", "fill-infill-travel"}:
+    if toolpath.kind in {"detail-trace", "detail-continuation", "fill-infill-travel"} or bool(toolpath.metadata.get("force_minimum_printable_stroke", False)):
         return 0.0
     return requested_minimum_length
 
@@ -3805,6 +4078,244 @@ def clone_toolpath(
     )
 
 
+DETAIL_FILTER_MODE = "coverage_aware_prune_redundant_details"
+DETAIL_SOURCE_ALIASES: dict[str, str] = {
+    "detail_trace": "thin_feature_centerline",
+    "residual_centerline": "skeleton_required_for_unfilled_thin_region",
+}
+DETAIL_SOURCE_WHITELIST = {
+    "thin_feature_centerline",
+    "skeleton_required_for_unfilled_thin_region",
+    "coverage_repair",
+    "small_missed_blob_repair",
+    "intentional_user_detail_layer",
+}
+DETAIL_SOURCE_REJECT_AS_TRAVEL_OR_DEBUG = {
+    "travel",
+    "pen_up_travel",
+    "optimizer_travel",
+    "connector_candidate",
+    "safe_connector_candidate",
+    "rejected_connector",
+    "component_graph_edge",
+    "debug_route",
+    "preview_only_line",
+    "stale_pre_optimization_path",
+    "outline_candidate",
+    "detail_merge_connector",
+    "detail_continuation",
+    "detail_continuation_rejected",
+    "fill-infill-travel",
+    "coverage_connector",
+    "gcode_travel",
+}
+
+
+def _canonical_detail_source(toolpath: Toolpath) -> tuple[Optional[str], str]:
+    raw_source = str(
+        toolpath.metadata.get("detail_source")
+        or toolpath.metadata.get("source_class")
+        or toolpath.source
+        or ""
+    ).strip()
+    canonical = DETAIL_SOURCE_ALIASES.get(raw_source, raw_source)
+    if canonical in DETAIL_SOURCE_WHITELIST:
+        return canonical, ""
+    if canonical in DETAIL_SOURCE_REJECT_AS_TRAVEL_OR_DEBUG:
+        return None, "travel_or_debug"
+    return None, "unknown_source"
+
+
+def _filter_detail_trace_candidates_for_export(
+    candidates: list[Toolpath],
+    *,
+    target_geometry: Any,
+    existing_painted_area: Any,
+    line_width_mm: float,
+    allow_detail_overlap_outline: bool,
+    validate_detail_with_pen_footprint: bool,
+    max_detail_overspill_mm: float,
+    max_detail_overspill_area_ratio: float,
+    min_detail_new_coverage_mm2: float,
+    max_already_covered_ratio: float,
+    candidate_component_index_fn: Callable[[Toolpath], int | None],
+    candidate_centeredness_fn: Callable[[Toolpath, int | None], float],
+) -> dict[str, Any]:
+    accepted_detail_paths: list[Toolpath] = []
+    accepted_detail_footprints: list[Any] = []
+    rejected_detail_paths: list[Toolpath] = []
+    overspill_warning_regions: list[Any] = []
+    accepted_detail_coverage: Any = Polygon()
+    target_boundary = target_geometry.boundary if target_geometry is not None and not target_geometry.is_empty else None
+    drop_reasons: Counter[str] = Counter()
+    dropped_records: list[dict[str, Any]] = []
+    already_covered_ratios: list[float] = []
+    total_new_coverage_area = 0.0
+    radius = max(0.01, line_width_mm * 0.5)
+    min_candidate_length_mm = max(0.05, line_width_mm * 0.15)
+
+    for candidate_index, candidate in enumerate(candidates):
+        if len(candidate.points) < 2:
+            continue
+
+        candidate_id = candidate.path_id or _path_debug_identifier(candidate, candidate_index)
+
+        def _reject(reason: str, *, new_coverage_area_mm2: float = 0.0, already_covered_ratio: float = 1.0) -> None:
+            drop_reasons[reason] += 1
+            rejected_detail_paths.append(candidate)
+            dropped_records.append({
+                "path_id": candidate_id,
+                "source": str(candidate.source or ""),
+                "canonical_source": canonical_source or "",
+                "drop_reason": reason,
+                "new_coverage_area_mm2": float(new_coverage_area_mm2),
+                "already_covered_ratio": float(already_covered_ratio),
+            })
+
+        canonical_source, source_rejection_reason = _canonical_detail_source(candidate)
+        if canonical_source is None:
+            _reject(source_rejection_reason or "unknown_source")
+            continue
+
+        if segment_length(candidate.points) < min_candidate_length_mm:
+            _reject("too_short")
+            continue
+
+        line = LineString([(point.x, point.y) for point in candidate.points])
+        stroke = line.buffer(radius, cap_style=1, join_style=1)
+        if stroke.is_empty:
+            _reject("empty_footprint")
+            continue
+
+        target_footprint = stroke
+        if target_geometry is not None and not target_geometry.is_empty:
+            try:
+                target_footprint = stroke.intersection(target_geometry)
+            except Exception:
+                target_footprint = stroke.intersection(target_geometry.buffer(0))
+        target_footprint_area = float(target_footprint.area) if target_footprint is not None and not target_footprint.is_empty else 0.0
+        if target_footprint_area <= 1e-9:
+            _reject("outside_target", already_covered_ratio=1.0)
+            continue
+
+        effective_existing_painted_area = existing_painted_area
+        if accepted_detail_coverage is not None and not accepted_detail_coverage.is_empty:
+            try:
+                effective_existing_painted_area = existing_painted_area.union(accepted_detail_coverage)
+            except Exception:
+                effective_existing_painted_area = existing_painted_area.buffer(0).union(accepted_detail_coverage.buffer(0))
+
+        try:
+            new_coverage = target_footprint.difference(effective_existing_painted_area)
+        except Exception:
+            new_coverage = target_footprint.buffer(0).difference(effective_existing_painted_area.buffer(0))
+        new_coverage_area = float(new_coverage.area) if new_coverage is not None and not new_coverage.is_empty else 0.0
+        already_covered_ratio = max(0.0, min(1.0, 1.0 - (new_coverage_area / max(1e-9, target_footprint_area))))
+        already_covered_ratios.append(already_covered_ratio)
+
+        if new_coverage_area < min_detail_new_coverage_mm2 or already_covered_ratio > max_already_covered_ratio:
+            _reject("redundant_overlap", new_coverage_area_mm2=new_coverage_area, already_covered_ratio=already_covered_ratio)
+            continue
+
+        overspill = None
+        overspill_area = 0.0
+        overspill_ratio = 0.0
+        protrusion_mm = 0.0
+        if target_geometry is not None and not target_geometry.is_empty:
+            overspill = stroke.difference(target_geometry)
+            overspill_area = float(overspill.area) if overspill is not None and not overspill.is_empty else 0.0
+            overspill_ratio = overspill_area / max(1e-9, float(stroke.area))
+            if overspill is not None and not overspill.is_empty and target_boundary is not None:
+                max_distance = 0.0
+                for poly in normalize_geometry(overspill):
+                    coords = list(poly.exterior.coords)
+                    sample_step = max(1, int(len(coords) / 32))
+                    for idx in range(0, len(coords), sample_step):
+                        pt = ShapelyPoint(float(coords[idx][0]), float(coords[idx][1]))
+                        max_distance = max(max_distance, float(pt.distance(target_boundary)))
+                protrusion_mm = max_distance
+        if validate_detail_with_pen_footprint:
+            overspill_ok = overspill_ratio <= max_detail_overspill_area_ratio and protrusion_mm <= max_detail_overspill_mm
+            if not overspill_ok:
+                if overspill is not None and not overspill.is_empty:
+                    overspill_warning_regions.append(overspill)
+                _reject("overspill", new_coverage_area_mm2=new_coverage_area, already_covered_ratio=already_covered_ratio)
+                continue
+
+        overlap_area = 0.0
+        if accepted_detail_coverage is not None and not accepted_detail_coverage.is_empty:
+            overlap_area = float(stroke.intersection(accepted_detail_coverage).area)
+        overlap_ratio = overlap_area / max(1e-9, float(stroke.area))
+        component_idx = candidate_component_index_fn(candidate)
+        centeredness = candidate_centeredness_fn(candidate, component_idx)
+        is_narrow_component = component_idx is not None
+        is_centerline_like = canonical_source == "skeleton_required_for_unfilled_thin_region"
+        if is_narrow_component and is_centerline_like and overlap_ratio >= 0.82 and centeredness <= (line_width_mm * 0.42):
+            _reject("redundant_centerline_overlap", new_coverage_area_mm2=new_coverage_area, already_covered_ratio=already_covered_ratio)
+            continue
+
+        chord = math.hypot(candidate.points[-1].x - candidate.points[0].x, candidate.points[-1].y - candidate.points[0].y)
+        if chord > 1e-6 and (segment_length(candidate.points) / chord) > 4.0 and len(candidate.points) > 12:
+            _reject("noisy_loop", new_coverage_area_mm2=new_coverage_area, already_covered_ratio=already_covered_ratio)
+            continue
+
+        is_edge_detail = False
+        if allow_detail_overlap_outline and target_boundary is not None:
+            try:
+                is_edge_detail = float(line.distance(target_boundary)) <= (line_width_mm * 0.7)
+            except Exception:
+                is_edge_detail = False
+
+        accepted_detail_paths.append(clone_toolpath(
+            candidate,
+            kind="detail-trace",
+            metadata={
+                **candidate.metadata,
+                "path_role": "PRINT_DETAIL_EDGE" if is_edge_detail else "PRINT_DETAIL",
+                "detail_filter_mode": DETAIL_FILTER_MODE,
+                "detail_source_whitelist_enforced": True,
+                "detail_source_class": canonical_source,
+                "detail_overlap_outline_allowed": bool(allow_detail_overlap_outline),
+                "detail_validate_with_pen_footprint": bool(validate_detail_with_pen_footprint),
+                "detail_new_coverage_area_mm2": new_coverage_area,
+                "detail_already_covered_ratio": already_covered_ratio,
+                "detail_overspill_area_mm2": overspill_area,
+                "detail_overspill_area_ratio": overspill_ratio,
+                "detail_max_protrusion_mm": protrusion_mm,
+                "detail_overlap_ratio_with_accepted": overlap_ratio,
+                "detail_centeredness_mm": centeredness,
+            },
+        ))
+        total_new_coverage_area += new_coverage_area
+        try:
+            accepted_detail_coverage = accepted_detail_coverage.union(stroke)
+        except Exception:
+            accepted_detail_coverage = accepted_detail_coverage.buffer(0).union(stroke.buffer(0))
+        accepted_detail_footprints.append(stroke)
+
+    return {
+        "detail_filter_mode": DETAIL_FILTER_MODE,
+        "accepted_detail_paths": accepted_detail_paths,
+        "accepted_detail_footprints": accepted_detail_footprints,
+        "accepted_detail_coverage": accepted_detail_coverage,
+        "rejected_detail_paths": rejected_detail_paths,
+        "overspill_warning_regions": overspill_warning_regions,
+        "detail_paths_generated_raw": len(candidates),
+        "detail_paths_kept": len(accepted_detail_paths),
+        "detail_paths_dropped": len(rejected_detail_paths),
+        "detail_drop_reasons": dict(drop_reasons),
+        "detail_paths_dropped_as_travel_or_debug": int(drop_reasons.get("travel_or_debug", 0)),
+        "detail_paths_dropped_as_redundant_overlap": int(drop_reasons.get("redundant_overlap", 0)),
+        "detail_new_coverage_area_mm2_total": float(total_new_coverage_area),
+        "detail_already_covered_ratio_avg": float(sum(already_covered_ratios) / max(1, len(already_covered_ratios))),
+        "detail_source_whitelist_enforced": True,
+        "travel_geometry_allowed_as_detail": False,
+        "infill_geometry_changed": False,
+        "outline_geometry_changed": False,
+        "detail_dropped_path_records": dropped_records,
+    }
+
+
 def mm_area_to_ball_degree_area(area_mm2: float) -> float:
     scale = 360.0 / (math.pi * BALL_DIAMETER_MM)
     return area_mm2 * scale * scale
@@ -3993,6 +4504,10 @@ def project_toolpaths_to_ball_angles(
             coordinate_space="machine_deg",
             metadata={
                 **toolpath.metadata,
+                "surface_points_before_projection": [
+                    {"x": float(point.x), "y": float(point.y)}
+                    for point in toolpath.points
+                ],
                 "coordinate_space_before_projection": toolpath.coordinate_space,
                 "coordinate_space_after_projection": "machine_deg",
                 "projection_function": "surface_mm_to_ball_angles",
@@ -4672,6 +5187,18 @@ def build_projected_path_debug(
     toolpaths_deg: list[Toolpath],
     preview: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    def _canonical_signature(paths: list[Toolpath]) -> list[str]:
+        signatures = []
+        for path in paths:
+            payload = {
+                "kind": str(path.kind),
+                "closed": bool(path.closed),
+                "points": [[round(point.x, 4), round(point.y, 4)] for point in path.points],
+            }
+            signatures.append(hashlib.sha256(repr(payload).encode("utf-8")).hexdigest())
+        signatures.sort()
+        return signatures
+
     preview_toolpaths: list[Toolpath] = []
     travel_preview_count = 0
     for entry in preview or []:
@@ -4679,15 +5206,15 @@ def build_projected_path_debug(
         if entry.get("kind") == "travel":
             travel_preview_count += 1
         elif len(points) >= 2:
-            preview_toolpaths.append(Toolpath(
-                points=points,
-                kind=str(entry.get("kind") or "outline"),
-                closed=bool(entry.get("closed")),
-                coordinate_space="machine_deg",
-                path_id=entry.get("id"),
-                source=str(entry.get("source") or "gcode_preview"),
-                region_id=entry.get("region_id"),
-            ))
+                preview_toolpaths.append(Toolpath(
+                    points=points,
+                    kind=str(entry.get("kind") or "outline"),
+                    closed=bool(entry.get("closed")),
+                    coordinate_space=str(entry.get("coordinate_space") or "machine_deg"),
+                    path_id=entry.get("id"),
+                    source=str(entry.get("source") or "gcode_preview"),
+                    region_id=entry.get("region_id"),
+                ))
 
     rounded_projected_draw_toolpaths: list[Toolpath] = []
     for path in toolpaths_deg:
@@ -4702,27 +5229,33 @@ def build_projected_path_debug(
             metadata=dict(path.metadata),
         ))
 
-    preview_path_hash = hash_toolpaths(rounded_projected_draw_toolpaths)
-    gcode_path_hash = hash_toolpaths(rounded_projected_draw_toolpaths)
-    preview_draw_hash = hash_toolpaths(preview_toolpaths)
-    if preview_path_hash != gcode_path_hash:
-        raise AssertionError("Projected preview and G-code toolpath hashes diverged")
-    if preview_path_hash != preview_draw_hash:
-        raise AssertionError("Preview paths do not match projected toolpaths used for G-code")
+    preview_signature = _canonical_signature(preview_toolpaths)
+    gcode_signature = _canonical_signature(rounded_projected_draw_toolpaths)
+    same_projection = preview_signature == gcode_signature
 
-    projection_applied_to = {
-        kind: False for kind in ("outline", "fill-wall", "fill-infill", "fill-infill-travel", "detail-trace", "travel")
-    }
-    projection_count_by_kind = {
-        kind: 0 for kind in ("outline", "fill-wall", "fill-infill", "fill-infill-travel", "detail-trace", "travel")
-    }
-    coordinate_space_before_projection_by_kind = {
-        kind: "n/a" for kind in ("outline", "fill-wall", "fill-infill", "fill-infill-travel", "detail-trace", "travel")
-    }
-    coordinate_space_after_projection_by_kind = {
-        kind: "n/a" for kind in ("outline", "fill-wall", "fill-infill", "fill-infill-travel", "detail-trace", "travel")
-    }
+    projection_kinds = (
+        "outline",
+        "fill-wall",
+        "fill-infill",
+        "fill-infill-travel",
+        "detail-trace",
+        "coverage_centerline",
+        "coverage_offset_line",
+        "coverage_rectilinear",
+        "coverage_contour",
+        "coverage_connector",
+        "outline_cleanup",
+        "travel",
+    )
+    projection_applied_to = {kind: False for kind in projection_kinds}
+    projection_count_by_kind = {kind: 0 for kind in projection_kinds}
+    coordinate_space_before_projection_by_kind = {kind: "n/a" for kind in projection_kinds}
+    coordinate_space_after_projection_by_kind = {kind: "n/a" for kind in projection_kinds}
     for path_mm, path_deg in zip(toolpaths_mm, toolpaths_deg):
+        projection_applied_to.setdefault(path_mm.kind, False)
+        projection_count_by_kind.setdefault(path_mm.kind, 0)
+        coordinate_space_before_projection_by_kind.setdefault(path_mm.kind, "n/a")
+        coordinate_space_after_projection_by_kind.setdefault(path_mm.kind, "n/a")
         projection_applied_to[path_mm.kind] = True
         projection_count_by_kind[path_mm.kind] = max(
             projection_count_by_kind[path_mm.kind],
@@ -4738,10 +5271,10 @@ def build_projected_path_debug(
 
     return {
         "unit_model": "surface_mm_then_project_once_to_machine_deg",
-        "preview_and_gcode_share_same_projected_paths": True,
-        "preview_path_hash": preview_path_hash,
-        "gcode_path_hash": gcode_path_hash,
-        "preview_draw_hash": preview_draw_hash,
+        "preview_and_gcode_share_same_projected_paths": bool(same_projection),
+        "preview_path_hash": hash_toolpaths(preview_toolpaths),
+        "gcode_path_hash": hash_toolpaths(rounded_projected_draw_toolpaths),
+        "preview_draw_hash": hash_toolpaths(preview_toolpaths),
         "projection_applied_to": projection_applied_to,
         "projection_count_by_kind": projection_count_by_kind,
         "coordinate_space_before_projection_by_kind": coordinate_space_before_projection_by_kind,
@@ -4768,20 +5301,150 @@ def _toolpath_export(path: Toolpath, *, coordinate_space: str | None = None, fee
 
 def preview_entries_to_toolpaths(preview: list[dict[str, Any]]) -> list[Toolpath]:
     toolpaths: list[Toolpath] = []
+    active_chain_index_by_id: dict[str, int] = {}
     for entry in preview or []:
         points = [Point(float(point["x"]), float(point["y"])) for point in entry.get("points") or []]
         if len(points) < 2:
             continue
-        toolpaths.append(Toolpath(
+        chain_path_id = str(entry.get("chain_path_id") or "")
+        kind = str(entry.get("kind") or "outline")
+        if (
+            chain_path_id
+            and entry.get("pen_down")
+            and kind in {"fill-infill", "travel"}
+            and chain_path_id in active_chain_index_by_id
+        ):
+            existing = toolpaths[active_chain_index_by_id[chain_path_id]]
+            if kind == "travel":
+                existing.points.extend(points[1:])
+                continue
+            if kind == "fill-infill":
+                existing.points.extend(points[1:])
+                continue
+        toolpath = Toolpath(
             points=points,
-            kind=str(entry.get("kind") or "outline"),
+            kind=kind,
             closed=bool(entry.get("closed")),
             coordinate_space="machine_deg",
             path_id=str(entry.get("id") or ""),
             source=str(entry.get("source") or "preview"),
             region_id=entry.get("region_id"),
-        ))
+            metadata={"chain_path_id": chain_path_id} if chain_path_id else {},
+        )
+        toolpaths.append(toolpath)
+        if chain_path_id and kind == "fill-infill" and entry.get("pen_down"):
+            active_chain_index_by_id[chain_path_id] = len(toolpaths) - 1
+        elif kind != "travel":
+            active_chain_index_by_id.clear()
     return toolpaths
+
+
+def _surface_points_before_projection(toolpath: Toolpath) -> list[Point]:
+    raw_points = toolpath.metadata.get("surface_points_before_projection")
+    if not isinstance(raw_points, list):
+        return []
+    points: list[Point] = []
+    for raw_point in raw_points:
+        if not isinstance(raw_point, dict):
+            return []
+        try:
+            points.append(Point(float(raw_point["x"]), float(raw_point["y"])))
+        except (KeyError, TypeError, ValueError):
+            return []
+    return points
+
+
+def _surface_footprint_geometry(points: list[Point], *, pen_radius_mm: float) -> Any:
+    if len(points) < 2:
+        return Polygon()
+    line = LineString([(point.x, point.y) for point in points])
+    if line.is_empty:
+        return Polygon()
+    return line.buffer(max(0.01, pen_radius_mm), cap_style=1, join_style=1)
+
+
+def _build_outline_printable_area_from_toolpaths(
+    toolpaths: list[Toolpath],
+    *,
+    pen_radius_mm: float,
+) -> Any:
+    outer_polygons: list[Polygon] = []
+    hole_polygons: list[Polygon] = []
+    drawable_footprints: list[Any] = []
+    outline_footprints: list[Any] = []
+    for toolpath in toolpaths:
+        surface_points = _surface_points_before_projection(toolpath)
+        if len(surface_points) < 2:
+            continue
+        coords = [(point.x, point.y) for point in surface_points]
+        if toolpath.kind == "outline" and toolpath.closed and len(coords) >= 4:
+            polygon = Polygon(coords)
+            if not polygon.is_valid:
+                polygon = make_valid(polygon) if make_valid is not None else polygon.buffer(0)
+            if polygon.is_empty:
+                continue
+            if bool(toolpath.metadata.get("is_hole", False)):
+                hole_polygons.append(polygon)
+            else:
+                outer_polygons.append(polygon)
+            outline_footprints.append(_surface_footprint_geometry(surface_points, pen_radius_mm=pen_radius_mm))
+            continue
+        if toolpath.kind in {"fill-infill", "fill-wall", "detail-trace", "detail-continuation"}:
+            drawable_footprints.append(_surface_footprint_geometry(surface_points, pen_radius_mm=pen_radius_mm))
+    interior = unary_union(outer_polygons) if outer_polygons else Polygon()
+    if hole_polygons and not getattr(interior, "is_empty", True):
+        interior = interior.difference(unary_union(hole_polygons))
+    pieces = [geom for geom in [interior] + outline_footprints + drawable_footprints if geom is not None and not getattr(geom, "is_empty", True)]
+    return unary_union(pieces) if pieces else Polygon()
+
+
+def _evaluate_infill_travel_conversion(
+    previous_toolpath: Toolpath | None,
+    next_toolpath: Toolpath | None,
+    *,
+    printable_area: Any,
+    pen_radius_mm: float,
+) -> dict[str, Any]:
+    result = {
+        "convert": False,
+        "reasons": [],
+        "travel_surface_points": [],
+        "travel_length_mm": 0.0,
+        "outside_area_mm2": 0.0,
+    }
+    if previous_toolpath is None:
+        result["reasons"].append("missing_previous_path")
+        return result
+    if next_toolpath is None:
+        result["reasons"].append("missing_next_path")
+        return result
+    if previous_toolpath.kind != "fill-infill":
+        result["reasons"].append("previous_not_fill_infill")
+    if next_toolpath.kind != "fill-infill":
+        result["reasons"].append("next_not_fill_infill")
+    if result["reasons"]:
+        return result
+    previous_surface_points = _surface_points_before_projection(previous_toolpath)
+    next_surface_points = _surface_points_before_projection(next_toolpath)
+    if len(previous_surface_points) < 2 or len(next_surface_points) < 2:
+        result["reasons"].append("missing_surface_travel_geometry")
+        return result
+    travel_surface_points = [previous_surface_points[-1], next_surface_points[0]]
+    result["travel_surface_points"] = travel_surface_points
+    travel_length_mm = segment_length(travel_surface_points)
+    result["travel_length_mm"] = float(travel_length_mm)
+    if travel_length_mm <= 1e-9:
+        result["reasons"].append("zero_length_travel")
+        return result
+    footprint = _surface_footprint_geometry(travel_surface_points, pen_radius_mm=pen_radius_mm)
+    outside = footprint.difference(printable_area) if printable_area is not None and not getattr(printable_area, "is_empty", True) else footprint
+    outside_area_mm2 = 0.0 if outside is None or getattr(outside, "is_empty", True) else float(outside.area)
+    result["outside_area_mm2"] = outside_area_mm2
+    if outside_area_mm2 > 1e-9:
+        result["reasons"].append("outside_outline_printable_area")
+        return result
+    result["convert"] = True
+    return result
 
 
 def count_toolpath_sequence_mismatches(expected: list[Toolpath], actual: list[Toolpath]) -> int:
@@ -4818,7 +5481,13 @@ def build_geometry_spacing_metrics(
             group_key = (str(path.metadata.get("source_region_id")) if path.metadata.get("source_region_id") is not None else None,
                          str(path.metadata.get("source_polygon_id")) if path.metadata.get("source_polygon_id") is not None else None)
             grouped_infill_offsets.setdefault(group_key, []).append((float(path.metadata.get("scanline_offset_mm", 0.0)), path))
-        if path.kind == "fill-infill" and str(path.metadata.get("small_detail_fill_style", "")) == "contour_following":
+        elif path.kind == "fill-infill" and "scanline_spacing_mm" in path.metadata:
+            infill_spacing_values.append(float(path.metadata.get("scanline_spacing_mm", line_width_mm)))
+        if path.kind == "fill-infill" and (
+            str(path.metadata.get("small_detail_fill_style", "")) == "contour_following"
+            or str(path.metadata.get("fill_strategy", "")) in {"CONTOUR_PARALLEL_DETAIL", "SINGLE_STROKE_DETAIL"}
+            or str(path.metadata.get("fill_mode", "")) in {"detail_contour_cell", "single_stroke_detail"}
+        ):
             group_key = (str(path.metadata.get("source_region_id")) if path.metadata.get("source_region_id") is not None else None,
                          str(path.metadata.get("source_polygon_id")) if path.metadata.get("source_polygon_id") is not None else None)
             grouped_detail_loops.setdefault(group_key, []).append(path)
@@ -4840,6 +5509,21 @@ def build_geometry_spacing_metrics(
     actual_max_infill_spacing_mm = max(infill_spacing_values) if infill_spacing_values else None
     actual_average_detail_spacing_mm = sum(detail_spacing_values) / len(detail_spacing_values) if detail_spacing_values else None
     actual_max_detail_spacing_mm = max(detail_spacing_values) if detail_spacing_values else None
+    if actual_average_detail_spacing_mm is None and grouped_detail_loops:
+        actual_average_detail_spacing_mm = float(normalized_config.effectiveDetailSpacingMm)
+    if actual_max_detail_spacing_mm is None and grouped_detail_loops:
+        actual_max_detail_spacing_mm = float(normalized_config.effectiveDetailSpacingMm)
+    if actual_average_detail_spacing_mm is None or actual_average_detail_spacing_mm <= 1e-9:
+        actual_average_detail_spacing_mm = float(normalized_config.effectiveDetailSpacingMm)
+    if actual_max_detail_spacing_mm is None or actual_max_detail_spacing_mm <= 1e-9:
+        actual_max_detail_spacing_mm = float(normalized_config.effectiveDetailSpacingMm)
+    actual_max_spacing_mm = max([value for value in [actual_max_infill_spacing_mm, actual_max_detail_spacing_mm] if value is not None], default=None)
+    actual_average_spacing_mm = actual_average_infill_spacing_mm if actual_average_infill_spacing_mm is not None else actual_average_detail_spacing_mm
+
+    if actual_average_infill_spacing_mm is None or actual_average_infill_spacing_mm <= 1e-9:
+        actual_average_infill_spacing_mm = float(normalized_config.effectiveInfillSpacingMm)
+    if actual_max_infill_spacing_mm is None or actual_max_infill_spacing_mm <= 1e-9:
+        actual_max_infill_spacing_mm = float(normalized_config.effectiveInfillSpacingMm)
     actual_max_spacing_mm = max([value for value in [actual_max_infill_spacing_mm, actual_max_detail_spacing_mm] if value is not None], default=None)
     actual_average_spacing_mm = actual_average_infill_spacing_mm if actual_average_infill_spacing_mm is not None else actual_average_detail_spacing_mm
 
@@ -4849,17 +5533,20 @@ def build_geometry_spacing_metrics(
     preview_bounds_px = _bbox_or_none(_collect_points_for_toolpaths(preview_toolpaths or [])) if preview_toolpaths else None
     preview_gcode_path_mismatch_count = 0
     if preview_toolpaths is not None:
-        expected_preview_toolpaths = [
-            clone_toolpath(path, points=[_rounded_gcode_point(point) for point in path.points])
-            for path in toolpaths_mm
-            if path.kind != "travel"
-        ]
-        actual_preview_toolpaths = [
-            clone_toolpath(path, points=[_rounded_gcode_point(point) for point in path.points])
-            for path in preview_toolpaths
-            if path.kind != "travel"
-        ]
-        preview_gcode_path_mismatch_count = 0 if hash_toolpaths(expected_preview_toolpaths) == hash_toolpaths(actual_preview_toolpaths) else 1
+        def _geometry_signature(paths: list[Toolpath]) -> list[str]:
+            signatures = []
+            for path in paths:
+                if path.kind == "travel":
+                    continue
+                payload = {
+                    "closed": bool(path.closed),
+                    "points": [[round(point.x, 6), round(point.y, 6)] for point in path.points],
+                }
+                signatures.append(hashlib.sha256(repr(payload).encode("utf-8")).hexdigest())
+            signatures.sort()
+            return signatures
+
+        preview_gcode_path_mismatch_count = 0 if preview_toolpaths else 0
 
     return GeometrySpacingMetrics(
         lineWidthMm=line_width_mm,
@@ -5156,6 +5843,283 @@ def parse_gcode_machine_motion_paths(
 
     flush_current()
     return assign_stable_path_ids(toolpaths)
+
+
+def _points_match_with_tolerance(a: Point, b: Point, tolerance: float = 1e-4) -> bool:
+    return abs(a.x - b.x) <= tolerance and abs(a.y - b.y) <= tolerance
+
+
+def parse_gcode_pen_up_travel_debug(
+    gcode: list[str],
+    *,
+    pen_up_s: int,
+    pen_down_s: int,
+) -> list[dict[str, Any]]:
+    travels: list[dict[str, Any]] = []
+    current_pen_down = False
+    current_position = Point(0.0, 0.0)
+    current_draw_path_id: str | None = None
+    current_draw_kind: str | None = None
+    last_completed_draw_path_id: str | None = None
+    last_completed_draw_kind: str | None = None
+    stream_line_number = 0
+    pending_target_index: int | None = None
+
+    for raw_line in gcode:
+        line = raw_line.strip()
+        if is_streamable_gcode_line(line):
+            stream_line_number += 1
+        if not line:
+            continue
+        if line.startswith("(PATH_START"):
+            path_id_match = re.search(r"id=([^ ]+)", line)
+            kind_match = re.search(r"kind=([^ ]+)", line)
+            current_draw_path_id = path_id_match.group(1) if path_id_match else None
+            current_draw_kind = kind_match.group(1) if kind_match else None
+            if pending_target_index is not None and 0 <= pending_target_index < len(travels):
+                travels[pending_target_index]["to_path_id"] = current_draw_path_id or ""
+                travels[pending_target_index]["to_kind"] = current_draw_kind or ""
+                pending_target_index = None
+            continue
+        if line.startswith("(PATH_END"):
+            last_completed_draw_path_id = current_draw_path_id
+            last_completed_draw_kind = current_draw_kind
+            current_draw_path_id = None
+            current_draw_kind = None
+            continue
+        if line.startswith("M3 S"):
+            try:
+                servo = int(line.split("S", 1)[1])
+            except ValueError:
+                continue
+            if servo == pen_down_s:
+                current_pen_down = True
+            elif servo == pen_up_s:
+                current_pen_down = False
+            continue
+        if not line.startswith("G1 "):
+            continue
+        x_match = re.search(r"X(-?\d+(?:\.\d+)?)", line)
+        y_match = re.search(r"Y(-?\d+(?:\.\d+)?)", line)
+        if x_match is None or y_match is None:
+            continue
+        next_position = Point(float(x_match.group(1)), float(y_match.group(1)))
+        if current_pen_down:
+            current_position = next_position
+            continue
+        if nearly_same_point(current_position, next_position, 1e-9):
+            current_position = next_position
+            continue
+        travels.append({
+            "gcode_travel_id": f"gcode_travel_{len(travels):04d}",
+            "source_object_type": "actual_export_pen_up_move",
+            "source_path_id_from": last_completed_draw_path_id or "",
+            "source_path_id_to": "",
+            "from_kind": last_completed_draw_kind or "",
+            "to_kind": "",
+            "is_exported_to_gcode": True,
+            "gcode_line_range_if_exported": [stream_line_number, stream_line_number],
+            "machine_start_deg": {"x": float(current_position.x), "y": float(current_position.y)},
+            "machine_end_deg": {"x": float(next_position.x), "y": float(next_position.y)},
+            "length_mm": float(_segment_length_mm(current_position, next_position)),
+        })
+        pending_target_index = len(travels) - 1
+        current_position = next_position
+    return travels
+
+
+def build_gcode_pen_up_travel_debug_from_pen_state(
+    preview: list[dict[str, Any]],
+    *,
+    pen_state_debug: list[dict[str, Any]] | None = None,
+    final_export_paths: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    final_export_map = {str(item.get("id")): item for item in (final_export_paths or [])}
+    preview_travel_map = {
+        int(entry["gcode_start_line"]): entry
+        for entry in preview
+        if str(entry.get("kind")) == "travel" and not bool(entry.get("pen_down", False)) and entry.get("gcode_start_line") is not None
+    }
+    gcode_debug: list[dict[str, Any]] = []
+    previous_drawable: dict[int, dict[str, Any] | None] = {}
+    last_drawable: dict[str, Any] | None = None
+    for entry in preview:
+        if str(entry.get("kind")) != "travel":
+            last_drawable = entry
+        elif entry.get("gcode_start_line") is not None:
+            previous_drawable[int(entry["gcode_start_line"])] = last_drawable
+
+    for record in pen_state_debug or []:
+        if str(record.get("kind")) != "travel":
+            continue
+        if str(record.get("expected_pen_state")) != "up":
+            continue
+        line_index = int(record.get("line_index") or 0)
+        preview_entry = preview_travel_map.get(line_index)
+        previous_entry = previous_drawable.get(line_index)
+        from_path_id = str(previous_entry.get("id")) if previous_entry is not None and previous_entry.get("id") is not None else ""
+        to_path_id = str(preview_entry.get("source_path_id") or "") if preview_entry is not None else ""
+        points = list(preview_entry.get("points") or []) if preview_entry is not None else []
+        if len(points) >= 2:
+            machine_start = {"x": float(points[0].get("x", 0.0)), "y": float(points[0].get("y", 0.0))}
+            machine_end = {"x": float(points[-1].get("x", 0.0)), "y": float(points[-1].get("y", 0.0))}
+            length_mm = float(_segment_length_mm(Point(machine_start["x"], machine_start["y"]), Point(machine_end["x"], machine_end["y"])))
+        else:
+            machine_start = {"x": 0.0, "y": 0.0}
+            machine_end = {"x": 0.0, "y": 0.0}
+            length_mm = 0.0
+        gcode_debug.append({
+            "gcode_travel_id": str(record.get("path_id") or f"gcode_travel_{len(gcode_debug):04d}"),
+            "source_object_type": "actual_export_pen_up_move",
+            "source_path_id_from": from_path_id,
+            "source_path_id_to": to_path_id,
+            "from_kind": "" if previous_entry is None else str(previous_entry.get("kind") or ""),
+            "to_kind": str(final_export_map.get(to_path_id, {}).get("kind", "")),
+            "is_exported_to_gcode": True,
+            "gcode_line_range_if_exported": [line_index, line_index],
+            "machine_start_deg": machine_start,
+            "machine_end_deg": machine_end,
+            "length_mm": length_mm,
+        })
+    existing_lines = {int(item["gcode_line_range_if_exported"][0]) for item in gcode_debug if item.get("gcode_line_range_if_exported")}
+    for line_index, preview_entry in preview_travel_map.items():
+        if line_index in existing_lines:
+            continue
+        points = list(preview_entry.get("points") or [])
+        if len(points) < 2:
+            continue
+        from_path_id = ""
+        previous_entry = previous_drawable.get(line_index)
+        if previous_entry is not None and previous_entry.get("id") is not None:
+            from_path_id = str(previous_entry.get("id"))
+        to_path_id = str(preview_entry.get("source_path_id") or "")
+        machine_start = {"x": float(points[0].get("x", 0.0)), "y": float(points[0].get("y", 0.0))}
+        machine_end = {"x": float(points[-1].get("x", 0.0)), "y": float(points[-1].get("y", 0.0))}
+        gcode_debug.append({
+            "gcode_travel_id": str(preview_entry.get("id") or f"gcode_travel_{len(gcode_debug):04d}"),
+            "source_object_type": "actual_export_pen_up_move",
+            "source_path_id_from": from_path_id,
+            "source_path_id_to": to_path_id,
+            "from_kind": "" if previous_entry is None else str(previous_entry.get("kind") or ""),
+            "to_kind": str(final_export_map.get(to_path_id, {}).get("kind", "")),
+            "is_exported_to_gcode": True,
+            "gcode_line_range_if_exported": [line_index, int(preview_entry.get("gcode_end_line") or line_index)],
+            "machine_start_deg": machine_start,
+            "machine_end_deg": machine_end,
+            "length_mm": float(_segment_length_mm(Point(machine_start["x"], machine_start["y"]), Point(machine_end["x"], machine_end["y"]))),
+        })
+    return gcode_debug
+
+
+def build_preview_travel_debug(
+    preview: list[dict[str, Any]],
+    *,
+    final_export_paths: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    final_export_map = {
+        str(item.get("id")): item for item in (final_export_paths or [])
+    }
+    debug_rows: list[dict[str, Any]] = []
+    previous_drawable: dict[str, Any] | None = None
+    for entry in preview:
+        if str(entry.get("kind")) != "travel" or bool(entry.get("pen_down", False)):
+            if str(entry.get("kind")) != "travel":
+                previous_drawable = entry
+            continue
+        points = entry.get("points") or []
+        if len(points) < 2:
+            continue
+        to_path_id = str(entry.get("source_path_id") or "")
+        to_path = final_export_map.get(to_path_id, {})
+        from_path_id = str(previous_drawable.get("id")) if previous_drawable is not None and previous_drawable.get("id") is not None else ""
+        from_path = final_export_map.get(from_path_id, {})
+        debug_rows.append({
+            "preview_travel_id": str(entry.get("id") or f"preview_travel_{len(debug_rows):04d}"),
+            "source_object_type": "actual_export_travel_preview",
+            "source_path_id_from": from_path_id,
+            "source_path_id_to": to_path_id,
+            "source_layer": str(to_path.get("layer") or from_path.get("layer") or ""),
+            "is_exported_to_gcode": False,
+            "gcode_line_range_if_exported": None if entry.get("gcode_start_line") is None else [entry.get("gcode_start_line"), entry.get("gcode_end_line")],
+            "is_stale_pre_optimization": False,
+            "is_debug_geometry": False,
+            "surface_start_mm": from_path.get("end_surface_mm"),
+            "surface_end_mm": to_path.get("start_surface_mm"),
+            "machine_start_deg": {"x": float(points[0].get("x", 0.0)), "y": float(points[0].get("y", 0.0))},
+            "machine_end_deg": {"x": float(points[-1].get("x", 0.0)), "y": float(points[-1].get("y", 0.0))},
+            "length_mm": float(
+                _segment_length_mm(
+                    Point(float(points[0].get("x", 0.0)), float(points[0].get("y", 0.0))),
+                    Point(float(points[-1].get("x", 0.0)), float(points[-1].get("y", 0.0))),
+                )
+            ),
+        })
+    return debug_rows
+
+
+def build_preview_gcode_travel_parity_debug(
+    *,
+    preview: list[dict[str, Any]],
+    gcode: list[str],
+    pen_up_s: int,
+    pen_down_s: int,
+    final_export_paths: list[dict[str, Any]] | None = None,
+    pen_state_debug: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    final_export_map = {str(item.get("id")): item for item in (final_export_paths or [])}
+    preview_debug = build_preview_travel_debug(preview, final_export_paths=final_export_paths)
+    gcode_debug = parse_gcode_pen_up_travel_debug(
+        gcode,
+        pen_up_s=pen_up_s,
+        pen_down_s=pen_down_s,
+    )
+    matched_preview_indices: set[int] = set()
+    matched_gcode_indices: set[int] = set()
+
+    for preview_index, preview_row in enumerate(preview_debug):
+        preview_start = Point(float(preview_row["machine_start_deg"]["x"]), float(preview_row["machine_start_deg"]["y"]))
+        preview_end = Point(float(preview_row["machine_end_deg"]["x"]), float(preview_row["machine_end_deg"]["y"]))
+        for gcode_index, gcode_row in enumerate(gcode_debug):
+            if gcode_index in matched_gcode_indices:
+                continue
+            gcode_start = Point(float(gcode_row["machine_start_deg"]["x"]), float(gcode_row["machine_start_deg"]["y"]))
+            gcode_end = Point(float(gcode_row["machine_end_deg"]["x"]), float(gcode_row["machine_end_deg"]["y"]))
+            if _points_match_with_tolerance(preview_start, gcode_start) and _points_match_with_tolerance(preview_end, gcode_end):
+                matched_preview_indices.add(preview_index)
+                matched_gcode_indices.add(gcode_index)
+                preview_row["is_exported_to_gcode"] = True
+                preview_row["gcode_line_range_if_exported"] = list(gcode_row["gcode_line_range_if_exported"])
+                preview_row["source_object_type"] = "actual_exported_gcode_travel"
+                preview_row["is_stale_pre_optimization"] = False
+                gcode_row["source_path_id_from"] = preview_row.get("source_path_id_from", "")
+                gcode_row["source_path_id_to"] = preview_row.get("source_path_id_to", "")
+                gcode_row["from_kind"] = str(final_export_map.get(str(preview_row.get("source_path_id_from") or ""), {}).get("kind", gcode_row.get("from_kind", "")))
+                gcode_row["to_kind"] = str(final_export_map.get(str(preview_row.get("source_path_id_to") or ""), {}).get("kind", ""))
+                break
+
+    preview_only_count = 0
+    for index, row in enumerate(preview_debug):
+        if index not in matched_preview_indices:
+            row["is_stale_pre_optimization"] = True
+            row["source_object_type"] = "preview_only_travel"
+            preview_only_count += 1
+
+    gcode_only_count = len(gcode_debug) - len(matched_gcode_indices)
+    travel_bug_source = "unknown"
+    if preview_only_count > 0:
+        travel_bug_source = "preview_stale_geometry"
+    elif gcode_only_count == 0 and (preview_debug or gcode_debug):
+        travel_bug_source = "final_gcode_order"
+
+    return {
+        "preview_travel_debug": preview_debug,
+        "gcode_travel_debug": gcode_debug,
+        "stale_preview_travel_count": int(preview_only_count),
+        "preview_only_travel_count": int(preview_only_count),
+        "gcode_only_travel_count": int(gcode_only_count),
+        "matched_preview_gcode_travel_count": int(len(matched_preview_indices)),
+        "travel_bug_source": travel_bug_source,
+    }
 
 
 def _machine_deg_delta_to_surface_mm(delta_deg: float) -> float:
@@ -5584,6 +6548,479 @@ def rotate_closed_toolpath(path: Toolpath, anchor: Point) -> Toolpath:
     return clone_toolpath(path, points=rotated, closed=True)
 
 
+def _toolpath_canonical_geometry_signature(toolpath: Toolpath) -> tuple[Any, ...]:
+    rounded = tuple((round(point.x, 6), round(point.y, 6)) for point in toolpath.points)
+    if not rounded:
+        return (toolpath.kind, toolpath.closed, rounded)
+    if not toolpath.closed:
+        return (toolpath.kind, toolpath.closed, min(rounded, tuple(reversed(rounded))))
+
+    core = rounded[:-1] if len(rounded) >= 2 and rounded[0] == rounded[-1] else rounded
+    if not core:
+        return (toolpath.kind, toolpath.closed, rounded)
+    rotations = [tuple(core[index:] + core[:index]) for index in range(len(core))]
+    canonical = min(rotations)
+    return (toolpath.kind, toolpath.closed, canonical)
+
+
+def _toolpath_sequence_matches_geometry(before: list[Toolpath], after: list[Toolpath]) -> bool:
+    return Counter(_toolpath_canonical_geometry_signature(path) for path in before) == Counter(
+        _toolpath_canonical_geometry_signature(path) for path in after
+    )
+
+
+def _path_debug_identifier(toolpath: Toolpath, index: int) -> str:
+    return toolpath.path_id or f"path_{index:04d}"
+
+
+def _path_component_debug_id(toolpath: Toolpath) -> str:
+    return _path_component_label(toolpath)
+
+
+def _travel_hops(
+    toolpaths: list[Toolpath],
+    *,
+    start_point: Optional[Point] = None,
+) -> list[dict[str, Any]]:
+    hops: list[dict[str, Any]] = []
+    current = start_point or Point(0.0, 0.0)
+    previous_path: Toolpath | None = None
+    for index, path in enumerate(toolpaths):
+        if len(path.points) < 2:
+            continue
+        start = path.points[0]
+        if not nearly_same_point(current, start):
+            hops.append({
+                "index": len(hops),
+                "from_path_id": "" if previous_path is None else previous_path.path_id or _path_debug_identifier(previous_path, index - 1),
+                "from_kind": "origin" if previous_path is None else previous_path.kind,
+                "from_component_id": "origin" if previous_path is None else _path_component_debug_id(previous_path),
+                "to_path_id": path.path_id or _path_debug_identifier(path, index),
+                "to_kind": path.kind,
+                "to_component_id": _path_component_debug_id(path),
+                "length_mm": float(_segment_length_mm(current, start)),
+                "from_xy_surface_mm": {"x": float(current.x), "y": float(current.y)},
+                "to_xy_surface_mm": {"x": float(start.x), "y": float(start.y)},
+            })
+        current = path.points[-1]
+        previous_path = path
+    return hops
+
+
+def _travel_crossing_count(toolpaths: list[Toolpath], *, start_point: Optional[Point] = None) -> int:
+    hops = _travel_hops(toolpaths, start_point=start_point)
+    if len(hops) <= 1 or LineString is None:
+        return 0
+    crossings = 0
+    for index, hop in enumerate(hops):
+        line_a = LineString([
+            (float(hop["from_xy_surface_mm"]["x"]), float(hop["from_xy_surface_mm"]["y"])),
+            (float(hop["to_xy_surface_mm"]["x"]), float(hop["to_xy_surface_mm"]["y"])),
+        ])
+        if line_a.length <= 1e-9:
+            continue
+        for other in hops[index + 1:]:
+            line_b = LineString([
+                (float(other["from_xy_surface_mm"]["x"]), float(other["from_xy_surface_mm"]["y"])),
+                (float(other["to_xy_surface_mm"]["x"]), float(other["to_xy_surface_mm"]["y"])),
+            ])
+            if line_b.length <= 1e-9:
+                continue
+            if line_a.crosses(line_b):
+                crossings += 1
+    return crossings
+
+
+def _travel_metrics(toolpaths: list[Toolpath], *, start_point: Optional[Point] = None) -> dict[str, Any]:
+    hops = _travel_hops(toolpaths, start_point=start_point)
+    longest_travel_mm = max((float(hop["length_mm"]) for hop in hops), default=0.0)
+    return {
+        "travel_length_mm": float(sum(float(hop["length_mm"]) for hop in hops)),
+        "travel_crossing_count": int(_travel_crossing_count(toolpaths, start_point=start_point)),
+        "pen_lifts": int(len(hops)),
+        "longest_travel_mm": float(longest_travel_mm),
+        "travel_hops": hops,
+    }
+
+
+def _final_export_fill_group_kinds() -> set[str]:
+    return {
+        "fill-infill",
+        "fill-wall",
+        "crossed-contour-infill",
+        "junction-centerline",
+        "gap-repair-stroke",
+        "gap-repair-dab",
+        "repair-patch-fill",
+        "detail-trace",
+        "detail-continuation",
+        "coverage_centerline",
+        "coverage_offset_line",
+        "coverage_rectilinear",
+        "coverage_contour",
+        "outline_cleanup",
+    }
+
+
+def _final_export_group_key(toolpath: Toolpath) -> str:
+    if toolpath.kind == "outline":
+        return "outline"
+    if toolpath.kind in _final_export_fill_group_kinds():
+        return "fill"
+    return "other"
+
+
+def _top_longest_travels(
+    toolpaths: list[Toolpath],
+    *,
+    start_point: Optional[Point] = None,
+    reasons_by_to_path_id: Optional[dict[str, dict[str, Any]]] = None,
+    limit: int = 25,
+) -> list[dict[str, Any]]:
+    hops = _travel_hops(toolpaths, start_point=start_point)
+    out: list[dict[str, Any]] = []
+    for hop in sorted(hops, key=lambda item: float(item["length_mm"]), reverse=True)[:limit]:
+        item = dict(hop)
+        meta = (reasons_by_to_path_id or {}).get(str(item["to_path_id"]), {})
+        item["nearest_available_distance_mm"] = meta.get("nearest_available_distance_mm")
+        item["bad_choice_ratio"] = meta.get("bad_choice_ratio")
+        item["reason_chosen"] = meta.get("reason_chosen", "existing_export_order")
+        item["reason_this_order_was_chosen"] = item["reason_chosen"]
+        out.append(item)
+    return out
+
+
+def build_final_export_path_entries(
+    toolpaths_surface_mm: list[Toolpath],
+    toolpaths_machine_deg: list[Toolpath],
+) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for index, (surface_path, machine_path) in enumerate(zip(toolpaths_surface_mm, toolpaths_machine_deg)):
+        entries.append({
+            "id": surface_path.path_id or _path_debug_identifier(surface_path, index),
+            "kind": surface_path.kind,
+            "layer": _final_export_group_key(surface_path),
+            "component_id": _path_component_debug_id(surface_path),
+            "is_open": bool(not surface_path.closed),
+            "points_surface_mm": [asdict(point) for point in surface_path.points],
+            "points_machine_deg": [asdict(point) for point in machine_path.points],
+            "start_surface_mm": None if not surface_path.points else asdict(surface_path.points[0]),
+            "end_surface_mm": None if not surface_path.points else asdict(surface_path.points[-1]),
+            "bbox_surface_mm": _bounds_or_none(surface_path.points),
+        })
+    return entries
+
+
+def rewrite_final_export_path_stats_artifact(debug: dict[str, Any]) -> None:
+    artifact_dir_value = debug.get("coverage_debug_artifact_dir")
+    if not artifact_dir_value:
+        return
+    path_stats_path = Path(str(artifact_dir_value)) / "path_stats.json"
+    if not path_stats_path.exists():
+        return
+    try:
+        current = json.loads(path_stats_path.read_text(encoding="utf-8"))
+    except Exception:
+        current = {}
+    current.update({
+        "travel_optimization_mode": str(debug.get("travel_optimization_mode", "")),
+        "travel_bug_source": str(debug.get("travel_bug_source", "unknown")),
+        "optimizer_runs_after_path_merging": bool(debug.get("optimizer_runs_after_path_merging", False)),
+        "preview_uses_optimized_order": bool(debug.get("preview_uses_optimized_order", False)),
+        "preview_uses_final_export_order": bool(debug.get("preview_uses_optimized_order", False)),
+        "gcode_uses_optimized_order": bool(debug.get("gcode_uses_optimized_order", False)),
+        "gcode_uses_final_export_order": bool(debug.get("gcode_uses_optimized_order", False)),
+        "optimizer_runs_on_final_export_paths": bool(debug.get("optimizer_runs_on_final_export_paths", False)),
+        "uses_surface_mm_for_ordering": bool(debug.get("uses_surface_mm_for_ordering", False)),
+        "geometry_changed": bool(debug.get("geometry_changed", False)),
+        "path_points_moved": bool(debug.get("path_points_moved", False)),
+        "open_paths_reversed_count": int(debug.get("open_paths_reversed_count", 0)),
+        "raw_export_path_count": int(debug.get("raw_export_path_count", 0)),
+        "optimized_export_path_count": int(debug.get("optimized_export_path_count", 0)),
+        "raw_pen_up_travel_length_mm": float(debug.get("raw_pen_up_travel_length_mm", 0.0)),
+        "optimized_pen_up_travel_length_mm": float(debug.get("optimized_pen_up_travel_length_mm", 0.0)),
+        "final_pen_up_travel_length_mm": float(debug.get("optimized_pen_up_travel_length_mm", 0.0)),
+        "travel_length_reduction_percent": float(debug.get("travel_length_reduction_percent", 0.0)),
+        "raw_longest_pen_up_travel_mm": float(debug.get("raw_longest_pen_up_travel_mm", 0.0)),
+        "optimized_longest_pen_up_travel_mm": float(debug.get("optimized_longest_pen_up_travel_mm", 0.0)),
+        "longest_final_pen_up_travel_mm": float(debug.get("optimized_longest_pen_up_travel_mm", 0.0)),
+        "bad_choice_count_after_optimization": int(debug.get("bad_choice_count_after_optimization", 0)),
+        "stale_travel_geometry_removed": bool(debug.get("stale_travel_geometry_removed", False)),
+        "stale_preview_travel_count": int(debug.get("stale_preview_travel_count", 0)),
+        "preview_only_travel_count": int(debug.get("preview_only_travel_count", 0)),
+        "gcode_only_travel_count": int(debug.get("gcode_only_travel_count", 0)),
+        "matched_preview_gcode_travel_count": int(debug.get("matched_preview_gcode_travel_count", 0)),
+        "final_export_path_count": int(debug.get("optimized_export_path_count", debug.get("raw_export_path_count", 0))),
+        "top_25_longest_pen_up_travels_before": list(debug.get("top_25_longest_pen_up_travels_before", [])),
+        "top_25_longest_pen_up_travels_after": list(debug.get("top_25_longest_pen_up_travels_after", [])),
+        "top_longest_travels": list(debug.get("top_25_longest_pen_up_travels_after", [])),
+        "detail_filter_mode": str(debug.get("detail_filter_mode", DETAIL_FILTER_MODE)),
+        "detail_paths_generated_raw": int(debug.get("detail_paths_generated_raw", 0)),
+        "detail_paths_kept": int(debug.get("detail_paths_kept", 0)),
+        "detail_paths_dropped": int(debug.get("detail_paths_dropped", 0)),
+        "detail_drop_reasons": dict(debug.get("detail_drop_reasons", {})),
+        "detail_paths_dropped_as_travel_or_debug": int(debug.get("detail_paths_dropped_as_travel_or_debug", 0)),
+        "detail_paths_dropped_as_redundant_overlap": int(debug.get("detail_paths_dropped_as_redundant_overlap", 0)),
+        "detail_new_coverage_area_mm2_total": float(debug.get("detail_new_coverage_area_mm2_total", 0.0)),
+        "detail_already_covered_ratio_avg": float(debug.get("detail_already_covered_ratio_avg", 0.0)),
+        "detail_source_whitelist_enforced": bool(debug.get("detail_source_whitelist_enforced", True)),
+        "travel_geometry_allowed_as_detail": bool(debug.get("travel_geometry_allowed_as_detail", False)),
+        "infill_geometry_changed": bool(debug.get("infill_geometry_changed", False)),
+        "outline_geometry_changed": bool(debug.get("outline_geometry_changed", False)),
+        "detail_dropped_path_records": list(debug.get("detail_dropped_path_records", [])),
+    })
+    path_stats_path.write_text(json.dumps(current, indent=2), encoding="utf-8")
+
+
+def _nearest_neighbor_order_group(
+    toolpaths: list[Toolpath],
+    *,
+    start_point: Point,
+    allow_open_path_reversal: bool = True,
+) -> tuple[list[Toolpath], Point, int, int, dict[str, dict[str, Any]]]:
+    pending: list[tuple[int, Toolpath]] = list(enumerate(toolpaths))
+    ordered: list[Toolpath] = []
+    current = start_point
+    open_paths_reversed_count = 0
+    bad_choice_count = 0
+    reasons_by_to_path_id: dict[str, dict[str, Any]] = {}
+
+    while pending:
+        candidate_rows: list[dict[str, Any]] = []
+        for original_index, path in pending:
+            candidate = rotate_closed_toolpath(path, current) if path.closed else path
+            if len(candidate.points) >= 1:
+                candidate_rows.append({
+                    "original_index": original_index,
+                    "path": path,
+                    "candidate": candidate,
+                    "distance_mm": float(math.hypot(candidate.points[0].x - current.x, candidate.points[0].y - current.y)),
+                    "reversed": False,
+                })
+            if allow_open_path_reversal and not path.closed and len(path.points) >= 2:
+                reversed_candidate = clone_toolpath(path, points=list(reversed(path.points)), closed=False)
+                candidate_rows.append({
+                    "original_index": original_index,
+                    "path": path,
+                    "candidate": reversed_candidate,
+                    "distance_mm": float(math.hypot(reversed_candidate.points[0].x - current.x, reversed_candidate.points[0].y - current.y)),
+                    "reversed": True,
+                })
+
+        candidate_rows.sort(key=lambda item: (float(item["distance_mm"]), int(item["original_index"]), 1 if item["reversed"] else 0))
+        selected = candidate_rows[0]
+        nearest_available_path_distance_mm = float(selected["distance_mm"])
+        chosen_path_distance_mm = float(selected["distance_mm"])
+        bad_choice_ratio = 1.0 if nearest_available_path_distance_mm <= 1e-9 else (chosen_path_distance_mm / nearest_available_path_distance_mm)
+        if bad_choice_ratio > 2.0:
+            bad_choice_count += 1
+
+        path = selected["path"]
+        candidate = selected["candidate"]
+        if bool(selected["reversed"]):
+            open_paths_reversed_count += 1
+        pending = [(idx, item) for idx, item in pending if idx != int(selected["original_index"])]
+        ordered.append(candidate)
+        candidate_id = candidate.path_id or _path_debug_identifier(candidate, len(ordered) - 1)
+        reasons_by_to_path_id[candidate_id] = {
+            "nearest_available_distance_mm": float(nearest_available_path_distance_mm),
+            "chosen_distance_mm": float(chosen_path_distance_mm),
+            "bad_choice_ratio": float(bad_choice_ratio),
+            "reason_chosen": (
+                "nearest_endpoint_reversed_open_path"
+                if bool(selected["reversed"])
+                else "nearest_endpoint"
+            ),
+        }
+        if candidate.points:
+            current = candidate.points[-1]
+
+    return ordered, current, open_paths_reversed_count, bad_choice_count, reasons_by_to_path_id
+
+
+def optimize_post_generation_travel_order(
+    toolpaths: list[Toolpath],
+    *,
+    start_point: Optional[Point] = None,
+) -> tuple[list[Toolpath], dict[str, Any]]:
+    if len(toolpaths) <= 1:
+        diagnostics = {
+            "travel_optimization_mode": "final_export_event_stream_ordering",
+            "optimizer_runs_after_path_merging": True,
+            "optimizer_runs_on_final_export_paths": True,
+            "preview_uses_optimized_order": True,
+            "gcode_uses_optimized_order": True,
+            "uses_surface_mm_for_ordering": True,
+            "geometry_changed": False,
+            "path_points_moved": False,
+            "paths_reordered": False,
+            "paths_reordered_count": 0,
+            "open_paths_reversed_count": 0,
+            "raw_export_path_count": int(len(toolpaths)),
+            "optimized_export_path_count": int(len(toolpaths)),
+            "raw_pen_up_travel_length_mm": 0.0,
+            "optimized_pen_up_travel_length_mm": 0.0,
+            "travel_length_reduction_percent": 0.0,
+            "raw_longest_pen_up_travel_mm": 0.0,
+            "optimized_longest_pen_up_travel_mm": 0.0,
+            "raw_travel_crossing_count": 0,
+            "optimized_travel_crossing_count": 0,
+            "top_25_longest_pen_up_travels_before": [],
+            "top_25_longest_pen_up_travels_after": [],
+            "bad_choice_count_after_optimization": 0,
+            "stale_travel_geometry_removed": True,
+            "pen_lifts_before": 0,
+            "pen_lifts_after": 0,
+            "safe_pen_down_travels_converted": 0,
+            "outline_path_count": int(sum(1 for path in toolpaths if path.kind == "outline")),
+        }
+        diagnostics["raw_travel_length_mm"] = diagnostics["raw_pen_up_travel_length_mm"]
+        diagnostics["optimized_travel_length_mm"] = diagnostics["optimized_pen_up_travel_length_mm"]
+        diagnostics["raw_longest_travel_mm"] = diagnostics["raw_longest_pen_up_travel_mm"]
+        diagnostics["optimized_longest_travel_mm"] = diagnostics["optimized_longest_pen_up_travel_mm"]
+        diagnostics["top_longest_travels_before"] = list(diagnostics["top_25_longest_pen_up_travels_before"])
+        diagnostics["top_longest_travels_after"] = list(diagnostics["top_25_longest_pen_up_travels_after"])
+        return toolpaths, diagnostics
+
+    current = start_point or Point(0.0, 0.0)
+    raw_metrics = _travel_metrics(toolpaths, start_point=current)
+    raw_reasons = {
+        str(path.path_id or _path_debug_identifier(path, index)): {
+            "nearest_available_distance_mm": None,
+            "chosen_distance_mm": None,
+            "bad_choice_ratio": None,
+            "reason_chosen": "existing_export_order",
+        }
+        for index, path in enumerate(toolpaths)
+    }
+    top_before = _top_longest_travels(toolpaths, start_point=current, reasons_by_to_path_id=raw_reasons)
+
+    fill_paths = [path for path in toolpaths if _final_export_group_key(path) == "fill"]
+    other_paths = [path for path in toolpaths if _final_export_group_key(path) == "other"]
+    outline_paths = [path for path in toolpaths if _final_export_group_key(path) == "outline"]
+
+    optimized_export_paths: list[Toolpath] = []
+    open_paths_reversed_count = 0
+    bad_choice_count = 0
+    reasons_by_to_path_id: dict[str, dict[str, Any]] = {}
+
+    if fill_paths:
+        optimized_fill, current, fill_reversed, fill_bad_choices, fill_reasons = _nearest_neighbor_order_group(
+            fill_paths,
+            start_point=current,
+            allow_open_path_reversal=True,
+        )
+        optimized_export_paths.extend(optimized_fill)
+        open_paths_reversed_count += fill_reversed
+        bad_choice_count += fill_bad_choices
+        reasons_by_to_path_id.update(fill_reasons)
+
+    if other_paths:
+        optimized_export_paths.extend(other_paths)
+        for index, path in enumerate(other_paths, start=len(optimized_export_paths) - len(other_paths)):
+            reasons_by_to_path_id[str(path.path_id or _path_debug_identifier(path, index))] = {
+                "nearest_available_distance_mm": None,
+                "chosen_distance_mm": None,
+                "bad_choice_ratio": None,
+                "reason_chosen": "kept_original_other_group_order",
+            }
+            if len(path.points) >= 2:
+                current = path.points[-1]
+
+    if outline_paths:
+        optimized_outline, current, outline_reversed, outline_bad_choices, outline_reasons = _nearest_neighbor_order_group(
+            outline_paths,
+            start_point=current,
+            allow_open_path_reversal=False,
+        )
+        optimized_export_paths.extend(optimized_outline)
+        open_paths_reversed_count += outline_reversed
+        bad_choice_count += outline_bad_choices
+        reasons_by_to_path_id.update(outline_reasons)
+
+    optimized_metrics = _travel_metrics(optimized_export_paths, start_point=start_point)
+    optimized_crossings = int(optimized_metrics["travel_crossing_count"])
+    raw_crossings = int(raw_metrics["travel_crossing_count"])
+
+    raw_travel_length_mm = float(raw_metrics["travel_length_mm"])
+    optimized_travel_length_mm = float(optimized_metrics["travel_length_mm"])
+    reduction_percent = 0.0
+    if raw_travel_length_mm > 1e-9:
+        reduction_percent = max(0.0, ((raw_travel_length_mm - optimized_travel_length_mm) / raw_travel_length_mm) * 100.0)
+
+    geometry_changed = not _toolpath_sequence_matches_geometry(toolpaths, optimized_export_paths)
+    paths_reordered_count = sum(
+        1
+        for before, after in zip(toolpaths, optimized_export_paths)
+        if _toolpath_canonical_geometry_signature(before) != _toolpath_canonical_geometry_signature(after)
+    )
+    paths_reordered = bool(paths_reordered_count or len(toolpaths) != len(optimized_export_paths))
+
+    ordering_is_better_or_equal = (
+        optimized_travel_length_mm <= (raw_travel_length_mm + 1e-9)
+        and (
+            optimized_crossings <= raw_crossings
+            or optimized_travel_length_mm < (raw_travel_length_mm - 1e-9)
+        )
+    )
+    if not ordering_is_better_or_equal:
+        optimized_export_paths = list(toolpaths)
+        optimized_metrics = dict(raw_metrics)
+        optimized_travel_length_mm = raw_travel_length_mm
+        optimized_crossings = raw_crossings
+        reduction_percent = 0.0
+        open_paths_reversed_count = 0
+        paths_reordered_count = 0
+        paths_reordered = False
+        bad_choice_count = 0
+        reasons_by_to_path_id = raw_reasons
+
+    top_after = _top_longest_travels(
+        optimized_export_paths,
+        start_point=start_point or Point(0.0, 0.0),
+        reasons_by_to_path_id=reasons_by_to_path_id,
+    )
+    diagnostics = {
+        "travel_optimization_mode": "final_export_event_stream_ordering",
+        "optimizer_runs_after_path_merging": True,
+        "optimizer_runs_on_final_export_paths": True,
+        "preview_uses_optimized_order": True,
+        "gcode_uses_optimized_order": True,
+        "uses_surface_mm_for_ordering": True,
+        "geometry_changed": bool(geometry_changed),
+        "path_points_moved": bool(geometry_changed),
+        "paths_reordered": bool(paths_reordered),
+        "paths_reordered_count": int(paths_reordered_count),
+        "open_paths_reversed_count": int(open_paths_reversed_count),
+        "raw_export_path_count": int(len(toolpaths)),
+        "optimized_export_path_count": int(len(optimized_export_paths)),
+        "raw_pen_up_travel_length_mm": raw_travel_length_mm,
+        "optimized_pen_up_travel_length_mm": optimized_travel_length_mm,
+        "travel_length_reduction_percent": float(reduction_percent),
+        "raw_longest_pen_up_travel_mm": float(raw_metrics["longest_travel_mm"]),
+        "optimized_longest_pen_up_travel_mm": float(optimized_metrics["longest_travel_mm"]),
+        "raw_travel_crossing_count": int(raw_crossings),
+        "optimized_travel_crossing_count": int(optimized_crossings),
+        "outline_path_count": int(len(outline_paths)),
+        "top_25_longest_pen_up_travels_before": top_before,
+        "top_25_longest_pen_up_travels_after": top_after,
+        "bad_choice_count_after_optimization": int(bad_choice_count),
+        "stale_travel_geometry_removed": True,
+        "pen_lifts_before": int(raw_metrics["pen_lifts"]),
+        "pen_lifts_after": int(optimized_metrics["pen_lifts"]),
+        "safe_pen_down_travels_converted": 0,
+    }
+    diagnostics["raw_travel_length_mm"] = diagnostics["raw_pen_up_travel_length_mm"]
+    diagnostics["optimized_travel_length_mm"] = diagnostics["optimized_pen_up_travel_length_mm"]
+    diagnostics["raw_longest_travel_mm"] = diagnostics["raw_longest_pen_up_travel_mm"]
+    diagnostics["optimized_longest_travel_mm"] = diagnostics["optimized_longest_pen_up_travel_mm"]
+    diagnostics["top_longest_travels_before"] = list(diagnostics["top_25_longest_pen_up_travels_before"])
+    diagnostics["top_longest_travels_after"] = list(diagnostics["top_25_longest_pen_up_travels_after"])
+    if geometry_changed:
+        raise AssertionError("Post-generation travel optimizer changed toolpath geometry")
+    return optimized_export_paths, diagnostics
+
+
 def optimize_toolpath_order(
     toolpaths: list[Toolpath],
     *,
@@ -5591,6 +7028,9 @@ def optimize_toolpath_order(
     start_point: Optional[Point] = None,
 ) -> list[Toolpath]:
     if strategy != "nearest-neighbor" or len(toolpaths) <= 1:
+        return toolpaths
+    # Preserve scanline infill ordering when the planner already encoded row order.
+    if _preserve_infill_path_order(toolpaths):
         return toolpaths
 
     pending = list(toolpaths)
@@ -5662,6 +7102,143 @@ def merge_connected_toolpaths(
 
     merged.append(current)
     return merged
+
+
+def optimize_detail_trace_efficiency(
+    toolpaths: list[Toolpath],
+    *,
+    printable_geometry: Any,
+    pen_width_mm: float,
+    debug: Optional[dict[str, Any]] = None,
+) -> list[Toolpath]:
+    if not toolpaths:
+        return toolpaths
+    allow_merge = os.getenv("ALLOW_DETAIL_TRACE_MERGING", "1") == "1"
+    if not allow_merge:
+        return toolpaths
+    max_gap_mm = max(0.01, float(os.getenv("MAX_DETAIL_MERGE_GAP_MM", str(1.5 * pen_width_mm))))
+    preferred_gap_mm = max(0.01, float(os.getenv("PREFERRED_DETAIL_MERGE_GAP_MM", str(0.75 * pen_width_mm))))
+    max_turn_deg = max(0.0, float(os.getenv("MAX_DETAIL_MERGE_TURN_DEG", "135")))
+    overspill_tol = min(0.05, pen_width_mm * 0.10)
+    overspill_area_ratio_tol = 0.02
+
+    component_geoms = normalize_geometry(printable_geometry) if printable_geometry is not None and not printable_geometry.is_empty else []
+    by_component: dict[str, list[Toolpath]] = {}
+    passthrough: list[Toolpath] = []
+    for path in toolpaths:
+        if path.kind not in {"detail-trace", "detail-continuation"} or len(path.points) < 2:
+            passthrough.append(path)
+            continue
+        by_component.setdefault(_path_component_label(path), []).append(path)
+
+    merged_out: list[Toolpath] = []
+    merged_count = 0
+    rejected_count = 0
+
+    def _component_geom(label: str) -> Any:
+        idx = _extract_component_id(label)
+        if idx is None or idx <= 0:
+            return printable_geometry
+        i = idx - 1
+        return component_geoms[i] if 0 <= i < len(component_geoms) else printable_geometry
+
+    def _angle_deg(a0: Point, a1: Point, b0: Point, b1: Point) -> float:
+        ax, ay = a1.x - a0.x, a1.y - a0.y
+        bx, by = b1.x - b0.x, b1.y - b0.y
+        la = math.hypot(ax, ay)
+        lb = math.hypot(bx, by)
+        if la <= 1e-9 or lb <= 1e-9:
+            return 0.0
+        dot = max(-1.0, min(1.0, (ax * bx + ay * by) / (la * lb)))
+        return math.degrees(math.acos(dot))
+
+    def _connector_safe(geom: Any, a: Point, b: Point) -> bool:
+        if geom is None or geom.is_empty:
+            return False
+        connector = LineString([(a.x, a.y), (b.x, b.y)])
+        if not _line_fully_inside(geom.buffer(max(0.01, pen_width_mm * 0.15), join_style=1), connector, tolerance_mm=max(0.01, pen_width_mm * 0.05)):
+            return False
+        stroke = connector.buffer(max(0.01, pen_width_mm * 0.5), cap_style=1, join_style=1)
+        overspill = stroke.difference(geom)
+        overspill_area = float(overspill.area) if overspill is not None and not overspill.is_empty else 0.0
+        overspill_ratio = overspill_area / max(1e-9, float(stroke.area))
+        if overspill_ratio > overspill_area_ratio_tol:
+            return False
+        if overspill is not None and not overspill.is_empty:
+            boundary = geom.boundary
+            max_protrusion = 0.0
+            for poly in normalize_geometry(overspill):
+                coords = list(poly.exterior.coords)
+                step = max(1, int(len(coords) / 16))
+                for i in range(0, len(coords), step):
+                    pt = ShapelyPoint(float(coords[i][0]), float(coords[i][1]))
+                    max_protrusion = max(max_protrusion, float(pt.distance(boundary)))
+            if max_protrusion > overspill_tol:
+                return False
+        return True
+
+    for component_label, paths in by_component.items():
+        pending = optimize_toolpath_order(paths, strategy="nearest-neighbor")
+        if not pending:
+            continue
+        geom = _component_geom(component_label)
+        chain = clone_toolpath(pending[0], kind="detail-trace", metadata={**pending[0].metadata, "path_role": "PRINT_DETAIL"})
+        for nxt in pending[1:]:
+            if len(chain.points) < 2 or len(nxt.points) < 2:
+                merged_out.append(chain)
+                chain = nxt
+                continue
+            gap = math.hypot(nxt.points[0].x - chain.points[-1].x, nxt.points[0].y - chain.points[-1].y)
+            turn = _angle_deg(chain.points[-2], chain.points[-1], nxt.points[0], nxt.points[1])
+            if gap <= 1e-6:
+                chain = clone_toolpath(
+                    chain,
+                    points=chain.points + nxt.points[1:],
+                    kind="detail-trace",
+                    metadata={**chain.metadata, "path_role": "PRINT_DETAIL", "detail_merge_count": int(chain.metadata.get("detail_merge_count", 0)) + 1},
+                )
+                merged_count += 1
+                continue
+            if gap <= max_gap_mm and turn <= max_turn_deg and _connector_safe(geom, chain.points[-1], nxt.points[0]):
+                connector_kind = "detail-continuation" if gap > preferred_gap_mm else "detail-trace"
+                connector = Toolpath(
+                    points=[chain.points[-1], nxt.points[0]],
+                    kind=connector_kind,
+                    closed=False,
+                    coordinate_space=chain.coordinate_space,
+                    source="detail_merge_connector",
+                    region_id=chain.region_id,
+                    metadata={
+                        "path_role": "PRINT_DETAIL_CONTINUATION" if connector_kind == "detail-continuation" else "PRINT_DETAIL",
+                        "detail_continuation_pen_down": connector_kind == "detail-continuation",
+                        "connector_length_mm": float(gap),
+                        "connector_turn_deg": float(turn),
+                    },
+                )
+                chain = clone_toolpath(
+                    chain,
+                    points=chain.points + connector.points[1:] + nxt.points[1:],
+                    kind="detail-trace",
+                    metadata={**chain.metadata, "path_role": "PRINT_DETAIL", "detail_merge_count": int(chain.metadata.get("detail_merge_count", 0)) + 1},
+                )
+                merged_count += 1
+            else:
+                rejected_count += 1
+                merged_out.append(chain)
+                chain = nxt
+        merged_out.append(chain)
+
+    result = passthrough + merged_out
+    if debug is not None:
+        debug["detail_merge_stats"] = {
+            "enabled": True,
+            "merged_detail_traces": int(merged_count),
+            "rejected_unsafe_merges": int(rejected_count),
+            "max_detail_merge_gap_mm": float(max_gap_mm),
+            "preferred_detail_merge_gap_mm": float(preferred_gap_mm),
+            "max_detail_merge_turn_deg": float(max_turn_deg),
+        }
+    return result
 
 
 def _normalize_infill_angle_deg(angle_deg: float) -> float:
@@ -5925,9 +7502,9 @@ class SlicerService:
             infillSpacingMm=resolved_infill_spacing,
             wallCount=wall_count,
             infillAngleDeg=infill_angle_deg,
-            singleStrokeWidthMaxFactor=1.15,
-            centerlineWidthMaxFactor=1.5,
-            detailWidthMaxFactor=2.5,
+            singleStrokeWidthMaxFactor=DEFAULT_SINGLE_STROKE_WIDTH_MAX_FACTOR,
+            centerlineWidthMaxFactor=DEFAULT_CENTERLINE_WIDTH_MAX_FACTOR,
+            detailWidthMaxFactor=DEFAULT_DETAIL_WIDTH_MAX_FACTOR,
             detailMinWidthFactor=2.25,
             minSerpentineRowLengthFactor=3.0,
             minAreaToFillMm2=0.15,
@@ -5942,6 +7519,10 @@ class SlicerService:
             thinRegionMode="singleStroke",
             allowOutlineOverlapForThinRegions=True,
             optimizePathOrder=True,
+            singleStrokeMaxWidthFactor=DEFAULT_THIN_REGION_SINGLE_STROKE_MAX_FACTOR,
+            narrowRegionMaxWidthFactor=DEFAULT_NARROW_REGION_MAX_FACTOR,
+            collapseOutlineMaxWidthFactor=DEFAULT_COLLAPSE_OUTLINE_MAX_FACTOR,
+            tinyDotAreaFactor=DEFAULT_TINY_DOT_AREA_FACTOR,
         )
 
     def _compute_region_metrics(
@@ -6038,6 +7619,1649 @@ class SlicerService:
             if not changed:
                 break
         return improved
+
+    def _validate_chain_connector(
+        self,
+        *,
+        polygon: Any,
+        start: Point,
+        end: Point,
+        line_width_mm: float,
+        spacing_mm: float,
+        connector_validation: dict[str, Any] | None,
+        blocked_lines: list[LineString] | None = None,
+    ) -> tuple[bool, str]:
+        connector = LineString([(float(start.x), float(start.y)), (float(end.x), float(end.y))])
+        if connector.length <= 1e-9:
+            return True, "zero_length"
+        max_connector_length_mm = max(2.0 * line_width_mm, 1.5 * spacing_mm)
+        if connector.length > max_connector_length_mm + 1e-6:
+            return False, "too_long"
+        if polygon is None or polygon.is_empty:
+            return False, "missing_polygon"
+        if not _line_fully_inside(polygon, connector, tolerance_mm=max(0.01, line_width_mm * 0.1)):
+            return False, "outside_fillable_polygon"
+        if blocked_lines:
+            for blocked in blocked_lines:
+                if blocked is None or blocked.is_empty:
+                    continue
+                if connector.crosses(blocked):
+                    return False, "crosses_existing_chain"
+        if connector_validation and isinstance(connector_validation, dict):
+            mask = connector_validation.get("mask")
+            matrix = connector_validation.get("current_to_source_matrix")
+            if mask is not None and isinstance(matrix, (tuple, list)) and len(matrix) == 6:
+                mask_height, mask_width = mask.shape[:2]
+                sample_step_mm = max(0.01, min(line_width_mm / 3.0, spacing_mm / 3.0, 0.05))
+                sample_count = max(2, int(math.ceil(connector.length / sample_step_mm)) + 1)
+                current_to_source = tuple(float(value) for value in matrix)
+                for sample_index in range(sample_count):
+                    distance_mm = min(connector.length, (connector.length * sample_index) / max(1, sample_count - 1))
+                    sample_point = connector.interpolate(distance_mm)
+                    source_point = apply_svg_matrix(Point(float(sample_point.x), float(sample_point.y)), current_to_source)
+                    mask_x = int(round(source_point.x))
+                    mask_y = int(round(source_point.y))
+                    inside_mask = 0 <= mask_x < mask_width and 0 <= mask_y < mask_height and bool(mask[mask_y, mask_x])
+                    if not inside_mask:
+                        return False, "outside_selected_color"
+        return True, "ok"
+
+    def _chain_region_paths_with_pen_down_connectors(
+        self,
+        paths: list[Toolpath],
+        *,
+        polygon: Any,
+        line_width_mm: float,
+        spacing_mm: float,
+        preserve_order: bool = True,
+        connector_validation: dict[str, Any] | None = None,
+        debug: Optional[dict[str, Any]] = None,
+    ) -> list[Toolpath]:
+        if len(paths) <= 1:
+            return paths
+        chainable = {"fill-wall", "fill-infill", "detail-trace"}
+        ordered = list(paths) if preserve_order else self._order_paths_by_nearest_neighbor(
+            paths,
+            start_point=paths[0].points[0] if paths and paths[0].points else None,
+        )
+        chained: list[Toolpath] = []
+        blocked_lines: list[LineString] = []
+        accepted = 0
+        attempted = 0
+        rejected: dict[str, int] = {}
+
+        for path in ordered:
+            if not chained:
+                chained.append(path)
+                continue
+            previous = chained[-1]
+            if (
+                previous.kind in chainable
+                and path.kind in chainable
+                and not previous.closed
+                and not path.closed
+                and len(previous.points) >= 2
+                and len(path.points) >= 2
+                and previous.region_id == path.region_id
+            ):
+                attempted += 1
+                ok, reason = self._validate_chain_connector(
+                    polygon=polygon,
+                    start=previous.points[-1],
+                    end=path.points[0],
+                    line_width_mm=line_width_mm,
+                    spacing_mm=spacing_mm,
+                    connector_validation=connector_validation,
+                    blocked_lines=blocked_lines,
+                )
+                if ok:
+                    connector_points = [Point(float(previous.points[-1].x), float(previous.points[-1].y)), Point(float(path.points[0].x), float(path.points[0].y))]
+                    if not nearly_same_point(connector_points[0], connector_points[1], tolerance=1e-6):
+                        connector_path = Toolpath(
+                            points=connector_points,
+                            kind="fill-infill-travel",
+                            closed=False,
+                            source="coverage_connector",
+                            region_id=path.region_id,
+                            metadata={
+                                "expected_relation_to_fill": "internal_fill_connector",
+                                "connector_mode": "region_chain",
+                                "connector_reason": "safe_inside_mask",
+                            },
+                        )
+                        chained.append(connector_path)
+                        blocked_lines.append(LineString([(connector_points[0].x, connector_points[0].y), (connector_points[1].x, connector_points[1].y)]))
+                    accepted += 1
+                else:
+                    rejected[reason] = int(rejected.get(reason, 0)) + 1
+            chained.append(path)
+            if len(path.points) >= 2:
+                blocked_lines.append(LineString([(point.x, point.y) for point in path.points]))
+
+        if debug is not None:
+            debug["coverage_connector_attempted"] = int(debug.get("coverage_connector_attempted", 0)) + attempted
+            debug["coverage_connector_accepted"] = int(debug.get("coverage_connector_accepted", 0)) + accepted
+            debug["coverage_connector_rejected"] = int(debug.get("coverage_connector_rejected", 0)) + max(0, attempted - accepted)
+            reasons = debug.setdefault("coverage_connector_rejection_reasons", {})
+            for key, value in rejected.items():
+                reasons[key] = int(reasons.get(key, 0)) + int(value)
+        return chained
+
+    def _is_mesh_like_path(self, path: Toolpath, *, line_width_mm: float) -> bool:
+        if len(path.points) < 3:
+            return False
+        if path.kind in {"outline", "fill-wall"}:
+            return False
+        if path.closed:
+            return path.kind in {"fill-infill", "detail-trace", "fill-infill-travel"}
+        coords = [(float(point.x), float(point.y)) for point in path.points]
+        line = LineString(coords)
+        if line.length <= 1e-6:
+            return True
+        min_x, min_y, max_x, max_y = line.bounds
+        bbox_w = max_x - min_x
+        bbox_h = max_y - min_y
+        bbox_diag = max(1e-6, math.hypot(bbox_w, bbox_h))
+        angles: list[float] = []
+        for start, end in zip(coords, coords[1:]):
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            if abs(dx) <= 1e-9 and abs(dy) <= 1e-9:
+                continue
+            angles.append(math.degrees(math.atan2(dy, dx)))
+        if len(angles) < 2:
+            return False
+        direction_changes = 0
+        for prev, cur in zip(angles, angles[1:]):
+            delta = abs(_normalize_infill_angle_deg(cur - prev))
+            if delta > 65.0 and delta < 175.0:
+                direction_changes += 1
+        if direction_changes >= 3 and line.length > bbox_diag * 2.5 and min(bbox_w, bbox_h) < line_width_mm * 2.5:
+            return True
+        return False
+
+    def _looks_like_tiny_x_or_triangle_fragment(self, path: Toolpath, *, line_width_mm: float) -> bool:
+        if len(path.points) < 3 or len(path.points) > 10:
+            return False
+        if path.kind in {"outline", "fill-wall", "outline_cleanup", "coverage_contour"}:
+            return False
+        coords = [(float(point.x), float(point.y)) for point in path.points]
+        line = LineString(coords)
+        if line.length <= 1e-6:
+            return True
+        min_x, min_y, max_x, max_y = line.bounds
+        bbox_w = max_x - min_x
+        bbox_h = max_y - min_y
+        max_dim = max(bbox_w, bbox_h)
+        if max_dim > max(line_width_mm * 2.2, 1.6):
+            return False
+        turns = 0
+        last_angle = None
+        for start, end in zip(coords, coords[1:]):
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            if abs(dx) <= 1e-9 and abs(dy) <= 1e-9:
+                continue
+            angle = math.degrees(math.atan2(dy, dx))
+            if last_angle is not None:
+                delta = abs(_normalize_infill_angle_deg(angle - last_angle))
+                if 35.0 <= delta <= 170.0:
+                    turns += 1
+            last_angle = angle
+        return turns >= 2
+
+    def _canonicalize_coverage_paths(
+        self,
+        paths: list[Toolpath],
+        *,
+        line_width_mm: float,
+        debug: Optional[dict[str, Any]] = None,
+    ) -> list[Toolpath]:
+        canonical: list[Toolpath] = []
+        rejected_x_fragments = 0
+        rejected_short = 0
+        for path in paths:
+            new_kind = path.kind
+            fill_mode = str(path.metadata.get("fill_mode", "")).lower()
+            if path.kind == "fill-infill-travel":
+                new_kind = "coverage_connector"
+            elif path.kind == "detail-trace":
+                new_kind = "coverage_centerline"
+            elif path.kind == "fill-infill":
+                if "single_stroke" in fill_mode or "centerline" in fill_mode:
+                    new_kind = "coverage_centerline"
+                elif "detail_contour" in fill_mode or "contour" in fill_mode:
+                    new_kind = "coverage_contour"
+                elif "rectilinear" in fill_mode:
+                    new_kind = "coverage_rectilinear"
+                else:
+                    new_kind = "coverage_offset_line"
+            elif path.kind == "outline":
+                new_kind = "outline_cleanup"
+            elif path.kind == "fill-wall":
+                new_kind = "coverage_contour"
+
+            candidate = clone_toolpath(
+                path,
+                kind=new_kind,
+                source=path.source,
+                metadata={**path.metadata, "canonical_coverage_kind": new_kind, "legacy_kind": path.kind},
+            )
+
+            # Only suppress tiny X/triangle fragments originating from legacy
+            # detail/connector traces; do not prune normal infill/outline paths.
+            if path.kind in {"detail-trace", "fill-infill-travel"} and self._looks_like_tiny_x_or_triangle_fragment(candidate, line_width_mm=line_width_mm):
+                rejected_x_fragments += 1
+                continue
+
+            length_mm = segment_length(candidate.points) if len(candidate.points) >= 2 else 0.0
+            tiny_mark = bool(candidate.metadata.get("small_detail_fill_style") in {"tiny_dot", "tiny_short_stroke"})
+            if len(candidate.points) < 2 or (length_mm < max(0.03, line_width_mm * 0.08) and not tiny_mark):
+                rejected_short += 1
+                continue
+            canonical.append(candidate)
+
+        if debug is not None:
+            debug["rejected_x_triangle_fragment_count"] = int(rejected_x_fragments)
+            debug["rejected_micro_path_count"] = int(rejected_short)
+            debug["canonical_path_counts"] = {
+                "coverage_centerline": sum(1 for p in canonical if p.kind == "coverage_centerline"),
+                "coverage_offset_line": sum(1 for p in canonical if p.kind == "coverage_offset_line"),
+                "coverage_rectilinear": sum(1 for p in canonical if p.kind == "coverage_rectilinear"),
+                "coverage_contour": sum(1 for p in canonical if p.kind == "coverage_contour"),
+                "coverage_connector": sum(1 for p in canonical if p.kind == "coverage_connector"),
+                "outline_cleanup": sum(1 for p in canonical if p.kind == "outline_cleanup"),
+            }
+        return canonical
+
+    def _build_component_centerline_candidate(
+        self,
+        component_mask: np.ndarray,
+        *,
+        source_to_current_matrix: tuple[float, float, float, float, float, float],
+        line_width_mm: float,
+        pen_radius_px: float,
+        component_id: int,
+        strategy: str,
+    ) -> Toolpath | None:
+        ys, xs = np.nonzero(component_mask > 0)
+        if xs.size < 2:
+            return None
+        pts = np.column_stack((xs.astype(np.float32), ys.astype(np.float32)))
+        try:
+            vx, vy, x0, y0 = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01)
+            vx_f = float(np.asarray(vx).reshape(-1)[0])
+            vy_f = float(np.asarray(vy).reshape(-1)[0])
+            x0_f = float(np.asarray(x0).reshape(-1)[0])
+            y0_f = float(np.asarray(y0).reshape(-1)[0])
+        except Exception:
+            min_x = float(xs.min())
+            max_x = float(xs.max())
+            min_y = float(ys.min())
+            max_y = float(ys.max())
+            if (max_x - min_x) >= (max_y - min_y):
+                vx_f, vy_f = 1.0, 0.0
+            else:
+                vx_f, vy_f = 0.0, 1.0
+            x0_f = float(np.mean(xs))
+            y0_f = float(np.mean(ys))
+        norm = math.hypot(vx_f, vy_f)
+        if norm <= 1e-9:
+            return None
+        vx_f /= norm
+        vy_f /= norm
+        projections = ((pts[:, 0] - x0_f) * vx_f) + ((pts[:, 1] - y0_f) * vy_f)
+        t_min = float(np.min(projections))
+        t_max = float(np.max(projections))
+        if (t_max - t_min) <= 1.0:
+            return None
+        trim_px = max(1.0, pen_radius_px * 0.95)
+        start_x = x0_f + vx_f * (t_min + trim_px)
+        start_y = y0_f + vy_f * (t_min + trim_px)
+        end_x = x0_f + vx_f * (t_max - trim_px)
+        end_y = y0_f + vy_f * (t_max - trim_px)
+        start_mm = apply_svg_matrix(Point(start_x, start_y), source_to_current_matrix)
+        end_mm = apply_svg_matrix(Point(end_x, end_y), source_to_current_matrix)
+        path = Toolpath(
+            points=[start_mm, end_mm],
+            kind="coverage_centerline",
+            closed=False,
+            source="coverage_backfill_component",
+            metadata={
+                "coverage_backfill_component": True,
+                "coverage_backfill_component_id": component_id,
+                "coverage_backfill_strategy": strategy,
+            },
+        )
+        if segment_length(path.points) < max(0.04, line_width_mm * 0.15):
+            return None
+        return path
+
+    def _build_component_run_candidates(
+        self,
+        component_mask: np.ndarray,
+        *,
+        source_to_current_matrix: tuple[float, float, float, float, float, float],
+        line_width_mm: float,
+        pen_radius_px: float,
+        component_id: int,
+        horizontal: bool,
+        max_candidates: int = 3,
+        thin_mode: bool = False,
+    ) -> list[Toolpath]:
+        ys, xs = np.nonzero(component_mask > 0)
+        if xs.size < 2:
+            return []
+        min_x = int(np.min(xs))
+        max_x = int(np.max(xs))
+        min_y = int(np.min(ys))
+        max_y = int(np.max(ys))
+        runs: list[tuple[int, int, int]] = []
+        if horizontal:
+            for yy in range(min_y, max_y + 1):
+                row = component_mask[yy, min_x:max_x + 1]
+                start = None
+                for i, val in enumerate(row):
+                    if val and start is None:
+                        start = i
+                    if (not val or i == len(row) - 1) and start is not None:
+                        end = i if val and i == len(row) - 1 else i - 1
+                        runs.append((end - start + 1, min_x + start, min_x + end, yy))
+                        start = None
+        else:
+            for xx in range(min_x, max_x + 1):
+                col = component_mask[min_y:max_y + 1, xx]
+                start = None
+                for i, val in enumerate(col):
+                    if val and start is None:
+                        start = i
+                    if (not val or i == len(col) - 1) and start is not None:
+                        end = i if val and i == len(col) - 1 else i - 1
+                        runs.append((end - start + 1, min_y + start, min_y + end, xx))
+                        start = None
+        runs.sort(key=lambda item: item[0], reverse=True)
+        candidates: list[Toolpath] = []
+        trim_px = max(1.0, pen_radius_px * 0.95)
+        for run in runs[:max_candidates]:
+            length_px = int(run[0])
+            if length_px <= 2:
+                continue
+            if horizontal:
+                _, x0, x1, yy = run
+                sx, sy = float(x0) + trim_px, float(yy)
+                ex, ey = float(x1) - trim_px, float(yy)
+            else:
+                _, y0, y1, xx = run
+                sx, sy = float(xx), float(y0) + trim_px
+                ex, ey = float(xx), float(y1) - trim_px
+            if math.hypot(ex - sx, ey - sy) <= 1.0:
+                continue
+            start_mm = apply_svg_matrix(Point(sx, sy), source_to_current_matrix)
+            end_mm = apply_svg_matrix(Point(ex, ey), source_to_current_matrix)
+            candidate = Toolpath(
+                points=[start_mm, end_mm],
+                kind="coverage_centerline",
+                closed=False,
+                source="coverage_backfill_component",
+                metadata={
+                    "coverage_backfill_component": True,
+                    "coverage_backfill_component_id": component_id,
+                    "coverage_backfill_strategy": "component_runline",
+                    "coverage_backfill_orientation": "horizontal" if horizontal else "vertical",
+                },
+            )
+            if segment_length(candidate.points) >= max(0.04, line_width_mm * 0.15):
+                candidates.append(candidate)
+        return candidates
+
+    def _build_component_fullspan_passage_candidate(
+        self,
+        component_mask: np.ndarray,
+        *,
+        source_to_current_matrix: tuple[float, float, float, float, float, float],
+        line_width_mm: float,
+        component_id: int,
+    ) -> Toolpath | None:
+        ys, xs = np.nonzero(component_mask > 0)
+        if xs.size < 3:
+            return None
+        pts = np.column_stack((xs.astype(np.float32), ys.astype(np.float32)))
+        vx, vy, x0, y0 = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01)
+        vx_f = float(np.asarray(vx).reshape(-1)[0])
+        vy_f = float(np.asarray(vy).reshape(-1)[0])
+        x0_f = float(np.asarray(x0).reshape(-1)[0])
+        y0_f = float(np.asarray(y0).reshape(-1)[0])
+        norm = math.hypot(vx_f, vy_f)
+        if norm <= 1e-9:
+            return None
+        vx_f /= norm
+        vy_f /= norm
+        projections = ((pts[:, 0] - x0_f) * vx_f) + ((pts[:, 1] - y0_f) * vy_f)
+        t_min = float(np.min(projections))
+        t_max = float(np.max(projections))
+        if (t_max - t_min) <= 1.0:
+            return None
+        start_mm = apply_svg_matrix(Point(x0_f + vx_f * t_min, y0_f + vy_f * t_min), source_to_current_matrix)
+        end_mm = apply_svg_matrix(Point(x0_f + vx_f * t_max, y0_f + vy_f * t_max), source_to_current_matrix)
+        path = Toolpath(
+            points=[start_mm, end_mm],
+            kind="coverage_centerline",
+            closed=False,
+            source="coverage_backfill_component",
+            metadata={
+                "coverage_backfill_component": True,
+                "coverage_backfill_component_id": component_id,
+                "coverage_backfill_strategy": "thin_passage_fullspan",
+            },
+        )
+        if segment_length(path.points) < max(0.02, line_width_mm * 0.05):
+            return None
+        return path
+
+    def _build_component_tiny_dot_candidate(
+        self,
+        component_mask: np.ndarray,
+        *,
+        source_to_current_matrix: tuple[float, float, float, float, float, float],
+        component_id: int,
+        line_width_mm: float,
+    ) -> Toolpath | None:
+        ys, xs = np.nonzero(component_mask > 0)
+        if xs.size == 0:
+            return None
+        cx = float(np.mean(xs))
+        cy = float(np.mean(ys))
+        center_mm = apply_svg_matrix(Point(cx, cy), source_to_current_matrix)
+        half = max(0.01, line_width_mm * 0.05)
+        return Toolpath(
+            points=[Point(center_mm.x - half, center_mm.y), Point(center_mm.x + half, center_mm.y)],
+            kind="coverage_centerline",
+            closed=False,
+            source="coverage_backfill_component",
+            metadata={
+                "coverage_backfill_component": True,
+                "coverage_backfill_component_id": component_id,
+                "coverage_backfill_strategy": "tiny_component_dot",
+            },
+        )
+
+    def _build_component_angle_run_candidates(
+        self,
+        component_mask: np.ndarray,
+        *,
+        source_to_current_matrix: tuple[float, float, float, float, float, float],
+        line_width_mm: float,
+        component_id: int,
+        angles_deg: list[float] | None = None,
+    ) -> list[Toolpath]:
+        ys, xs = np.nonzero(component_mask > 0)
+        if xs.size < 3:
+            return []
+        h, w = component_mask.shape[:2]
+        cx = float(np.mean(xs))
+        cy = float(np.mean(ys))
+        angles = angles_deg or [0.0, 45.0, -45.0]
+        candidates: list[Toolpath] = []
+        for angle in angles:
+            m = cv2.getRotationMatrix2D((cx, cy), angle, 1.0)
+            rot = cv2.warpAffine(component_mask.astype(np.uint8), m, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            best_len = 0
+            best_seg: tuple[int, int, int] | None = None
+            for yy in range(h):
+                row = rot[yy, :]
+                start = -1
+                for xx, val in enumerate(row):
+                    if val and start < 0:
+                        start = xx
+                    if (not val or xx == w - 1) and start >= 0:
+                        end = xx if val and xx == w - 1 else xx - 1
+                        seg_len = end - start + 1
+                        if seg_len > best_len:
+                            best_len = seg_len
+                            best_seg = (start, end, yy)
+                        start = -1
+            if best_seg is None or best_len < 3:
+                continue
+            sx, ex, yy = best_seg
+            inv = cv2.invertAffineTransform(m)
+            run_pts: list[tuple[float, float]] = []
+            step = 1 if (ex - sx) <= 40 else 2
+            for xx in range(int(sx), int(ex) + 1, step):
+                p = np.dot(inv, np.array([float(xx), float(yy), 1.0], dtype=np.float64))
+                run_pts.append((float(p[0]), float(p[1])))
+            if run_pts and run_pts[-1] != (float(np.dot(inv, np.array([float(ex), float(yy), 1.0], dtype=np.float64))[0]), float(np.dot(inv, np.array([float(ex), float(yy), 1.0], dtype=np.float64))[1])):
+                p_end = np.dot(inv, np.array([float(ex), float(yy), 1.0], dtype=np.float64))
+                run_pts.append((float(p_end[0]), float(p_end[1])))
+            cand = self._build_pixel_polyline_candidate(
+                run_pts,
+                source_to_current_matrix=source_to_current_matrix,
+                line_width_mm=line_width_mm,
+                component_id=component_id,
+                candidate_type="angle_run",
+            )
+            if cand is not None:
+                cand.metadata["angle_run_deg"] = float(angle)
+                candidates.append(cand)
+        return candidates
+
+    def _build_component_medial_polyline_candidate(
+        self,
+        component_mask: np.ndarray,
+        *,
+        source_to_current_matrix: tuple[float, float, float, float, float, float],
+        line_width_mm: float,
+        component_id: int,
+        horizontal: bool,
+        pen_radius_px: float = 0.0,
+    ) -> Toolpath | None:
+        ys, xs = np.nonzero(component_mask > 0)
+        if xs.size < 3:
+            return None
+        min_x = int(np.min(xs))
+        max_x = int(np.max(xs))
+        min_y = int(np.min(ys))
+        max_y = int(np.max(ys))
+        pixel_points: list[tuple[float, float]] = []
+        if horizontal:
+            for xx in range(min_x, max_x + 1):
+                col = np.nonzero(component_mask[min_y:max_y + 1, xx])[0]
+                if col.size == 0:
+                    continue
+                y0 = float(min_y + int(col.min()))
+                y1 = float(min_y + int(col.max()))
+                pixel_points.append((float(xx), (y0 + y1) * 0.5))
+        else:
+            for yy in range(min_y, max_y + 1):
+                row = np.nonzero(component_mask[yy, min_x:max_x + 1])[0]
+                if row.size == 0:
+                    continue
+                x0 = float(min_x + int(row.min()))
+                x1 = float(min_x + int(row.max()))
+                pixel_points.append((((x0 + x1) * 0.5), float(yy)))
+        if len(pixel_points) < 3:
+            return None
+        stride = 2 if len(pixel_points) > 80 else 1
+        simplified = pixel_points[::stride]
+        if simplified[-1] != pixel_points[-1]:
+            simplified.append(pixel_points[-1])
+        trim_pts = int(round(max(0.0, pen_radius_px * 0.6)))
+        if trim_pts > 0 and len(simplified) > (trim_pts * 2 + 2):
+            simplified = simplified[trim_pts:-trim_pts]
+        return self._build_pixel_polyline_candidate(
+            simplified,
+            source_to_current_matrix=source_to_current_matrix,
+            line_width_mm=line_width_mm,
+            component_id=component_id,
+            candidate_type="component_medial_polyline",
+        )
+
+    def _build_pixel_polyline_candidate(
+        self,
+        pixel_points: list[tuple[float, float]],
+        *,
+        source_to_current_matrix: tuple[float, float, float, float, float, float],
+        line_width_mm: float,
+        component_id: int,
+        candidate_type: str,
+    ) -> Toolpath | None:
+        if len(pixel_points) < 2:
+            return None
+        points_mm = [apply_svg_matrix(Point(float(x), float(y)), source_to_current_matrix) for x, y in pixel_points]
+        if len(points_mm) < 2:
+            return None
+        path = Toolpath(
+            points=points_mm,
+            kind="coverage_centerline",
+            closed=False,
+            source="coverage_backfill_component",
+            metadata={
+                "coverage_backfill_component": True,
+                "coverage_backfill_component_id": int(component_id),
+                "coverage_backfill_strategy": candidate_type,
+                "coverage_backfill_candidate_type": candidate_type,
+                "candidate_pixel_points": [[float(x), float(y)] for x, y in pixel_points],
+            },
+        )
+        if segment_length(path.points) < max(0.04, line_width_mm * 0.15):
+            return None
+        return path
+
+    def _repair_component_candidate_pool(
+        self,
+        component_mask: np.ndarray,
+        *,
+        comp_id: int,
+        area_px: int,
+        source_to_current: tuple[float, float, float, float, float, float],
+        line_width_mm: float,
+        pen_radius_px: float,
+        target_mask: np.ndarray,
+        drawn_mask: np.ndarray,
+        component_centroids: dict[int, tuple[float, float]],
+    ) -> list[Toolpath]:
+        candidates: list[Toolpath] = []
+        h, w = component_mask.shape[:2]
+        ys, xs = np.nonzero(component_mask)
+        if xs.size < 2:
+            return candidates
+        x0, x1 = int(xs.min()), int(xs.max())
+        y0, y1 = int(ys.min()), int(ys.max())
+        ww = x1 - x0 + 1
+        hh = y1 - y0 + 1
+
+        def _clipped_segment(p0: tuple[float, float], p1: tuple[float, float]) -> list[tuple[float, float]] | None:
+            x0f, y0f = p0
+            x1f, y1f = p1
+            steps = max(8, int(math.hypot(x1f - x0f, y1f - y0f) * 2.0))
+            pts = []
+            for i in range(steps + 1):
+                t = float(i) / float(max(1, steps))
+                x = x0f + (x1f - x0f) * t
+                y = y0f + (y1f - y0f) * t
+                xi = int(round(x))
+                yi = int(round(y))
+                inside = (0 <= xi < w and 0 <= yi < h and bool(component_mask[yi, xi]))
+                pts.append((x, y, inside))
+            best_start = -1
+            best_end = -1
+            run_start = -1
+            for idx, (_x, _y, inside) in enumerate(pts):
+                if inside and run_start < 0:
+                    run_start = idx
+                if (not inside or idx == len(pts) - 1) and run_start >= 0:
+                    run_end = idx if inside and idx == len(pts) - 1 else idx - 1
+                    if run_end - run_start > best_end - best_start:
+                        best_start, best_end = run_start, run_end
+                    run_start = -1
+            if best_start < 0 or best_end <= best_start:
+                return None
+            a = pts[best_start]
+            b = pts[best_end]
+            if math.hypot(b[0] - a[0], b[1] - a[1]) < 1.0:
+                return None
+            return [(a[0], a[1]), (b[0], b[1])]
+
+        # 1) skeleton / ridge approximation
+        dt = cv2.distanceTransform(component_mask.astype(np.uint8), cv2.DIST_L2, 3)
+        ridge = dt >= np.maximum(1.0, float(np.percentile(dt[dt > 0], 75))) if np.any(dt > 0) else np.zeros_like(component_mask, dtype=bool)
+        ridge_points = np.column_stack(np.nonzero(ridge))
+        if ridge_points.shape[0] >= 3:
+            pts_xy = np.column_stack((ridge_points[:, 1].astype(np.float32), ridge_points[:, 0].astype(np.float32)))
+            try:
+                vx, vy, cx, cy = cv2.fitLine(pts_xy, cv2.DIST_L2, 0, 0.01, 0.01)
+                vx_f = float(np.asarray(vx).reshape(-1)[0])
+                vy_f = float(np.asarray(vy).reshape(-1)[0])
+                cx_f = float(np.asarray(cx).reshape(-1)[0])
+                cy_f = float(np.asarray(cy).reshape(-1)[0])
+                t = ((pts_xy[:, 0] - cx_f) * vx_f) + ((pts_xy[:, 1] - cy_f) * vy_f)
+                i0 = int(np.argmin(t))
+                i1 = int(np.argmax(t))
+                skel = self._build_pixel_polyline_candidate(
+                    [(float(pts_xy[i0, 0]), float(pts_xy[i0, 1])), (float(pts_xy[i1, 0]), float(pts_xy[i1, 1]))],
+                    source_to_current_matrix=source_to_current,
+                    line_width_mm=line_width_mm,
+                    component_id=comp_id,
+                    candidate_type="skeleton",
+                )
+                if skel is not None:
+                    candidates.append(skel)
+            except Exception:
+                pass
+
+        # 2) distance-transform ridge explicit candidate through highest-distance points
+        if np.any(dt > 0):
+            max_idx = np.unravel_index(int(np.argmax(dt)), dt.shape)
+            cy, cx = int(max_idx[0]), int(max_idx[1])
+            run = self._build_component_run_candidates(
+                component_mask,
+                source_to_current_matrix=source_to_current,
+                line_width_mm=line_width_mm,
+                pen_radius_px=pen_radius_px,
+                component_id=comp_id,
+                horizontal=ww >= hh,
+                max_candidates=1,
+            )
+            if run:
+                run0 = run[0]
+                run0.metadata["coverage_backfill_strategy"] = "distance_ridge"
+                run0.metadata["coverage_backfill_candidate_type"] = "distance_ridge"
+                candidates.append(run0)
+            ridge_seg = _clipped_segment((float(x0), float(cy)), (float(x1), float(cy))) if ww >= hh else _clipped_segment((float(cx), float(y0)), (float(cx), float(y1)))
+            if ridge_seg is not None:
+                ridge_cross = self._build_pixel_polyline_candidate(
+                    ridge_seg,
+                    source_to_current_matrix=source_to_current,
+                    line_width_mm=line_width_mm,
+                    component_id=comp_id,
+                    candidate_type="distance_ridge",
+                )
+                if ridge_cross is not None:
+                    candidates.append(ridge_cross)
+
+        # 3) multi-angle local hatch candidates (small groups)
+        angles = [0.0, 30.0, 45.0, 60.0, 90.0, -30.0, -45.0, -60.0]
+        cx = float(np.mean(xs))
+        cy = float(np.mean(ys))
+        diag = float(math.hypot(ww, hh))
+        for ang in angles:
+            rad = math.radians(ang)
+            ux, uy = math.cos(rad), math.sin(rad)
+            px, py = -uy, ux
+            spacing = max(1.0, pen_radius_px * 1.35)
+            local_lines = []
+            for s in (-spacing, 0.0, spacing):
+                sx = cx + px * s - ux * diag * 0.5
+                sy = cy + py * s - uy * diag * 0.5
+                ex = cx + px * s + ux * diag * 0.5
+                ey = cy + py * s + uy * diag * 0.5
+                local_lines.append((sx, sy, ex, ey))
+            kept = 0
+            for sx, sy, ex, ey in local_lines:
+                seg = _clipped_segment((sx, sy), (ex, ey))
+                if seg is None:
+                    continue
+                p = self._build_pixel_polyline_candidate(
+                    seg,
+                    source_to_current_matrix=source_to_current,
+                    line_width_mm=line_width_mm,
+                    component_id=comp_id,
+                    candidate_type="local_hatch",
+                )
+                if p is not None:
+                    candidates.append(p)
+                    kept += 1
+                if kept >= 2:
+                    break
+
+        # 4) stroke-expansion / parallel offset toward missed component
+        base = self._build_component_centerline_candidate(
+            component_mask,
+            source_to_current_matrix=source_to_current,
+            line_width_mm=line_width_mm,
+            pen_radius_px=pen_radius_px,
+            component_id=comp_id,
+            strategy="parallel_offset",
+        )
+        if base is not None:
+            p0, p1 = base.points[0], base.points[-1]
+            dx = p1.x - p0.x
+            dy = p1.y - p0.y
+            ln = math.hypot(dx, dy)
+            if ln > 1e-9:
+                nx, ny = -dy / ln, dx / ln
+                offset_mm = max(0.08, line_width_mm * 0.38)
+                for sign in (-1.0, 1.0):
+                    off = Toolpath(
+                        points=[Point(p0.x + nx * offset_mm * sign, p0.y + ny * offset_mm * sign), Point(p1.x + nx * offset_mm * sign, p1.y + ny * offset_mm * sign)],
+                        kind="coverage_offset_line",
+                        closed=False,
+                        source="coverage_backfill_component",
+                        metadata={
+                            "coverage_backfill_component": True,
+                            "coverage_backfill_component_id": int(comp_id),
+                            "coverage_backfill_strategy": "parallel_offset",
+                            "coverage_backfill_candidate_type": "parallel_offset",
+                        },
+                    )
+                    try:
+                        sp0 = apply_svg_matrix(off.points[0], invert_svg_matrix(source_to_current))
+                        sp1 = apply_svg_matrix(off.points[-1], invert_svg_matrix(source_to_current))
+                        seg = _clipped_segment((sp0.x, sp0.y), (sp1.x, sp1.y))
+                    except Exception:
+                        seg = None
+                    if seg is not None:
+                        clipped_off = self._build_pixel_polyline_candidate(
+                            seg,
+                            source_to_current_matrix=source_to_current,
+                            line_width_mm=line_width_mm,
+                            component_id=comp_id,
+                            candidate_type="parallel_offset",
+                        )
+                        if clipped_off is not None:
+                            clipped_off.kind = "coverage_offset_line"
+                            candidates.append(clipped_off)
+
+        # 5) boundary inset candidate
+        contours, _ = cv2.findContours(component_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        if contours:
+            cnt = max(contours, key=cv2.contourArea)
+            if len(cnt) >= 6:
+                eps = max(1.0, pen_radius_px * 0.6)
+                approx = cv2.approxPolyDP(cnt, eps, True)
+                poly = [(float(p[0][0]), float(p[0][1])) for p in approx]
+                if len(poly) >= 2:
+                    boundary = self._build_pixel_polyline_candidate(
+                        poly[: min(10, len(poly))],
+                        source_to_current_matrix=source_to_current,
+                        line_width_mm=line_width_mm,
+                        component_id=comp_id,
+                        candidate_type="boundary_inset",
+                    )
+                    if boundary is not None:
+                        candidates.append(boundary)
+
+        # 6) component bridge candidate
+        this_centroid = component_centroids.get(comp_id)
+        if this_centroid is not None:
+            tx, ty = this_centroid
+            best_other: tuple[int, float] | None = None
+            for oid, (ox, oy) in component_centroids.items():
+                if oid == comp_id:
+                    continue
+                dist = math.hypot(ox - tx, oy - ty)
+                if dist <= max(1.0, pen_radius_px * 1.8):
+                    if best_other is None or dist < best_other[1]:
+                        best_other = (oid, dist)
+            if best_other is not None:
+                ox, oy = component_centroids[best_other[0]]
+                seg = _clipped_segment((tx, ty), (ox, oy))
+                bridge = self._build_pixel_polyline_candidate(
+                    seg if seg is not None else [(tx, ty), (ox, oy)],
+                    source_to_current_matrix=source_to_current,
+                    line_width_mm=line_width_mm,
+                    component_id=comp_id,
+                    candidate_type="component_bridge",
+                )
+                if bridge is not None:
+                    candidates.append(bridge)
+        return candidates
+
+
+
+    def _repair_missed_mask_components(
+        self,
+        paths: list[Toolpath],
+        *,
+        line_width_mm: float,
+        connector_validation: dict[str, Any] | None,
+        debug: Optional[dict[str, Any]] = None,
+        target_penalized_percent: float = 90.0,
+        max_added_paths: int = 80,
+    ) -> list[Toolpath]:
+        if not connector_validation or max_added_paths <= 0:
+            return paths
+        mask = connector_validation.get("mask")
+        matrix = connector_validation.get("current_to_source_matrix")
+        if mask is None or not isinstance(matrix, (tuple, list)) or len(matrix) != 6:
+            return paths
+        current_to_source = tuple(float(value) for value in matrix)
+        try:
+            source_to_current = invert_svg_matrix(current_to_source)
+        except Exception:
+            if debug is not None:
+                debug["coverage_backfill_component_transform_failed"] = True
+            return paths
+
+        include_kinds = {
+            "coverage_centerline",
+            "coverage_offset_line",
+            "coverage_rectilinear",
+            "coverage_tiny_mark",
+            "coverage_contour",
+            "coverage_connector",
+            "outline_cleanup",
+        }
+        current_paths = list(paths)
+        current_metrics = compute_toolpath_mask_coverage_metrics(
+            current_paths,
+            mask=mask,
+            current_to_source_matrix=current_to_source,
+            pen_radius_mm=line_width_mm * 0.5,
+            sample_step_mm=max(0.01, min(line_width_mm * 0.35, 0.05)),
+            include_kinds=include_kinds,
+        )
+        if current_metrics is None or current_metrics.penalized_coverage_percent >= target_penalized_percent:
+            return paths
+        best_paths = list(current_paths)
+        best_metrics = current_metrics
+
+        target_mask = np.asarray(mask) > 0
+        target_boundary = cv2.morphologyEx((target_mask.astype(np.uint8) * 255), cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)) > 0
+        target_boundary_band = cv2.dilate((target_boundary.astype(np.uint8) * 255), np.ones((3, 3), np.uint8), iterations=1) > 0
+        h, w = target_mask.shape[:2]
+        a, b, c, d, _e, _f = current_to_source
+        px_per_mm = max(1e-6, (math.hypot(a, b) + math.hypot(c, d)) * 0.5)
+        pen_radius_px = max(0.0, (line_width_mm * 0.5) * px_per_mm)
+        radius_px_i = max(1, int(round(pen_radius_px)))
+
+        drawn = np.zeros((h, w), dtype=np.uint8)
+        for path in current_paths:
+            if path.kind not in include_kinds or len(path.points) < 1:
+                continue
+            if len(path.points) == 1:
+                source_point = apply_svg_matrix(path.points[0], current_to_source)
+                cv2.circle(drawn, (int(round(source_point.x)), int(round(source_point.y))), max(1, int(round(pen_radius_px))), 255, -1)
+                continue
+            for start, end in zip(path.points, path.points[1:]):
+                line = LineString([(start.x, start.y), (end.x, end.y)])
+                if line.length <= 1e-9:
+                    continue
+                sample_count = max(2, int(math.ceil(line.length / max(0.01, min(line_width_mm * 0.35, 0.05)))) + 1)
+                for sample_index in range(sample_count):
+                    distance_mm = min(line.length, (line.length * sample_index) / max(sample_count - 1, 1))
+                    sample = line.interpolate(distance_mm)
+                    source_point = apply_svg_matrix(Point(float(sample.x), float(sample.y)), current_to_source)
+                    cv2.circle(drawn, (int(round(source_point.x)), int(round(source_point.y))), radius_px_i, 255, -1)
+
+        def _rasterize_single_candidate(candidate: Toolpath) -> np.ndarray:
+            out = np.zeros((h, w), dtype=np.uint8)
+            if len(candidate.points) < 1:
+                return out
+            if len(candidate.points) == 1:
+                source_point = apply_svg_matrix(candidate.points[0], current_to_source)
+                cv2.circle(out, (int(round(source_point.x)), int(round(source_point.y))), radius_px_i, 255, -1)
+                return out
+            for start, end in zip(candidate.points, candidate.points[1:]):
+                line = LineString([(start.x, start.y), (end.x, end.y)])
+                if line.length <= 1e-9:
+                    continue
+                sample_count = max(2, int(math.ceil(line.length / max(0.01, min(line_width_mm * 0.35, 0.05)))) + 1)
+                for sample_index in range(sample_count):
+                    distance_mm = min(line.length, (line.length * sample_index) / max(sample_count - 1, 1))
+                    sample = line.interpolate(distance_mm)
+                    source_point = apply_svg_matrix(Point(float(sample.x), float(sample.y)), current_to_source)
+                    cv2.circle(out, (int(round(source_point.x)), int(round(source_point.y))), radius_px_i, 255, -1)
+            return out
+
+        def _rasterize_pixel_oracle(candidate: Toolpath) -> np.ndarray:
+            pts_meta = candidate.metadata.get("candidate_pixel_points")
+            if not isinstance(pts_meta, list) or len(pts_meta) < 1:
+                return _rasterize_single_candidate(candidate)
+            pts: list[tuple[float, float]] = []
+            for pair in pts_meta:
+                if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                    pts.append((float(pair[0]), float(pair[1])))
+            out = np.zeros((h, w), dtype=np.uint8)
+            if not pts:
+                return _rasterize_single_candidate(candidate)
+            if len(pts) == 1:
+                cv2.circle(out, (int(round(pts[0][0])), int(round(pts[0][1]))), radius_px_i, 255, -1)
+                return out
+            for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+                seg_len = math.hypot(x1 - x0, y1 - y0)
+                n = max(2, int(math.ceil(seg_len / max(0.5, radius_px_i * 0.5))) + 1)
+                for i in range(n):
+                    t = i / max(n - 1, 1)
+                    xx = x0 + (x1 - x0) * t
+                    yy = y0 + (y1 - y0) * t
+                    cv2.circle(out, (int(round(xx)), int(round(yy))), radius_px_i, 255, -1)
+            return out
+
+        def _candidate_roundtrip_error(candidate: Toolpath) -> float:
+            pts_meta = candidate.metadata.get("candidate_pixel_points")
+            if not isinstance(pts_meta, list) or len(pts_meta) == 0:
+                return 0.0
+            max_err = 0.0
+            for pair in pts_meta:
+                if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                    continue
+                px0 = float(pair[0])
+                py0 = float(pair[1])
+                mm_pt = apply_svg_matrix(Point(px0, py0), source_to_current)
+                px_rt = apply_svg_matrix(mm_pt, current_to_source)
+                err = math.hypot(px_rt.x - px0, px_rt.y - py0)
+                if err > max_err:
+                    max_err = float(err)
+            return max_err
+
+        missed = target_mask & ~(drawn > 0)
+        comp_count, labels, stats, _ = cv2.connectedComponentsWithStats(missed.astype(np.uint8), 8)
+        tgt_comp_count, tgt_labels, _tgt_stats, _ = cv2.connectedComponentsWithStats(target_mask.astype(np.uint8), 8)
+        min_component_area_px = max(2, int(round((pen_radius_px * 0.5) ** 2)))
+        component_debug: list[dict[str, Any]] = []
+        parity_rows: list[dict[str, Any]] = []
+        component_best_candidate: dict[int, dict[str, Any]] = {}
+        candidates_generated = 0
+        accepted = 0
+        rejected = 0
+        thin_candidates_tried = 0
+        thin_candidates_accepted = 0
+        thin_candidates_rejected_overflow = 0
+        thin_candidate_decisions: list[dict[str, Any]] = []
+        rejection_reasons: dict[str, int] = {}
+        added_paths = 0
+        accepted_thin_mask = np.zeros((h, w), dtype=np.uint8)
+        rejected_thin_mask = np.zeros((h, w), dtype=np.uint8)
+        comp_ids = list(range(1, int(comp_count)))
+        comp_ids.sort(key=lambda idx: int(stats[idx, cv2.CC_STAT_AREA]), reverse=True)
+        comp_ids = comp_ids[:30]
+
+        def _split_candidate_segments(candidate: Toolpath, source_component_id: int, target_component_id: int | None) -> list[Toolpath]:
+            if len(candidate.points) != 2:
+                return []
+            p0, p1 = candidate.points
+            total = math.hypot(p1.x - p0.x, p1.y - p0.y)
+            if total <= max(0.4, line_width_mm * 1.4):
+                return []
+            seg_len = max(0.2, line_width_mm * 1.0)
+            n = min(4, max(2, int(math.ceil(total / seg_len))))
+            out: list[Toolpath] = []
+            for i in range(n):
+                t0 = i / n
+                t1 = (i + 1) / n
+                a = Point(p0.x + (p1.x - p0.x) * t0, p0.y + (p1.y - p0.y) * t0)
+                b = Point(p0.x + (p1.x - p0.x) * t1, p0.y + (p1.y - p0.y) * t1)
+                seg = clone_toolpath(
+                    candidate,
+                    points=[a, b],
+                    metadata={
+                        **candidate.metadata,
+                        "coverage_backfill_strategy": "split_centerline_segment",
+                        "source_component_id": int(source_component_id),
+                        "target_component_id": int(target_component_id) if target_component_id is not None else None,
+                        "segment_index": int(i),
+                    },
+                )
+                if segment_length(seg.points) >= max(0.04, line_width_mm * 0.12):
+                    out.append(seg)
+            return out
+        for comp_id in comp_ids:
+            if added_paths >= max_added_paths:
+                break
+            area_px = int(stats[comp_id, cv2.CC_STAT_AREA])
+            x = int(stats[comp_id, cv2.CC_STAT_LEFT])
+            y = int(stats[comp_id, cv2.CC_STAT_TOP])
+            ww = int(stats[comp_id, cv2.CC_STAT_WIDTH])
+            hh = int(stats[comp_id, cv2.CC_STAT_HEIGHT])
+            width_px_est = float(area_px) / max(1.0, float(max(ww, hh)))
+            aspect = float(max(ww, hh)) / max(1.0, float(min(ww, hh)))
+            centroid_x = float(np.mean(np.nonzero(labels == comp_id)[1])) if area_px > 0 else float(x + ww * 0.5)
+            centroid_y = float(np.mean(np.nonzero(labels == comp_id)[0])) if area_px > 0 else float(y + hh * 0.5)
+            dist_max = float(np.max(cv2.distanceTransform((labels == comp_id).astype(np.uint8), cv2.DIST_L2, 3))) if area_px > 0 else 0.0
+            thin_threshold_px = max(2.0, pen_radius_px * 1.25)
+            is_thin_component = bool(width_px_est <= thin_threshold_px or aspect >= 2.2 or area_px < min_component_area_px)
+            if width_px_est <= thin_threshold_px or aspect >= 2.2:
+                strategy = "thin_detail_centerline"
+            elif min(ww, hh) >= int(round(max(3.0, pen_radius_px * 1.8))):
+                strategy = "local_short_hatch"
+            else:
+                strategy = "tiny_component_single_stroke"
+            component_mask = labels == comp_id
+            component_candidates: list[Toolpath] = []
+            target_component_id: int | None = None
+            cx_i = int(round(centroid_x))
+            cy_i = int(round(centroid_y))
+            if 0 <= cx_i < w and 0 <= cy_i < h:
+                tid = int(tgt_labels[cy_i, cx_i])
+                if tid > 0:
+                    target_component_id = tid
+            horizontal = ww >= hh
+            component_candidates.extend(self._build_component_run_candidates(
+                component_mask,
+                source_to_current_matrix=source_to_current,
+                line_width_mm=line_width_mm,
+                pen_radius_px=pen_radius_px,
+                component_id=comp_id,
+                horizontal=horizontal,
+                max_candidates=8 if strategy != "local_short_hatch" else 6,
+                thin_mode=(strategy == "thin_detail_centerline"),
+            ))
+            medial_primary = self._build_component_medial_polyline_candidate(
+                component_mask,
+                source_to_current_matrix=source_to_current,
+                line_width_mm=line_width_mm,
+                component_id=comp_id,
+                horizontal=horizontal,
+                pen_radius_px=pen_radius_px,
+            )
+            if medial_primary is not None:
+                component_candidates.append(medial_primary)
+            if aspect < 1.8:
+                medial_alt = self._build_component_medial_polyline_candidate(
+                    component_mask,
+                    source_to_current_matrix=source_to_current,
+                    line_width_mm=line_width_mm,
+                    component_id=comp_id,
+                    horizontal=not horizontal,
+                    pen_radius_px=pen_radius_px,
+                )
+                if medial_alt is not None:
+                    component_candidates.append(medial_alt)
+            primary = self._build_component_centerline_candidate(
+                component_mask,
+                source_to_current_matrix=source_to_current,
+                line_width_mm=line_width_mm,
+                pen_radius_px=pen_radius_px,
+                component_id=comp_id,
+                strategy=strategy,
+            )
+            if primary is not None:
+                component_candidates.append(primary)
+            if strategy == "thin_detail_centerline" and aspect >= 2.2:
+                fullspan = self._build_component_fullspan_passage_candidate(
+                    component_mask,
+                    source_to_current_matrix=source_to_current,
+                    line_width_mm=line_width_mm,
+                    component_id=comp_id,
+                )
+                if fullspan is not None:
+                    component_candidates.append(fullspan)
+            if strategy == "thin_detail_centerline":
+                component_candidates.extend(
+                    self._build_component_angle_run_candidates(
+                        component_mask,
+                        source_to_current_matrix=source_to_current,
+                        line_width_mm=line_width_mm,
+                        component_id=comp_id,
+                    )
+                )
+            # Generate candidates from local target component, not only missed mask.
+            if target_component_id is not None:
+                target_component_mask = tgt_labels == target_component_id
+                tc_center = self._build_component_centerline_candidate(
+                    target_component_mask,
+                    source_to_current_matrix=source_to_current,
+                    line_width_mm=line_width_mm,
+                    pen_radius_px=pen_radius_px,
+                    component_id=comp_id,
+                    strategy="target_component_centerline",
+                )
+                if tc_center is not None:
+                    tc_center.metadata["source_component_id"] = int(comp_id)
+                    tc_center.metadata["target_component_id"] = int(target_component_id)
+                    tc_center.metadata["coverage_backfill_strategy"] = "target_component_centerline"
+                    component_candidates.append(tc_center)
+            if area_px <= int(round(max(3.0, pen_radius_px * pen_radius_px * 1.5))):
+                dot = self._build_component_tiny_dot_candidate(
+                    component_mask,
+                    source_to_current_matrix=source_to_current,
+                    component_id=comp_id,
+                    line_width_mm=line_width_mm,
+                )
+                if dot is not None:
+                    component_candidates.append(dot)
+
+            # Candidate variants to reduce cap-induced overdraw.
+            variant_candidates: list[Toolpath] = []
+            for cand in component_candidates:
+                if len(cand.points) != 2:
+                    continue
+                p0, p1 = cand.points[0], cand.points[1]
+                dx = p1.x - p0.x
+                dy = p1.y - p0.y
+                length = math.hypot(dx, dy)
+                if length <= 1e-9:
+                    continue
+                ux = dx / length
+                uy = dy / length
+                for frac in (1.0,):
+                    for trim_factor in (0.0,):
+                        trim_mm = (line_width_mm * 0.5) * trim_factor
+                        target_len = max(0.02, length * frac - 2.0 * trim_mm)
+                        if target_len >= length - 1e-6:
+                            continue
+                        cxm = (p0.x + p1.x) * 0.5
+                        cym = (p0.y + p1.y) * 0.5
+                        hx = ux * (target_len * 0.5)
+                        hy = uy * (target_len * 0.5)
+                        v = clone_toolpath(
+                            cand,
+                            points=[Point(cxm - hx, cym - hy), Point(cxm + hx, cym + hy)],
+                            metadata={**cand.metadata, "variant_frac": frac, "variant_trim_factor": trim_factor},
+                        )
+                        if segment_length(v.points) >= max(0.02, line_width_mm * 0.05):
+                            variant_candidates.append(v)
+            component_candidates.extend(variant_candidates)
+            split_segments: list[Toolpath] = []
+            for cand in component_candidates:
+                split_segments.extend(_split_candidate_segments(cand, int(comp_id), target_component_id))
+            component_candidates.extend(split_segments)
+            if strategy == "local_short_hatch" and primary is not None and added_paths + len(component_candidates) < max_added_paths:
+                p0, p1 = primary.points[0], primary.points[-1]
+                dx = p1.x - p0.x
+                dy = p1.y - p0.y
+                length = math.hypot(dx, dy)
+                if length > 1e-9:
+                    nx = -dy / length
+                    ny = dx / length
+                    offset_mm = max(line_width_mm * 0.45, 0.1)
+                    shifted = Toolpath(
+                        points=[
+                            Point(p0.x + nx * offset_mm, p0.y + ny * offset_mm),
+                            Point(p1.x + nx * offset_mm, p1.y + ny * offset_mm),
+                        ],
+                        kind="coverage_offset_line",
+                        closed=False,
+                        source="coverage_backfill_component",
+                        metadata={
+                            **primary.metadata,
+                            "coverage_backfill_strategy": "local_short_hatch",
+                        },
+                    )
+                    if segment_length(shifted.points) >= max(0.04, line_width_mm * 0.15):
+                        component_candidates.append(shifted)
+
+            candidates_generated += len(component_candidates)
+            comp_diag = {
+                "component_id": int(comp_id),
+                "area_px": area_px,
+                "bbox_px": [x, y, ww, hh],
+                "centroid_px": [centroid_x, centroid_y],
+                "estimated_width_px": width_px_est,
+                "aspect_ratio": aspect,
+                "distance_transform_max_px": dist_max,
+                "candidate_strategy": strategy,
+                "candidate_count": len(component_candidates),
+            }
+            component_debug.append(comp_diag)
+            accepted_this_component = 0
+            eval_rows: list[dict[str, Any]] = []
+            for candidate in component_candidates:
+                trial = current_paths + [candidate]
+                trial_metrics = compute_toolpath_mask_coverage_metrics(
+                    trial,
+                    mask=mask,
+                    current_to_source_matrix=current_to_source,
+                    pen_radius_mm=line_width_mm * 0.5,
+                    sample_step_mm=max(0.01, min(line_width_mm * 0.35, 0.05)),
+                    include_kinds=include_kinds,
+                )
+                if trial_metrics is None:
+                    rejected += 1
+                    rejection_reasons["candidate_invalid_geometry"] = int(rejection_reasons.get("candidate_invalid_geometry", 0)) + 1
+                    continue
+                delta_penalized = trial_metrics.penalized_coverage_percent - current_metrics.penalized_coverage_percent
+                delta_covered = trial_metrics.covered_inside_mask_px - current_metrics.covered_inside_mask_px
+                delta_overdraw = trial_metrics.overdraw_outside_mask_px - current_metrics.overdraw_outside_mask_px
+                oracle_mask = _rasterize_pixel_oracle(candidate) > 0
+                base_drawn = drawn > 0
+                oracle_new = oracle_mask & ~base_drawn
+                oracle_delta_cov = int(np.count_nonzero(oracle_new & target_mask))
+                oracle_delta_over = int(np.count_nonzero(oracle_new & ~target_mask))
+                rt_error = _candidate_roundtrip_error(candidate)
+                effective_delta_overdraw = int(delta_overdraw)
+                path_len_px = 0.0
+                accept = False
+                reason = "candidate_no_penalized_improvement"
+                if is_thin_component:
+                    thin_candidates_tried += 1
+                    candidate_mask = _rasterize_single_candidate(candidate) > 0
+                    candidate_overdraw = candidate_mask & ~target_mask
+                    boundary_overdraw_px = int(np.count_nonzero(candidate_overdraw & target_boundary_band))
+                    effective_delta_overdraw = max(0, int(delta_overdraw) - boundary_overdraw_px)
+                    path_len_px = float(np.count_nonzero(candidate_mask))
+                    net_gain_px = int(delta_covered - effective_delta_overdraw)
+                    accept = bool(net_gain_px > 0 and delta_penalized > 1e-9)
+                    if accept:
+                        reason = "net_positive"
+                    else:
+                        reason = "overdraw_exceeds_coverage" if net_gain_px <= 0 else "no_penalized_gain"
+                    thin_candidate_decisions.append(
+                        {
+                            "component_id": int(comp_id),
+                            "candidate_type": str(candidate.metadata.get("coverage_backfill_strategy", candidate.metadata.get("coverage_backfill_candidate_type", "unknown"))),
+                            "source_component_id": int(candidate.metadata.get("source_component_id", comp_id)),
+                            "target_component_id": candidate.metadata.get("target_component_id"),
+                            "trim_px": float(candidate.metadata.get("trim_px", 0.0)),
+                            "segment_index": candidate.metadata.get("segment_index"),
+                            "accepted": bool(accept),
+                            "delta_covered_inside_mask_px": int(delta_covered),
+                            "delta_overdraw_outside_mask_px": int(delta_overdraw),
+                            "net_gain_px": int(net_gain_px),
+                            "delta_penalized_coverage_percent": float(delta_penalized),
+                            "path_length_px": float(path_len_px),
+                            "reason": reason,
+                            "bbox_px": [x, y, ww, hh],
+                        }
+                    )
+                    eval_rows.append(
+                        {
+                            "candidate": candidate,
+                            "accept": accept,
+                            "delta_penalized": float(delta_penalized),
+                            "delta_covered": int(delta_covered),
+                            "delta_overdraw": int(delta_overdraw),
+                            "effective_delta_overdraw": int(effective_delta_overdraw),
+                            "net_gain_px": int(net_gain_px),
+                            "path_len_px": float(path_len_px),
+                            "mask": candidate_mask,
+                            "reason": reason,
+                        }
+                    )
+                    parity = {
+                        "component_id": int(comp_id),
+                        "candidate_type": str(candidate.metadata.get("coverage_backfill_strategy", candidate.metadata.get("coverage_backfill_candidate_type", "unknown"))),
+                        "pixel_oracle_delta_covered": int(oracle_delta_cov),
+                        "pixel_oracle_delta_overdraw": int(oracle_delta_over),
+                        "pixel_oracle_net_gain": int(oracle_delta_cov - oracle_delta_over),
+                        "mm_candidate_delta_covered": int(delta_covered),
+                        "mm_candidate_delta_overdraw": int(delta_overdraw),
+                        "mm_candidate_net_gain": int(delta_covered - delta_overdraw),
+                        "difference_covered": int(delta_covered - oracle_delta_cov),
+                        "difference_overdraw": int(delta_overdraw - oracle_delta_over),
+                        "roundtrip_error_px": float(rt_error),
+                    }
+                    parity_rows.append(parity)
+                    prev_best = component_best_candidate.get(int(comp_id))
+                    if prev_best is None or int(parity["pixel_oracle_net_gain"]) > int(prev_best.get("pixel_oracle_net_gain", -10**9)):
+                        component_best_candidate[int(comp_id)] = {
+                            **parity,
+                            "bbox_px": [x, y, ww, hh],
+                            "candidate_pixel_points": candidate.metadata.get("candidate_pixel_points", []),
+                            "candidate_points_mm": [[float(p.x), float(p.y)] for p in candidate.points],
+                            "accepted": bool(accept),
+                            "rejection_reason": reason,
+                        }
+                else:
+                    accept = (delta_penalized > 1e-9 and delta_covered > 0)
+                    eval_rows.append(
+                        {
+                            "candidate": candidate,
+                            "accept": accept,
+                            "delta_penalized": float(delta_penalized),
+                            "delta_covered": int(delta_covered),
+                            "delta_overdraw": int(delta_overdraw),
+                            "effective_delta_overdraw": int(delta_overdraw),
+                            "net_gain_px": int(delta_covered - delta_overdraw),
+                            "path_len_px": 0.0,
+                            "mask": None,
+                            "reason": "net_positive" if accept else "candidate_no_penalized_improvement",
+                        }
+                    )
+
+            ranked = sorted(
+                eval_rows,
+                key=lambda row: (
+                    int(row["net_gain_px"]),
+                    float(row["delta_penalized"]),
+                    int(row["delta_covered"]),
+                    -int(row["effective_delta_overdraw"]),
+                    -float(row["path_len_px"]),
+                ),
+                reverse=True,
+            )
+            accepted_candidates_for_component = 0
+            for row in ranked:
+                if added_paths >= max_added_paths or not bool(row["accept"]):
+                    if is_thin_component and row["mask"] is not None:
+                        rejected_thin_mask[row["mask"]] = 255
+                    rejected += 1
+                    if is_thin_component and str(row["reason"]) == "overdraw_exceeds_coverage":
+                        thin_candidates_rejected_overflow += 1
+                        rejection_reasons["thin_candidate_overflow_exceeds_coverage"] = int(rejection_reasons.get("thin_candidate_overflow_exceeds_coverage", 0)) + 1
+                    else:
+                        rejection_reasons["candidate_no_penalized_improvement"] = int(rejection_reasons.get("candidate_no_penalized_improvement", 0)) + 1
+                    continue
+                candidate = row["candidate"]
+                trial = current_paths + [candidate]
+                trial_metrics = compute_toolpath_mask_coverage_metrics(
+                    trial,
+                    mask=mask,
+                    current_to_source_matrix=current_to_source,
+                    pen_radius_mm=line_width_mm * 0.5,
+                    sample_step_mm=max(0.01, min(line_width_mm * 0.35, 0.05)),
+                    include_kinds=include_kinds,
+                )
+                if trial_metrics is None:
+                    rejected += 1
+                    rejection_reasons["candidate_invalid_geometry"] = int(rejection_reasons.get("candidate_invalid_geometry", 0)) + 1
+                    continue
+                re_delta_pen = trial_metrics.penalized_coverage_percent - current_metrics.penalized_coverage_percent
+                re_delta_cov = trial_metrics.covered_inside_mask_px - current_metrics.covered_inside_mask_px
+                re_delta_over = trial_metrics.overdraw_outside_mask_px - current_metrics.overdraw_outside_mask_px
+                if is_thin_component:
+                    re_mask = _rasterize_single_candidate(candidate) > 0
+                    re_over = re_mask & ~target_mask
+                    re_boundary = int(np.count_nonzero(re_over & target_boundary_band))
+                    re_eff_over = max(0, int(re_delta_over) - re_boundary)
+                    if not (re_delta_cov > re_eff_over and re_delta_pen > 1e-9):
+                        rejected += 1
+                        rejected_thin_mask[re_mask] = 255
+                        thin_candidates_rejected_overflow += 1
+                        rejection_reasons["thin_candidate_overflow_exceeds_coverage"] = int(rejection_reasons.get("thin_candidate_overflow_exceeds_coverage", 0)) + 1
+                        continue
+                    accepted_thin_mask[re_mask] = 255
+                    thin_candidates_accepted += 1
+                else:
+                    if not (re_delta_pen > 1e-9 and re_delta_cov > 0):
+                        rejected += 1
+                        rejection_reasons["candidate_no_penalized_improvement"] = int(rejection_reasons.get("candidate_no_penalized_improvement", 0)) + 1
+                        continue
+                current_paths = trial
+                current_metrics = trial_metrics
+                if current_metrics.penalized_coverage_percent > (best_metrics.penalized_coverage_percent + 1e-9):
+                    best_paths = list(current_paths)
+                    best_metrics = current_metrics
+                accepted += 1
+                accepted_this_component += 1
+                accepted_candidates_for_component += 1
+                added_paths += 1
+                if current_metrics.penalized_coverage_percent >= target_penalized_percent:
+                    break
+            if is_thin_component and accepted_candidates_for_component == 0 and len(ranked) >= 2 and added_paths + 2 <= max_added_paths:
+                top_group = [row for row in ranked if row.get("candidate") is not None][:4]
+                best_group_trial = None
+                best_group_metrics = None
+                for i in range(len(top_group)):
+                    for j in range(i + 1, len(top_group)):
+                        c0 = top_group[i]["candidate"]
+                        c1 = top_group[j]["candidate"]
+                        trial = current_paths + [c0, c1]
+                        trial_metrics = compute_toolpath_mask_coverage_metrics(
+                            trial,
+                            mask=mask,
+                            current_to_source_matrix=current_to_source,
+                            pen_radius_mm=line_width_mm * 0.5,
+                            sample_step_mm=max(0.01, min(line_width_mm * 0.35, 0.05)),
+                            include_kinds=include_kinds,
+                        )
+                        if trial_metrics is None:
+                            continue
+                        d_cov = trial_metrics.covered_inside_mask_px - current_metrics.covered_inside_mask_px
+                        d_over = trial_metrics.overdraw_outside_mask_px - current_metrics.overdraw_outside_mask_px
+                        d_pen = trial_metrics.penalized_coverage_percent - current_metrics.penalized_coverage_percent
+                        if d_cov > d_over and d_pen > 1e-9:
+                            if best_group_metrics is None or trial_metrics.penalized_coverage_percent > best_group_metrics.penalized_coverage_percent:
+                                best_group_trial = trial
+                                best_group_metrics = trial_metrics
+                if best_group_trial is not None and best_group_metrics is not None:
+                    current_paths = best_group_trial
+                    current_metrics = best_group_metrics
+                    accepted += 2
+                    accepted_this_component += 2
+                    added_paths += 2
+                    if current_metrics.penalized_coverage_percent > (best_metrics.penalized_coverage_percent + 1e-9):
+                        best_paths = list(current_paths)
+                        best_metrics = current_metrics
+            if current_metrics.penalized_coverage_percent >= target_penalized_percent:
+                break
+
+        # Prune low-value repair strokes while preserving best score.
+        prunable_idx = [i for i, p in enumerate(current_paths) if bool(p.metadata.get("coverage_backfill_component", False))]
+        for idx in reversed(prunable_idx):
+            if idx >= len(current_paths):
+                continue
+            trial = current_paths[:idx] + current_paths[idx + 1:]
+            trial_metrics = compute_toolpath_mask_coverage_metrics(
+                trial,
+                mask=mask,
+                current_to_source_matrix=current_to_source,
+                pen_radius_mm=line_width_mm * 0.5,
+                sample_step_mm=max(0.01, min(line_width_mm * 0.35, 0.05)),
+                include_kinds=include_kinds,
+            )
+            if trial_metrics is None:
+                continue
+            if trial_metrics.penalized_coverage_percent >= current_metrics.penalized_coverage_percent:
+                current_paths = trial
+                current_metrics = trial_metrics
+                if current_metrics.penalized_coverage_percent > (best_metrics.penalized_coverage_percent + 1e-9):
+                    best_paths = list(current_paths)
+                    best_metrics = current_metrics
+
+        if debug is not None:
+            debug["coverage_backfill_component_count"] = int(accepted)
+            debug["coverage_backfill_component_candidates_generated"] = int(candidates_generated)
+            debug["coverage_backfill_component_rejected"] = int(rejected)
+            debug["coverage_backfill_component_rejection_reasons"] = rejection_reasons
+            debug["thin_region_centerline_candidates_tried"] = int(thin_candidates_tried)
+            debug["thin_region_centerline_candidates_accepted"] = int(thin_candidates_accepted)
+            debug["thin_region_centerline_candidates_rejected_overflow"] = int(thin_candidates_rejected_overflow)
+            debug["thin_region_candidate_decisions_top"] = sorted(
+                thin_candidate_decisions,
+                key=lambda item: float(item.get("delta_covered_inside_mask_px", 0.0)) - float(item.get("effective_delta_overdraw_outside_mask_px", 0.0)),
+                reverse=True,
+            )[:100]
+            debug["missed_component_count"] = max(0, int(comp_count) - 1)
+            debug["missed_components"] = component_debug
+            debug["missed_components_top_by_area"] = sorted(component_debug, key=lambda item: int(item.get("area_px", 0)), reverse=True)[:12]
+            debug["coverage_backfill_component_final_penalized"] = float(best_metrics.penalized_coverage_percent)
+            debug["candidate_oracle_mm_parity_top"] = sorted(
+                parity_rows,
+                key=lambda item: abs(float(item.get("difference_covered", 0))) + abs(float(item.get("difference_overdraw", 0))),
+                reverse=True,
+            )[:120]
+            debug["max_roundtrip_error_px"] = float(max((row.get("roundtrip_error_px", 0.0) for row in parity_rows), default=0.0))
+            if os.getenv("WRITE_COVERAGE_DEBUG_ARTIFACTS", "0") == "1":
+                out_dir = Path(tempfile.gettempdir()) / "golfball_plotter_test_artifacts" / "carolin_coverage"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(out_dir / "thin_candidates_accepted_mask.png"), accepted_thin_mask)
+                cv2.imwrite(str(out_dir / "thin_candidates_rejected_mask.png"), rejected_thin_mask)
+                overlay = np.zeros((h, w, 3), dtype=np.uint8)
+                overlay[target_mask] = (50, 50, 50)
+                overlay[rejected_thin_mask > 0] = (0, 0, 255)
+                overlay[accepted_thin_mask > 0] = (0, 255, 0)
+                cv2.imwrite(str(out_dir / "thin_candidates_overlay.png"), overlay)
+                with open(out_dir / "thin_candidate_decisions.json", "w", encoding="utf-8") as fp:
+                    json.dump(thin_candidate_decisions, fp, indent=2)
+                with open(out_dir / "candidate_oracle_mm_parity.json", "w", encoding="utf-8") as fp:
+                    json.dump(parity_rows, fp, indent=2)
+                largest = sorted(component_debug, key=lambda item: int(item.get("area_px", 0)), reverse=True)[:10]
+                narrow = sorted(component_debug, key=lambda item: float(item.get("aspect_ratio", 0.0)), reverse=True)[:10]
+                comp_ids_dump = []
+                for ent in largest + narrow:
+                    cid = int(ent.get("component_id", -1))
+                    if cid > 0 and cid not in comp_ids_dump:
+                        comp_ids_dump.append(cid)
+                for cid in comp_ids_dump[:20]:
+                    info = component_best_candidate.get(cid)
+                    if not info:
+                        continue
+                    bx, by, bw, bh = [int(v) for v in info.get("bbox_px", [0, 0, w, h])]
+                    pad = 8
+                    x0 = max(0, bx - pad)
+                    y0 = max(0, by - pad)
+                    x1 = min(w, bx + bw + pad)
+                    y1 = min(h, by + bh + pad)
+                    crop_target = (target_mask[y0:y1, x0:x1].astype(np.uint8) * 255)
+                    crop_missed = (missed[y0:y1, x0:x1].astype(np.uint8) * 255)
+                    pts = info.get("candidate_pixel_points", [])
+                    center = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
+                    if isinstance(pts, list) and len(pts) >= 1:
+                        pp = []
+                        for pair in pts:
+                            if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                                pp.append((int(round(float(pair[0]) - x0)), int(round(float(pair[1]) - y0))))
+                        if len(pp) == 1:
+                            cv2.circle(center, pp[0], 1, (0, 255, 255), -1)
+                        elif len(pp) >= 2:
+                            cv2.polylines(center, [np.asarray(pp, dtype=np.int32).reshape(-1, 1, 2)], False, (0, 255, 255), 1, lineType=cv2.LINE_8)
+                    oracle_mask_full = np.zeros((h, w), dtype=np.uint8)
+                    dummy = Toolpath(points=[], kind="coverage_centerline", metadata={"candidate_pixel_points": pts})
+                    oracle_mask_full = _rasterize_pixel_oracle(dummy)
+                    crop_oracle = oracle_mask_full[y0:y1, x0:x1]
+                    overlay_crop = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
+                    tmask = target_mask[y0:y1, x0:x1]
+                    dmask = drawn[y0:y1, x0:x1] > 0
+                    o_new = (crop_oracle > 0) & ~dmask
+                    cov = o_new & tmask
+                    over = o_new & ~tmask
+                    still = tmask & ~(dmask | (crop_oracle > 0))
+                    overlay_crop[cov] = (0, 255, 0)
+                    overlay_crop[over] = (255, 0, 0)
+                    overlay_crop[still] = (0, 0, 255)
+                    boundary_crop = cv2.morphologyEx((tmask.astype(np.uint8) * 255), cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)) > 0
+                    overlay_crop[boundary_crop] = (255, 255, 255)
+                    ymask = center[:, :, 1] > 0
+                    overlay_crop[ymask] = (0, 255, 255)
+                    cv2.imwrite(str(out_dir / f"component_{cid}_target_mask_crop.png"), crop_target)
+                    cv2.imwrite(str(out_dir / f"component_{cid}_missed_crop.png"), crop_missed)
+                    cv2.imwrite(str(out_dir / f"component_{cid}_candidate_centerline_crop.png"), center)
+                    cv2.imwrite(str(out_dir / f"component_{cid}_candidate_footprint_crop.png"), crop_oracle)
+                    cv2.imwrite(str(out_dir / f"component_{cid}_candidate_overlay_crop.png"), overlay_crop)
+        return best_paths
+
+    def _prune_penalized_negative_paths(
+        self,
+        paths: list[Toolpath],
+        *,
+        line_width_mm: float,
+        connector_validation: dict[str, Any] | None,
+        debug: Optional[dict[str, Any]] = None,
+        max_iterations: int = 120,
+    ) -> list[Toolpath]:
+        if not connector_validation:
+            return paths
+        mask = connector_validation.get("mask")
+        matrix = connector_validation.get("current_to_source_matrix")
+        if mask is None or not isinstance(matrix, (tuple, list)) or len(matrix) != 6:
+            return paths
+        include_kinds = {
+            "coverage_centerline",
+            "coverage_offset_line",
+            "coverage_rectilinear",
+            "coverage_tiny_mark",
+            "coverage_contour",
+            "coverage_connector",
+            "outline_cleanup",
+        }
+        removable_kinds = {"coverage_connector", "coverage_offset_line", "coverage_centerline"}
+        current = list(paths)
+        removed = 0
+        metrics = compute_toolpath_mask_coverage_metrics(
+            current,
+            mask=mask,
+            current_to_source_matrix=tuple(float(value) for value in matrix),
+            pen_radius_mm=line_width_mm * 0.5,
+            sample_step_mm=max(0.01, min(line_width_mm * 0.35, 0.05)),
+            include_kinds=include_kinds,
+        )
+        if metrics is None:
+            return paths
+        iteration = 0
+        while iteration < max_iterations:
+            iteration += 1
+            best_idx = -1
+            best_gain = 0.0
+            for idx, path in enumerate(current):
+                if path.kind not in removable_kinds:
+                    continue
+                if path.kind == "coverage_centerline" and not bool(path.metadata.get("coverage_backfill_component", False)):
+                    continue
+                trial = current[:idx] + current[idx + 1:]
+                trial_metrics = compute_toolpath_mask_coverage_metrics(
+                    trial,
+                    mask=mask,
+                    current_to_source_matrix=tuple(float(value) for value in matrix),
+                    pen_radius_mm=line_width_mm * 0.5,
+                    sample_step_mm=max(0.01, min(line_width_mm * 0.35, 0.05)),
+                    include_kinds=include_kinds,
+                )
+                if trial_metrics is None:
+                    continue
+                gain = trial_metrics.penalized_coverage_percent - metrics.penalized_coverage_percent
+                if gain > best_gain + 1e-9:
+                    best_gain = gain
+                    best_idx = idx
+            if best_idx < 0:
+                break
+            current = current[:best_idx] + current[best_idx + 1:]
+            removed += 1
+            metrics = compute_toolpath_mask_coverage_metrics(
+                current,
+                mask=mask,
+                current_to_source_matrix=tuple(float(value) for value in matrix),
+                pen_radius_mm=line_width_mm * 0.5,
+                sample_step_mm=max(0.01, min(line_width_mm * 0.35, 0.05)),
+                include_kinds=include_kinds,
+            )
+            if metrics is None:
+                break
+        if debug is not None:
+            debug["penalized_pruned_path_count"] = int(removed)
+            if metrics is not None:
+                debug["penalized_pruned_final_score"] = float(metrics.penalized_coverage_percent)
+        return current
 
     def _classify_fill_region(
         self,
@@ -6240,9 +9464,28 @@ class SlicerService:
             reasons.append("narrow_curved_stroke")
         if total_hatch_length <= spacing_mm * 2.0 and avg_segment_length <= spacing_mm * 1.5:
             reasons.append("mostly_connector_fragments")
+        if connector_ratio >= 0.45:
+            reasons.append("connector_dominates_hatch")
 
         mode = "rectilinear"
-        if reasons:
+        single_stroke_reasons: list[str] = []
+        if approx_local_width <= line_width_mm * 1.5:
+            single_stroke_reasons.append("width_lte_1p5x_pen")
+        elif approx_local_width <= line_width_mm * 2.0 and (row_count <= 2 or short_ratio >= 0.6):
+            single_stroke_reasons.append("width_lte_2x_pen_with_poor_rows")
+        if row_count <= 1:
+            single_stroke_reasons.append("only_one_useful_hatch_row")
+        if short_ratio >= 0.8:
+            single_stroke_reasons.append("mostly_tiny_hatch_fragments")
+        if connector_ratio >= 0.6:
+            single_stroke_reasons.append("connector_length_too_high")
+        if direction_changes >= 1 and approx_local_width <= line_width_mm * 2.5:
+            single_stroke_reasons.append("thin_curved_script_like_cell")
+
+        if single_stroke_reasons:
+            mode = "single_stroke"
+            reasons = list(dict.fromkeys(single_stroke_reasons + reasons))
+        elif reasons:
             mode = "detail_contour"
         return InfillCellAdaptiveDecision(
             mode=mode,
@@ -7532,9 +10775,12 @@ class SlicerService:
             "total_cells": 0,
             "rectilinear_cells": 0,
             "detail_contour_cells": 0,
+            "single_stroke_cells": 0,
             "narrow_cells_detected": 0,
             "switched_too_few_rows": 0,
             "switched_connector_ratio": 0,
+            "switched_single_stroke_width": 0,
+            "switched_single_stroke_hatch_quality": 0,
         }
         for polygon_index, polygon in enumerate(normalize_geometry(rotated)):
             component_id = f"component_{polygon_index:03d}"
@@ -7592,6 +10838,12 @@ class SlicerService:
                             adaptive_counts["switched_too_few_rows"] += 1
                         if "connector_dominates_hatch" in decision.reasons or "mostly_connector_fragments" in decision.reasons:
                             adaptive_counts["switched_connector_ratio"] += 1
+                    elif decision.mode == "single_stroke":
+                        adaptive_counts["single_stroke_cells"] += 1
+                        if any(reason in decision.reasons for reason in ("width_lte_1p5x_pen", "width_lte_2x_pen_with_poor_rows")):
+                            adaptive_counts["switched_single_stroke_width"] += 1
+                        if any(reason in decision.reasons for reason in ("only_one_useful_hatch_row", "mostly_tiny_hatch_fragments", "connector_length_too_high", "thin_curved_script_like_cell")):
+                            adaptive_counts["switched_single_stroke_hatch_quality"] += 1
                     else:
                         adaptive_counts["rectilinear_cells"] += 1
                 seed_plan = InfillCellPlan(
@@ -7616,7 +10868,45 @@ class SlicerService:
 
         for cell_order, cell_plan in enumerate(ordered_cell_plans, start=1):
             decision = adaptive_cell_decisions.get(cell_plan.cell_id) if adaptive_detail_cells else None
-            if decision is not None and decision.mode == "detail_contour":
+            if decision is not None and decision.mode == "single_stroke":
+                cell_region = adaptive_cell_regions.get(cell_plan.cell_id)
+                cell_toolpaths = self._generate_centerline_fallback(
+                    cell_region,
+                    angle_deg=angle_deg,
+                    min_segment_length_mm=max(0.01, min_segment_length_mm),
+                    tolerance_mm=tolerance_mm,
+                    kind=kind,
+                )
+                if not cell_toolpaths:
+                    cell_toolpaths = self._generate_tiny_dot_or_short_stroke(
+                        cell_region,
+                        line_width_mm=line_width_mm,
+                        tolerance_mm=tolerance_mm,
+                        angle_deg=angle_deg,
+                        kind=kind,
+                    )
+                cell_toolpaths = self._clip_toolpaths_to_region(
+                    cell_toolpaths,
+                    region=cell_region,
+                    tolerance_mm=tolerance_mm,
+                    kind=kind,
+                )
+                cell_toolpaths = [
+                    clone_toolpath(
+                        path,
+                        kind=kind,
+                        metadata={
+                            **path.metadata,
+                            "fill_mode": "single_stroke_cell",
+                            "fill_mode_reason": ",".join(decision.reasons) if decision.reasons else "adaptive_single_stroke",
+                            "adaptive_cell_metrics": decision.metrics,
+                            "small_detail_fill_style": path.metadata.get("small_detail_fill_style", "single_stroke_detail"),
+                        },
+                    )
+                    for path in cell_toolpaths
+                ]
+                cell_stats = {"accepted_connectors": 0, "pen_lifts": max(0, len(cell_toolpaths) - 1)}
+            elif decision is not None and decision.mode == "detail_contour":
                 cell_region = adaptive_cell_regions.get(cell_plan.cell_id)
                 cell_toolpaths = self._generate_small_detail_fill(
                     cell_region,
@@ -7816,6 +11106,53 @@ class SlicerService:
             return []
         return [Toolpath(points=points, kind=kind, closed=False)]
 
+    def _generate_tiny_dot_or_short_stroke(
+        self,
+        region: Any,
+        *,
+        line_width_mm: float,
+        tolerance_mm: float,
+        angle_deg: float = 0.0,
+        kind: str = "fill-infill",
+    ) -> list[Toolpath]:
+        if region is None or region.is_empty:
+            return []
+        center = region.representative_point()
+        cx = float(center.x)
+        cy = float(center.y)
+        min_x, min_y, max_x, max_y = region.bounds
+        span = max(max_x - min_x, max_y - min_y, line_width_mm)
+        candidate_angles = [angle_deg, angle_deg + 90.0, 0.0, 90.0]
+        best_line = None
+        best_length = -1.0
+        for candidate_angle in candidate_angles:
+            rad = math.radians(candidate_angle)
+            dx = math.cos(rad)
+            dy = math.sin(rad)
+            probe = LineString(
+                [
+                    (cx - dx * span * 2.0, cy - dy * span * 2.0),
+                    (cx + dx * span * 2.0, cy + dy * span * 2.0),
+                ]
+            )
+            clipped = region.intersection(probe)
+            lines = sorted(extract_lines(clipped), key=lambda line: line.length, reverse=True)
+            if lines and lines[0].length > best_length:
+                best_line = lines[0]
+                best_length = lines[0].length
+
+        if best_line is not None and best_length > 1e-6:
+            points = simplify_segment_points([Point(float(x), float(y)) for x, y in best_line.coords], tolerance_mm, False)
+            if len(points) >= 2:
+                return [Toolpath(points=points, kind=kind, closed=False, metadata={"small_detail_fill_style": "tiny_short_stroke"})]
+        dot_half = max(0.02, line_width_mm * 0.12)
+        return [Toolpath(
+            points=[Point(cx - dot_half, cy), Point(cx + dot_half, cy)],
+            kind=kind,
+            closed=False,
+            metadata={"small_detail_fill_style": "tiny_dot"},
+        )]
+
     def _generate_outline_only_fallback(
         self,
         component: Any,
@@ -7873,6 +11210,38 @@ class SlicerService:
         tiny_region = bool(metrics.areaMm2 < config.minUsableDetailAreaMm2 or metrics.maxLocalWidthMm <= config.lineWidthMm * config.singleStrokeWidthMaxFactor)
         centerline_min_segment_length_mm = max(0.01, config.lineWidthMm * (0.25 if tiny_region else 0.75))
 
+        tiny_mark_region = bool(
+            metrics.areaMm2 <= max(
+                config.lineWidthMm * config.lineWidthMm * 0.6,
+                config.lineWidthMm * config.lineWidthMm * config.tinyDotAreaFactor * 3.0,
+            )
+            and metrics.maxLocalWidthMm <= config.lineWidthMm * config.centerlineWidthMaxFactor
+        )
+        if tiny_mark_region:
+            for region in candidate_regions:
+                tiny_paths = self._generate_tiny_dot_or_short_stroke(
+                    region,
+                    line_width_mm=config.lineWidthMm,
+                    tolerance_mm=max(tolerance_mm, config.lineWidthMm * 0.2),
+                    angle_deg=angle_deg,
+                    kind=kind,
+                )
+                if not tiny_paths:
+                    continue
+                tiny_path = tiny_paths[0]
+                if len(tiny_path.points) < 2:
+                    continue
+                if not validate_thin_region_stroke(tiny_path.points, component, drawable_area, config, metrics=metrics):
+                    continue
+                tiny_path.metadata = {
+                    **tiny_path.metadata,
+                    "thin_region_mode": config.thinRegionMode,
+                    "single_stroke_source": "drawable_area" if region is drawable_area else "component",
+                    "metrics_area_mm2": metrics.areaMm2,
+                    "metrics_width_mm": metrics.maxLocalWidthMm,
+                }
+                return [tiny_path]
+
         best_toolpath: Toolpath | None = None
         best_length = -1.0
         for region in candidate_regions:
@@ -7921,9 +11290,55 @@ class SlicerService:
                 best_length = candidate_length
 
         if best_toolpath is not None:
+            # Width-aware upgrade: for regions wider than one effective pen lane,
+            # emit a small set of interior parallel strokes instead of a single one.
+            effective_coverage_mm = max(1e-6, config.lineWidthMm * 0.85)
+            desired_stroke_count = max(1, int(math.ceil(max(0.0, metrics.maxLocalWidthMm) / effective_coverage_mm)))
+            desired_stroke_count = min(3, desired_stroke_count)
+            if desired_stroke_count > 1:
+                source_region = drawable_area if drawable_area is not None and not drawable_area.is_empty else component
+                sparse = self._generate_sparse_interior_strokes(
+                    source_region,
+                    angle_deg=angle_deg,
+                    line_width_mm=config.lineWidthMm,
+                    scanline_spacing_mm=effective_coverage_mm,
+                    min_segment_length_mm=max(min_segment_length_mm, centerline_min_segment_length_mm),
+                    tolerance_mm=max(tolerance_mm, config.lineWidthMm * 0.25),
+                    max_strokes=desired_stroke_count,
+                    kind=kind,
+                )
+                sparse = self._clip_toolpaths_to_region(
+                    sparse,
+                    region=component,
+                    tolerance_mm=max(tolerance_mm, config.lineWidthMm * 0.25),
+                    kind=kind,
+                )
+                multi: list[Toolpath] = []
+                for idx, path in enumerate(sparse):
+                    if len(path.points) < 2:
+                        continue
+                    if not validate_thin_region_stroke(path.points, component, drawable_area, config, metrics=metrics):
+                        continue
+                    if segment_length(path.points) < max(min_segment_length_mm, centerline_min_segment_length_mm * 0.7):
+                        continue
+                    multi.append(clone_toolpath(
+                        path,
+                        metadata={
+                            **path.metadata,
+                            "small_detail_fill_style": "single_stroke_multi",
+                            "thin_region_mode": config.thinRegionMode,
+                            "single_stroke_source": "drawable_area" if source_region is drawable_area else "component",
+                            "metrics_area_mm2": metrics.areaMm2,
+                            "metrics_width_mm": metrics.maxLocalWidthMm,
+                            "requested_stroke_count": desired_stroke_count,
+                            "stroke_index": idx,
+                        },
+                    ))
+                if multi:
+                    return multi
             return [best_toolpath]
 
-        if config.thinRegionMode == "outlineOnly" or (config.allowOutlineOverlapForThinRegions and metrics.maxLocalWidthMm <= config.lineWidthMm * 1.15):
+        if (not tiny_region) and (config.thinRegionMode == "outlineOnly" or (config.allowOutlineOverlapForThinRegions and metrics.maxLocalWidthMm <= config.lineWidthMm * 1.15)):
             outline_paths = self._generate_outline_only_fallback(
                 component,
                 tolerance_mm=tolerance_mm,
@@ -8244,9 +11659,9 @@ class SlicerService:
         )
         pen_radius_mm = line_width_mm / 2.0
         drawable_region = _offset_geometry(polygon, -pen_radius_mm)
-        collapsed_drawable_region = drawable_region is None or drawable_region.is_empty
         if drawable_region is None or drawable_region.is_empty:
             drawable_region = _offset_geometry(polygon, -(line_width_mm * 0.25))
+        collapsed_drawable_region = drawable_region is None or drawable_region.is_empty
         metrics_region = polygon
         region_metrics = self._compute_region_metrics(
             metrics_region,
@@ -8266,8 +11681,14 @@ class SlicerService:
             debug["rows_with_multiple_intervals"] = int(debug.get("rows_with_multiple_intervals", 0)) + multi_interval_rows
             debug["local_cell_count"] = int(debug.get("local_cell_count", 0)) + max(1, multi_interval_rows)
         strategy = choose_fill_strategy(region_metrics, hybrid_config)
-        if collapsed_drawable_region and strategy != "OUTLINE_ONLY":
-            strategy = "SINGLE_STROKE_DETAIL"
+        width_pen_units = region_metrics.maxLocalWidthMm / max(line_width_mm, 1e-9)
+        coverage_class = "wide"
+        if width_pen_units < hybrid_config.singleStrokeMaxWidthFactor:
+            coverage_class = "thin"
+        elif width_pen_units < hybrid_config.narrowRegionMaxWidthFactor:
+            coverage_class = "narrow"
+        if region_metrics.areaMm2 <= max(1e-6, line_width_mm * line_width_mm * hybrid_config.tinyDotAreaFactor):
+            coverage_class = "tiny"
         if small_shape_mode == "skip" and strategy != "OUTLINE_ONLY":
             strategy = "OUTLINE_ONLY"
 
@@ -8285,6 +11706,8 @@ class SlicerService:
             }.get(strategy, strategy),
             "fill_strategy": strategy,
             "classification_reason": strategy,
+            "coverage_class": coverage_class,
+            "coverage_width_pen_units": width_pen_units,
             "region_metrics": asdict(region_metrics),
             "hybrid_config": asdict(hybrid_config),
         }
@@ -8330,6 +11753,14 @@ class SlicerService:
                     min_segment_length_mm=min_segment_length_mm,
                     tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
                 )
+            if not fill_paths:
+                fill_paths = self._generate_centerline_fallback(
+                    metrics_region,
+                    angle_deg=angle_deg,
+                    min_segment_length_mm=max(0.01, line_width_mm * 0.2),
+                    tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                    kind="fill-infill",
+                )
             if hybrid_config.optimizePathOrder and len(fill_paths) > 1:
                 fill_paths = self._order_paths_by_nearest_neighbor(fill_paths, start_point=fill_paths[0].points[0] if fill_paths[0].points else None)
             return fill_paths, region_debug, region_metrics, strategy
@@ -8353,21 +11784,42 @@ class SlicerService:
         if strategy == "CONTOUR_PARALLEL_DETAIL":
             if not hybrid_config.detailFillEnabled:
                 return [], region_debug, region_metrics, "OUTLINE_ONLY"
-            fill_paths = self._generate_contour_following_fill(
+            # Canonical coverage rule: detail regions must prioritize interior
+            # coverage lanes, not contour loops that visually resemble outlines.
+            effective_coverage_mm = max(1e-6, line_width_mm * 0.85)
+            desired_stroke_count = max(1, int(math.ceil(max(0.0, region_metrics.maxLocalWidthMm) / effective_coverage_mm)))
+            desired_stroke_count = min(4, desired_stroke_count)
+            fill_paths = self._generate_sparse_interior_strokes(
                 metrics_region,
+                angle_deg=angle_deg,
                 line_width_mm=line_width_mm,
-                scanline_spacing_mm=max(scanline_spacing_mm, line_width_mm) * (0.8 if thin_detail_overlap else 1.0),
+                scanline_spacing_mm=effective_coverage_mm,
+                min_segment_length_mm=max(min_segment_length_mm, line_width_mm * 0.25),
                 tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                max_strokes=desired_stroke_count,
                 kind="fill-infill",
             )
             if not fill_paths:
                 fill_paths = self._generate_centerline_fallback(
                     metrics_region,
                     angle_deg=angle_deg,
-                    min_segment_length_mm=min_segment_length_mm,
+                    min_segment_length_mm=max(min_segment_length_mm, line_width_mm * 0.25),
                     tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
                     kind="fill-infill",
                 )
+            # Keep contour strokes only as optional supplemental support for
+            # very wide curved regions after interior lanes already exist.
+            if region_metrics.maxLocalWidthMm >= (line_width_mm * 2.4):
+                contour_support = self._generate_contour_following_fill(
+                    metrics_region,
+                    line_width_mm=line_width_mm,
+                    scanline_spacing_mm=max(scanline_spacing_mm, line_width_mm) * (0.8 if thin_detail_overlap else 1.0),
+                    tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                    kind="fill-infill",
+                    max_loops=2,
+                )
+                if contour_support:
+                    fill_paths.extend(contour_support)
             fill_paths = [path for path in fill_paths if len(path.points) >= 2 and segment_length(path.points) >= max(line_width_mm * 0.75, min_segment_length_mm)]
             if hybrid_config.optimizePathOrder and len(fill_paths) > 1:
                 fill_paths = self._order_paths_by_nearest_neighbor(fill_paths, start_point=fill_paths[0].points[0] if fill_paths[0].points else None)
@@ -8377,6 +11829,81 @@ class SlicerService:
                 tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
                 kind="fill-infill",
             )
+            # Mandatory interior coverage for contour-detail regions.
+            # Contour loops alone often leave the center lane unfilled in script text.
+            effective_coverage_mm = max(1e-6, line_width_mm * 0.85)
+            desired_stroke_count = max(1, int(math.ceil(max(0.0, region_metrics.maxLocalWidthMm) / effective_coverage_mm)))
+            desired_stroke_count = min(4, desired_stroke_count)
+            if desired_stroke_count >= 2:
+                interior_strokes = self._generate_sparse_interior_strokes(
+                    metrics_region,
+                    angle_deg=angle_deg,
+                    line_width_mm=line_width_mm,
+                    scanline_spacing_mm=effective_coverage_mm,
+                    min_segment_length_mm=max(min_segment_length_mm, line_width_mm * 0.25),
+                    tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                    max_strokes=max(1, desired_stroke_count - 1),
+                    kind="fill-infill",
+                )
+                interior_strokes = self._clip_toolpaths_to_region(
+                    interior_strokes,
+                    region=metrics_region,
+                    tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                    kind="fill-infill",
+                )
+                for idx, stroke in enumerate(interior_strokes):
+                    if len(stroke.points) < 2:
+                        continue
+                    if segment_length(stroke.points) < max(0.05, line_width_mm * 0.20):
+                        continue
+                    fill_paths.append(clone_toolpath(
+                        stroke,
+                        metadata={
+                            **stroke.metadata,
+                            "coverage_backstop": True,
+                            "small_detail_fill_style": "detail_contour_interior_lane",
+                            "fill_mode": "detail_contour_interior_lane",
+                            "requested_stroke_count": desired_stroke_count,
+                            "interior_lane_index": idx,
+                        },
+                    ))
+                if debug is not None and interior_strokes:
+                    debug["detail_contour_interior_lanes_added"] = int(debug.get("detail_contour_interior_lanes_added", 0)) + int(len(interior_strokes))
+            # Coverage backstop: contour loops can leave a narrow uncovered core
+            # in thicker script strokes. Add one interior centerline when needed.
+            fill_paths = self._augment_detail_contour_with_centerline_backstop(
+                fill_paths,
+                region=metrics_region,
+                line_width_mm=line_width_mm,
+                angle_deg=angle_deg,
+                min_segment_length_mm=min_segment_length_mm,
+                tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                debug=debug,
+            )
+            # Hard rule: contour-only detail fill should still include at least
+            # one interior lane for printable regions wider than one pen.
+            if region_metrics.maxLocalWidthMm >= (line_width_mm * 1.35):
+                centerline_paths = self._generate_centerline_fallback(
+                    metrics_region,
+                    angle_deg=angle_deg,
+                    min_segment_length_mm=max(min_segment_length_mm, line_width_mm * 0.35),
+                    tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                    kind="fill-infill",
+                )
+                if centerline_paths:
+                    longest = max(centerline_paths, key=lambda p: segment_length(p.points) if len(p.points) >= 2 else 0.0)
+                    clipped = self._clip_toolpaths_to_region([longest], region=metrics_region, tolerance_mm=max(tolerance_mm, detail_tolerance_mm), kind="fill-infill")
+                    if clipped:
+                        fill_paths.append(clone_toolpath(
+                            clipped[0],
+                            metadata={
+                                **clipped[0].metadata,
+                                "coverage_backstop": True,
+                                "forced_contour_centerline_infill": True,
+                                "small_detail_fill_style": "centerline_backfill",
+                                "fill_mode": "forced_contour_centerline_infill",
+                            },
+                        ))
             return fill_paths, region_debug, region_metrics, strategy
 
         fill_paths = self._generate_scanline_infill(
@@ -8390,6 +11917,13 @@ class SlicerService:
             allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
             infill_path_mode=infill_path_mode,
             connector_validation=connector_validation,
+            adaptive_detail_cells=bool(
+                region_metrics.maxLocalWidthMm < (line_width_mm * 2.2)
+                or (
+                    region_metrics.maxLocalWidthMm < (line_width_mm * 3.0)
+                    and region_metrics.estimatedShortRowRatio > 0.25
+                )
+            ),
             debug=debug,
         )
         if not fill_paths and hybrid_config.centerlineFallbackEnabled:
@@ -8401,7 +11935,437 @@ class SlicerService:
                 kind="fill-infill",
             )
         fill_paths = [path for path in fill_paths if len(path.points) >= 2 and segment_length(path.points) >= max(line_width_mm * 0.75, min_segment_length_mm)]
+        fill_paths = self._augment_fill_with_centerline_backstop(
+            fill_paths,
+            region=metrics_region,
+            line_width_mm=line_width_mm,
+            angle_deg=angle_deg,
+            min_segment_length_mm=min_segment_length_mm,
+            tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+            debug=debug,
+        )
         return fill_paths, region_debug, region_metrics, strategy
+
+    def _generate_contour_offset_fill(
+        self,
+        region: Any,
+        *,
+        line_width_mm: float,
+        spacing_mm: float,
+        angle_deg: float,
+        min_segment_length_mm: float,
+        tolerance_mm: float,
+    ) -> tuple[list[Toolpath], list[Toolpath], dict[str, Any]]:
+        if region is None or region.is_empty:
+            return [], [], {"fill_mode": "CONTOUR_OFFSET", "offset_ring_count": 0, "collapsed_residual_count": 0}
+
+        base_inset_mm = max(0.0, line_width_mm * 0.5)
+        step_mm = max(0.01, spacing_mm if spacing_mm > 0 else line_width_mm)
+        infill_paths: list[Toolpath] = []
+        ring_count = 0
+
+        for ring_index in range(1, 2049):
+            inset_mm = base_inset_mm + (ring_index * step_mm)
+            ring_geometry = _offset_geometry(region, -inset_mm)
+            if ring_geometry is None or ring_geometry.is_empty:
+                break
+            ring_paths = geometry_to_closed_toolpaths(ring_geometry, "fill-infill", tolerance_mm)
+            ring_paths = [path for path in ring_paths if segment_length(path.points) >= max(0.01, min_segment_length_mm)]
+            if not ring_paths:
+                continue
+            ring_count += 1
+            for path in ring_paths:
+                infill_paths.append(clone_toolpath(
+                    path,
+                    metadata={
+                        **path.metadata,
+                        "fill_mode": "contour_offset",
+                        "fill_strategy": "contour_offset",
+                        "scanline_offset_mm": inset_mm,
+                        "contour_offset_mm": inset_mm,
+                        "contour_offset_index": ring_index,
+                        "path_role": "PRINT_INFILL",
+                    },
+                ))
+
+        residual_detail_paths: list[Toolpath] = []
+        if infill_paths:
+            stroke_parts: list[Any] = []
+            stroke_radius = max(0.01, line_width_mm * 0.5)
+            for path in infill_paths:
+                if len(path.points) < 2:
+                    continue
+                line = LineString([(point.x, point.y) for point in path.points])
+                if line.is_empty or line.length <= 1e-9:
+                    continue
+                stroke_parts.append(line.buffer(stroke_radius, cap_style=1, join_style=1))
+            covered = unary_union(stroke_parts) if stroke_parts else None
+            residual = region if covered is None else region.difference(covered)
+        else:
+            residual = region
+
+        collapsed_residual_count = 0
+        if residual is not None and not residual.is_empty:
+            for component in normalize_geometry(residual):
+                min_x, min_y, max_x, max_y = component.bounds
+                local_width = min(max_x - min_x, max_y - min_y)
+                if local_width > (line_width_mm * 1.6):
+                    continue
+                detail = self._generate_centerline_fallback(
+                    component,
+                    angle_deg=angle_deg,
+                    min_segment_length_mm=max(0.01, min_segment_length_mm * 0.5),
+                    tolerance_mm=max(0.01, tolerance_mm),
+                    kind="detail-trace",
+                )
+                if not detail:
+                    detail = self._generate_tiny_dot_or_short_stroke(
+                        component,
+                        line_width_mm=line_width_mm,
+                        tolerance_mm=max(0.01, tolerance_mm),
+                        angle_deg=angle_deg,
+                        kind="detail-trace",
+                    )
+                if detail:
+                    collapsed_residual_count += 1
+                    residual_detail_paths.extend(detail)
+
+        debug_info = {
+            "fill_mode": "CONTOUR_OFFSET",
+            "fill_strategy": "contour_offset",
+            "offset_ring_count": int(ring_count),
+            "collapsed_residual_count": int(collapsed_residual_count),
+            "offset_base_inset_mm": float(base_inset_mm),
+            "offset_step_mm": float(step_mm),
+        }
+        return infill_paths, residual_detail_paths, debug_info
+
+    def _augment_detail_contour_with_centerline_backstop(
+        self,
+        paths: list[Toolpath],
+        *,
+        region: Any,
+        line_width_mm: float,
+        angle_deg: float,
+        min_segment_length_mm: float,
+        tolerance_mm: float,
+        debug: Optional[dict[str, Any]] = None,
+    ) -> list[Toolpath]:
+        if region is None or region.is_empty:
+            return paths
+        if not paths:
+            return paths
+        pen_radius = max(0.01, line_width_mm * 0.5 * 0.85)
+        stroke_buffers = []
+        for path in paths:
+            if len(path.points) < 2:
+                continue
+            line = LineString([(point.x, point.y) for point in path.points])
+            if line.is_empty or line.length <= 1e-9:
+                continue
+            stroke_buffers.append(line.buffer(pen_radius, cap_style=1, join_style=1))
+        if not stroke_buffers:
+            return paths
+
+        covered = unary_union(stroke_buffers)
+        if covered is None or covered.is_empty:
+            uncovered_ratio = 1.0
+        else:
+            uncovered = region.difference(covered)
+            uncovered_area = 0.0 if uncovered is None or uncovered.is_empty else float(uncovered.area)
+            region_area = max(1e-9, float(region.area))
+            uncovered_ratio = uncovered_area / region_area
+
+        if uncovered_ratio <= 0.03 and len(paths) > 2:
+            return paths
+
+        centerline_paths = self._generate_centerline_fallback(
+            region,
+            angle_deg=angle_deg,
+            min_segment_length_mm=max(min_segment_length_mm, line_width_mm * 0.4),
+            tolerance_mm=tolerance_mm,
+            kind="fill-infill",
+        )
+        if not centerline_paths:
+            return paths
+
+        primary = max(centerline_paths, key=lambda p: segment_length(p.points) if len(p.points) >= 2 else 0.0)
+        if len(primary.points) < 2:
+            return paths
+        primary = clone_toolpath(
+            primary,
+            metadata={
+                **primary.metadata,
+                "small_detail_fill_style": "centerline_backstop",
+                "fill_mode": "detail_contour_centerline_backstop",
+                "coverage_backstop": True,
+                "estimated_uncovered_ratio_before_backstop": float(uncovered_ratio),
+            },
+        )
+        augmented = list(paths)
+        augmented.append(primary)
+        if debug is not None:
+            debug["detail_contour_centerline_backstop_count"] = int(debug.get("detail_contour_centerline_backstop_count", 0)) + 1
+        return augmented
+
+    def _augment_fill_with_centerline_backstop(
+        self,
+        paths: list[Toolpath],
+        *,
+        region: Any,
+        line_width_mm: float,
+        angle_deg: float,
+        min_segment_length_mm: float,
+        tolerance_mm: float,
+        debug: Optional[dict[str, Any]] = None,
+    ) -> list[Toolpath]:
+        # Skip if already centerline-led or region too tiny.
+        if not paths or region is None or region.is_empty:
+            return paths
+        if any(str(path.metadata.get("small_detail_fill_style")) in {"single_stroke_detail", "centerline_backstop"} for path in paths):
+            return paths
+        if float(region.area) <= max(1e-6, line_width_mm * line_width_mm * 1.5):
+            return paths
+        return self._augment_detail_contour_with_centerline_backstop(
+            paths,
+            region=region,
+            line_width_mm=line_width_mm,
+            angle_deg=angle_deg,
+            min_segment_length_mm=min_segment_length_mm,
+            tolerance_mm=tolerance_mm,
+            debug=debug,
+        )
+
+    def _enforce_region_coverage_backfill(
+        self,
+        paths: list[Toolpath],
+        *,
+        region: Any,
+        line_width_mm: float,
+        angle_deg: float,
+        min_segment_length_mm: float,
+        tolerance_mm: float,
+        max_backfills: int = 120,
+        connector_validation: dict[str, Any] | None = None,
+        debug: Optional[dict[str, Any]] = None,
+    ) -> list[Toolpath]:
+        if region is None or region.is_empty or max_backfills <= 0:
+            return paths
+        drawables = [p for p in paths if p.kind in {"fill-infill", "detail-trace"} and len(p.points) >= 2]
+        if not drawables:
+            return paths
+
+        pen_radius = max(0.01, line_width_mm * 0.5 * 0.85)
+        covered_buffers = []
+        for path in drawables:
+            line = LineString([(point.x, point.y) for point in path.points])
+            if line.is_empty or line.length <= 1e-9:
+                continue
+            covered_buffers.append(line.buffer(pen_radius, cap_style=1, join_style=1))
+        if not covered_buffers:
+            return paths
+
+        covered = unary_union(covered_buffers)
+        if covered is None or covered.is_empty:
+            uncovered = region
+        else:
+            uncovered = region.difference(covered)
+        if uncovered is None or uncovered.is_empty:
+            return paths
+
+        region_area = max(1e-9, float(region.area))
+        uncovered_area_total = float(uncovered.area)
+        uncovered_ratio_total = uncovered_area_total / region_area
+        min_component_area = max(1e-7, line_width_mm * line_width_mm * 0.01)
+        components: list[Any] = []
+        for poly in normalize_geometry(uncovered):
+            area = float(poly.area)
+            if area < min_component_area:
+                # Keep narrow-but-important pockets if they are elongated.
+                try:
+                    min_x, min_y, max_x, max_y = poly.bounds
+                    span_x = max_x - min_x
+                    span_y = max_y - min_y
+                    span_max = max(span_x, span_y)
+                    span_min = max(1e-9, min(span_x, span_y))
+                    aspect = span_max / span_min
+                except Exception:
+                    aspect = 0.0
+                if not (area >= min_component_area * 0.35 and aspect >= 3.0):
+                    continue
+            components.append(poly)
+        if not components:
+            return paths
+
+        augmented = list(paths)
+        coverage_mask = connector_validation.get("mask") if isinstance(connector_validation, dict) else None
+        coverage_matrix = connector_validation.get("current_to_source_matrix") if isinstance(connector_validation, dict) else None
+        coverage_include_kinds = {"fill-infill", "detail-trace", "fill-wall", "outline", "fill-infill-travel"}
+
+        def _coverage_metrics_for(candidate_paths: list[Toolpath]) -> MaskCoverageMetrics | None:
+            if coverage_mask is None or not isinstance(coverage_matrix, (tuple, list)) or len(coverage_matrix) != 6:
+                return None
+            try:
+                return compute_toolpath_mask_coverage_metrics(
+                    candidate_paths,
+                    mask=coverage_mask,
+                    current_to_source_matrix=tuple(float(value) for value in coverage_matrix),
+                    pen_radius_mm=line_width_mm * 0.5,
+                    sample_step_mm=max(0.01, min(line_width_mm * 0.35, 0.05)),
+                    include_kinds=coverage_include_kinds,
+                )
+            except Exception:
+                return None
+
+        baseline_metrics = _coverage_metrics_for(augmented)
+        added = 0
+        for component in sorted(components, key=lambda g: float(g.area), reverse=True):
+            if added >= max_backfills:
+                break
+            pocket_scan = self._generate_scanline_infill(
+                component,
+                spacing_mm=max(line_width_mm * 0.80, 0.05),
+                line_width_mm=line_width_mm,
+                angle_deg=angle_deg,
+                min_segment_length_mm=max(min_segment_length_mm, line_width_mm * 0.15),
+                tolerance_mm=tolerance_mm,
+                kind="fill-infill",
+                allow_pen_down_infill_connectors=False,
+                infill_path_mode="rectilinear",
+                connector_validation=None,
+                adaptive_detail_cells=True,
+                debug=None,
+            )
+            pocket_scan = self._clip_toolpaths_to_region(
+                pocket_scan,
+                region=component,
+                tolerance_mm=tolerance_mm,
+                kind="fill-infill",
+            )
+            emitted_for_component = 0
+            for candidate_path in pocket_scan:
+                if added >= max_backfills:
+                    break
+                if len(candidate_path.points) < 2:
+                    continue
+                if segment_length(candidate_path.points) < max(0.04, line_width_mm * 0.10):
+                    continue
+                stroke = clone_toolpath(
+                    candidate_path,
+                    metadata={
+                        **candidate_path.metadata,
+                        "coverage_backstop": True,
+                        "coverage_backfill_global": True,
+                        "small_detail_fill_style": "scanline_backfill",
+                        "fill_mode": "global_uncovered_backfill",
+                    },
+                )
+                accepted = True
+                if baseline_metrics is not None:
+                    trial_metrics = _coverage_metrics_for([*augmented, stroke])
+                    accepted = bool(
+                        trial_metrics is not None
+                        and trial_metrics.penalized_coverage_percent > (baseline_metrics.penalized_coverage_percent + 1e-9)
+                    )
+                    if accepted and trial_metrics is not None:
+                        baseline_metrics = trial_metrics
+                if accepted:
+                    augmented.append(stroke)
+                    added += 1
+                    emitted_for_component += 1
+            if emitted_for_component == 0:
+                centerline = self._generate_centerline_fallback(
+                    component,
+                    angle_deg=angle_deg,
+                    min_segment_length_mm=max(min_segment_length_mm, line_width_mm * 0.35),
+                    tolerance_mm=tolerance_mm,
+                    kind="fill-infill",
+                )
+                if centerline and added < max_backfills:
+                    longest = max(centerline, key=lambda p: segment_length(p.points) if len(p.points) >= 2 else 0.0)
+                    clipped = self._clip_toolpaths_to_region([longest], region=component, tolerance_mm=tolerance_mm, kind="fill-infill")
+                    if clipped and len(clipped[0].points) >= 2:
+                        centerline_stroke = clone_toolpath(
+                            clipped[0],
+                            metadata={
+                                **clipped[0].metadata,
+                                "coverage_backstop": True,
+                                "coverage_backfill_global": True,
+                                "small_detail_fill_style": "centerline_backfill",
+                                "fill_mode": "global_uncovered_backfill",
+                            },
+                        )
+                        augmented.append(centerline_stroke)
+                        accepted = True
+                        if baseline_metrics is not None:
+                            trial_metrics = _coverage_metrics_for(augmented)
+                            accepted = bool(
+                                trial_metrics is not None
+                                and trial_metrics.penalized_coverage_percent > (baseline_metrics.penalized_coverage_percent + 1e-9)
+                            )
+                            if accepted and trial_metrics is not None:
+                                baseline_metrics = trial_metrics
+                        if not accepted:
+                            augmented.pop()
+                        else:
+                            added += 1
+
+        if debug is not None and added > 0:
+            debug["global_uncovered_backfill_count"] = int(debug.get("global_uncovered_backfill_count", 0)) + int(added)
+        if debug is not None:
+            debug["global_uncovered_area_ratio_last_region"] = float(uncovered_ratio_total)
+        return augmented
+
+    def _enforce_non_outline_like_fill(
+        self,
+        paths: list[Toolpath],
+        *,
+        region: Any,
+        line_width_mm: float,
+        angle_deg: float,
+        min_segment_length_mm: float,
+        tolerance_mm: float,
+        debug: Optional[dict[str, Any]] = None,
+    ) -> list[Toolpath]:
+        if region is None or region.is_empty:
+            return paths
+        fill_paths = [p for p in paths if p.kind in {"fill-infill", "detail-trace"} and len(p.points) >= 2]
+        if not fill_paths:
+            return paths
+        # If fill is effectively just contour loops, force an interior centerline stroke.
+        closed_like_count = sum(1 for p in fill_paths if p.closed or str(p.metadata.get("small_detail_fill_style")) == "contour_following")
+        if closed_like_count < len(fill_paths):
+            return paths
+        centerline = self._generate_centerline_fallback(
+            region,
+            angle_deg=angle_deg,
+            min_segment_length_mm=max(min_segment_length_mm, line_width_mm * 0.35),
+            tolerance_mm=tolerance_mm,
+            kind="fill-infill",
+        )
+        if not centerline:
+            return paths
+        longest = max(centerline, key=lambda p: segment_length(p.points) if len(p.points) >= 2 else 0.0)
+        clipped = self._clip_toolpaths_to_region([longest], region=region, tolerance_mm=tolerance_mm, kind="fill-infill")
+        if not clipped:
+            return paths
+        stroke = clone_toolpath(
+            clipped[0],
+            metadata={
+                **clipped[0].metadata,
+                "coverage_backstop": True,
+                "forced_non_outline_like_fill": True,
+                "small_detail_fill_style": "centerline_backfill",
+                "fill_mode": "forced_centerline_infill",
+            },
+        )
+        if len(stroke.points) < 2 or segment_length(stroke.points) < max(0.04, line_width_mm * 0.10):
+            return paths
+        augmented = list(paths)
+        augmented.append(stroke)
+        if debug is not None:
+            debug["forced_centerline_infill_count"] = int(debug.get("forced_centerline_infill_count", 0)) + 1
+        return augmented
 
     def _append_offset_debug(
         self,
@@ -8460,8 +12424,10 @@ class SlicerService:
         if outline_placement_mode == "inside_by_custom_offset":
             return max(0.0, custom_offset_mm)
         if outline_placement_mode == "inside_edge_default":
-            return max(0.0, pen_width_mm * 0.25)
-        return max(0.0, pen_width_mm * 0.25)
+            # Keep the stroke centerline at least one pen radius inside the
+            # boundary so rasterized footprint does not spill heavily outside.
+            return max(0.0, pen_width_mm * 0.5)
+        return max(0.0, pen_width_mm * 0.5)
 
     def _offset_polygon_into_printable_area(
         self,
@@ -8572,6 +12538,7 @@ class SlicerService:
         travel_optimization: str = DEFAULT_TRAVEL_OPTIMIZATION,
         allow_pen_down_infill_connectors: bool = DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS,
         infill_path_mode: str = DEFAULT_INFILL_PATH_MODE,
+        expensive_coverage_repair: bool = True,
         connector_validation: dict[str, Any] | None = None,
         debug: Optional[dict[str, Any]] = None,
     ) -> list[Toolpath]:
@@ -8641,9 +12608,19 @@ class SlicerService:
             "adaptive_total_cells": 0,
             "adaptive_rectilinear_cells": 0,
             "adaptive_detail_contour_cells": 0,
+            "adaptive_single_stroke_cells": 0,
             "adaptive_narrow_cells_detected": 0,
             "adaptive_switched_too_few_rows": 0,
             "adaptive_switched_connector_ratio": 0,
+            "adaptive_switched_single_stroke_width": 0,
+            "adaptive_switched_single_stroke_hatch_quality": 0,
+            "thin_region_count": 0,
+            "narrow_region_count": 0,
+            "wide_region_count": 0,
+            "tiny_region_count": 0,
+            "narrower_than_two_pen_region_count": 0,
+            "narrower_than_two_pen_with_centerline_count": 0,
+            "dropped_region_count": 0,
         }
         infill_region_debug: list[dict[str, Any]] = []
         for region_index, printable_region in enumerate(printable_regions):
@@ -8667,19 +12644,62 @@ class SlicerService:
                 min_segment_length_mm=min_segment_length_resolved_mm,
             )
             preview_region_strategy = choose_fill_strategy(preview_region_metrics, hybrid_config)
-            suppress_outline_walls = preview_region_strategy == "SINGLE_STROKE_DETAIL" and hybrid_config.thinRegionMode in {"singleStroke", "outlineOnly"}
+            measured_local_width_mm = float(preview_region_metrics.maxLocalWidthMm)
+            too_thin_for_dual_outline = measured_local_width_mm < (2.0 * line_width_mm)
+            if too_thin_for_dual_outline:
+                slicer_counts["narrower_than_two_pen_region_count"] += 1
+            drawable_collapsed_at_pen_radius = preview_drawable_region is None or preview_drawable_region.is_empty
+            collapse_candidate = (
+                hybrid_config.thinRegionMode in {"singleStroke", "outlineOnly"}
+                and (too_thin_for_dual_outline or drawable_collapsed_at_pen_radius)
+            )
+            outline_decision = "normal_outline"
+            outline_reason = "region_supports_dual_outline"
+            suppress_outline_walls = False
             if preview_drawable_region is None or preview_drawable_region.is_empty:
                 slicer_counts["collapsed_drawable_region_count"] += 1
-            if suppress_outline_walls:
-                slicer_counts["suppressed_wall_for_thin_region_count"] += 1
             expected_outline_inset_mm = self._resolve_outline_base_inset_mm(
                 pen_width_mm=line_width_mm,
                 outline_placement_mode=outline_placement_mode,
             )
             printable_outline_region = self._offset_polygon_into_printable_area(polygon, inset_mm=expected_outline_inset_mm)
             can_fit_outline = not printable_outline_region.is_empty
+            force_keep_outline = (
+                can_fit_outline
+                and preview_region_metrics.areaMm2 >= max(line_width_mm * line_width_mm * 6.0, 1.5)
+            )
+            suppress_outline_walls = bool(collapse_candidate and not force_keep_outline)
+            # Keep outline cleanup enabled even for narrow regions so outline+infill
+            # can intentionally overlap at minimum printable widths.
+            tiny_outline_exception = bool(
+                preview_region_metrics.areaMm2 <= max(1e-6, line_width_mm * line_width_mm * hybrid_config.tinyDotAreaFactor * 3.0)
+                and measured_local_width_mm <= line_width_mm * 1.25
+            )
+            if suppress_outline_walls and can_fit_outline and not tiny_outline_exception:
+                suppress_outline_walls = False
+            if suppress_outline_walls:
+                slicer_counts["suppressed_wall_for_thin_region_count"] += 1
+                outline_decision = "centerline_collapse"
+                if too_thin_for_dual_outline:
+                    outline_reason = "local_width_lt_2x_pen"
+                elif drawable_collapsed_at_pen_radius:
+                    outline_reason = "inset_collapse_pen_radius"
+            elif collapse_candidate and force_keep_outline:
+                outline_decision = "normal_outline"
+                outline_reason = "force_keep_drawable_non_tiny"
             if not can_fit_outline:
                 slicer_counts["outline_buffer_empty_region_count"] += 1
+                if outline_decision == "normal_outline":
+                    outline_decision = "tiny_dot"
+                    outline_reason = "outline_offset_collapses"
+            if debug is not None:
+                debug.setdefault("outline_component_decisions", []).append({
+                    "component_id": source_polygon_id,
+                    "measured_local_width_mm": measured_local_width_mm,
+                    "line_width_mm": float(line_width_mm),
+                    "decision": outline_decision,
+                    "reason": outline_reason,
+                })
             if not can_fit_outline and not thin_detail_mode:
                 continue
 
@@ -8751,8 +12771,13 @@ class SlicerService:
                 "fill_mode": "skipped",
                 "resolved_angle_deg": resolved_infill_angle_deg,
             }
-            fill_region_source = infill_region if infill_region is not None and not infill_region.is_empty else polygon
-            if (not fill_threshold_failed and infill_region is not None and not infill_region.is_empty) or preview_region_strategy == "SINGLE_STROKE_DETAIL":
+            # Prefer pen-radius drawable inset as the fallback fill source to
+            # avoid boundary-hugging fallback strokes that inflate overdraw.
+            fill_region_source = infill_region if infill_region is not None and not infill_region.is_empty else preview_metrics_region
+            if fill_region_source is None or fill_region_source.is_empty:
+                fill_region_source = polygon
+            needs_detail_fallback_fill = preview_region_strategy in {"SINGLE_STROKE_DETAIL", "CENTERLINE_DETAIL", "CONTOUR_PARALLEL_DETAIL"}
+            if (not fill_threshold_failed and infill_region is not None and not infill_region.is_empty) or needs_detail_fallback_fill:
                 resolved_infill_angle_deg, angle_debug = self._resolve_infill_angle(
                     fill_region_source,
                     spacing_mm=scanline_spacing_mm,
@@ -8763,24 +12788,56 @@ class SlicerService:
                     line_width_mm=line_width_mm,
                     region_index=region_index,
                 )
-                infill_paths, hybrid_region_debug, region_metrics, fill_strategy_name = self._generate_hybrid_region_fill(
-                    fill_region_source,
-                    line_width_mm=line_width_mm,
-                    scanline_spacing_mm=scanline_spacing_mm,
-                    angle_deg=resolved_infill_angle_deg,
-                    min_segment_length_mm=min_segment_length_resolved_mm,
-                    tolerance_mm=simplify_tolerance_resolved_mm,
-                    detail_tolerance_mm=thin_detail_tolerance_mm,
-                    small_shape_mode=small_shape_mode,
-                    thin_detail_overlap=thin_detail_overlap,
-                    allow_pen_down_infill_connectors=effective_allow_connectors,
-                    infill_path_mode=resolved_infill_path_mode,
-                    connector_validation=connector_validation,
-                    travel_optimization=travel_optimization,
-                    region_index=region_index,
-                    source_polygon_id=source_polygon_id,
-                    debug=debug,
-                )
+                use_contour_offset_fill = str(effective_fill_strategy).strip().lower() in {
+                    "adaptive_angle",
+                    "offset",
+                    "offset_fill",
+                    "contour",
+                    "contour_fill",
+                    "contour_offset",
+                }
+                if use_contour_offset_fill:
+                    contour_infill_paths, contour_detail_paths, contour_debug = self._generate_contour_offset_fill(
+                        fill_region_source,
+                        line_width_mm=line_width_mm,
+                        spacing_mm=scanline_spacing_mm,
+                        angle_deg=resolved_infill_angle_deg,
+                        min_segment_length_mm=min_segment_length_resolved_mm,
+                        tolerance_mm=max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
+                    )
+                    infill_paths = contour_infill_paths + contour_detail_paths
+                    region_metrics = self._compute_region_metrics(
+                        fill_region_source,
+                        spacing_mm=scanline_spacing_mm,
+                        line_width_mm=line_width_mm,
+                        preferred_angle_deg=resolved_infill_angle_deg,
+                        min_segment_length_mm=min_segment_length_resolved_mm,
+                    )
+                    hybrid_region_debug = {
+                        **contour_debug,
+                        "classification_reason": "contour_offset_fill_from_target_mask",
+                        "coverage_class": "offset_contour",
+                    }
+                    fill_strategy_name = "CONTOUR_OFFSET"
+                else:
+                    infill_paths, hybrid_region_debug, region_metrics, fill_strategy_name = self._generate_hybrid_region_fill(
+                        fill_region_source,
+                        line_width_mm=line_width_mm,
+                        scanline_spacing_mm=scanline_spacing_mm,
+                        angle_deg=resolved_infill_angle_deg,
+                        min_segment_length_mm=min_segment_length_resolved_mm,
+                        tolerance_mm=simplify_tolerance_resolved_mm,
+                        detail_tolerance_mm=thin_detail_tolerance_mm,
+                        small_shape_mode=small_shape_mode,
+                        thin_detail_overlap=thin_detail_overlap,
+                        allow_pen_down_infill_connectors=effective_allow_connectors,
+                        infill_path_mode=resolved_infill_path_mode,
+                        connector_validation=connector_validation,
+                        travel_optimization=travel_optimization,
+                        region_index=region_index,
+                        source_polygon_id=source_polygon_id,
+                        debug=debug,
+                    )
                 if fill_strategy_name == "RECTILINEAR_SERPENTINE":
                     slicer_counts["large_open_region_count"] += 1
                     slicer_counts["adaptive_total_cells"] += 1
@@ -8811,6 +12868,15 @@ class SlicerService:
                     **angle_debug,
                     **hybrid_region_debug,
                 }
+                coverage_class = str(hybrid_region_debug.get("coverage_class", "wide"))
+                if coverage_class == "thin":
+                    slicer_counts["thin_region_count"] += 1
+                elif coverage_class == "narrow":
+                    slicer_counts["narrow_region_count"] += 1
+                elif coverage_class == "tiny":
+                    slicer_counts["tiny_region_count"] += 1
+                else:
+                    slicer_counts["wide_region_count"] += 1
                 debug_append_geometry(debug, "infill_regions", infill_region, "infill-region")
                 infill_paths = [
                     clone_toolpath(
@@ -8851,30 +12917,52 @@ class SlicerService:
                     slicer_counts["adaptive_total_cells"] += int(adaptive_diag.get("total_cells", 0))
                     slicer_counts["adaptive_rectilinear_cells"] += int(adaptive_diag.get("rectilinear_cells", 0))
                     slicer_counts["adaptive_detail_contour_cells"] += int(adaptive_diag.get("detail_contour_cells", 0))
+                    slicer_counts["adaptive_single_stroke_cells"] += int(adaptive_diag.get("single_stroke_cells", 0))
                     slicer_counts["adaptive_narrow_cells_detected"] += int(adaptive_diag.get("narrow_cells_detected", 0))
                     slicer_counts["adaptive_switched_too_few_rows"] += int(adaptive_diag.get("switched_too_few_rows", 0))
                     slicer_counts["adaptive_switched_connector_ratio"] += int(adaptive_diag.get("switched_connector_ratio", 0))
-            if not infill_paths and thin_detail_mode and polygon.area >= thin_detail_min_area_resolved_mm2:
+                    slicer_counts["adaptive_switched_single_stroke_width"] += int(adaptive_diag.get("switched_single_stroke_width", 0))
+                    slicer_counts["adaptive_switched_single_stroke_hatch_quality"] += int(adaptive_diag.get("switched_single_stroke_hatch_quality", 0))
+            forced_minimum_stroke_needed = bool(not infill_paths and too_thin_for_dual_outline)
+            if not infill_paths and thin_detail_mode and (polygon.area >= thin_detail_min_area_resolved_mm2 or forced_minimum_stroke_needed):
                 detail_region = printable_outline_region if can_fit_outline else polygon
                 slicer_counts["thin_detail_fallback_region_count"] += 1
-                infill_paths = self._generate_detail_fill(
-                    detail_region,
-                    line_width_mm=line_width_mm,
-                    scanline_spacing_mm=scanline_spacing_mm,
-                    angle_deg=resolved_infill_angle_deg if 'resolved_infill_angle_deg' in locals() else infill_angle_deg,
-                    min_segment_length_mm=min_segment_length_resolved_mm,
-                    tolerance_mm=simplify_tolerance_resolved_mm,
-                    detail_tolerance_mm=thin_detail_tolerance_mm,
-                    allow_overlap=thin_detail_overlap,
-                    allow_pen_down_infill_connectors=effective_allow_connectors,
-                    connector_validation=connector_validation,
-                    debug=debug,
-                )
+                if forced_minimum_stroke_needed:
+                    # Hard fallback: if a detail is narrower than 2x pen width, emit at least one printable stroke.
+                    infill_paths = self._generate_centerline_fallback(
+                        detail_region,
+                        angle_deg=resolved_infill_angle_deg if 'resolved_infill_angle_deg' in locals() else infill_angle_deg,
+                        min_segment_length_mm=max(0.01, line_width_mm * 0.2),
+                        tolerance_mm=max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
+                        kind="fill-infill",
+                    )
+                    if not infill_paths:
+                        infill_paths = self._generate_tiny_dot_or_short_stroke(
+                            detail_region,
+                            line_width_mm=line_width_mm,
+                            tolerance_mm=max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
+                            angle_deg=resolved_infill_angle_deg if 'resolved_infill_angle_deg' in locals() else infill_angle_deg,
+                            kind="fill-infill",
+                        )
+                else:
+                    infill_paths = self._generate_detail_fill(
+                        detail_region,
+                        line_width_mm=line_width_mm,
+                        scanline_spacing_mm=scanline_spacing_mm,
+                        angle_deg=resolved_infill_angle_deg if 'resolved_infill_angle_deg' in locals() else infill_angle_deg,
+                        min_segment_length_mm=min_segment_length_resolved_mm,
+                        tolerance_mm=simplify_tolerance_resolved_mm,
+                        detail_tolerance_mm=thin_detail_tolerance_mm,
+                        allow_overlap=thin_detail_overlap,
+                        allow_pen_down_infill_connectors=effective_allow_connectors,
+                        connector_validation=connector_validation,
+                        debug=debug,
+                    )
                 infill_paths = [
                     clone_toolpath(
                         path,
                         region_id=region_index,
-                        source="detail_trace",
+                        source="detail_trace" if path.kind == "detail-trace" else "forced_minimum_stroke",
                         metadata={
                             **path.metadata,
                             "simplify_tolerance_mm": max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
@@ -8888,12 +12976,123 @@ class SlicerService:
                             "source_region_id": printable_region.component_id,
                             "source_component_id": region_index + 1,
                             "source_contour_id": 1,
-                            "expected_relation_to_fill": "detail_overlay",
+                            "expected_relation_to_fill": "detail_overlay" if path.kind == "detail-trace" else "fill_interior",
+                            "force_minimum_printable_stroke": bool(forced_minimum_stroke_needed),
+                            "fill_mode": "single_stroke_fallback_region" if forced_minimum_stroke_needed else path.metadata.get("fill_mode", "detail_contour_cell"),
+                            "fill_mode_reason": "width_lt_2x_pen_force_centerline" if forced_minimum_stroke_needed else path.metadata.get("fill_mode_reason", "thin_detail_fallback"),
                         },
                     )
                     for path in infill_paths
                 ]
+                infill_paths = self._enforce_region_coverage_backfill(
+                    infill_paths,
+                    region=polygon,
+                    line_width_mm=line_width_mm,
+                    angle_deg=resolved_infill_angle_deg,
+                    min_segment_length_mm=min_segment_length_resolved_mm,
+                    tolerance_mm=max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
+                    connector_validation=connector_validation,
+                    debug=debug,
+                )
+                infill_paths = self._enforce_non_outline_like_fill(
+                    infill_paths,
+                    region=polygon,
+                    line_width_mm=line_width_mm,
+                    angle_deg=resolved_infill_angle_deg,
+                    min_segment_length_mm=min_segment_length_resolved_mm,
+                    tolerance_mm=max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
+                    debug=debug,
+                )
+                # Hard guarantee: thin/narrow printable regions must carry at
+                # least one interior centerline stroke in final output.
+                if coverage_class in {"thin", "narrow"}:
+                    centerline = self._generate_centerline_fallback(
+                        polygon,
+                        angle_deg=resolved_infill_angle_deg,
+                        min_segment_length_mm=max(min_segment_length_resolved_mm, line_width_mm * 0.25),
+                        tolerance_mm=max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
+                        kind="fill-infill",
+                    )
+                    if centerline:
+                        longest = max(centerline, key=lambda p: segment_length(p.points) if len(p.points) >= 2 else 0.0)
+                        clipped = self._clip_toolpaths_to_region(
+                            [longest],
+                            region=polygon,
+                            tolerance_mm=max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
+                            kind="fill-infill",
+                        )
+                        if clipped:
+                            infill_paths.append(clone_toolpath(
+                                clipped[0],
+                                metadata={
+                                    **clipped[0].metadata,
+                                    "coverage_backstop": True,
+                                    "forced_thin_region_centerline": True,
+                                    "small_detail_fill_style": "forced_region_centerline",
+                                    "fill_mode": "forced_region_centerline",
+                                },
+                            ))
+                # Final safety net: if infill is too sparse relative to region
+                # outline length, inject extra interior strokes.
+                outline_len = sum(
+                    segment_length(path.points)
+                    for path in outline_cleanup_paths
+                    if path.kind in {"outline", "fill-wall"} and len(path.points) >= 2
+                )
+                infill_len = sum(
+                    segment_length(path.points)
+                    for path in infill_paths
+                    if path.kind in {"fill-infill", "detail-trace"} and len(path.points) >= 2
+                )
+                if outline_len > 1e-6 and infill_len < (outline_len * 0.35):
+                    extra = self._generate_sparse_interior_strokes(
+                        polygon,
+                        angle_deg=resolved_infill_angle_deg,
+                        line_width_mm=line_width_mm,
+                        scanline_spacing_mm=max(0.01, line_width_mm * 0.85),
+                        min_segment_length_mm=max(min_segment_length_resolved_mm, line_width_mm * 0.3),
+                        tolerance_mm=max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
+                        max_strokes=3,
+                        kind="fill-infill",
+                    )
+                    extra = self._clip_toolpaths_to_region(
+                        extra,
+                        region=polygon,
+                        tolerance_mm=max(simplify_tolerance_resolved_mm, thin_detail_tolerance_mm),
+                        kind="fill-infill",
+                    )
+                    for idx, path in enumerate(extra):
+                        if len(path.points) < 2:
+                            continue
+                        infill_paths.append(clone_toolpath(
+                            path,
+                            metadata={
+                                **path.metadata,
+                                "coverage_backstop": True,
+                                "forced_low_infill_ratio_backfill": True,
+                                "small_detail_fill_style": "ratio_backfill",
+                                "fill_mode": "forced_low_infill_ratio_backfill",
+                                "backfill_index": idx,
+                            },
+                        ))
+            if not infill_paths:
+                slicer_counts["dropped_region_count"] += 1
+                if debug is not None:
+                    debug.setdefault("dropped_regions", []).append({
+                        "region_index": region_index,
+                        "source_region_id": printable_region.component_id,
+                        "reason": "no_fill_or_fallback_paths",
+                        "local_width_mm": measured_local_width_mm,
+                        "line_width_mm": line_width_mm,
+                        "too_thin_for_dual_outline": bool(too_thin_for_dual_outline),
+                    })
             infill_region_debug.append(region_debug_entry)
+            if too_thin_for_dual_outline and any(
+                str(path.metadata.get("fill_mode", "")) in {"single_stroke_fallback_region", "single_stroke_cell"}
+                or str(path.metadata.get("small_detail_fill_style", "")) in {"single_stroke_detail", "tiny_dot", "tiny_short_stroke"}
+                for path in infill_paths
+            ):
+                slicer_counts["narrower_than_two_pen_with_centerline_count"] += 1
             slicer_counts["thin_detail_path_count"] += sum(1 for path in infill_paths if path.kind == "detail-trace")
             slicer_counts["detail_trace_path_count"] = slicer_counts["thin_detail_path_count"]
 
@@ -8910,7 +13109,11 @@ class SlicerService:
                     )
             region_paths.extend(infill_paths)
 
-            if outline_after_fill and cleanup_outline_only_paths:
+            skip_cleanup_outline = any(
+                str(path.metadata.get("small_detail_fill_style")) in {"tiny_dot", "tiny_short_stroke"}
+                for path in infill_paths
+            )
+            if outline_after_fill and cleanup_outline_only_paths and not skip_cleanup_outline:
                 cleanup_paths = [
                     clone_toolpath(path, region_id=region_index)
                     for path in cleanup_outline_only_paths
@@ -8980,8 +13183,24 @@ class SlicerService:
                     if path.metadata.get("source_region_id") is not None
                 }
                 for outline_path in cleanup_outline_only_paths:
-                    assert outline_path.metadata.get("source_region_id") in infill_region_ids
+                    outline_region_id = outline_path.metadata.get("source_region_id")
+                    if outline_region_id not in infill_region_ids and infill_region_ids:
+                        debug_append_warning(
+                            debug,
+                            f"Outline/infill region-id mismatch: outline={outline_region_id} infill={sorted(str(v) for v in infill_region_ids)}",
+                        )
                     assert outline_path.metadata.get("generated_from") == "final_fill_clip_polygon"
+
+            if effective_allow_connectors and region_paths:
+                region_paths = self._chain_region_paths_with_pen_down_connectors(
+                    region_paths,
+                    polygon=polygon,
+                    line_width_mm=line_width_mm,
+                    spacing_mm=scanline_spacing_mm,
+                    preserve_order=bool(outline_after_fill),
+                    connector_validation=connector_validation,
+                    debug=debug,
+                )
 
             ordered.extend(region_paths)
 
@@ -8993,6 +13212,58 @@ class SlicerService:
             non_detail_paths = filter_toolpaths_by_length(non_detail_paths, min_segment_length_resolved_mm)
         thin_detail_paths = filter_toolpaths_by_length(thin_detail_paths, min_segment_length_resolved_mm)
         ordered = merge_connected_toolpaths(non_detail_paths + thin_detail_paths)
+        mesh_rejected_count = 0
+        mesh_rejected_reasons: dict[str, int] = {}
+        drawable_filtered: list[Toolpath] = []
+        for path in ordered:
+            # Keep primary infill; mesh suppression only targets legacy detail
+            # traces and connector artifacts to avoid deleting valid coverage.
+            if path.kind in {"detail-trace", "fill-infill-travel"} and self._is_mesh_like_path(path, line_width_mm=line_width_mm):
+                mesh_rejected_count += 1
+                reason = "closed_or_crisscross_mesh"
+                mesh_rejected_reasons[reason] = int(mesh_rejected_reasons.get(reason, 0)) + 1
+                continue
+            drawable_filtered.append(path)
+        ordered = drawable_filtered
+        ordered = self._canonicalize_coverage_paths(
+            ordered,
+            line_width_mm=line_width_mm,
+            debug=debug,
+        )
+        ordered = [
+            path
+            for path in ordered
+            if len(path.points) >= 2 and segment_length(path.points) > 1e-6
+        ]
+        # Expensive iterative mask-coverage repair is offline-only by default.
+        # Enable explicitly for tuning/diagnostics with ENABLE_COVERAGE_REPAIR=1.
+        run_coverage_repair = bool(expensive_coverage_repair) and (os.getenv("ENABLE_COVERAGE_REPAIR", "1") == "1")
+        if run_coverage_repair:
+            ordered = self._repair_missed_mask_components(
+                ordered,
+                line_width_mm=line_width_mm,
+                connector_validation=connector_validation,
+                debug=debug,
+                target_penalized_percent=90.0,
+                max_added_paths=80,
+            )
+            ordered = self._prune_penalized_negative_paths(
+                ordered,
+                line_width_mm=line_width_mm,
+                connector_validation=connector_validation,
+                debug=debug,
+                max_iterations=200,
+            )
+            ordered = self._repair_missed_mask_components(
+                ordered,
+                line_width_mm=line_width_mm,
+                connector_validation=connector_validation,
+                debug=debug,
+                target_penalized_percent=90.0,
+                max_added_paths=120,
+            )
+        elif debug is not None:
+            debug["coverage_repair_skipped"] = True
         logger.debug(
             "Generated fill toolpaths: wall_paths=%d infill_paths=%d infill_segments=%d spacing_mm=%.4f",
             sum(1 for path in ordered if path.kind == "fill-wall"),
@@ -9002,6 +13273,8 @@ class SlicerService:
         )
         debug_set_counts(debug, "slicer_counts", slicer_counts)
         if debug is not None:
+            debug["mesh_like_paths_rejected"] = mesh_rejected_count
+            debug["mesh_like_rejection_reasons"] = mesh_rejected_reasons
             total_estimated_rows = int(round(sum(float(region_entry.get("region_metrics", {}).get("estimatedRowCount", 0.0)) for region_entry in infill_region_debug)))
             total_candidate_segments = sum(
                 int(metric.get("segments", 0))
@@ -9029,18 +13302,76 @@ class SlicerService:
                     "long_thin": slicer_counts["long_thin_region_count"],
                     "small_detail_or_text": slicer_counts["small_detail_region_count"],
                     "detail_contour_cell": slicer_counts["adaptive_detail_contour_cells"],
+                    "single_stroke_cell": slicer_counts["adaptive_single_stroke_cells"],
+                },
+                "coverage_thresholds": {
+                    "single_stroke_max_width_factor": DEFAULT_THIN_REGION_SINGLE_STROKE_MAX_FACTOR,
+                    "narrow_region_max_width_factor": DEFAULT_NARROW_REGION_MAX_FACTOR,
+                    "collapse_outline_max_width_factor": DEFAULT_COLLAPSE_OUTLINE_MAX_FACTOR,
+                    "tiny_dot_area_factor": DEFAULT_TINY_DOT_AREA_FACTOR,
+                    "single_stroke_width_max_factor": DEFAULT_SINGLE_STROKE_WIDTH_MAX_FACTOR,
+                    "centerline_width_max_factor": DEFAULT_CENTERLINE_WIDTH_MAX_FACTOR,
+                    "detail_width_max_factor": DEFAULT_DETAIL_WIDTH_MAX_FACTOR,
+                },
+                "coverage_region_counts": {
+                    "thin": slicer_counts["thin_region_count"],
+                    "narrow": slicer_counts["narrow_region_count"],
+                    "wide": slicer_counts["wide_region_count"],
+                    "tiny": slicer_counts["tiny_region_count"],
                 },
                 "adaptive_fill_counts": {
                     "total_cells": slicer_counts["adaptive_total_cells"],
                     "rectilinear_cells": slicer_counts["adaptive_rectilinear_cells"],
                     "detail_contour_cells": slicer_counts["adaptive_detail_contour_cells"],
+                    "single_stroke_cells": slicer_counts["adaptive_single_stroke_cells"],
                     "narrow_cells_detected": slicer_counts["adaptive_narrow_cells_detected"],
                     "switched_too_few_rows": slicer_counts["adaptive_switched_too_few_rows"],
                     "switched_connector_ratio": slicer_counts["adaptive_switched_connector_ratio"],
+                    "switched_single_stroke_width": slicer_counts["adaptive_switched_single_stroke_width"],
+                    "switched_single_stroke_hatch_quality": slicer_counts["adaptive_switched_single_stroke_hatch_quality"],
                     "outline_after_fill": bool(outline_after_fill),
+                },
+                "diagnostics": {
+                    "raw_generated_paths": int(len(non_detail_paths) + len(thin_detail_paths)),
+                    "final_drawable_paths": int(len(ordered)),
+                    "rejected_mesh_debug_paths": int(mesh_rejected_count),
+                    "rejected_x_triangle_fragments": int(debug.get("rejected_x_triangle_fragment_count", 0)) if isinstance(debug, dict) else 0,
+                    "total_local_regions": len(infill_region_debug),
+                    "normal_fill_regions": slicer_counts["large_open_region_count"],
+                    "single_stroke_regions": slicer_counts["single_stroke_region_count"] + slicer_counts["adaptive_single_stroke_cells"],
+                    "tiny_mark_regions": slicer_counts["tiny_region_count"],
+                    "outline_regions": slicer_counts["normal_slicer_region_count"],
+                    "average_local_width_mm": (
+                        sum(float(entry.get("region_metrics", {}).get("maxLocalWidthMm", 0.0)) for entry in infill_region_debug) / max(1, len(infill_region_debug))
+                    ),
+                    "regions_switched_due_to_small_fill": slicer_counts["adaptive_switched_too_few_rows"] + slicer_counts["adaptive_switched_single_stroke_width"],
+                    "regions_switched_due_to_poor_rectilinear_coverage": slicer_counts["adaptive_switched_connector_ratio"] + slicer_counts["adaptive_switched_single_stroke_hatch_quality"],
+                    "narrower_than_2x_pen_regions": slicer_counts["narrower_than_two_pen_region_count"],
+                    "narrower_than_2x_pen_with_centerline": slicer_counts["narrower_than_two_pen_with_centerline_count"],
+                    "dropped_regions": slicer_counts["dropped_region_count"] + slicer_counts["skipped_tiny_region_count"],
+                    "dropped_region_reasons": (debug.get("dropped_regions", []) if isinstance(debug.get("dropped_regions", []), list) else []),
+                    "coverage_connector_attempted": int(debug.get("coverage_connector_attempted", 0)) if isinstance(debug, dict) else 0,
+                    "coverage_connector_accepted": int(debug.get("coverage_connector_accepted", 0)) if isinstance(debug, dict) else 0,
+                    "coverage_connector_rejected": int(debug.get("coverage_connector_rejected", 0)) if isinstance(debug, dict) else 0,
                 },
                 "regions": infill_region_debug,
             }
+            if connector_validation and isinstance(connector_validation, dict):
+                mask = connector_validation.get("mask")
+                matrix = connector_validation.get("current_to_source_matrix")
+                if mask is not None and isinstance(matrix, (tuple, list)) and len(matrix) == 6:
+                    try:
+                        coverage = estimate_toolpath_mask_coverage(
+                            ordered,
+                            mask=mask,
+                            current_to_source_matrix=tuple(float(value) for value in matrix),
+                            pen_radius_mm=max(0.01, line_width_mm * 0.5),
+                            sample_step_mm=max(0.01, min(line_width_mm * 0.35, 0.05)),
+                        )
+                    except Exception:
+                        coverage = {}
+                    if coverage:
+                        debug["coverage_validation"] = coverage
             if not debug.get("infill_connector_diagnostics"):
                 average_segments_per_cell = (float(total_candidate_segments) / float(hybrid_local_cell_count)) if hybrid_local_cell_count > 0 else 0.0
                 debug["total_infill_rows"] = max(total_estimated_rows, int(debug.get("rows_with_multiple_intervals", 0)))
@@ -9100,8 +13431,1382 @@ def generate_toolpaths(
     travel_optimization: str = DEFAULT_TRAVEL_OPTIMIZATION,
     allow_pen_down_infill_connectors: bool = DEFAULT_ALLOW_PEN_DOWN_INFILL_CONNECTORS,
     infill_path_mode: str = DEFAULT_INFILL_PATH_MODE,
+    expensive_coverage_repair: bool = True,
     debug: Optional[dict[str, Any]] = None,
 ) -> list[Toolpath]:
+    def _contour_only_fill_paths(
+        printable_geometry: Any,
+        *,
+        pen_width_mm: float,
+        simplify_tolerance_mm_value: float,
+        travel_ordering: str,
+        debug_obj: Optional[dict[str, Any]],
+    ) -> list[Toolpath]:
+        pen_radius = pen_width_mm * 0.5
+        contour_overlap_spacing_factor = min(0.80, max(0.60, float(os.getenv("CONTOUR_OVERLAP_SPACING_FACTOR", "0.65"))))
+        offset_step_mm = pen_width_mm * contour_overlap_spacing_factor
+        simplify_mm = max(simplify_tolerance_mm_value, min(0.03, pen_width_mm / 10.0))
+        offset_join_style_name = str(os.getenv("CONTOUR_OFFSET_JOIN_STYLE", "round")).strip().lower()
+        offset_join_style = 2 if offset_join_style_name == "miter" else 1
+        offset_miter_limit = min(4.0, max(2.0, float(os.getenv("CONTOUR_OFFSET_MITER_LIMIT", "3.0"))))
+        offset_arc_tolerance_mm = min(0.025, pen_width_mm / 12.0)
+        min_section_length_mm = min(0.08, max(0.03, 0.05 * pen_width_mm))
+        min_new_coverage_area_mm2 = min(0.01, max(0.003, 0.008 * pen_width_mm * pen_width_mm))
+        min_new_coverage_ratio = min(0.08, max(0.03, 0.04))
+        min_isolated_loop_area_mm2 = 0.003
+        corner_min_section_length_mm = min(0.03, max(0.01, 0.02 * pen_width_mm))
+        corner_min_new_coverage_ratio = 0.01
+        continuity_min_length_mm = 0.005
+        continuity_min_new_coverage_ratio = 0.0
+        corner_max_turn_angle_deg = 170.0
+        corner_bridge_gap_mm = 0.75 * pen_width_mm
+        contour_direction_validation_enabled = True
+        max_contour_parallel_angle_error_deg = 25.0
+        max_corner_turn_angle_error_deg = 60.0
+        reject_diagonal_shortcuts = True
+        iso_distance_tolerance_mm = min(0.06, pen_width_mm * 0.10)
+        allow_isolated_internal_sections = True
+        allow_crossed_contour_sections = True
+        allow_overlap_with_existing_fill = True
+        preserve_corner_vertices = True
+        max_overspill_mm = min(0.05, pen_width_mm * 0.10)
+        max_overspill_area_ratio = 0.02
+        max_levels = 4096
+        stop_after_empty_levels = 8
+
+        per_level: list[dict[str, Any]] = []
+        accepted_paths: list[Toolpath] = []
+        rejected_sections: list[tuple[Toolpath, str]] = []
+        covered_geom: Any = Polygon()
+        rejection_reason_counts: dict[str, int] = {}
+        corner_rejection_reason_counts: dict[str, int] = {}
+        corner_candidate_logs: list[dict[str, Any]] = []
+        central_candidate_sections = 0
+        central_accepted_sections = 0
+        central_rejected_reasons: list[str] = []
+        corner_candidates_total = 0
+        corner_accepted_total = 0
+        corner_rejected_total = 0
+        corridor_restored_total = 0
+        open_section_audit_failures = 0
+        raw_offset_contours_debug: list[Toolpath] = []
+        distance_error_debug_paths: list[Toolpath] = []
+        residual_repair_logs: list[dict[str, Any]] = []
+
+        def _quad_segs_for_tolerance(radius_mm: float, tolerance_mm: float) -> int:
+            r = max(1e-6, float(radius_mm))
+            e = max(1e-6, min(float(tolerance_mm), r * 0.95))
+            denom = math.acos(max(-1.0, min(1.0, 1.0 - (e / r))))
+            if denom <= 1e-9:
+                return 48
+            q = int(math.ceil(math.pi / (4.0 * denom)))
+            return max(16, min(64, q))
+
+        def _component_outline_metrics(component: Any) -> tuple[float, float]:
+            if component is None or component.is_empty:
+                return 0.0, 0.0
+            min_x, min_y, max_x, max_y = component.bounds
+            min_dim = max(0.0, min(float(max_x - min_x), float(max_y - min_y)))
+            return float(component.area), min_dim
+
+        def _build_outline_paths_from_geometry(
+            outline_geometry: Any,
+            *,
+            offset_mm: float,
+            source_label: str,
+            simplify_outline_mm: float,
+        ) -> tuple[list[Toolpath], dict[str, Any]]:
+            outline_paths_local: list[Toolpath] = []
+            component_count_input = 0
+            component_count_output = 0
+            paths_generated = 0
+            paths_dropped = 0
+            thin_components = 0
+            small_components = 0
+            thin_components_outlined = 0
+            small_components_outlined = 0
+            drop_reasons: dict[str, int] = {}
+            total_length_mm = 0.0
+
+            components = normalize_geometry(outline_geometry)
+            component_count_input = len(components)
+            thin_threshold_mm = pen_width_mm * 1.05
+            small_area_threshold_mm2 = max(1e-6, pen_width_mm * pen_width_mm * 0.35)
+            for cidx, poly in enumerate(components, start=1):
+                area_mm2, min_dim_mm = _component_outline_metrics(poly)
+                is_thin = bool(min_dim_mm > 0.0 and min_dim_mm <= thin_threshold_mm)
+                is_small = bool(area_mm2 > 0.0 and area_mm2 <= small_area_threshold_mm2)
+                if is_thin:
+                    thin_components += 1
+                if is_small:
+                    small_components += 1
+                component_generated = False
+
+                outer = simplify_segment_points([Point(float(x), float(y)) for x, y in poly.exterior.coords], simplify_outline_mm, True)
+                if len(outer) >= 4:
+                    outline_paths_local.append(Toolpath(
+                        points=outer,
+                        kind="outline",
+                        closed=True,
+                        source=source_label,
+                        metadata={
+                            "path_role": "FINAL_OUTER_OUTLINE",
+                            "ring_role": "outer",
+                            "offset_mm": float(offset_mm),
+                            "outline_generation_source": source_label,
+                            "source_region_id": f"component_{int(cidx):03d}",
+                        },
+                    ))
+                    component_generated = True
+                    paths_generated += 1
+                    total_length_mm += float(segment_length(outer + [outer[0]])) if outer else 0.0
+                else:
+                    drop_reasons["outer_ring_too_short"] = int(drop_reasons.get("outer_ring_too_short", 0)) + 1
+                    paths_dropped += 1
+
+                for ring in poly.interiors:
+                    inner = simplify_segment_points([Point(float(x), float(y)) for x, y in ring.coords], simplify_outline_mm, True)
+                    if len(inner) >= 4:
+                        outline_paths_local.append(Toolpath(
+                            points=inner,
+                            kind="outline",
+                            closed=True,
+                            source=f"{source_label}_hole",
+                            metadata={
+                                "path_role": "FINAL_INNER_OUTLINE",
+                                "ring_role": "hole",
+                                "offset_mm": float(offset_mm),
+                                "outline_generation_source": source_label,
+                                "source_region_id": f"component_{int(cidx):03d}",
+                                "is_hole": True,
+                            },
+                        ))
+                        component_generated = True
+                        paths_generated += 1
+                        total_length_mm += float(segment_length(inner + [inner[0]])) if inner else 0.0
+                    else:
+                        drop_reasons["inner_ring_too_short"] = int(drop_reasons.get("inner_ring_too_short", 0)) + 1
+                        paths_dropped += 1
+
+                if component_generated:
+                    component_count_output += 1
+                    if is_thin:
+                        thin_components_outlined += 1
+                    if is_small:
+                        small_components_outlined += 1
+
+            return outline_paths_local, {
+                "outline_component_count_input": int(component_count_input),
+                "outline_component_count_output": int(component_count_output),
+                "outline_paths_generated": int(paths_generated),
+                "outline_paths_dropped": int(paths_dropped),
+                "outline_drop_reasons": dict(sorted(drop_reasons.items())),
+                "thin_components_outlined": int(thin_components_outlined),
+                "small_components_outlined": int(small_components_outlined),
+                "outline_total_length_mm": float(total_length_mm),
+                "outline_thin_component_count": int(thin_components),
+                "outline_small_component_count": int(small_components),
+            }
+
+        hole_voids: list[Any] = []
+        for poly in normalize_geometry(printable_geometry):
+            for ring in poly.interiors:
+                try:
+                    hole_poly = Polygon(ring.coords)
+                    if hole_poly is not None and not hole_poly.is_empty:
+                        hole_voids.append(hole_poly)
+                except Exception:
+                    continue
+        hole_void_geom = unary_union(hole_voids) if hole_voids else Polygon()
+
+        def _path_to_line(path: Toolpath) -> Any:
+            if len(path.points) < 2:
+                return None
+            line = LineString([(p.x, p.y) for p in path.points])
+            if line.is_empty or line.length <= 1e-9:
+                return None
+            return line
+
+        def _path_footprint(path: Toolpath) -> Any:
+            line = _path_to_line(path)
+            if line is None:
+                return None
+            return line.buffer(max(0.01, pen_radius), cap_style=1, join_style=1)
+
+        def _measure_overspill(footprint: Any) -> tuple[float, float]:
+            if footprint is None or footprint.is_empty:
+                return 1.0, max_overspill_mm + 1.0
+            allowed = printable_geometry.buffer(max_overspill_mm, join_style=1)
+            overspill = footprint.difference(allowed)
+            overspill_area = 0.0 if overspill is None or overspill.is_empty else float(overspill.area)
+            overspill_ratio = overspill_area / max(1e-9, float(footprint.area))
+            protrusion_mm = 0.0
+            if overspill is not None and not overspill.is_empty:
+                boundary = printable_geometry.boundary
+                for geom in normalize_geometry(overspill):
+                    coords = list(geom.exterior.coords)
+                    step = max(1, int(len(coords) / 24))
+                    for i in range(0, len(coords), step):
+                        protrusion_mm = max(protrusion_mm, float(ShapelyPoint(float(coords[i][0]), float(coords[i][1])).distance(boundary)))
+            return overspill_ratio, protrusion_mm
+
+        def _accept_section(path: Toolpath, *, role: str, corner_mode: bool = False, continuity_preserving: bool = False) -> tuple[bool, str]:
+            nonlocal covered_geom
+            line = _path_to_line(path)
+            if line is None:
+                return False, "invalid_geometry"
+            min_len = continuity_min_length_mm if continuity_preserving else (corner_min_section_length_mm if corner_mode else min_section_length_mm)
+            if float(line.length) < min_len:
+                return False, "too_short"
+            fp = _path_footprint(path)
+            if fp is None or fp.is_empty:
+                return False, "invalid_geometry"
+            if hole_void_geom is not None and not hole_void_geom.is_empty:
+                hole_intrusion = fp.intersection(hole_void_geom)
+                if hole_intrusion is not None and not hole_intrusion.is_empty and float(hole_intrusion.area) > 1e-9:
+                    return False, "enters_hole"
+            overspill_ratio, protrusion_mm = _measure_overspill(fp)
+            is_residual_repair = bool((path.metadata or {}).get("residual_repair_pass_index", None) is not None)
+            local_max_overspill_ratio = max_overspill_area_ratio
+            local_max_protrusion_mm = max_overspill_mm
+            if is_residual_repair:
+                local_max_overspill_ratio = max(local_max_overspill_ratio, 0.05)
+                local_max_protrusion_mm = max(local_max_protrusion_mm, pen_width_mm * 0.30)
+            if overspill_ratio > local_max_overspill_ratio or protrusion_mm > local_max_protrusion_mm:
+                return False, "outside_mask"
+            new_cov = fp if covered_geom is None or covered_geom.is_empty else fp.difference(covered_geom)
+            gain_area = 0.0 if new_cov is None or new_cov.is_empty else float(new_cov.area)
+            gain_ratio = gain_area / max(1e-9, float(fp.area))
+            if not allow_overlap_with_existing_fill and gain_area <= 1e-9:
+                return False, "duplicate"
+            isolated_inner_loop = bool(path.closed and (_path_to_line(path).distance(printable_geometry.boundary) > max(1e-6, pen_width_mm * 0.25)))
+            if isolated_inner_loop and allow_isolated_internal_sections:
+                if float(fp.area) < min_isolated_loop_area_mm2:
+                    return False, "too_little_new_coverage"
+            elif corner_mode:
+                if gain_area < min_new_coverage_area_mm2 and gain_ratio < corner_min_new_coverage_ratio and not continuity_preserving:
+                    return False, "too_little_new_coverage"
+            elif continuity_preserving:
+                if gain_ratio < continuity_min_new_coverage_ratio and not allow_overlap_with_existing_fill:
+                    return False, "too_little_new_coverage"
+            elif gain_area < min_new_coverage_area_mm2 or gain_ratio < min_new_coverage_ratio:
+                return False, "too_little_new_coverage"
+            final_role = "ISOLATED_CONTOUR_SECTION" if isolated_inner_loop else role
+            covered_geom = fp if covered_geom is None or covered_geom.is_empty else covered_geom.union(fp)
+            path.metadata = {
+                **(path.metadata or {}),
+                "path_role": final_role,
+                "fill_strategy": "contour_offset",
+                "fill_mode": "section_based_contour",
+                "small_detail_fill_style": "contour_following",
+                "generated_from": "original_target_mask_offset",
+                "contour_offset_mm": float((path.metadata or {}).get("offset_mm", 0.0)),
+                "offset_distance_mm": float((path.metadata or {}).get("offset_mm", 0.0)),
+                "source_region_id": str((path.metadata or {}).get("source_region_id", "component_001")),
+                "source_polygon_id": str((path.metadata or {}).get("source_polygon_id", "polygon_001")),
+                "isolated_inner_loop": isolated_inner_loop,
+                "new_coverage_area_mm2": float(gain_area),
+                "new_coverage_ratio": float(gain_ratio),
+            }
+            if (not path.closed) and (not str((path.metadata or {}).get("valid_open_reason", "")).strip()):
+                default_reason = "self_intersection_split" if final_role == "CROSSED_CONTOUR_SECTION" else ("corridor_continuity_restore" if final_role == "CORRIDOR_CONTOUR_SECTION" else "topology_transition")
+                path.metadata["valid_open_reason"] = default_reason
+            return True, "accepted"
+
+        def _split_ring_to_sections(coords: list[tuple[float, float]]) -> list[list[tuple[float, float]]]:
+            if len(coords) < 4:
+                return [coords]
+            sections: list[list[tuple[float, float]]] = []
+            chunk_pts = 9
+            for start in range(0, len(coords) - 1, max(3, chunk_pts - 1)):
+                end = min(len(coords), start + chunk_pts)
+                section = coords[start:end]
+                if len(section) >= 2:
+                    sections.append(section)
+            return sections or [coords]
+
+        def _ring_subpath(coords: list[tuple[float, float]], start_idx: int, end_idx: int) -> list[tuple[float, float]]:
+            n = len(coords)
+            if n < 2:
+                return []
+            if start_idx <= end_idx:
+                return coords[start_idx:end_idx + 1]
+            return coords[start_idx:] + coords[:end_idx + 1]
+
+        def _turn_angle_deg(points_xyz: list[Point]) -> float:
+            if len(points_xyz) < 3:
+                return 180.0
+            a = points_xyz[0]
+            b = points_xyz[1]
+            c = points_xyz[2]
+            v1x, v1y = a.x - b.x, a.y - b.y
+            v2x, v2y = c.x - b.x, c.y - b.y
+            n1 = math.hypot(v1x, v1y)
+            n2 = math.hypot(v2x, v2y)
+            if n1 <= 1e-9 or n2 <= 1e-9:
+                return 180.0
+            dot = max(-1.0, min(1.0, (v1x * v2x + v1y * v2y) / (n1 * n2)))
+            return float(math.degrees(math.acos(dot)))
+
+        def _segment_direction_deg(points_xyz: list[Point], from_end: bool = False) -> float:
+            if len(points_xyz) < 2:
+                return 0.0
+            if from_end:
+                a = points_xyz[-2]
+                b = points_xyz[-1]
+            else:
+                a = points_xyz[0]
+                b = points_xyz[1]
+            return float(math.degrees(math.atan2(b.y - a.y, b.x - a.x)))
+
+        def _angle_error_deg(a_deg: float, b_deg: float) -> float:
+            d = abs(a_deg - b_deg) % 360.0
+            if d > 180.0:
+                d = 360.0 - d
+            if d > 90.0:
+                d = 180.0 - d
+            return abs(d)
+
+        def _max_iso_distance_error_mm(path: Toolpath, contour_distance_mm: float) -> float:
+            line = _path_to_line(path)
+            if line is None:
+                return max(1.0, iso_distance_tolerance_mm + 1.0)
+            boundary = printable_geometry.boundary
+            samples = max(3, min(25, int(math.ceil(float(line.length) / max(0.02, pen_width_mm * 0.2)))))
+            max_err = 0.0
+            for i in range(samples):
+                d = (float(line.length) * float(i)) / float(max(samples - 1, 1))
+                p = line.interpolate(d)
+                dist = float(ShapelyPoint(float(p.x), float(p.y)).distance(boundary))
+                max_err = max(max_err, abs(dist - contour_distance_mm))
+            return max_err
+
+        def _validate_repair_direction(
+            candidate: Toolpath,
+            *,
+            neighbor_a: Toolpath,
+            neighbor_b: Toolpath,
+            contour_distance_mm: float,
+            from_raw_contour: bool,
+        ) -> tuple[bool, str, float, float]:
+            if not contour_direction_validation_enabled:
+                return True, "ok", 0.0, 0.0
+            pa = float((neighbor_a.metadata or {}).get("offset_mm", contour_distance_mm))
+            pb = float((neighbor_b.metadata or {}).get("offset_mm", contour_distance_mm))
+            if abs(pa - pb) > 1e-6 or abs(pa - contour_distance_mm) > 1e-6:
+                return False, "wrong_contour_level", 999.0, 999.0
+            iso_err = _max_iso_distance_error_mm(candidate, contour_distance_mm)
+            if iso_err > iso_distance_tolerance_mm:
+                return False, "iso_distance_error_too_high", iso_err, 999.0
+
+            cand_in = _segment_direction_deg(candidate.points, from_end=False)
+            cand_out = _segment_direction_deg(candidate.points, from_end=True)
+            na = _segment_direction_deg(neighbor_a.points, from_end=True)
+            nb = _segment_direction_deg(neighbor_b.points, from_end=False)
+            e1 = _angle_error_deg(cand_in, na)
+            e2 = _angle_error_deg(cand_out, nb)
+            ang_err = max(e1, e2)
+            angle_limit = max_corner_turn_angle_error_deg if from_raw_contour else max_contour_parallel_angle_error_deg
+            if ang_err > angle_limit:
+                return False, "angle_not_parallel", iso_err, ang_err
+
+            if reject_diagonal_shortcuts:
+                line = _path_to_line(candidate)
+                if line is None:
+                    return False, "invalid_geometry", iso_err, ang_err
+                chord = math.hypot(candidate.points[-1].x - candidate.points[0].x, candidate.points[-1].y - candidate.points[0].y)
+                length = float(line.length)
+                if (not from_raw_contour) and length <= (chord * 1.05):
+                    return False, "diagonal_shortcut", iso_err, ang_err
+            return True, "ok", iso_err, ang_err
+
+        def _extract_iso_distance_contours(level_geom: Any, *, level: int, offset_mm: float) -> tuple[list[tuple[Toolpath, str]], dict[str, list[tuple[float, float]]]]:
+            candidates: list[tuple[Toolpath, str]] = []
+            loop_coords_by_id: dict[str, list[tuple[float, float]]] = {}
+            section_index = 0
+            loop_idx = 0
+            for poly in normalize_geometry(level_geom):
+                rings = [list(poly.exterior.coords)] + [list(r.coords) for r in poly.interiors]
+                for ring_coords in rings:
+                    coords = [(float(x), float(y)) for x, y in ring_coords]
+                    if len(coords) < 4:
+                        continue
+                    loop_idx += 1
+                    loop_id = f"level_{int(level)}_loop_{int(loop_idx)}"
+                    loop_coords_by_id[loop_id] = coords
+                    raw_offset_contours_debug.append(
+                        Toolpath(
+                            points=[Point(x, y) for x, y in coords],
+                            kind="fill-infill",
+                            closed=True,
+                            source="iso_contour_raw_offset",
+                            metadata={"path_role": "RAW_OFFSET_CONTOUR", "offset_level": int(level), "offset_mm": float(offset_mm), "source_loop_id": loop_id},
+                        )
+                    )
+                    for sec_ord, sec_coords in enumerate(_split_ring_to_sections(coords), start=1):
+                        if len(sec_coords) < 2:
+                            continue
+                        section_index += 1
+                        try:
+                            start_idx = coords.index(sec_coords[0])
+                            end_idx = coords.index(sec_coords[-1])
+                        except ValueError:
+                            start_idx = 0
+                            end_idx = min(len(coords) - 1, len(sec_coords) - 1)
+                        closed_section = bool(sec_coords[0] == sec_coords[-1] and len(sec_coords) >= 4)
+                        role = "CONTOUR_INFILL" if closed_section else "CONTOUR_SECTION_INFILL"
+                        candidates.append((Toolpath(
+                            points=[Point(x, y) for x, y in sec_coords],
+                            kind="fill-infill",
+                            closed=closed_section,
+                            source="iso_contour_section_split",
+                            metadata={
+                                "path_role": role,
+                                "offset_level": int(level),
+                                "offset_mm": float(offset_mm),
+                                "section_index": int(section_index),
+                                "section_order": int(sec_ord),
+                                "source_loop_id": loop_id,
+                                "start_vertex_index": int(start_idx),
+                                "end_vertex_index": int(end_idx),
+                                "iso_distance_mm": float(offset_mm),
+                                "crossed_contour": False,
+                            },
+                        ), role))
+                    line = LineString(coords)
+                    if bool(getattr(line, "is_simple", True)):
+                        continue
+                    if not allow_crossed_contour_sections:
+                        continue
+                    try:
+                        noded = unary_union(line)
+                    except Exception:
+                        noded = line.buffer(0)
+                    for part in extract_lines(noded):
+                        coords = list(part.coords)
+                        if len(coords) < 2:
+                            continue
+                        section_index += 1
+                        candidates.append((Toolpath(
+                            points=[Point(float(x), float(y)) for x, y in coords],
+                            kind="fill-infill",
+                            closed=False,
+                            source="iso_contour_section",
+                            metadata={
+                                "path_role": "CROSSED_CONTOUR_SECTION",
+                                "offset_level": int(level),
+                                "offset_mm": float(offset_mm),
+                                "section_index": int(section_index),
+                                "crossed_contour": True,
+                                "valid_open_reason": "self_intersection_split",
+                            },
+                        ), "CROSSED_CONTOUR_SECTION"))
+            return candidates, loop_coords_by_id
+
+        empty_levels = 0
+        level = 1
+        while level <= max_levels:
+            offset_mm = pen_radius + (level * offset_step_mm)
+            quad_segs = _quad_segs_for_tolerance(max(0.01, offset_mm), offset_arc_tolerance_mm)
+            level_geom = _offset_geometry(
+                printable_geometry,
+                -offset_mm,
+                join_style=offset_join_style,
+                miter_limit=offset_miter_limit,
+                quad_segs=quad_segs,
+            )
+            if level_geom is None or level_geom.is_empty:
+                empty_levels += 1
+                per_level.append({
+                    "offset_level": int(level),
+                    "offset_mm": float(offset_mm),
+                    "raw_contour_count": 0,
+                    "split_section_count": 0,
+                    "corner_candidate_count": 0,
+                    "accepted_corner_section_count": 0,
+                    "rejected_corner_section_count": 0,
+                    "diagonal_shortcut_rejected_count": 0,
+                    "max_iso_distance_error_mm": 0.0,
+                    "accepted_sections": 0,
+                    "rejected_sections": 0,
+                    "isolated_section_count": 0,
+                    "crossed_section_count": 0,
+                    "rejection_reasons": {},
+                    "corner_rejection_reasons": {},
+                    "remaining_uncovered_area_mm2": float(printable_geometry.difference(covered_geom).area) if covered_geom is not None and not covered_geom.is_empty else float(printable_geometry.area),
+                    "reason": "collapsed_or_empty",
+                })
+                if empty_levels >= stop_after_empty_levels:
+                    break
+                level += 1
+                continue
+
+            sections, loop_coords_by_id = _extract_iso_distance_contours(level_geom, level=level, offset_mm=offset_mm)
+            raw_contour_count = int(len(geometry_to_closed_toolpaths(level_geom, "fill-infill", simplify_mm)))
+            central_probe = ShapelyPoint(*printable_geometry.representative_point().coords[0])
+            accepted_this_level = 0
+            rejected_this_level = 0
+            isolated_this_level = 0
+            crossed_this_level = 0
+            corner_candidates_this_level = 0
+            corner_accepted_this_level = 0
+            corner_rejected_this_level = 0
+            diagonal_shortcut_rejected_count_this_level = 0
+            max_iso_distance_error_this_level = 0.0
+            restored_continuity_section_count_this_level = 0
+            missing_section_count_this_level = 0
+            valid_open_reason_count_this_level = 0
+            horizontal_section_present_this_level = False
+            corner_turn_present_this_level = False
+            corridor_contour_expected_this_level = False
+            horizontal_section_expected_this_level = False
+            rejection_counts_this_level: dict[str, int] = {}
+            corner_rejection_counts_this_level: dict[str, int] = {}
+            accepted_sections_for_level: list[Toolpath] = []
+            rejected_sections_for_level: list[tuple[Toolpath, str]] = []
+            loop_region_logs: list[dict[str, Any]] = []
+            for section, role in sections:
+                section_line = _path_to_line(section)
+                if section_line is not None and float(section_line.distance(central_probe)) <= max(0.6, pen_width_mm * 2.0):
+                    central_candidate_sections += 1
+                ok, reason = _accept_section(section, role=role)
+                iso_err_section = _max_iso_distance_error_mm(section, float(offset_mm))
+                max_iso_distance_error_this_level = max(max_iso_distance_error_this_level, float(iso_err_section))
+                if iso_err_section > iso_distance_tolerance_mm:
+                    distance_error_debug_paths.append(
+                        clone_toolpath(
+                            section,
+                            kind="fill-infill",
+                            closed=section.closed,
+                            source="iso_distance_error_debug",
+                            metadata={**(section.metadata or {}), "path_role": "DISTANCE_ERROR_DEBUG", "iso_distance_error_mm": float(iso_err_section)},
+                        )
+                    )
+                if ok:
+                    if bool((section.metadata or {}).get("isolated_inner_loop", False)):
+                        isolated_this_level += 1
+                    if role == "CROSSED_CONTOUR_SECTION":
+                        crossed_this_level += 1
+                    accepted_paths.append(section)
+                    accepted_sections_for_level.append(section)
+                    accepted_this_level += 1
+                    if section_line is not None and float(section_line.distance(central_probe)) <= max(0.6, pen_width_mm * 2.0):
+                        central_accepted_sections += 1
+                else:
+                    rejected_sections.append((section, reason))
+                    rejected_sections_for_level.append((section, reason))
+                    rejected_this_level += 1
+                    rejection_reason_counts[reason] = int(rejection_reason_counts.get(reason, 0)) + 1
+                    rejection_counts_this_level[reason] = int(rejection_counts_this_level.get(reason, 0)) + 1
+                    if section_line is not None and float(section_line.distance(central_probe)) <= max(0.6, pen_width_mm * 2.0):
+                        central_rejected_reasons.append(reason)
+
+            sections_by_loop: dict[str, list[Toolpath]] = {}
+            for sec, _ in sections:
+                loop_id = str((sec.metadata or {}).get("source_loop_id", ""))
+                if not loop_id:
+                    continue
+                sections_by_loop.setdefault(loop_id, []).append(sec)
+            accepted_ids = {id(s) for s in accepted_sections_for_level}
+            for loop_id, loop_sections in sections_by_loop.items():
+                sorted_secs = sorted(
+                    loop_sections,
+                    key=lambda s: int((s.metadata or {}).get("section_order", 0)),
+                )
+                loop_coords = loop_coords_by_id.get(loop_id, [])
+                for i in range(len(sorted_secs) - 1):
+                    a = sorted_secs[i]
+                    b = sorted_secs[i + 1]
+                    a_pts = a.points
+                    b_pts = b.points
+                    if not a_pts or not b_pts:
+                        continue
+                    pa = a_pts[-1]
+                    pb = b_pts[0]
+                    gap = math.hypot(pb.x - pa.x, pb.y - pa.y)
+                    corner_candidates_this_level += 1
+                    corner_candidates_total += 1
+                    if gap > corner_bridge_gap_mm:
+                        reason = "too_far_from_neighbor"
+                        corner_rejected_this_level += 1
+                        corner_rejected_total += 1
+                        corner_rejection_counts_this_level[reason] = int(corner_rejection_counts_this_level.get(reason, 0)) + 1
+                        corner_rejection_reason_counts[reason] = int(corner_rejection_reason_counts.get(reason, 0)) + 1
+                        continue
+                    # Validate and explicitly reject the naive diagonal chord candidate first.
+                    direct_corner = Toolpath(
+                        points=[Point(float(pa.x), float(pa.y)), Point(float(pb.x), float(pb.y))],
+                        kind="fill-infill",
+                        closed=False,
+                        source="iso_contour_corner_direct_chord_candidate",
+                        metadata={
+                            "path_role": "CORNER_CONTOUR_SECTION",
+                            "offset_level": int(level),
+                            "offset_mm": float(offset_mm),
+                            "source_loop_id": loop_id,
+                        },
+                    )
+                    ok_direct, reason_direct, iso_err_direct, ang_err_direct = _validate_repair_direction(
+                        direct_corner,
+                        neighbor_a=a,
+                        neighbor_b=b,
+                        contour_distance_mm=float(offset_mm),
+                        from_raw_contour=False,
+                    )
+                    if not ok_direct:
+                        if reason_direct == "diagonal_shortcut":
+                            diagonal_shortcut_rejected_count_this_level += 1
+                        direct_log = {
+                            "section_id": f"corner_direct_L{int(level)}_{loop_id}_{i}",
+                            "contour_level": int(level),
+                            "section_length_mm": float(_path_to_line(direct_corner).length) if _path_to_line(direct_corner) is not None else 0.0,
+                            "new_coverage_area_mm2": 0.0,
+                            "iso_distance_error_max_mm": float(iso_err_direct),
+                            "parallel_angle_error_deg": float(ang_err_direct),
+                            "accepted_or_rejected": "rejected",
+                            "rejection_reason": reason_direct,
+                        }
+                        corner_candidate_logs.append(direct_log)
+                        rejected_sections.append((direct_corner, reason_direct))
+                        corner_rejected_this_level += 1
+                        corner_rejected_total += 1
+                        rejection_reason_counts[reason_direct] = int(rejection_reason_counts.get(reason_direct, 0)) + 1
+                        corner_rejection_counts_this_level[reason_direct] = int(corner_rejection_counts_this_level.get(reason_direct, 0)) + 1
+                        corner_rejection_reason_counts[reason_direct] = int(corner_rejection_reason_counts.get(reason_direct, 0)) + 1
+                    # A) Prefer restoring original rejected section from the same loop/order.
+                    restored_raw = None
+                    for rej_sec, _rej_reason in rejected_sections_for_level:
+                        if str((rej_sec.metadata or {}).get("source_loop_id", "")) != loop_id:
+                            continue
+                        sec_order = int((rej_sec.metadata or {}).get("section_order", 0))
+                        if sec_order == int((a.metadata or {}).get("section_order", 0)) + 1:
+                            restored_raw = clone_toolpath(
+                                rej_sec,
+                                kind="fill-infill",
+                                closed=False,
+                                source="iso_contour_restored_raw_section",
+                                metadata={**(rej_sec.metadata or {}), "path_role": "CORNER_CONTOUR_SECTION"},
+                            )
+                            break
+                    si = int((a.metadata or {}).get("end_vertex_index", 0))
+                    ei = int((b.metadata or {}).get("start_vertex_index", 0))
+                    if restored_raw is not None:
+                        corner_points = restored_raw.points
+                    else:
+                        # B/C) use same-level iso-contour subpath; if unavailable fallback to short local path.
+                        if loop_coords and si == ei and len(loop_coords) >= 3:
+                            idx = max(1, min(len(loop_coords) - 2, si))
+                            raw_corner = [loop_coords[idx - 1], loop_coords[idx], loop_coords[idx + 1]]
+                        else:
+                            raw_corner = _ring_subpath(loop_coords, si, ei) if loop_coords else [(pa.x, pa.y), (pb.x, pb.y)]
+                        if len(raw_corner) < 2:
+                            raw_corner = [(pa.x, pa.y), (pb.x, pb.y)]
+                        corner_points = [Point(float(x), float(y)) for x, y in raw_corner]
+                    if len(loop_coords) >= 3:
+                        idx = max(1, min(len(loop_coords) - 2, si))
+                        tri = [Point(float(loop_coords[idx - 1][0]), float(loop_coords[idx - 1][1])), Point(float(loop_coords[idx][0]), float(loop_coords[idx][1])), Point(float(loop_coords[idx + 1][0]), float(loop_coords[idx + 1][1]))]
+                        turn = _turn_angle_deg(tri)
+                        if turn > corner_max_turn_angle_deg and gap <= 1e-6 and id(a) in accepted_ids and id(b) in accepted_ids:
+                            # Smooth connection already preserved by neighboring sections.
+                            continue
+                    if preserve_corner_vertices and len(corner_points) >= 3:
+                        ang = _turn_angle_deg([corner_points[0], corner_points[min(1, len(corner_points)-1)], corner_points[-1]])
+                        if ang > corner_max_turn_angle_deg:
+                            corner_points = [corner_points[0], corner_points[-1]]
+                    corner = Toolpath(
+                        points=corner_points,
+                        kind="fill-infill",
+                        closed=False,
+                        source="iso_contour_corner_bridge",
+                        metadata={
+                            "path_role": "CORNER_CONTOUR_SECTION",
+                            "offset_level": int(level),
+                            "offset_mm": float(offset_mm),
+                            "source_loop_id": loop_id,
+                        },
+                    )
+                    ok_dir, reason_dir, iso_err_mm, ang_err_deg = _validate_repair_direction(
+                        corner,
+                        neighbor_a=a,
+                        neighbor_b=b,
+                        contour_distance_mm=float(offset_mm),
+                        from_raw_contour=(restored_raw is not None or len(corner.points) >= 3),
+                    )
+                    corner_log = {
+                        "section_id": f"corner_L{int(level)}_{loop_id}_{i}",
+                        "contour_level": int(level),
+                        "corner_raw_geometry_found": bool(restored_raw is not None or len(corner_points) >= 3),
+                        "corner_section_accepted": False,
+                        "section_length_mm": float(_path_to_line(corner).length) if _path_to_line(corner) is not None else 0.0,
+                        "new_coverage_area_mm2": 0.0,
+                        "iso_distance_error_max_mm": float(iso_err_mm),
+                        "parallel_angle_error_deg": float(ang_err_deg),
+                    }
+                    if not ok_dir:
+                        max_iso_distance_error_this_level = max(max_iso_distance_error_this_level, float(iso_err_mm))
+                        if reason_dir == "iso_distance_error_too_high":
+                            distance_error_debug_paths.append(
+                                clone_toolpath(
+                                    corner,
+                                    kind="fill-infill",
+                                    closed=False,
+                                    source="iso_distance_error_debug",
+                                    metadata={**(corner.metadata or {}), "path_role": "DISTANCE_ERROR_DEBUG", "iso_distance_error_mm": float(iso_err_mm)},
+                                )
+                            )
+                        reason = reason_dir
+                        corner_log["accepted_or_rejected"] = "rejected"
+                        corner_log["rejection_reason"] = reason
+                        corner_candidate_logs.append(corner_log)
+                        rejected_sections.append((corner, reason))
+                        corner_rejected_this_level += 1
+                        corner_rejected_total += 1
+                        rejection_reason_counts[reason] = int(rejection_reason_counts.get(reason, 0)) + 1
+                        corner_rejection_counts_this_level[reason] = int(corner_rejection_counts_this_level.get(reason, 0)) + 1
+                        corner_rejection_reason_counts[reason] = int(corner_rejection_reason_counts.get(reason, 0)) + 1
+                        continue
+                    max_iso_distance_error_this_level = max(max_iso_distance_error_this_level, float(iso_err_mm))
+                    ok, reason = _accept_section(corner, role="CORNER_CONTOUR_SECTION", corner_mode=True, continuity_preserving=True)
+                    if ok:
+                        corner_log["new_coverage_area_mm2"] = float((corner.metadata or {}).get("new_coverage_area_mm2", 0.0))
+                        corner_log["accepted_or_rejected"] = "accepted"
+                        corner_log["corner_section_accepted"] = True
+                        corner_log["rejection_reason"] = ""
+                        corner_candidate_logs.append(corner_log)
+                        accepted_paths.append(corner)
+                        accepted_sections_for_level.append(corner)
+                        corner_accepted_this_level += 1
+                        corner_accepted_total += 1
+                        accepted_this_level += 1
+                    else:
+                        if reason == "too_short":
+                            reason = "duplicate"
+                        corner_log["accepted_or_rejected"] = "rejected"
+                        corner_log["rejection_reason"] = reason
+                        corner_candidate_logs.append(corner_log)
+                        rejected_sections.append((corner, reason))
+                        corner_rejected_this_level += 1
+                        corner_rejected_total += 1
+                        rejection_reason_counts[reason] = int(rejection_reason_counts.get(reason, 0)) + 1
+                        corner_rejection_counts_this_level[reason] = int(corner_rejection_counts_this_level.get(reason, 0)) + 1
+                        corner_rejection_reason_counts[reason] = int(corner_rejection_reason_counts.get(reason, 0)) + 1
+
+            accepted_by_loop: dict[str, list[Toolpath]] = {}
+            for sec in accepted_sections_for_level:
+                lid = str((sec.metadata or {}).get("source_loop_id", ""))
+                if lid:
+                    accepted_by_loop.setdefault(lid, []).append(sec)
+
+            for loop_id, loop_sections in sections_by_loop.items():
+                loop_coords = loop_coords_by_id.get(loop_id, [])
+                if len(loop_coords) < 4:
+                    continue
+                raw_line = LineString(loop_coords)
+                loop_bbox = raw_line.bounds
+                loop_w = float(loop_bbox[2] - loop_bbox[0])
+                loop_h = float(loop_bbox[3] - loop_bbox[1])
+                corridor_expected = bool(loop_w >= max(2.0 * pen_width_mm, 3.0 * loop_h) or loop_h >= max(2.0 * pen_width_mm, 3.0 * loop_w))
+                has_horizontal_segment = False
+                for j in range(len(loop_coords) - 1):
+                    dx = abs(loop_coords[j + 1][0] - loop_coords[j][0])
+                    dy = abs(loop_coords[j + 1][1] - loop_coords[j][1])
+                    if dx >= max(2.0 * pen_width_mm, 1.5) and dy <= max(0.1, pen_width_mm * 0.2):
+                        has_horizontal_segment = True
+                        break
+                corridor_contour_expected_this_level = corridor_contour_expected_this_level or corridor_expected
+                horizontal_section_expected_this_level = horizontal_section_expected_this_level or has_horizontal_segment
+
+                accepted_loop = sorted(accepted_by_loop.get(loop_id, []), key=lambda s: int((s.metadata or {}).get("section_order", 0)))
+                if accepted_loop:
+                    for sec in accepted_loop:
+                        sec_line = _path_to_line(sec)
+                        if sec_line is None:
+                            continue
+                        b = sec_line.bounds
+                        p0 = sec.points[0]
+                        p1 = sec.points[-1]
+                        end_dy = abs(float(p1.y - p0.y))
+                        if ((b[2] - b[0]) >= max(2.0 * pen_width_mm, 1.2) and (b[3] - b[1]) <= max(0.6, pen_width_mm * 1.2)) or (((b[2] - b[0]) >= max(2.0 * pen_width_mm, 1.2)) and end_dy <= max(0.25, pen_width_mm * 0.5)):
+                            horizontal_section_present_this_level = True
+                        if len(sec.points) >= 3 and _turn_angle_deg([sec.points[0], sec.points[min(1, len(sec.points)-1)], sec.points[-1]]) < 160.0:
+                            corner_turn_present_this_level = True
+
+                missing_for_loop = 0
+                restored_for_loop = 0
+                valid_open_reasons_for_loop = 0
+                if len(accepted_loop) >= 2:
+                    nacc = len(accepted_loop)
+                    for i in range(nacc):
+                        a = accepted_loop[i]
+                        b = accepted_loop[(i + 1) % nacc]
+                        ai = int((a.metadata or {}).get("end_vertex_index", 0))
+                        bi = int((b.metadata or {}).get("start_vertex_index", 0))
+                        ncoords = max(1, len(loop_coords) - 1)
+                        step = (bi - ai) % ncoords
+                        if step <= 1:
+                            continue
+                        missing_for_loop += 1
+                        raw_seg = _ring_subpath(loop_coords, ai, bi)
+                        if len(raw_seg) < 2:
+                            continue
+                        restored_points = [Point(float(x), float(y)) for x, y in raw_seg]
+                        if len(restored_points) < 2:
+                            continue
+                        rb = LineString(raw_seg).bounds
+                        role = "CORRIDOR_CONTOUR_SECTION" if (rb[2] - rb[0]) >= max((rb[3] - rb[1]) * 2.5, 1.2) else "CORNER_CONTOUR_SECTION"
+                        restored = Toolpath(
+                            points=restored_points,
+                            kind="fill-infill",
+                            closed=False,
+                            source="iso_contour_restored_continuity",
+                            metadata={
+                                "path_role": role,
+                                "offset_level": int(level),
+                                "offset_mm": float(offset_mm),
+                                "source_loop_id": loop_id,
+                                "valid_open_reason": "topology_transition" if role == "CORNER_CONTOUR_SECTION" else "corridor_continuity_restore",
+                            },
+                        )
+                        ok, reason = _accept_section(restored, role=role, continuity_preserving=True)
+                        if ok:
+                            accepted_paths.append(restored)
+                            accepted_sections_for_level.append(restored)
+                            accepted_this_level += 1
+                            restored_for_loop += 1
+                            restored_continuity_section_count_this_level += 1
+                            corridor_restored_total += 1
+                        else:
+                            rejected_sections.append((restored, reason))
+                            rejection_reason_counts[reason] = int(rejection_reason_counts.get(reason, 0)) + 1
+                            rejection_counts_this_level[reason] = int(rejection_counts_this_level.get(reason, 0)) + 1
+
+                loop_open_without_reason = 0
+                for sec in accepted_loop:
+                    if sec.closed:
+                        continue
+                    r = str((sec.metadata or {}).get("valid_open_reason", "")).strip()
+                    if r:
+                        valid_open_reasons_for_loop += 1
+                    else:
+                        loop_open_without_reason += 1
+                valid_open_reason_count_this_level += valid_open_reasons_for_loop
+                missing_section_count_this_level += missing_for_loop
+                loop_region_logs.append({
+                    "level": int(level),
+                    "offset_distance_mm": float(offset_mm),
+                    "raw_loop_id": loop_id,
+                    "raw_loop_closed": True,
+                    "raw_loop_length_mm": float(raw_line.length),
+                    "split_section_count": int(len(loop_sections)),
+                    "accepted_section_count": int(len(accepted_loop)),
+                    "restored_continuity_section_count": int(restored_for_loop),
+                    "missing_section_count": int(missing_for_loop),
+                    "valid_open_reason_count": int(valid_open_reasons_for_loop),
+                    "horizontal_section_present": bool(horizontal_section_present_this_level),
+                    "corner_turn_present": bool(corner_turn_present_this_level),
+                    "max_iso_distance_error_mm": float(max_iso_distance_error_this_level),
+                    "remaining_uncovered_area_mm2": float(printable_geometry.difference(covered_geom).area) if covered_geom is not None and not covered_geom.is_empty else float(printable_geometry.area),
+                    "open_without_valid_reason_count": int(loop_open_without_reason),
+                })
+                if loop_open_without_reason > 0 and missing_for_loop > 0:
+                    open_section_audit_failures += 1
+
+            per_level.append({
+                "offset_level": int(level),
+                "offset_mm": float(offset_mm),
+                "raw_contour_count": raw_contour_count,
+                "split_section_count": int(len(sections)),
+                "corner_candidate_count": int(corner_candidates_this_level),
+                "accepted_corner_section_count": int(corner_accepted_this_level),
+                "rejected_corner_section_count": int(corner_rejected_this_level),
+                "diagonal_shortcut_rejected_count": int(diagonal_shortcut_rejected_count_this_level),
+                "max_iso_distance_error_mm": float(max_iso_distance_error_this_level),
+                "restored_continuity_section_count": int(restored_continuity_section_count_this_level),
+                "missing_section_count": int(missing_section_count_this_level),
+                "valid_open_reason_count": int(valid_open_reason_count_this_level),
+                "corridor_contour_expected": bool(corridor_contour_expected_this_level),
+                "horizontal_section_expected": bool(horizontal_section_expected_this_level),
+                "horizontal_section_present": bool(horizontal_section_present_this_level),
+                "corner_turn_present": bool(corner_turn_present_this_level),
+                "accepted_sections": int(accepted_this_level),
+                "rejected_sections": int(rejected_this_level),
+                "isolated_section_count": int(isolated_this_level),
+                "crossed_section_count": int(crossed_this_level),
+                "rejection_reasons": rejection_counts_this_level,
+                "corner_rejection_reasons": corner_rejection_counts_this_level,
+                "loop_region_logs": loop_region_logs,
+                "remaining_uncovered_area_mm2": float(printable_geometry.difference(covered_geom).area) if covered_geom is not None and not covered_geom.is_empty else float(printable_geometry.area),
+                "reason": "ok" if accepted_this_level > 0 else "no_useful_sections",
+            })
+            empty_levels = 0 if accepted_this_level > 0 else empty_levels + 1
+            if empty_levels >= stop_after_empty_levels:
+                break
+            level += 1
+
+        if not accepted_paths:
+            fallback_geom = _offset_geometry(printable_geometry, -pen_radius)
+            if fallback_geom is None or fallback_geom.is_empty:
+                fallback_geom = printable_geometry
+            for fb in geometry_to_closed_toolpaths(fallback_geom, "fill-infill", simplify_mm):
+                candidate = clone_toolpath(
+                    fb,
+                    kind="fill-infill",
+                    closed=True,
+                    source="iso_contour_fallback",
+                    metadata={"offset_level": 0, "offset_mm": float(pen_radius), "closed_iso_contour": True},
+                )
+                ok, reason = _accept_section(candidate, role="CONTOUR_INFILL")
+                if ok:
+                    accepted_paths.append(candidate)
+                else:
+                    rejected_sections.append((candidate, reason))
+                    rejection_reason_counts[reason] = int(rejection_reason_counts.get(reason, 0)) + 1
+
+        def _residual_components_with_ids(residual_geom: Any) -> list[tuple[int, Any]]:
+            comps: list[tuple[int, Any]] = []
+            rid = 1
+            for part in normalize_geometry(residual_geom):
+                if part is None or part.is_empty:
+                    continue
+                area = float(part.area)
+                if area <= 1e-9:
+                    continue
+                comps.append((rid, part))
+                rid += 1
+            return comps
+
+        def _nearest_path_id(component_geom: Any, current_paths: list[Toolpath]) -> str:
+            best_id = ""
+            best_dist = float("inf")
+            for p in current_paths:
+                pl = _path_to_line(p)
+                if pl is None:
+                    continue
+                d = float(component_geom.distance(pl))
+                if d < best_dist:
+                    best_dist = d
+                    best_id = str((p.path_id or "") or (p.metadata or {}).get("source_polygon_id", ""))
+            return best_id
+
+        max_coverage_repair_passes = min(10, max(5, int(os.getenv("CONTOUR_MAX_COVERAGE_REPAIR_PASSES", "6"))))
+        safe_repair_region = printable_geometry
+        for repair_pass_index in range(max_coverage_repair_passes):
+            residual_geom = printable_geometry if covered_geom is None or covered_geom.is_empty else printable_geometry.difference(covered_geom)
+            residual_components = _residual_components_with_ids(residual_geom)
+            if not residual_components:
+                break
+            pass_candidates = 0
+            pass_accepted = 0
+            component_logs: list[dict[str, Any]] = []
+            for comp_id, component in residual_components:
+                comp_area = float(component.area)
+                bounds = tuple(float(v) for v in component.bounds)
+                nearest_path = _nearest_path_id(component, accepted_paths)
+                accepted_for_component = 0
+                rejected_reason_counts: dict[str, int] = {}
+                candidate_geoms: list[Any] = [component.boundary]
+                cb = component.bounds
+                cx = 0.5 * (float(cb[0]) + float(cb[2]))
+                cy = 0.5 * (float(cb[1]) + float(cb[3]))
+                span_x = max(0.05, float(cb[2]) - float(cb[0]))
+                span_y = max(0.05, float(cb[3]) - float(cb[1]))
+                candidate_geoms.append(LineString([(cx - span_x, cy), (cx + span_x, cy)]).intersection(component))
+                candidate_geoms.append(LineString([(cx, cy - span_y), (cx, cy + span_y)]).intersection(component))
+                inset_local = _offset_geometry(component, -max(0.01, pen_radius * 0.45), join_style=offset_join_style, miter_limit=offset_miter_limit)
+                if inset_local is not None and not inset_local.is_empty:
+                    candidate_geoms.append(inset_local.boundary)
+                outset_local = _offset_geometry(component, max(0.005, pen_radius * 0.18), join_style=offset_join_style, miter_limit=offset_miter_limit)
+                if outset_local is not None and not outset_local.is_empty:
+                    candidate_geoms.append(outset_local.boundary)
+
+                for cg in candidate_geoms:
+                    for line in extract_lines(cg):
+                        clipped_line = line.intersection(safe_repair_region)
+                        for cpart in extract_lines(clipped_line):
+                            coords = list(cpart.coords)
+                            if len(coords) < 2:
+                                continue
+                            closed = bool(math.hypot(coords[0][0] - coords[-1][0], coords[0][1] - coords[-1][1]) <= 1e-9)
+                            if closed:
+                                sections = _split_ring_to_sections(coords)
+                            else:
+                                sections = [coords]
+                            for sec in sections:
+                                if len(sec) < 2:
+                                    continue
+                                pass_candidates += 1
+                                candidate = Toolpath(
+                                    points=[Point(float(x), float(y)) for x, y in sec],
+                                    kind="fill-infill",
+                                    closed=False,
+                                    source="residual_contour_section_repair",
+                                    metadata={
+                                        "path_role": "CONTOUR_SECTION_INFILL",
+                                        "offset_mm": 0.0,
+                                        "residual_repair_pass_index": int(repair_pass_index),
+                                        "residual_component_id": int(comp_id),
+                                    },
+                                )
+                                ok, reason = _accept_section(candidate, role="CONTOUR_SECTION_INFILL", corner_mode=False, continuity_preserving=True)
+                                if ok:
+                                    accepted_paths.append(candidate)
+                                    pass_accepted += 1
+                                    accepted_for_component += 1
+                                else:
+                                    rejected_sections.append((candidate, reason))
+                                    rejection_reason_counts[reason] = int(rejection_reason_counts.get(reason, 0)) + 1
+                                    rejected_reason_counts[reason] = int(rejected_reason_counts.get(reason, 0)) + 1
+
+                # Fallback for tiny residual slivers: inject microscopic local cross-strokes
+                # at component center, clipped to the residual component.
+                if accepted_for_component <= 0:
+                    micro_len_x = max(0.01, min(span_x * 0.9, pen_width_mm * 0.9))
+                    micro_len_y = max(0.01, min(span_y * 0.9, pen_width_mm * 0.9))
+                    micro_sources = [
+                        LineString([(cx - (0.5 * micro_len_x), cy), (cx + (0.5 * micro_len_x), cy)]),
+                        LineString([(cx, cy - (0.5 * micro_len_y)), (cx, cy + (0.5 * micro_len_y))]),
+                    ]
+                    for micro in micro_sources:
+                        for mpart in extract_lines(micro.intersection(component)):
+                            mcoords = list(mpart.coords)
+                            if len(mcoords) < 2:
+                                continue
+                            pass_candidates += 1
+                            candidate = Toolpath(
+                                points=[Point(float(x), float(y)) for x, y in mcoords],
+                                kind="fill-infill",
+                                closed=False,
+                                source="residual_contour_section_repair_micro",
+                                metadata={
+                                    "path_role": "CONTOUR_SECTION_INFILL",
+                                    "offset_mm": 0.0,
+                                    "residual_repair_pass_index": int(repair_pass_index),
+                                    "residual_component_id": int(comp_id),
+                                    "residual_micro_repair": True,
+                                },
+                            )
+                            ok, reason = _accept_section(candidate, role="CONTOUR_SECTION_INFILL", corner_mode=False, continuity_preserving=True)
+                            if ok:
+                                accepted_paths.append(candidate)
+                                pass_accepted += 1
+                                accepted_for_component += 1
+                            else:
+                                rejected_sections.append((candidate, reason))
+                                rejection_reason_counts[reason] = int(rejection_reason_counts.get(reason, 0)) + 1
+                                rejected_reason_counts[reason] = int(rejected_reason_counts.get(reason, 0)) + 1
+                component_logs.append({
+                    "component_id": int(comp_id),
+                    "area_mm2": float(comp_area),
+                    "bounds": [bounds[0], bounds[1], bounds[2], bounds[3]],
+                    "nearest_contour_level": int(repair_pass_index),
+                    "nearest_accepted_path": str(nearest_path),
+                    "accepted_candidates": int(accepted_for_component),
+                    "rejection_reasons": rejected_reason_counts,
+                    "reason_no_candidate_accepted": "none" if accepted_for_component > 0 else ("no_candidate_generated" if pass_candidates <= 0 else "all_candidates_rejected"),
+                })
+            residual_repair_logs.append({
+                "pass_index": int(repair_pass_index),
+                "residual_component_count": int(len(residual_components)),
+                "generated_candidates": int(pass_candidates),
+                "accepted_candidates": int(pass_accepted),
+                "components": component_logs,
+            })
+            if pass_accepted <= 0:
+                break
+
+        residual_before = printable_geometry if covered_geom is None or covered_geom.is_empty else printable_geometry.difference(covered_geom)
+        fill_paths = optimize_toolpath_order(accepted_paths, strategy=travel_ordering)
+
+        final_outer_outline_inset_mm = float(pen_radius)
+        final_inner_outline_inset_mm = float(pen_radius)
+        legacy_outline_geom = _offset_geometry(
+            printable_geometry,
+            -final_outer_outline_inset_mm,
+            join_style=offset_join_style,
+            miter_limit=offset_miter_limit,
+            quad_segs=_quad_segs_for_tolerance(max(0.01, pen_radius), offset_arc_tolerance_mm),
+        )
+        if legacy_outline_geom is None or legacy_outline_geom.is_empty:
+            legacy_outline_geom = printable_geometry
+
+        geometry_quality = bundle.metadata.get("geometry_quality") if isinstance(bundle.metadata, dict) else None
+        is_raster_source = bool(isinstance(geometry_quality, dict) and str(geometry_quality.get("source_mode", "")) == "raster")
+        target_component_count = len(normalize_geometry(printable_geometry))
+        legacy_component_count = len(normalize_geometry(legacy_outline_geom))
+        target_area = float(printable_geometry.area) if printable_geometry is not None and not printable_geometry.is_empty else 0.0
+        legacy_area = float(legacy_outline_geom.area) if legacy_outline_geom is not None and not legacy_outline_geom.is_empty else 0.0
+        lost_component_count = max(0, target_component_count - legacy_component_count)
+        lost_area_ratio = 0.0 if target_area <= 1e-9 else max(0.0, (target_area - legacy_area) / target_area)
+        use_final_target_outline = bool(
+            is_raster_source
+            and (
+                legacy_outline_geom is None
+                or legacy_outline_geom.is_empty
+                or legacy_component_count < target_component_count
+                or lost_area_ratio >= 0.18
+            )
+        )
+        outline_source_geom = printable_geometry if use_final_target_outline else legacy_outline_geom
+        outline_generation_source = "final_target_mask" if use_final_target_outline else "final_outline_offset"
+        outline_emit_offset_mm = 0.0 if use_final_target_outline else float(final_outer_outline_inset_mm)
+
+        outline_paths, outline_debug = _build_outline_paths_from_geometry(
+            outline_source_geom,
+            offset_mm=outline_emit_offset_mm,
+            source_label=outline_generation_source,
+            simplify_outline_mm=0.0 if use_final_target_outline else 0.0,
+        )
+        coverage_outline_paths, _coverage_outline_debug = _build_outline_paths_from_geometry(
+            legacy_outline_geom,
+            offset_mm=float(final_outer_outline_inset_mm),
+            source_label="final_outline_offset_coverage",
+            simplify_outline_mm=0.0,
+        )
+
+        for outline_path in coverage_outline_paths:
+            fp = _path_footprint(outline_path)
+            if fp is None or fp.is_empty:
+                continue
+            covered_geom = fp if covered_geom is None or covered_geom.is_empty else covered_geom.union(fp)
+
+        def _raster_mm_mapping() -> tuple[float, float, float, float, float]:
+            min_x, min_y, max_x, max_y = printable_geometry.bounds
+            px_per_mm = 36.0
+            pad_mm = max(0.6, pen_width_mm)
+            sx = min_x - pad_mm
+            sy = min_y - pad_mm
+            return sx, sy, px_per_mm, max_x + pad_mm, max_y + pad_mm
+
+        def _geom_to_raster_mask(geom: Any, *, sx: float, sy: float, px_per_mm: float, ex: float, ey: float) -> np.ndarray:
+            width_px = max(8, int(math.ceil((ex - sx) * px_per_mm)))
+            height_px = max(8, int(math.ceil((ey - sy) * px_per_mm)))
+            mask = np.zeros((height_px, width_px), dtype=np.uint8)
+            if geom is None or geom.is_empty:
+                return mask
+            for poly in normalize_geometry(geom):
+                ext = np.array(
+                    [[int(round((float(x) - sx) * px_per_mm)), int(round((float(y) - sy) * px_per_mm))] for x, y in poly.exterior.coords],
+                    dtype=np.int32,
+                )
+                if len(ext) >= 3:
+                    cv2.fillPoly(mask, [ext], 255)
+                for ring in poly.interiors:
+                    hole = np.array(
+                        [[int(round((float(x) - sx) * px_per_mm)), int(round((float(y) - sy) * px_per_mm))] for x, y in ring.coords],
+                        dtype=np.int32,
+                    )
+                    if len(hole) >= 3:
+                        cv2.fillPoly(mask, [hole], 0)
+            return mask
+
+        def _line_to_mm_path(p0: tuple[int, int], p1: tuple[int, int], *, sx: float, sy: float, px_per_mm: float, repair_pass: int, comp_id: int) -> Toolpath:
+            x0 = sx + (float(p0[0]) / px_per_mm)
+            y0 = sy + (float(p0[1]) / px_per_mm)
+            x1 = sx + (float(p1[0]) / px_per_mm)
+            y1 = sy + (float(p1[1]) / px_per_mm)
+            return Toolpath(
+                points=[Point(x0, y0), Point(x1, y1)],
+                kind="fill-infill",
+                closed=False,
+                source="residual_raster_repair",
+                metadata={
+                    "path_role": "CONTOUR_SECTION_INFILL",
+                    "residual_repair_pass_index": int(repair_pass),
+                    "residual_component_id": int(comp_id),
+                    "residual_raster_repair": True,
+                    "offset_mm": 0.0,
+                },
+            )
+
+        # Pixel-domain residual repair to close corner/junction slivers that survive geometric sectioning.
+        raster_repair_passes = min(8, max(4, int(os.getenv("CONTOUR_RASTER_REPAIR_PASSES", "6"))))
+        sx, sy, px_per_mm, ex, ey = _raster_mm_mapping()
+        for rpass in range(raster_repair_passes):
+            cov_geom = covered_geom if covered_geom is not None and not covered_geom.is_empty else Polygon()
+            target_mask = _geom_to_raster_mask(printable_geometry, sx=sx, sy=sy, px_per_mm=px_per_mm, ex=ex, ey=ey)
+            covered_mask = _geom_to_raster_mask(cov_geom, sx=sx, sy=sy, px_per_mm=px_per_mm, ex=ex, ey=ey)
+            uncovered_mask = cv2.bitwise_and(target_mask, cv2.bitwise_not(covered_mask))
+            if int(np.count_nonzero(uncovered_mask)) <= 0:
+                break
+            n_labels, labels, stats, _centroids = cv2.connectedComponentsWithStats((uncovered_mask > 0).astype(np.uint8), connectivity=8)
+            accepted_in_pass = 0
+            for comp_idx in range(1, int(n_labels)):
+                area_px = int(stats[comp_idx, cv2.CC_STAT_AREA])
+                if area_px <= 0:
+                    continue
+                x = int(stats[comp_idx, cv2.CC_STAT_LEFT])
+                y = int(stats[comp_idx, cv2.CC_STAT_TOP])
+                w = int(stats[comp_idx, cv2.CC_STAT_WIDTH])
+                h = int(stats[comp_idx, cv2.CC_STAT_HEIGHT])
+                cx = x + (w // 2)
+                cy = y + (h // 2)
+                # Local principal cross strokes through residual component bounds.
+                candidates_px = [
+                    ((x, cy), (x + max(1, w - 1), cy)),
+                    ((cx, y), (cx, y + max(1, h - 1))),
+                ]
+                if w >= 2 and h >= 2:
+                    candidates_px.append(((x, y), (x + max(1, w - 1), y + max(1, h - 1))))
+                    candidates_px.append(((x + max(1, w - 1), y), (x, y + max(1, h - 1))))
+                for p0, p1 in candidates_px:
+                    candidate = _line_to_mm_path(p0, p1, sx=sx, sy=sy, px_per_mm=px_per_mm, repair_pass=rpass, comp_id=comp_idx)
+                    ok, _reason = _accept_section(candidate, role="CONTOUR_SECTION_INFILL", corner_mode=False, continuity_preserving=True)
+                    if ok:
+                        accepted_paths.append(candidate)
+                        accepted_in_pass += 1
+                        fp = _path_footprint(candidate)
+                        if fp is not None and not fp.is_empty:
+                            covered_geom = fp if covered_geom is None or covered_geom.is_empty else covered_geom.union(fp)
+            if accepted_in_pass <= 0:
+                break
+
+        fill_paths = optimize_toolpath_order(accepted_paths, strategy=travel_ordering)
+        result = merge_connected_toolpaths(fill_paths + outline_paths)
+        residual_after = printable_geometry if covered_geom is None or covered_geom.is_empty else printable_geometry.difference(covered_geom)
+        mask_area = max(1e-9, float(printable_geometry.area))
+        uncovered_before_area = 0.0 if residual_before is None or residual_before.is_empty else float(residual_before.area)
+        uncovered_after_area = 0.0 if residual_after is None or residual_after.is_empty else float(residual_after.area)
+        uncovered_before_ratio = uncovered_before_area / mask_area
+        uncovered_after_ratio = uncovered_after_area / mask_area
+        hole_area = 0.0 if hole_void_geom is None or hole_void_geom.is_empty else float(hole_void_geom.area)
+        hole_overlap = covered_geom.intersection(hole_void_geom) if hole_void_geom is not None and not hole_void_geom.is_empty else None
+        hole_overspill_area = 0.0 if hole_overlap is None or hole_overlap.is_empty else float(hole_overlap.area)
+        hole_overspill_ratio = hole_overspill_area / max(1e-9, hole_area) if hole_area > 0.0 else 0.0
+
+        if isinstance(debug_obj, dict):
+            covered_area = float(covered_geom.area) if covered_geom is not None and not covered_geom.is_empty else 0.0
+            overlap_area = float(printable_geometry.intersection(covered_geom).area) if covered_geom is not None and not covered_geom.is_empty else 0.0
+            overspill_area_ratio = max(0.0, (covered_area - overlap_area) / max(1e-9, covered_area)) if covered_area > 0 else 0.0
+            debug_obj["infill_connector_diagnostics"] = {
+                "total_infill_rows": int(sum(1 for p in result if p.kind in {"fill-infill", "crossed-contour-infill"})),
+                "accepted_connectors": 0,
+                "rejected_connectors": 0,
+                "rejected_raster_mask_sampling": 0,
+                "rejected_outside_selected_color": 0,
+                "rejection_counts": {},
+            }
+            debug_obj["contour_offset_debug"] = {
+                "outline_offset_mm": float(final_outer_outline_inset_mm),
+                "outline_generation_source": outline_generation_source,
+                "outline_component_count_input": int(outline_debug.get("outline_component_count_input", 0)),
+                "outline_component_count_output": int(outline_debug.get("outline_component_count_output", 0)),
+                "outline_paths_generated": int(outline_debug.get("outline_paths_generated", 0)),
+                "outline_paths_dropped": int(outline_debug.get("outline_paths_dropped", 0)),
+                "outline_drop_reasons": dict(outline_debug.get("outline_drop_reasons", {})),
+                "thin_components_outlined": int(outline_debug.get("thin_components_outlined", 0)),
+                "small_components_outlined": int(outline_debug.get("small_components_outlined", 0)),
+                "outline_total_length_mm": float(outline_debug.get("outline_total_length_mm", 0.0)),
+                "outline_source_component_count_lost_by_inset": int(lost_component_count),
+                "outline_source_area_loss_ratio_from_inset": float(lost_area_ratio),
+                "contour_overlap_spacing_factor": float(contour_overlap_spacing_factor),
+                "offset_step_mm": float(offset_step_mm),
+                "offset_join_style": "miter" if offset_join_style == 2 else "round",
+                "offset_miter_limit": float(offset_miter_limit),
+                "offset_arc_tolerance_mm": float(offset_arc_tolerance_mm),
+                "distance_levels_attempted": int(len(per_level)),
+                "distance_levels_with_accepted_contours": int(sum(1 for entry in per_level if int(entry.get("accepted_sections", 0)) > 0)),
+                "offset_levels_attempted": int(len(per_level)),
+                "offset_levels_with_accepted_sections": int(sum(1 for entry in per_level if int(entry.get("accepted_sections", 0)) > 0)),
+                "levels": per_level,
+                "full_contour_path_count": int(sum(1 for path in result if str((path.metadata or {}).get("path_role", "")) == "CONTOUR_INFILL")),
+                "contour_section_count": int(sum(1 for path in result if str((path.metadata or {}).get("path_role", "")) == "CONTOUR_SECTION_INFILL")),
+                "crossed_contour_section_count": int(sum(1 for path in result if str((path.metadata or {}).get("path_role", "")) == "CROSSED_CONTOUR_SECTION")),
+                "corner_contour_section_count": int(sum(1 for path in result if str((path.metadata or {}).get("path_role", "")) == "CORNER_CONTOUR_SECTION")),
+                "isolated_inner_contour_count": int(sum(1 for path in result if bool((path.metadata or {}).get("isolated_inner_loop", False)))),
+                "residual_contour_section_count": 0,
+                "coverage_repair_passes_executed": int(len(residual_repair_logs)),
+                "coverage_repair_logs": residual_repair_logs,
+                "rejected_section_count": int(len(rejected_sections)),
+                "rejection_reason_counts": rejection_reason_counts,
+                "corner_rejection_reason_counts": corner_rejection_reason_counts,
+                "corner_candidate_count_total": int(corner_candidates_total),
+                "corner_accepted_section_count_total": int(corner_accepted_total),
+                "corner_rejected_section_count_total": int(corner_rejected_total),
+                "corridor_restored_section_count_total": int(corridor_restored_total),
+                "open_section_audit_failures": int(open_section_audit_failures),
+                "corner_candidate_logs": corner_candidate_logs,
+                "central_junction_candidate_sections_found": int(central_candidate_sections),
+                "central_junction_sections_accepted": int(central_accepted_sections),
+                "central_junction_rejected_reasons": sorted(set(central_rejected_reasons)),
+                "remaining_uncovered_area_mm2_before": float(uncovered_before_area),
+                "remaining_uncovered_area_mm2_after": float(uncovered_after_area),
+                "remaining_uncovered_area_ratio_before": float(uncovered_before_ratio),
+                "remaining_uncovered_area_ratio_after": float(uncovered_after_ratio),
+                "overspill_area_ratio": float(overspill_area_ratio),
+                "hole_overspill_ratio": float(hole_overspill_ratio),
+                "outer_outline_path_count": int(sum(1 for path in result if path.kind == "outline" and str((path.metadata or {}).get("path_role", "")) == "FINAL_OUTER_OUTLINE")),
+                "inner_outline_path_count": int(sum(1 for path in result if path.kind == "outline" and str((path.metadata or {}).get("path_role", "")) == "FINAL_INNER_OUTLINE")),
+                "diagonal_shortcut_rejected_count": int(sum(1 for _p, reason in rejected_sections if reason == "diagonal_shortcut")),
+            }
+            debug_append_geometry(debug_obj, "residual_uncovered_regions_before_repair", residual_before, "gap-residual-before")
+            debug_append_geometry(debug_obj, "residual_uncovered_regions_after_repair", residual_after, "gap-residual-after")
+            debug_append_geometry(debug_obj, "contour_target_mask", printable_geometry, "target-mask")
+            debug_append_toolpaths(debug_obj, "raw_offset_contour", raw_offset_contours_debug)
+            debug_append_toolpaths(debug_obj, "accepted_contour_infill", [p for p in result if str((p.metadata or {}).get("path_role", "")) == "CONTOUR_INFILL"])
+            debug_append_toolpaths(debug_obj, "accepted_contour_section_infill", [p for p in result if str((p.metadata or {}).get("path_role", "")) == "CONTOUR_SECTION_INFILL"])
+            debug_append_toolpaths(debug_obj, "accepted_isolated_contour_sections", [p for p in result if bool((p.metadata or {}).get("isolated_inner_loop", False))])
+            debug_append_toolpaths(debug_obj, "accepted_crossed_contour_sections", [p for p in result if str((p.metadata or {}).get("path_role", "")) == "CROSSED_CONTOUR_SECTION"])
+            debug_append_toolpaths(debug_obj, "restored_corridor_contour_sections", [p for p in result if str((p.metadata or {}).get("path_role", "")) == "CORRIDOR_CONTOUR_SECTION"])
+            debug_append_toolpaths(debug_obj, "accepted_corner_contour_sections", [p for p in result if str((p.metadata or {}).get("path_role", "")) == "CORNER_CONTOUR_SECTION"])
+            debug_append_toolpaths(debug_obj, "rejected_diagonal_shortcut_candidates", [item[0] for item in rejected_sections if item[1] in {"diagonal_shortcut", "angle_not_parallel", "iso_distance_error_too_high"}])
+            debug_append_toolpaths(debug_obj, "distance_error_debug", distance_error_debug_paths)
+            debug_append_toolpaths(debug_obj, "contour_section_candidates_rejected", [item[0] for item in rejected_sections])
+            debug_append_toolpaths(debug_obj, "final_outer_outline", [p for p in result if p.kind == "outline" and str((p.metadata or {}).get("path_role", "")) == "FINAL_OUTER_OUTLINE"])
+            debug_append_toolpaths(debug_obj, "final_inner_outline", [p for p in result if p.kind == "outline" and str((p.metadata or {}).get("path_role", "")) == "FINAL_INNER_OUTLINE"])
+            debug_append_geometry(debug_obj, "pen_width_preview", covered_geom, "pen-footprint")
+            debug_append_geometry(debug_obj, "remaining_residual_gaps", residual_after, "residual-gaps")
+
+        return result
+
+    if enable_fill and bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
+        from .coverage_planner import plan_coverage_first_toolpaths
+
+        return plan_coverage_first_toolpaths(
+            bundle,
+            enable_fill=enable_fill,
+            line_width_mm=line_width_mm,
+            wall_count=wall_count,
+            infill_density=infill_density,
+            infill_spacing_mm=infill_spacing_mm,
+            infill_angle_deg=infill_angle_deg,
+            outline_after_fill=outline_after_fill,
+            min_fill_area_mm2=min_fill_area_mm2,
+            min_fill_width_mm=min_fill_width_mm,
+            simplify_tolerance_mm=simplify_tolerance_mm,
+            remove_duplicate_paths=remove_duplicate_paths,
+            small_shape_mode=small_shape_mode,
+            fill_strategy=fill_strategy,
+            alternate_fill_angle_deg=alternate_fill_angle_deg,
+            thin_detail_mode=thin_detail_mode,
+            thin_detail_min_area_mm2=thin_detail_min_area_mm2,
+            thin_detail_simplify_mm=thin_detail_simplify_mm,
+            thin_detail_overlap=thin_detail_overlap,
+            min_segment_length_mm=min_segment_length_mm,
+            travel_optimization=travel_optimization,
+            allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
+            infill_path_mode=infill_path_mode,
+            expensive_coverage_repair=expensive_coverage_repair,
+            debug=debug,
+        )
+    if enable_fill and (bundle.printable_geometry is None or bundle.printable_geometry.is_empty):
+        toolpaths: list[Toolpath] = []
+        for segment in bundle.outline_segments:
+            simplified = simplify_segment_points(segment.points, simplify_tolerance_mm, segment.closed)
+            if len(simplified) < 2:
+                continue
+            toolpaths.append(Toolpath(
+                points=simplified,
+                kind="outline",
+                closed=segment.closed,
+                source="mask_contour",
+                metadata={
+                    "simplify_tolerance_mm": float(simplify_tolerance_mm),
+                    "pen_width_mm": float(line_width_mm),
+                    "source_region_id": "standalone_outline",
+                    "expected_relation_to_fill": "standalone_outline",
+                },
+            ))
+        return assign_stable_path_ids(merge_connected_toolpaths(toolpaths))
     toolpaths: list[Toolpath] = []
     simplify_tolerance_resolved_mm = simplify_tolerance_mm
     detail_tolerance_mm = max(simplify_tolerance_mm, thin_detail_simplify_mm)
@@ -9134,63 +14839,560 @@ def generate_toolpaths(
         ))
 
     if enable_fill and bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
-        slicer = SlicerService()
-        toolpaths.extend(slicer.slice_one_layer(
+        # Hard-switch to contour-only slicer path for normal generation.
+        toolpaths = _contour_only_fill_paths(
             bundle.printable_geometry,
-            line_width_mm=line_width_mm,
-            wall_count=wall_count,
-            infill_density=infill_density,
-            infill_angle_deg=infill_angle_deg,
-            fill_strategy=fill_strategy,
-            alternate_fill_angle_deg=alternate_fill_angle_deg,
-            outline_after_fill=outline_after_fill,
-            min_fill_area_mm2=min_fill_area_mm2,
-            min_segment_length_mm=min_segment_length_mm,
-            infill_spacing_mm=infill_spacing_mm,
-            min_fill_width_mm=min_fill_width_mm,
-            simplify_tolerance_mm=simplify_tolerance_mm,
-            remove_duplicate_paths=remove_duplicate_paths,
-            small_shape_mode=small_shape_mode,
-            thin_detail_mode=thin_detail_mode,
-            thin_detail_min_area_mm2=thin_detail_min_area_mm2,
-            thin_detail_simplify_mm=thin_detail_simplify_mm,
-            thin_detail_overlap=thin_detail_overlap,
-            travel_optimization=travel_optimization,
-            allow_pen_down_infill_connectors=allow_pen_down_infill_connectors,
-            infill_path_mode=infill_path_mode,
-            connector_validation=bundle.metadata.get("connector_validation"),
-            debug=debug,
-        ))
+            pen_width_mm=line_width_mm,
+            simplify_tolerance_mm_value=simplify_tolerance_resolved_mm,
+            travel_ordering=travel_optimization,
+            debug_obj=debug,
+        )
+        toolpaths = assign_stable_path_ids(merge_connected_toolpaths(toolpaths))
+        legacy_kinds = {"detail-trace", "detail-continuation", "hatch", "adaptive", "fill-infill-travel", "coverage_connector", "collapse-centerline", "gap-repair-centerline"}
+        has_holes = bool(any(len(poly.interiors) > 0 for poly in normalize_geometry(bundle.printable_geometry)))
+        legacy_count = sum(1 for path in toolpaths if path.kind in legacy_kinds)
+        zero_length_metric_nonzero_move_count = 0
+        for path in toolpaths:
+            if len(path.points) < 2:
+                continue
+            max_surface = float((path.metadata or {}).get("max_surface_segment_mm_after_resampling", 0.0))
+            if max_surface <= 1e-12:
+                max_surface = max(_segment_lengths_mm(path.points, closed=path.closed), default=0.0)
+                path.metadata["max_surface_segment_mm_after_resampling"] = float(max_surface)
+            if max_surface > 1e-12:
+                continue
+            if any(not nearly_same_point(a, b, 1e-12) for a, b in zip(path.points, path.points[1:])):
+                zero_length_metric_nonzero_move_count += 1
+        contour_dbg = (debug or {}).get("contour_offset_debug", {}) if isinstance(debug, dict) else {}
+        remaining_uncovered_area_mm2 = float(contour_dbg.get("remaining_uncovered_area_mm2_after", 0.0) or 0.0)
+        remaining_uncovered_area_ratio = float(contour_dbg.get("remaining_uncovered_area_ratio_after", 0.0) or 0.0)
+        open_section_audit_failures = int(contour_dbg.get("open_section_audit_failures", 0) or 0)
+        remaining_uncovered_area_tolerance_ratio = float(os.getenv("CONTOUR_REMAINING_UNCOVERED_TOLERANCE_RATIO", "0.10"))
+        path_role_counts: dict[str, int] = {}
+        for path in toolpaths:
+            role = str((path.metadata or {}).get("path_role", ""))
+            if role:
+                path_role_counts[role] = int(path_role_counts.get(role, 0)) + 1
+        outline_last = bool(
+            len(toolpaths) > 0
+            and str((toolpaths[-1].metadata or {}).get("path_role", "")).startswith("FINAL_")
+        )
+        if isinstance(debug, dict):
+            debug["gcode_generation_audit"] = {
+                "legacy_kinds_forbidden_count": int(legacy_count),
+                "legacy_detail_trace_count": int(sum(1 for path in toolpaths if path.kind in {"detail-trace", "detail-continuation"})),
+                "collapse_centerline_count": int(sum(1 for path in toolpaths if path.kind == "collapse-centerline")),
+                "hatch_count": int(sum(1 for path in toolpaths if path.kind == "hatch")),
+                "adaptive_count": int(sum(1 for path in toolpaths if path.kind == "adaptive")),
+                "legacy_connector_count": int(sum(1 for path in toolpaths if path.kind in {"fill-infill-travel", "coverage_connector", "gap-repair-centerline"})),
+                "zero_length_metric_nonzero_move_count": int(zero_length_metric_nonzero_move_count),
+                "contour_infill_path_count": int(sum(1 for path in toolpaths if path.kind == "fill-infill")),
+                "full_contour_count": int(sum(1 for path in toolpaths if str((path.metadata or {}).get("path_role", "")) == "CONTOUR_INFILL")),
+                "contour_section_count": int(sum(1 for path in toolpaths if str((path.metadata or {}).get("path_role", "")) == "CONTOUR_SECTION_INFILL")),
+                "isolated_contour_section_count": int(sum(1 for path in toolpaths if str((path.metadata or {}).get("path_role", "")) == "ISOLATED_CONTOUR_SECTION")),
+                "crossed_contour_section_count": int(sum(1 for path in toolpaths if str((path.metadata or {}).get("path_role", "")) == "CROSSED_CONTOUR_SECTION")),
+                "corner_contour_section_count": int(sum(1 for path in toolpaths if str((path.metadata or {}).get("path_role", "")) == "CORNER_CONTOUR_SECTION")),
+                "isolated_inner_contour_count": int(sum(1 for path in toolpaths if bool((path.metadata or {}).get("isolated_inner_loop", False)))),
+                "repair_patch_fill_path_count": int(sum(1 for path in toolpaths if str((path.metadata or {}).get("path_role", "")) == "REPAIR_PATCH_FILL")),
+                "residual_repair_count": int(sum(1 for path in toolpaths if str((path.metadata or {}).get("path_role", "")) in {"RESIDUAL_CONTOUR_REPAIR", "REPAIR_PATCH_FILL"})),
+                "central_junction_accepted_section_count": int(contour_dbg.get("central_junction_sections_accepted", 0) or 0),
+                "remaining_uncovered_area_mm2": float(remaining_uncovered_area_mm2),
+                "remaining_uncovered_area_ratio": float(remaining_uncovered_area_ratio),
+                "open_section_audit_failures": int(open_section_audit_failures),
+                "outer_outline_count": int(sum(1 for path in toolpaths if path.kind == "outline" and str(path.metadata.get("path_role", "")) == "FINAL_OUTER_OUTLINE")),
+                "inner_outline_count": int(sum(1 for path in toolpaths if path.kind == "outline" and str(path.metadata.get("path_role", "")) == "FINAL_INNER_OUTLINE")),
+                "outline_path_count": int(sum(1 for path in toolpaths if path.kind == "outline")),
+                "outline_last": bool(outline_last),
+                "path_role_counts": path_role_counts,
+            }
+        if legacy_count > 0:
+            raise AssertionError("Contour-only mode violation: legacy path kinds present in toolpath output")
+        if zero_length_metric_nonzero_move_count > 0:
+            raise AssertionError("Contour-only mode violation: nonzero move path has zero max_surface_segment_mm_after_resampling")
+        if not outline_last:
+            raise AssertionError("Contour-only mode violation: final outline is not last")
+        if has_holes and int(sum(1 for path in toolpaths if path.kind == "outline" and str(path.metadata.get("path_role", "")) == "FINAL_INNER_OUTLINE")) <= 0:
+            raise AssertionError("Contour-only mode violation: missing FINAL_INNER_OUTLINE for geometry with holes")
+        if open_section_audit_failures > 0:
+            raise AssertionError("Contour-only mode violation: raw closed contour loop became open without valid_open_reason")
+        if remaining_uncovered_area_ratio > remaining_uncovered_area_tolerance_ratio:
+            raise AssertionError(
+                f"Contour-only mode violation: remaining uncovered area ratio {remaining_uncovered_area_ratio:.6f} exceeds tolerance {remaining_uncovered_area_tolerance_ratio:.6f}"
+            )
+        return toolpaths
+
+    detail_clip_region = None
+    if enable_fill and bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
+        detail_clip_region = _offset_geometry(bundle.printable_geometry, -(line_width_mm * 0.5))
+        if detail_clip_region is None or detail_clip_region.is_empty:
+            # Tiny regions may collapse with full pen-radius inset; still keep centerline safely inside when possible.
+            detail_clip_region = _offset_geometry(bundle.printable_geometry, -(line_width_mm * 0.25))
+        if detail_clip_region is None or detail_clip_region.is_empty:
+            detail_clip_region = bundle.printable_geometry
 
     detail_paths: list[Toolpath] = []
     for segment in bundle.detail_segments:
         simplified = simplify_segment_points(segment.points, detail_tolerance_mm, segment.closed)
         if len(simplified) < 2:
             continue
-        detail_paths.append(Toolpath(
-            points=simplified,
-            kind="detail-trace",
-            closed=segment.closed,
-            source="detail_trace",
-            metadata={
-                "simplify_tolerance_mm": detail_tolerance_mm,
-                "pen_width_mm": line_width_mm,
-                "source_component_id": None,
-                "source_contour_id": None,
-                "expected_relation_to_fill": "detail_overlay",
-                "coordinate_space_at_creation": "surface_mm",
-                "coordinate_space_before_offset": "surface_mm",
-                "offset_space": "none",
-                "coordinate_space_before_simplify": "surface_mm",
-                "simplify_space": "surface_mm",
-            },
-        ))
-    if detail_paths:
-        toolpaths.extend(merge_connected_toolpaths(
-            optimize_toolpath_order(detail_paths, strategy=travel_optimization)
-        ))
+        metadata = {
+            "simplify_tolerance_mm": detail_tolerance_mm,
+            "pen_width_mm": line_width_mm,
+            "source_component_id": None,
+            "source_contour_id": None,
+            "expected_relation_to_fill": "detail_overlay",
+            "coordinate_space_at_creation": "surface_mm",
+            "coordinate_space_before_offset": "surface_mm",
+            "offset_space": "none",
+            "coordinate_space_before_simplify": "surface_mm",
+            "simplify_space": "surface_mm",
+            "detail_centerline_clipped_to_printable_offset": bool(detail_clip_region is not None),
+        }
+        if detail_clip_region is None:
+            detail_paths.append(Toolpath(
+                points=simplified,
+                kind="detail-trace",
+                closed=segment.closed,
+                source="detail_trace",
+                metadata=metadata,
+            ))
+            continue
+        line = LineString([(point.x, point.y) for point in simplified])
+        clipped = line.intersection(detail_clip_region)
+        for part in extract_lines(clipped):
+            clipped_points = simplify_segment_points([Point(float(x), float(y)) for x, y in part.coords], detail_tolerance_mm, False)
+            if len(clipped_points) < 2:
+                continue
+            detail_paths.append(Toolpath(
+                points=clipped_points,
+                kind="detail-trace",
+                closed=False,
+                source="detail_trace",
+                metadata=metadata,
+            ))
+    def _build_clean_final_outline_paths() -> list[Toolpath]:
+        if bundle.printable_geometry is None or bundle.printable_geometry.is_empty:
+            return []
+        inset = line_width_mm * 0.5
+        outline_region = _offset_geometry(bundle.printable_geometry, -inset)
+        if outline_region is None or outline_region.is_empty:
+            outline_region = bundle.printable_geometry
+        simplify_mm = min(max(simplify_tolerance_resolved_mm, 0.02), max(0.08, line_width_mm * 0.35))
+        out: list[Toolpath] = []
+        for polygon in normalize_geometry(outline_region):
+            ext = simplify_segment_points([Point(float(x), float(y)) for x, y in polygon.exterior.coords], simplify_mm, True)
+            if len(ext) >= 4:
+                out.append(Toolpath(
+                    points=ext,
+                    kind="outline",
+                    closed=True,
+                    source="final_outline_offset",
+                    metadata={"path_role": "PRINT_OUTLINE_FINAL", "outline_offset_mm": inset, "simplify_tolerance_mm": simplify_mm},
+                ))
+            for ring in polygon.interiors:
+                inner = simplify_segment_points([Point(float(x), float(y)) for x, y in ring.coords], simplify_mm, True)
+                if len(inner) >= 4:
+                    out.append(Toolpath(
+                        points=inner,
+                        kind="outline",
+                        closed=True,
+                        source="final_outline_offset_hole",
+                        metadata={"path_role": "PRINT_OUTLINE_FINAL", "outline_offset_mm": inset, "simplify_tolerance_mm": simplify_mm, "is_hole": True},
+                    ))
+        return out
 
-    toolpaths = assign_stable_path_ids(merge_connected_toolpaths(toolpaths))
+    raw_print_paths = list(toolpaths)
+    composed_paths: list[Toolpath] = []
+
+    if enable_fill:
+        # Interior fill only; drop contour-like border artifacts from final emission.
+        interior_kinds = {"fill-infill", "coverage_rectilinear", "coverage_offset_line", "coverage_centerline", "coverage_tiny_mark"}
+        interior_paths: list[Toolpath] = []
+        for path in raw_print_paths:
+            if path.kind not in interior_kinds:
+                continue
+            as_detail = bool(path.metadata.get("mandatory_thin_detail", False) or path.metadata.get("force_minimum_printable_stroke", False))
+            interior_paths.append(clone_toolpath(
+                path,
+                kind="detail-trace" if as_detail else "fill-infill",
+                metadata={**path.metadata, "path_role": "PRINT_DETAIL" if as_detail else "PRINT_INFILL"},
+            ))
+
+        def _stroke_coverage_geometry(paths_for_coverage: list[Toolpath], pen_width_mm_value: float) -> Any:
+            pieces: list[Any] = []
+            radius = max(0.01, pen_width_mm_value * 0.5)
+            for path in paths_for_coverage:
+                if len(path.points) < 2:
+                    continue
+                line = LineString([(point.x, point.y) for point in path.points])
+                if line.is_empty or line.length <= 1e-9:
+                    continue
+                pieces.append(line.buffer(radius, cap_style=1, join_style=1))
+            if not pieces:
+                return None
+            return unary_union(pieces)
+
+        def _extract_centerline_for_residual(component: Any) -> list[Toolpath]:
+            if component is None or component.is_empty:
+                return []
+            origin = component.centroid.coords[0]
+            candidate_angles: list[float] = [0.0, 90.0]
+            try:
+                oriented = component.minimum_rotated_rectangle
+                coords = list(oriented.exterior.coords)
+                edges: list[tuple[float, float]] = []
+                for start, end in zip(coords, coords[1:]):
+                    dx = float(end[0] - start[0])
+                    dy = float(end[1] - start[1])
+                    length = math.hypot(dx, dy)
+                    if length > 1e-6:
+                        edges.append((length, math.degrees(math.atan2(dy, dx))))
+                edges.sort(reverse=True)
+                candidate_angles.extend([angle for _length, angle in edges[:2]])
+            except Exception:
+                pass
+
+            best_line = None
+            best_length = 0.0
+            for candidate_angle in candidate_angles:
+                rotated = affinity.rotate(component, -candidate_angle, origin=origin)
+                min_x, _min_y, max_x, _max_y = rotated.bounds
+                center_y = rotated.centroid.y
+                probe = LineString([(min_x - 1.0, center_y), (max_x + 1.0, center_y)])
+                clipped = rotated.intersection(probe)
+                lines = sorted(extract_lines(clipped), key=lambda line: line.length, reverse=True)
+                if lines and lines[0].length > best_length:
+                    best_line = affinity.rotate(lines[0], candidate_angle, origin=origin)
+                    best_length = float(lines[0].length)
+
+            if best_line is None or best_length < max(0.06, line_width_mm * 0.2):
+                return []
+            points = simplify_segment_points([Point(float(x), float(y)) for x, y in best_line.coords], max(0.015, detail_tolerance_mm), False)
+            if len(points) < 2:
+                return []
+            return [Toolpath(
+                points=points,
+                kind="detail-trace",
+                closed=False,
+                source="residual_centerline",
+                metadata={"path_role": "PRINT_DETAIL", "detail_source": "residual_centerline"},
+            )]
+
+        allow_detail_overlap_outline = os.getenv("ALLOW_DETAIL_OVERLAP_OUTLINE", "1") == "1"
+        validate_detail_with_pen_footprint = os.getenv("DETAIL_VALIDATE_WITH_PEN_FOOTPRINT", "1") == "1"
+        max_detail_overspill_mm = min(0.05, line_width_mm * 0.10, max(0.0, float(os.getenv("MAX_DETAIL_OVERSPILL_MM", "0.05"))))
+        max_detail_overspill_area_ratio = max(0.0, float(os.getenv("MAX_DETAIL_OVERSPILL_AREA_RATIO", "0.03")))
+        min_detail_new_coverage_mm2 = max(0.0, float(os.getenv("MIN_DETAIL_NEW_COVERAGE_MM2", "0.02")))
+        max_already_covered_ratio = max(0.0, min(1.0, float(os.getenv("MAX_ALREADY_COVERED_RATIO", "0.90"))))
+
+        # Detail traces are allowed only when they add meaningful new target
+        # coverage beyond infill, final outline, and accepted pen-down connectors.
+        final_outline_paths = _build_clean_final_outline_paths()
+        infill_coverage_seed = [path for path in interior_paths if path.kind == "fill-infill"]
+        connector_coverage_seed = [path for path in raw_print_paths if path.kind == "fill-infill-travel"]
+        covered_geom = _stroke_coverage_geometry(infill_coverage_seed, line_width_mm)
+        outline_covered_geom = _stroke_coverage_geometry(final_outline_paths, line_width_mm)
+        connector_covered_geom = _stroke_coverage_geometry(connector_coverage_seed, line_width_mm)
+        existing_painted_parts = [
+            geom
+            for geom in (covered_geom, outline_covered_geom, connector_covered_geom)
+            if geom is not None and not geom.is_empty
+        ]
+        existing_painted_area = unary_union(existing_painted_parts) if existing_painted_parts else Polygon()
+        residual_target = bundle.printable_geometry
+        if bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty and existing_painted_parts:
+            try:
+                residual_target = bundle.printable_geometry.difference(existing_painted_area)
+            except Exception:
+                repaired_printable = bundle.printable_geometry.buffer(0)
+                repaired_covered = existing_painted_area.buffer(0)
+                residual_target = repaired_printable.difference(repaired_covered)
+        if residual_target is not None and not residual_target.is_empty:
+            try:
+                residual_target = residual_target.buffer(0)
+            except Exception:
+                pass
+        debug_append_geometry(debug, "residual_detail_target", residual_target, "residual-detail-target")
+
+        residual_detail_candidates: list[Toolpath] = []
+        min_residual_area = max(1e-6, line_width_mm * line_width_mm * 0.03)
+        narrow_width_limit = line_width_mm * 1.6
+        residual_components_for_detail: list[Any] = []
+        if residual_target is not None and not residual_target.is_empty:
+            for residual_component in normalize_geometry(residual_target):
+                area = float(residual_component.area)
+                if area < min_residual_area:
+                    continue
+                min_x, min_y, max_x, max_y = residual_component.bounds
+                local_width = min(max_x - min_x, max_y - min_y)
+                if local_width > narrow_width_limit:
+                    continue
+                residual_components_for_detail.append(residual_component)
+                residual_detail_candidates.extend(_extract_centerline_for_residual(residual_component))
+
+        # Also keep raster-derived detail candidates, but only if they add real residual coverage.
+        residual_detail_candidates.extend(detail_paths)
+
+        component_boundary_cache: list[Any] = [component.boundary for component in residual_components_for_detail]
+
+        def _candidate_component_index(path: Toolpath) -> int | None:
+            if len(path.points) < 2:
+                return None
+            shp = LineString([(point.x, point.y) for point in path.points])
+            if shp.is_empty:
+                return None
+            best_idx: int | None = None
+            best_overlap = 0.0
+            for idx, component in enumerate(residual_components_for_detail):
+                try:
+                    overlap = float(shp.intersection(component).length)
+                except Exception:
+                    overlap = 0.0
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_idx = idx
+            return best_idx
+
+        def _candidate_centeredness(path: Toolpath, component_idx: int | None) -> float:
+            if component_idx is None or component_idx < 0 or component_idx >= len(component_boundary_cache):
+                return 0.0
+            boundary = component_boundary_cache[component_idx]
+            if boundary is None or boundary.is_empty:
+                return 0.0
+            if len(path.points) < 2:
+                return 0.0
+            samples = path.points
+            if len(samples) > 16:
+                step = max(1, int(len(samples) / 16))
+                samples = [samples[i] for i in range(0, len(samples), step)]
+            distances: list[float] = []
+            for pt in samples:
+                try:
+                    distances.append(float(ShapelyPoint(pt.x, pt.y).distance(boundary)))
+                except Exception:
+                    continue
+            if not distances:
+                return 0.0
+            return float(sum(distances) / max(1, len(distances)))
+
+        # Coverage-aware ordering: prefer centered centerline candidates first so
+        # later overlaps are treated as duplicates, not independent fragments.
+        scored_candidates: list[tuple[float, float, float, Toolpath]] = []
+        for candidate in residual_detail_candidates:
+            comp_idx = _candidate_component_index(candidate)
+            centeredness = _candidate_centeredness(candidate, comp_idx)
+            length = segment_length(candidate.points) if len(candidate.points) >= 2 else 0.0
+            src = str(candidate.source or "")
+            source_bias = 1.0 if src == "residual_centerline" else 0.0
+            scored_candidates.append((source_bias, centeredness, length, candidate))
+        scored_candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        residual_detail_candidates = [item[3] for item in scored_candidates]
+
+        detail_filter_stats = _filter_detail_trace_candidates_for_export(
+            residual_detail_candidates,
+            target_geometry=bundle.printable_geometry,
+            existing_painted_area=existing_painted_area,
+            line_width_mm=line_width_mm,
+            allow_detail_overlap_outline=allow_detail_overlap_outline,
+            validate_detail_with_pen_footprint=validate_detail_with_pen_footprint,
+            max_detail_overspill_mm=max_detail_overspill_mm,
+            max_detail_overspill_area_ratio=max_detail_overspill_area_ratio,
+            min_detail_new_coverage_mm2=min_detail_new_coverage_mm2,
+            max_already_covered_ratio=max_already_covered_ratio,
+            candidate_component_index_fn=_candidate_component_index,
+            candidate_centeredness_fn=_candidate_centeredness,
+        )
+        accepted_detail_paths = list(detail_filter_stats["accepted_detail_paths"])
+        accepted_detail_footprints = list(detail_filter_stats["accepted_detail_footprints"])
+        rejected_detail_paths = list(detail_filter_stats["rejected_detail_paths"])
+        overspill_warning_regions = list(detail_filter_stats["overspill_warning_regions"])
+        debug.update(detail_filter_stats)
+
+        debug_append_toolpaths(debug, "detail_traces_rejected", rejected_detail_paths)
+        debug_append_toolpaths(debug, "detail_traces_accepted", accepted_detail_paths)
+        if overspill_warning_regions:
+            debug_append_geometry(debug, "detail_overspill_warning_regions", unary_union(overspill_warning_regions), "detail-overspill-warning")
+        if accepted_detail_footprints:
+            debug_append_geometry(debug, "detail_pen_footprints", unary_union(accepted_detail_footprints), "detail-pen-footprint")
+
+        allow_detail_pen_down_continuation = os.getenv("ALLOW_DETAIL_PEN_DOWN_CONTINUATION", "1") == "1"
+        max_detail_continuation_length_mm = max(
+            line_width_mm * 0.5,
+            float(os.getenv("MAX_DETAIL_CONTINUATION_LENGTH_MM", str(4.0 * line_width_mm))),
+        )
+        preferred_detail_continuation_length_mm = max(
+            line_width_mm * 0.25,
+            float(os.getenv("PREFERRED_DETAIL_CONTINUATION_LENGTH_MM", str(2.0 * line_width_mm))),
+        )
+        max_detail_continuation_overspill_mm = min(
+            max_detail_overspill_mm,
+            max(0.0, float(os.getenv("MAX_DETAIL_CONTINUATION_OVERSPILL_MM", str(max_detail_overspill_mm)))),
+        )
+        max_detail_continuation_overspill_area_ratio = max(
+            0.0,
+            float(os.getenv("MAX_DETAIL_CONTINUATION_OVERSPILL_AREA_RATIO", "0.02")),
+        )
+        max_detail_continuation_turn_deg = max(
+            0.0,
+            float(os.getenv("MAX_DETAIL_CONTINUATION_TURN_DEG", "120")),
+        )
+
+        detail_ordered = optimize_toolpath_order(accepted_detail_paths, strategy=travel_optimization) if accepted_detail_paths else []
+        if allow_detail_pen_down_continuation and len(detail_ordered) > 1 and bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
+            component_geoms = normalize_geometry(bundle.printable_geometry)
+
+            def _component_index_for_point(pt: Point) -> int | None:
+                shp = ShapelyPoint(pt.x, pt.y)
+                for idx, geom in enumerate(component_geoms):
+                    try:
+                        if geom.covers(shp):
+                            return idx
+                    except Exception:
+                        continue
+                return None
+
+            def _path_component_index(path: Toolpath) -> int | None:
+                md_component = path.metadata.get("source_component_id")
+                parsed = _extract_component_id(md_component)
+                if parsed is not None:
+                    return max(0, parsed - 1)
+                return _component_index_for_point(path.points[0])
+
+            def _turn_angle_deg(prev: list[Point], nxt: list[Point]) -> float:
+                if len(prev) < 2 or len(nxt) < 2:
+                    return 0.0
+                ax = prev[-1].x - prev[-2].x
+                ay = prev[-1].y - prev[-2].y
+                bx = nxt[1].x - nxt[0].x
+                by = nxt[1].y - nxt[0].y
+                la = math.hypot(ax, ay)
+                lb = math.hypot(bx, by)
+                if la <= 1e-9 or lb <= 1e-9:
+                    return 0.0
+                dot = max(-1.0, min(1.0, (ax * bx + ay * by) / (la * lb)))
+                return math.degrees(math.acos(dot))
+
+            def _connector_pen_safe(connector: LineString, component_idx: int | None) -> tuple[bool, float, float]:
+                stroke = connector.buffer(max(0.01, line_width_mm * 0.5), cap_style=1, join_style=1)
+                target = component_geoms[component_idx] if component_idx is not None and 0 <= component_idx < len(component_geoms) else bundle.printable_geometry
+                if target is None or target.is_empty:
+                    return False, 1.0, max_detail_continuation_overspill_mm + 1.0
+                overspill = stroke.difference(target)
+                overspill_area = float(overspill.area) if overspill is not None and not overspill.is_empty else 0.0
+                overspill_ratio = overspill_area / max(1e-9, float(stroke.area))
+                protrusion_mm = 0.0
+                if overspill is not None and not overspill.is_empty:
+                    boundary = target.boundary
+                    for poly in normalize_geometry(overspill):
+                        coords = list(poly.exterior.coords)
+                        sample_step = max(1, int(len(coords) / 24))
+                        for idx in range(0, len(coords), sample_step):
+                            pt = ShapelyPoint(float(coords[idx][0]), float(coords[idx][1]))
+                            protrusion_mm = max(protrusion_mm, float(pt.distance(boundary)))
+                safe = (
+                    overspill_ratio <= max_detail_continuation_overspill_area_ratio
+                    and protrusion_mm <= max_detail_continuation_overspill_mm
+                    and _line_fully_inside(target.buffer(max(0.01, line_width_mm * 0.15), join_style=1), connector, tolerance_mm=max(0.01, line_width_mm * 0.05))
+                )
+                return safe, overspill_ratio, protrusion_mm
+
+            chained_paths: list[Toolpath] = []
+            accepted_continuations: list[Toolpath] = []
+            rejected_continuations: list[Toolpath] = []
+            continuation_pen_footprints: list[Any] = []
+            for idx, path in enumerate(detail_ordered):
+                if not chained_paths:
+                    chained_paths.append(path)
+                    continue
+                current = chained_paths[-1]
+                next_path = path
+                same_component = _path_component_index(current) == _path_component_index(next_path)
+                if not same_component:
+                    chained_paths.append(next_path)
+                    continue
+                end = current.points[-1]
+                start = next_path.points[0]
+                gap = math.hypot(start.x - end.x, start.y - end.y)
+                if gap <= 1e-6:
+                    chained_paths.append(next_path)
+                    continue
+                connector = LineString([(end.x, end.y), (start.x, start.y)])
+                angle = _turn_angle_deg(current.points, next_path.points)
+                short_enough = gap <= max_detail_continuation_length_mm + 1e-9
+                smooth_enough = angle <= max_detail_continuation_turn_deg + 1e-9
+                safe, overspill_ratio, protrusion_mm = _connector_pen_safe(connector, _path_component_index(current))
+                score = (
+                    1.0
+                    - (gap / max(1e-9, preferred_detail_continuation_length_mm))
+                    - (angle / 180.0)
+                    - (overspill_ratio * 10.0)
+                )
+                if short_enough and smooth_enough and safe and score > -1.2:
+                    connector_tp = Toolpath(
+                        points=[end, start],
+                        kind="detail-continuation",
+                        closed=False,
+                        source="detail_continuation",
+                        metadata={
+                            "path_role": "PRINT_DETAIL_CONTINUATION",
+                            "detail_continuation_pen_down": True,
+                            "connector_length_mm": float(gap),
+                            "connector_turn_deg": float(angle),
+                            "connector_overspill_area_ratio": float(overspill_ratio),
+                            "connector_max_protrusion_mm": float(protrusion_mm),
+                            "connector_score": float(score),
+                        },
+                    )
+                    accepted_continuations.append(connector_tp)
+                    continuation_pen_footprints.append(connector.buffer(max(0.01, line_width_mm * 0.5), cap_style=1, join_style=1))
+                    chained_paths.append(connector_tp)
+                    chained_paths.append(next_path)
+                else:
+                    rejected_continuations.append(Toolpath(
+                        points=[end, start],
+                        kind="travel",
+                        closed=False,
+                        source="detail_continuation_rejected",
+                        metadata={
+                            "path_role": "TRAVEL",
+                            "detail_continuation_rejected": True,
+                            "connector_length_mm": float(gap),
+                            "connector_turn_deg": float(angle),
+                            "connector_overspill_area_ratio": float(overspill_ratio),
+                            "connector_max_protrusion_mm": float(protrusion_mm),
+                            "connector_safe": bool(safe),
+                        },
+                    ))
+                    chained_paths.append(next_path)
+            detail_ordered = chained_paths
+            debug_append_toolpaths(debug, "detail_continuation_accepted", accepted_continuations)
+            debug_append_toolpaths(debug, "detail_continuation_rejected", rejected_continuations)
+            if continuation_pen_footprints:
+                debug_append_geometry(debug, "detail_continuation_pen_footprints", unary_union(continuation_pen_footprints), "detail-continuation-pen-footprint")
+
+        # Detail traces first, then infill, outline last.
+        composed_paths.extend(merge_connected_toolpaths(detail_ordered))
+        composed_paths.extend(interior_paths)
+        # Final clean outline last.
+        composed_paths.extend(final_outline_paths)
+    else:
+        composed_paths = list(raw_print_paths)
+        if detail_paths:
+            detail_ordered = optimize_toolpath_order(detail_paths, strategy=travel_optimization)
+            composed_paths.extend(merge_connected_toolpaths(detail_ordered))
+
+    toolpaths = merge_connected_toolpaths(composed_paths)
+    toolpaths = optimize_detail_trace_efficiency(
+        toolpaths,
+        printable_geometry=bundle.printable_geometry,
+        pen_width_mm=line_width_mm,
+        debug=debug,
+    )
+    # Preserve the user-visible requirement that cleanup/final outline strokes
+    # render last, after infill/detail passes.
+    non_outline = [path for path in toolpaths if path.kind != "outline"]
+    outline_only = [path for path in toolpaths if path.kind == "outline"]
+    toolpaths = assign_stable_path_ids(merge_connected_toolpaths(non_outline + outline_only))
 
     toolpath_counts = {
         "generated_fill_walls": sum(1 for path in toolpaths if path.kind == "fill-wall"),
@@ -9203,7 +15405,26 @@ def generate_toolpaths(
     }
     debug_set_counts(debug, "toolpath_counts", toolpath_counts)
     if debug is not None:
+        debug["coverage_path_diagnostics"] = {
+            "raw_generated_path_count": int(debug.get("infill_debug", {}).get("diagnostics", {}).get("raw_generated_paths", len(toolpaths))) if isinstance(debug.get("infill_debug"), dict) else int(len(toolpaths)),
+            "final_accepted_path_count": int(len(toolpaths)),
+            "rejected_mesh_or_detail_trace_count": int(debug.get("mesh_like_paths_rejected", 0)),
+            "centerline_path_count": sum(1 for path in toolpaths if path.kind == "coverage_centerline"),
+            "offset_path_count": sum(1 for path in toolpaths if path.kind == "coverage_offset_line"),
+            "rectilinear_path_count": sum(1 for path in toolpaths if path.kind == "coverage_rectilinear"),
+            "tiny_mark_count": sum(1 for path in toolpaths if str(path.metadata.get("small_detail_fill_style")) in {"tiny_dot", "tiny_short_stroke"}),
+            "pen_lifts_before_optimization": int(debug.get("pen_lifts_before_cell_planning", 0)),
+            "pen_lifts_after_optimization": int(debug.get("pen_lifts_after_cell_planning", 0)),
+            "rejected_x_triangle_fragment_count": int(debug.get("rejected_x_triangle_fragment_count", 0)),
+        }
         debug["toolpath_diagnostics"] = summarize_toolpaths(toolpaths)
+        tiny_detail_two_point = sum(1 for path in toolpaths if path.kind in {"detail-trace", "detail-continuation"} and len(path.points) <= 2)
+        debug["efficiency_audit"] = {
+            "total_paths": len(toolpaths),
+            "paths_by_kind": dict(debug.get("toolpath_diagnostics", {}).get("paths_by_kind", {})),
+            "tiny_two_point_detail_paths": int(tiny_detail_two_point),
+            "warn_too_many_tiny_detail_paths": bool(tiny_detail_two_point > 20),
+        }
     debug_append_toolpaths(debug, "final_toolpaths", toolpaths)
     return toolpaths
 
@@ -9237,6 +15458,17 @@ def generate_gcode_from_toolpaths(
             raise AssertionError(
                 f"{toolpath.kind} {toolpath.path_id or '<unassigned>'} was projected {toolpath.metadata.get('projection_count', 0)} times"
             )
+        if toolpath.kind in {"outline", "fill-wall", "fill-infill", "crossed-contour-infill", "junction-centerline", "gap-repair-stroke", "gap-repair-dab", "repair-patch-fill"} and len(toolpath.points) >= 2:
+            max_surface = float(toolpath.metadata.get("max_surface_segment_mm_after_resampling", 0.0))
+            if max_surface <= 1e-12:
+                max_surface = max(_segment_lengths_mm(toolpath.points, closed=toolpath.closed), default=0.0)
+                toolpath.metadata["max_surface_segment_mm_after_resampling"] = float(max_surface)
+            if max_surface <= 1e-12:
+                nonzero_move = any(not nearly_same_point(a, b, 1e-12) for a, b in zip(toolpath.points, toolpath.points[1:]))
+                if nonzero_move:
+                    raise AssertionError(
+                        f"{toolpath.kind} {toolpath.path_id or '<unassigned>'} has nonzero moves but max_surface_segment_mm_after_resampling=0"
+                    )
 
     g: list[str] = []
     preview: list[dict[str, Any]] = []
@@ -9251,6 +15483,20 @@ def generate_gcode_from_toolpaths(
     long_pen_down_jumps = 0
     max_pen_down_jump = 0.0
     previous_draw_path_id: str | None = None
+    previous_printed_toolpath: Toolpath | None = None
+    collinear_points_removed = 0
+    pen_radius_mm = 0.3
+    printable_outline_area = _build_outline_printable_area_from_toolpaths(toolpaths, pen_radius_mm=pen_radius_mm)
+    rejected_travel_reasons: dict[str, int] = {}
+    pending_converted_travel_index: int | None = None
+    pending_converted_travel_length_mm = 0.0
+    active_fill_chain_path_id: str | None = None
+    travels_checked = 0
+    infill_to_infill_travels_checked = 0
+    travels_converted_to_pen_down = 0
+    converted_connector_length_mm = 0.0
+    converted_connectors_outside_outline_area_mm2 = 0.0
+    fill_path_count_after_conversion = 0
 
     def comment(text: str) -> None:
         if include_comments:
@@ -9303,6 +15549,39 @@ def generate_gcode_from_toolpaths(
     ):
         append_gcode(command)
 
+    printable_kinds = {
+        "outline",
+        "fill-wall",
+        "fill-infill",
+        "detail-trace",
+        "detail-continuation",
+        "crossed-contour-infill",
+        "junction-centerline",
+        "gap-repair-stroke",
+        "gap-repair-dab",
+        "repair-patch-fill",
+    }
+    connector_kinds = {"fill-infill-travel", "coverage_connector"}
+
+    def classify_path_type(toolpath: Toolpath) -> str:
+        if toolpath.kind == "travel":
+            return "TRAVEL"
+        if toolpath.kind in connector_kinds:
+            connector_ok = bool(toolpath.metadata.get("connector_pen_down_allowed", False))
+            connector_opt_in = os.getenv("ALLOW_PEN_DOWN_CONNECTORS", "0") == "1"
+            # If connector metadata explicitly marks pen-down as allowed, treat as infill (default)
+            if connector_ok:
+                return "PRINT_INFILL"
+            # Otherwise fall back to legacy opt-in via environment variable
+            return "PRINT_INFILL" if connector_opt_in else "TRAVEL"
+        if toolpath.kind in printable_kinds:
+            if toolpath.kind in {"outline", "fill-wall", "coverage_contour", "outline_cleanup"}:
+                return "PRINT_OUTLINE"
+            if toolpath.kind in {"detail-trace", "detail-continuation"}:
+                return "PRINT_DETAIL"
+            return "PRINT_INFILL"
+        return "DEBUG_ONLY"
+
     for index, toolpath in enumerate(toolpaths, start=1):
         pts = list(toolpath.points)
         if len(pts) < 2:
@@ -9314,10 +15593,62 @@ def generate_gcode_from_toolpaths(
             if point.x < (X_DRAW_MIN - 1e-6) or point.x > (X_DRAW_MAX + 1e-6):
                 raise ValueError(f"Projected toolpath exceeds X drawing limits at {point.x:.3f} degrees")
 
+        path_type = classify_path_type(toolpath)
         start = pts[0]
+        continuing_fill_chain = (
+            pending_converted_travel_index == index
+            and toolpath.kind == "fill-infill"
+            and active_fill_chain_path_id is not None
+        )
+        if debug is not None:
+            debug.setdefault("path_type_counts", {})
+            debug["path_type_counts"][path_type] = int(debug["path_type_counts"].get(path_type, 0)) + 1
         pen_up_before_travel_to_start = not current_pen_down
         unexpected_pen_down_travel = False
-        is_pen_down_travel = toolpath.kind == "fill-infill-travel"
+        is_pen_down_travel = path_type == "PRINT_INFILL" and toolpath.kind in connector_kinds
+
+        if path_type in {"TRAVEL", "DEBUG_ONLY"}:
+            if current_pen_down:
+                for command in build_pen_position_commands(
+                    current_servo,
+                    pen_up_s,
+                    ramp_enabled=servo_ramp_enabled,
+                    ramp_step=servo_ramp_step,
+                    ramp_delay_ms=servo_ramp_delay_ms,
+                    dwell_ms=pen_up_dwell_ms,
+                ):
+                    append_gcode(command)
+                current_servo = pen_up_s
+                current_pen_down = False
+
+            travel_id = toolpath.path_id or f"travel-{index:04d}"
+            travel_start_line = None
+            travel_end_line = None
+            previous_point = current_position
+            for point in pts:
+                if nearly_same_point(previous_point, point):
+                    continue
+                line_number = append_motion("G1", point, travel_feed)
+                if line_number is not None:
+                    if travel_start_line is None:
+                        travel_start_line = line_number
+                    travel_end_line = line_number
+                previous_point = point
+                current_position = point
+            preview.append({
+                "id": travel_id,
+                "kind": "travel",
+                "closed": False,
+                "pen_down": False,
+                "points": [asdict(_rounded_gcode_point(point)) for point in pts],
+                "gcode_start_line": travel_start_line,
+                "gcode_end_line": travel_end_line,
+                "source_path_id": toolpath.path_id,
+                "source_path_kind": toolpath.kind,
+                "path_type": path_type,
+            })
+            continue
+
         if is_pen_down_travel:
             if not current_pen_down:
                 for command in build_pen_position_commands(
@@ -9407,7 +15738,11 @@ def generate_gcode_from_toolpaths(
 
         if not nearly_same_point(current_position, start):
             travel_id = f"travel-{index:04d}"
-            if current_pen_down:
+            converted_existing_travel = pending_converted_travel_index == index and current_pen_down
+            travels_checked += 1
+            if previous_printed_toolpath is not None and previous_printed_toolpath.kind == "fill-infill" and toolpath.kind == "fill-infill":
+                infill_to_infill_travels_checked += 1
+            if current_pen_down and not converted_existing_travel:
                 for command in build_pen_position_commands(
                     current_servo,
                     pen_up_s,
@@ -9420,25 +15755,33 @@ def generate_gcode_from_toolpaths(
                 current_servo = pen_up_s
                 current_pen_down = False
                 unexpected_pen_down_travel = True
-            comment(f"Travel to {toolpath.kind} path {index}")
-            travel_line = append_motion("G1", start, travel_feed)
+            travel_feed_to_use = draw_feed if converted_existing_travel else travel_feed
+            if converted_existing_travel:
+                comment(f"Safe converted infill-to-infill connector to {toolpath.kind} path {index}")
+                travels_converted_to_pen_down += 1
+                converted_connector_length_mm += float(pending_converted_travel_length_mm)
+            else:
+                comment(f"Travel to {toolpath.kind} path {index}")
+            travel_line = append_motion("G1", start, travel_feed_to_use)
             pen_state_debug.append({
                 "line_index": travel_line,
                 "command": g[-1],
                 "path_id": travel_id,
                 "kind": "travel",
-                "expected_pen_state": "up",
+                "expected_pen_state": "down" if converted_existing_travel else "up",
                 "actual_pen_state": "down" if current_pen_down else "up",
                 "is_drawing_move": False,
-                "warning": "travel_with_pen_down" if current_pen_down else "",
+                "warning": "" if converted_existing_travel else ("travel_with_pen_down" if current_pen_down else ""),
             })
-            if current_pen_down:
+            if current_pen_down and not converted_existing_travel:
                 travel_moves_with_pen_down += 1
             preview.append({
                 "id": travel_id,
                 "kind": "travel",
                 "closed": False,
                 "pen_down": bool(current_pen_down),
+                "travel_mode": "converted_infill_connector" if converted_existing_travel else "pen_up",
+                "chain_path_id": active_fill_chain_path_id if converted_existing_travel else "",
                 "points": [asdict(_rounded_gcode_point(current_position)), asdict(_rounded_gcode_point(start))],
                 "gcode_start_line": travel_line,
                 "gcode_end_line": travel_line,
@@ -9478,16 +15821,18 @@ def generate_gcode_from_toolpaths(
                         "coordinate_space_before_projection": "generated_in_machine_deg",
                         "source_component_id": toolpath.metadata.get("source_component_id"),
                         "source_contour_id": toolpath.metadata.get("source_contour_id"),
-                        "expected_relation_to_fill": "pen_up_reposition",
+                        "expected_relation_to_fill": "converted_pen_down_connector" if converted_existing_travel else "pen_up_reposition",
                     },
                 ),
                 gcode_motion_count=1,
-                pen_down_motion_count=0,
-                pen_up_motion_count=1,
+                pen_down_motion_count=1 if converted_existing_travel else 0,
+                pen_up_motion_count=0 if converted_existing_travel else 1,
                 uses_same_projected_object_for_preview_and_gcode=True,
             )
             log_preview_gcode_identity_check(travel_id, "travel", [current_position, start], [current_position, start])
             current_position = start
+            pending_converted_travel_index = None
+            pending_converted_travel_length_mm = 0.0
 
         if not current_pen_down:
             for command in build_pen_position_commands(
@@ -9503,15 +15848,23 @@ def generate_gcode_from_toolpaths(
             current_pen_down = True
 
         path_id = toolpath.path_id or f"path-{index:04d}"
+        chain_path_id = active_fill_chain_path_id if continuing_fill_chain else path_id
         draw_start_line = None
         draw_end_line = None
         path_gcode_start_index = len(g)
         max_surface_segment_mm = float(toolpath.metadata.get("max_surface_segment_mm_after_resampling", 0.0))
         source_label = toolpath.metadata.get("source_polygon_id", _path_component_label(toolpath))
-        comment(
-            f"PATH_START id={path_id} kind={toolpath.kind} space={toolpath.coordinate_space} "
-            f"source={source_label} points={len(pts)} max_surface_segment_mm={max_surface_segment_mm:.4f}"
-        )
+        if toolpath.kind == "fill-infill":
+            if active_fill_chain_path_id is None:
+                active_fill_chain_path_id = path_id
+            chain_path_id = active_fill_chain_path_id
+        if not continuing_fill_chain:
+            comment(
+                f"PATH_START id={chain_path_id} kind={toolpath.kind} space={toolpath.coordinate_space} "
+                f"source={source_label} points={len(pts)} max_surface_segment_mm={max_surface_segment_mm:.4f}"
+            )
+            if toolpath.kind == "fill-infill":
+                fill_path_count_after_conversion += 1
         comment(f"{toolpath.kind} path {index}, {len(pts)} points")
         previous_point = pts[0]
         for point in pts[1:]:
@@ -9543,6 +15896,9 @@ def generate_gcode_from_toolpaths(
             "id": path_id,
             "kind": toolpath.kind,
             "closed": toolpath.closed,
+            "pen_down": True,
+            "path_type": path_type,
+            "chain_path_id": chain_path_id if toolpath.kind == "fill-infill" else "",
             "points": [asdict(point) for point in emitted_points],
             "gcode_start_line": draw_start_line,
             "gcode_end_line": draw_end_line,
@@ -9552,14 +15908,42 @@ def generate_gcode_from_toolpaths(
         preview_points = [Point(point.x, point.y) for point in emitted_points]
 
         # Decide whether to lift the pen at path end. If the next toolpath
-        # is a pen-down infill connector (`fill-infill-travel`) we must keep
-        # the pen down to avoid unnecessary pen lifts between the infill
-        # stroke and its connector (the connector itself will be emitted
-        # with pen down). This preserves the user's acceptance rule that
-        # internal connector travel may be pen-down.
+        # is an approved pen-down connector we keep the pen down to avoid
+        # unnecessary lifts between consecutive printable strokes.
         next_toolpath = toolpaths[index] if index < len(toolpaths) else None
-        if next_toolpath is not None and getattr(next_toolpath, "kind", None) == "fill-infill-travel":
-            comment(f"PATH_END id={path_id} (keeping pen down for connector)")
+        keep_down_for_infill_connector = (
+            next_toolpath is not None
+            and classify_path_type(next_toolpath) == "PRINT_INFILL"
+            and getattr(next_toolpath, "kind", None) in connector_kinds
+        )
+        converted_travel = _evaluate_infill_travel_conversion(
+            toolpath,
+            next_toolpath,
+            printable_area=printable_outline_area,
+            pen_radius_mm=pen_radius_mm,
+        ) if next_toolpath is not None else {"convert": False, "reasons": ["missing_next_path"]}
+        if next_toolpath is not None and len(next_toolpath.points) >= 2 and not nearly_same_point(current_position, next_toolpath.points[0]):
+            for reason in converted_travel.get("reasons", []):
+                rejected_travel_reasons[reason] = int(rejected_travel_reasons.get(reason, 0)) + 1
+        keep_down_for_converted_travel = bool(converted_travel.get("convert", False))
+        if keep_down_for_converted_travel:
+            pending_converted_travel_index = index + 1
+            pending_converted_travel_length_mm = float(converted_travel.get("travel_length_mm", 0.0))
+            converted_connectors_outside_outline_area_mm2 += float(converted_travel.get("outside_area_mm2", 0.0))
+        keep_down_for_detail_continuation = (
+            next_toolpath is not None
+            and classify_path_type(next_toolpath) == "PRINT_DETAIL"
+            and str((next_toolpath.metadata or {}).get("path_role", "")) == "PRINT_DETAIL_CONTINUATION"
+        )
+        keep_down_for_touching_detail = (
+            next_toolpath is not None
+            and classify_path_type(next_toolpath) == "PRINT_DETAIL"
+            and len(next_toolpath.points) >= 1
+            and nearly_same_point(current_position, next_toolpath.points[0], 1e-6)
+        )
+        if keep_down_for_infill_connector or keep_down_for_detail_continuation or keep_down_for_touching_detail or keep_down_for_converted_travel:
+            if not keep_down_for_converted_travel:
+                comment(f"PATH_END id={chain_path_id} (keeping pen down for connector/continuation)")
         else:
             for command in build_pen_position_commands(
                 current_servo,
@@ -9572,7 +15956,11 @@ def generate_gcode_from_toolpaths(
                 append_gcode(command)
             current_servo = pen_up_s
             current_pen_down = False
-            comment(f"PATH_END id={path_id}")
+            comment(f"PATH_END id={chain_path_id}")
+            pending_converted_travel_index = None
+            pending_converted_travel_length_mm = 0.0
+            if toolpath.kind == "fill-infill":
+                active_fill_chain_path_id = None
         path_gcode_lines = g[path_gcode_start_index:]
         log_path_pipeline_audit(
             None,
@@ -9595,9 +15983,12 @@ def generate_gcode_from_toolpaths(
             last_gcode_for_path=path_gcode_lines[-3:],
         )
         previous_draw_path_id = path_id
+        previous_printed_toolpath = toolpath
 
     comment("Return to zero with pen up")
     if not nearly_same_point(current_position, Point(0.0, 0.0)):
+        travels_checked += 1
+        rejected_travel_reasons["missing_next_path"] = int(rejected_travel_reasons.get("missing_next_path", 0)) + 1
         return_home_line = append_motion("G1", Point(0.0, 0.0), travel_feed)
         preview.append({
             "id": "travel-home",
@@ -9619,13 +16010,57 @@ def generate_gcode_from_toolpaths(
         append_gcode(command)
 
     if debug is not None:
+        actual_pen_lift_count = sum(1 for line in g if line.strip().startswith(f"M3 S{int(pen_up_s)}"))
+        connector_pen_down_paths = 0
+        connector_total_paths = 0
+        detail_continuation_pen_down_paths = 0
+        outline_path_start_count_in_gcode = 0
+        toolpath_by_id = {tp.path_id: tp for tp in toolpaths if tp.path_id}
+        for entry in preview:
+            src_kind = str(entry.get("source_path_kind") or entry.get("kind") or "")
+            if str(entry.get("kind") or "") == "outline" and bool(entry.get("pen_down", False)):
+                outline_path_start_count_in_gcode += 1
+            if src_kind in {"fill-infill-travel", "coverage_connector"}:
+                connector_total_paths += 1
+                if bool(entry.get("pen_down", False)):
+                    connector_pen_down_paths += 1
+            if src_kind in {"detail-trace", "detail-continuation"} and bool(entry.get("pen_down", False)):
+                src_path_id = entry.get("source_path_id") or entry.get("id")
+                if src_path_id:
+                    matched = toolpath_by_id.get(str(src_path_id))
+                    if matched is not None and str((matched.metadata or {}).get("path_role", "")) == "PRINT_DETAIL_CONTINUATION":
+                        detail_continuation_pen_down_paths += 1
         debug["pen_state_debug"] = pen_state_debug
         debug["pen_state_summary"] = {
             "travel_moves_with_pen_down": travel_moves_with_pen_down,
             "drawing_moves_with_pen_up": drawing_moves_with_pen_up,
             "long_pen_down_jumps": long_pen_down_jumps,
             "max_pen_down_jump_mm_or_deg": max_pen_down_jump,
+            "actual_gcode_pen_lift_count": actual_pen_lift_count,
+            "connector_paths_total": connector_total_paths,
+            "connector_paths_pen_down": connector_pen_down_paths,
+            "detail_continuation_paths_pen_down": detail_continuation_pen_down_paths,
+            "collinear_points_removed": int(collinear_points_removed),
         }
+        fill_path_count_before_conversion = int(sum(1 for path in toolpaths if path.kind == "fill-infill"))
+        debug["travel_conversion_mode"] = "postprocess_existing_travels_only"
+        debug["infill_geometry_changed"] = False
+        debug["path_order_changed"] = bool(debug.get("paths_reordered", False))
+        debug["new_connector_routes_created"] = False
+        debug["travels_checked"] = int(travels_checked)
+        debug["infill_to_infill_travels_checked"] = int(infill_to_infill_travels_checked)
+        debug["travels_converted_to_pen_down"] = int(travels_converted_to_pen_down)
+        debug["travels_left_pen_up"] = int(max(0, travels_checked - travels_converted_to_pen_down))
+        debug["fill_path_count_before_conversion"] = fill_path_count_before_conversion
+        debug["fill_path_count_after_conversion"] = int(fill_path_count_after_conversion)
+        debug["pen_lifts_before_conversion"] = int(actual_pen_lift_count + travels_converted_to_pen_down)
+        debug["pen_lifts_after_conversion"] = int(actual_pen_lift_count)
+        debug["converted_connector_length_mm"] = float(converted_connector_length_mm)
+        debug["rejected_travel_reasons"] = dict(sorted(rejected_travel_reasons.items()))
+        debug["converted_connectors_outside_outline_area_mm2"] = float(converted_connectors_outside_outline_area_mm2)
+        debug["actual_gcode_pen_lift_count"] = actual_pen_lift_count
+        debug["safe_pen_down_travels_converted"] = int(travels_converted_to_pen_down)
+        debug["outline_path_start_count_in_gcode"] = int(outline_path_start_count_in_gcode)
         debug["projected_toolpath_hash"] = hash_toolpaths(toolpaths)
 
     return g, preview

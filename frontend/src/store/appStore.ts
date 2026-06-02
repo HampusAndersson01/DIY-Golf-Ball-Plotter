@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-import type { AppConfig, AppDefaults, CalibrationPattern, ImageAnalysis, JobSummary, MachineState, PreviewPath, XAxisCalibrationPattern } from '../api/types'
+import type { AppConfig, AppDefaults, CalibrationPattern, ImageAnalysis, JobSummary, MachineState, MaskProjectionQuad, PreviewPath, XAxisCalibrationPattern } from '../api/types'
 
 export type DrawerTab = 'advanced' | 'gcode' | 'logs'
 export type PreviewMode = '2d' | '3d'
@@ -121,6 +121,8 @@ type AppStore = {
   selectedColors: string[]
   preview: PreviewPath[]
   maskPreviewUrl: string | null
+  maskProjectionQuad: MaskProjectionQuad | null
+  maskProjectedPreview: PreviewPath[]
   gcode: string[]
   summary: JobSummary | null
   calibrationPattern: CalibrationPattern | null
@@ -133,6 +135,7 @@ type AppStore = {
   progressFilter: ProgressFilter
   showTravel: boolean
   showPenWidth: boolean
+  showMask: boolean
   showCompare: boolean
   drawerTab: DrawerTab
   advancedOpen: boolean
@@ -143,11 +146,12 @@ type AppStore = {
   setImageFile: (file: File | null, previewUrl: string | null) => void
   setAnalysis: (analysis: ImageAnalysis | null) => void
   toggleColor: (colorId: string) => void
-  setPreviewPayload: (payload: { preview: PreviewPath[]; maskPreviewUrl: string | null; gcode: string[]; summary: JobSummary | null; calibrationPattern?: CalibrationPattern | null; xAxisCalibrationPattern?: XAxisCalibrationPattern | null }) => void
+  setPreviewPayload: (payload: { preview: PreviewPath[]; maskPreviewUrl: string | null; maskProjectionQuad?: MaskProjectionQuad | null; maskProjectedPreview?: PreviewPath[]; gcode: string[]; summary: JobSummary | null; calibrationPattern?: CalibrationPattern | null; xAxisCalibrationPattern?: XAxisCalibrationPattern | null }) => void
   setPreviewMode: (mode: PreviewMode) => void
   setProgressFilter: (filter: ProgressFilter) => void
   setShowTravel: (show: boolean) => void
   setShowPenWidth: (show: boolean) => void
+  setShowMask: (show: boolean) => void
   setShowCompare: (show: boolean) => void
   setDrawerTab: (tab: DrawerTab) => void
   setAdvancedOpen: (open: boolean) => void
@@ -239,7 +243,7 @@ function buildSettings(defaults: AppDefaults): SettingsState {
     removeDuplicatePaths: defaults.removeDuplicatePaths,
     thinDetailMode: defaults.thinDetailMode,
     thinDetailOverlap: defaults.thinDetailOverlap,
-    allowPenDownInfillConnectors: defaults.allowPenDownInfillConnectors,
+    allowPenDownInfillConnectors: defaults.allowPenDownInfillConnectors ?? true,
     penUpS: defaults.penUpS,
     penDownS: defaults.penDownS,
     penUpDwellMs: defaults.penUpDwellMs,
@@ -265,6 +269,8 @@ export const useAppStore = create<AppStore>((set) => ({
   selectedColors: [],
   preview: [],
   maskPreviewUrl: null,
+  maskProjectionQuad: null,
+  maskProjectedPreview: [],
   gcode: [],
   summary: null,
   calibrationPattern: null,
@@ -277,6 +283,7 @@ export const useAppStore = create<AppStore>((set) => ({
   progressFilter: 'all',
   showTravel: true,
   showPenWidth: true,
+  showMask: true,
   showCompare: false,
   drawerTab: 'advanced',
   advancedOpen: false,
@@ -312,6 +319,8 @@ export const useAppStore = create<AppStore>((set) => ({
     selectedColors: [],
     preview: [],
     maskPreviewUrl: null,
+    maskProjectionQuad: null,
+    maskProjectedPreview: [],
     gcode: [],
     summary: null,
     calibrationPattern: null,
@@ -325,9 +334,11 @@ export const useAppStore = create<AppStore>((set) => ({
       ? state.selectedColors.filter((entry) => entry !== colorId)
       : [...state.selectedColors, colorId],
   })),
-  setPreviewPayload: ({ preview, maskPreviewUrl, gcode, summary, calibrationPattern = null, xAxisCalibrationPattern = null }) => set({
+  setPreviewPayload: ({ preview, maskPreviewUrl, maskProjectionQuad = null, maskProjectedPreview = [], gcode, summary, calibrationPattern = null, xAxisCalibrationPattern = null }) => set({
     preview,
     maskPreviewUrl,
+    maskProjectionQuad,
+    maskProjectedPreview,
     gcode,
     summary,
     calibrationPattern,
@@ -340,6 +351,7 @@ export const useAppStore = create<AppStore>((set) => ({
   setProgressFilter: (progressFilter) => set({ progressFilter }),
   setShowTravel: (showTravel) => set({ showTravel }),
   setShowPenWidth: (showPenWidth) => set({ showPenWidth }),
+  setShowMask: (showMask) => set({ showMask }),
   setShowCompare: (showCompare) => set({ showCompare }),
   setDrawerTab: (drawerTab) => set({ drawerTab }),
   setAdvancedOpen: (advancedOpen) => set({ advancedOpen }),

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import math
+import time
 
 from flask import Blueprint, current_app, jsonify, request
 
@@ -75,6 +77,167 @@ def build_effective_settings(options: dict) -> dict:
         "wall_count": options["wall_count"],
         "fill_density": options["infill_density"],
     }
+
+
+def build_mask_projection_quad(
+    *,
+    options: dict,
+    bounds,
+    resolved_center_lat_deg: float,
+    auto_y_band_fit: dict[str, object] | None = None,
+    artwork_scale_center_x_mm: float | None = None,
+    artwork_scale_center_y_mm: float | None = None,
+    origin_translation_x_mm: float | None = None,
+    origin_translation_y_mm: float | None = None,
+) -> dict[str, dict[str, float]]:
+    corner_segment = pipeline_core.Segment(
+        points=[
+            pipeline_core.Point(float(bounds.min_x), float(bounds.min_y)),
+            pipeline_core.Point(float(bounds.max_x), float(bounds.min_y)),
+            pipeline_core.Point(float(bounds.max_x), float(bounds.max_y)),
+            pipeline_core.Point(float(bounds.min_x), float(bounds.max_y)),
+            pipeline_core.Point(float(bounds.min_x), float(bounds.min_y)),
+        ],
+        closed=True,
+    )
+    frame_bundle = pipeline_core.GeometryBundle(outline_segments=[corner_segment])
+    geometry = get_geometry_service()
+    mapped = geometry.map_bundle_to_surface_mm(
+        frame_bundle,
+        bounds,
+        options["fit_mode"],
+        options["invert_y"],
+        options["margin_percent"],
+    )
+    if not mapped.outline_segments or len(mapped.outline_segments[0].points) < 4:
+        return {}
+
+    corners_surface = list(mapped.outline_segments[0].points[:4])
+    scale_factor = float(options["artwork_scale_percent"]) / 100.0
+    if artwork_scale_center_x_mm is not None and artwork_scale_center_y_mm is not None and abs(scale_factor - 1.0) > 1e-12:
+        scaled_corners = []
+        for point in corners_surface:
+            scaled_corners.append(
+                pipeline_core.Point(
+                    float(artwork_scale_center_x_mm) + ((point.x - float(artwork_scale_center_x_mm)) * scale_factor),
+                    float(artwork_scale_center_y_mm) + ((point.y - float(artwork_scale_center_y_mm)) * scale_factor),
+                )
+            )
+        corners_surface = scaled_corners
+
+    placement_scale = float(options["placement_scale"]) / 100.0
+    rotation_rad = math.radians(float(options["rotation_deg"]))
+    cos_a = math.cos(rotation_rad)
+    sin_a = math.sin(rotation_rad)
+    transformed_corners = []
+    for point in corners_surface:
+        sx = point.x * placement_scale
+        sy = point.y * placement_scale
+        transformed_corners.append(
+            pipeline_core.Point(
+                (sx * cos_a) - (sy * sin_a),
+                (sx * sin_a) + (sy * cos_a),
+            )
+        )
+    corners_surface = transformed_corners
+
+    if not corners_surface:
+        return {}
+
+    dx = float(origin_translation_x_mm) if origin_translation_x_mm is not None else 0.0
+    dy = float(origin_translation_y_mm) if origin_translation_y_mm is not None else 0.0
+    corners_surface = [pipeline_core.Point(point.x + dx, point.y + dy) for point in corners_surface]
+
+    if auto_y_band_fit and bool(auto_y_band_fit.get("auto_scaled", False)):
+        y_band_scale_factor = float(auto_y_band_fit.get("scale_factor", 1.0))
+        origin_x = float(auto_y_band_fit.get("origin_x_mm", 0.0))
+        origin_y = float(auto_y_band_fit.get("origin_y_mm", 0.0))
+        scaled_corners = []
+        for point in corners_surface:
+            scaled_corners.append(
+                pipeline_core.Point(
+                    origin_x + ((point.x - origin_x) * y_band_scale_factor),
+                    origin_y + ((point.y - origin_y) * y_band_scale_factor),
+                )
+            )
+        corners_surface = scaled_corners
+
+    projected = [
+        pipeline_core.surface_mm_to_ball_angles(
+            point,
+            center_lon_deg=options["placement_offset_x"],
+            center_lat_deg=resolved_center_lat_deg,
+            ball_diameter_mm=current_app.config["BALL_DIAMETER_MM"],
+        )
+        for point in corners_surface
+    ]
+    return {
+        "top_left": {"x": projected[0].x, "y": projected[0].y},
+        "top_right": {"x": projected[1].x, "y": projected[1].y},
+        "bottom_right": {"x": projected[2].x, "y": projected[2].y},
+        "bottom_left": {"x": projected[3].x, "y": projected[3].y},
+    }
+
+
+def build_projected_mask_preview_paths(
+    *,
+    placed_bundle,
+    center_lon_deg: float,
+    center_lat_deg: float,
+    ball_diameter_mm: float,
+    pen_width_mm: float,
+) -> list[dict[str, object]]:
+    geometry = placed_bundle.printable_geometry
+    if geometry is None or geometry.is_empty:
+        return []
+    surface_paths: list[pipeline_core.Toolpath] = []
+    for polygon in pipeline_core.normalize_geometry(geometry):
+        exterior_points = [pipeline_core.Point(float(x), float(y)) for x, y in polygon.exterior.coords]
+        if len(exterior_points) >= 2:
+            surface_paths.append(
+                pipeline_core.Toolpath(
+                    points=exterior_points,
+                    kind="mask-overlay",
+                    closed=True,
+                    coordinate_space="surface_mm",
+                    source="mask_projection",
+                )
+            )
+        for ring in polygon.interiors:
+            hole_points = [pipeline_core.Point(float(x), float(y)) for x, y in ring.coords]
+            if len(hole_points) >= 2:
+                surface_paths.append(
+                    pipeline_core.Toolpath(
+                        points=hole_points,
+                        kind="mask-overlay-hole",
+                        closed=True,
+                        coordinate_space="surface_mm",
+                        source="mask_projection",
+                    )
+                )
+    if not surface_paths:
+        return []
+    prepared = pipeline_core.prepare_toolpaths_for_projection(surface_paths, default_pen_width_mm=max(0.01, float(pen_width_mm)))
+    projected = pipeline_core.project_toolpaths_to_ball_angles(
+        prepared,
+        center_lon_deg=float(center_lon_deg),
+        center_lat_deg=float(center_lat_deg),
+        ball_diameter_mm=float(ball_diameter_mm),
+    )
+    return [
+        {
+            "id": f"mask_overlay_{index:03d}",
+            "kind": path.kind,
+            "closed": bool(path.closed),
+            "points": [{"x": float(point.x), "y": float(point.y)} for point in path.points],
+            "gcode_start_line": None,
+            "gcode_end_line": None,
+            "pen_down": False,
+            "source": "mask_projection",
+        }
+        for index, path in enumerate(projected)
+        if len(path.points) >= 2
+    ]
 
 
 def project_surface_toolpaths(toolpaths, options: dict):
@@ -216,6 +379,15 @@ def generate_image_gcode_route():
     validation = get_validation_service()
     config = current_app.config
     try:
+        stage_t0 = time.perf_counter()
+        stage_marks: dict[str, float] = {}
+
+        def _mark(stage_name: str) -> None:
+            stage_marks[stage_name] = time.perf_counter() - stage_t0
+
+        def _dur(start_stage: str, end_stage: str) -> float:
+            return max(0.0, float(stage_marks.get(end_stage, 0.0) - stage_marks.get(start_stage, 0.0)))
+
         current_app.logger.info(
             "Raster G-code generation requested: files=%s form_keys=%s",
             sorted(list(request.files.keys())),
@@ -226,6 +398,7 @@ def generate_image_gcode_route():
             raise ValueError("No PNG or JPG image uploaded")
 
         image_bytes = file.read()
+        _mark("input_loading")
         options = validation.parse_generate_raster_form(request.form, config)
         debug_data = {} if options["debug_pipeline"] else None
         raster = get_raster_analysis_service()
@@ -239,11 +412,13 @@ def generate_image_gcode_route():
             open_radius_px=options["mask_open_radius_px"],
             close_radius_px=options["mask_close_radius_px"],
         )
+        _mark("mask_extraction")
         region_result = raster.extract_regions(
             mask_result,
             min_region_area_px=0.0 if options["thin_detail_mode"] else options["min_region_area_px"],
             simplify_tolerance_px=options["region_simplify_px"],
         )
+        _mark("vector_extraction")
         has_area_geometry = region_result.bundle.printable_geometry is not None and not region_result.bundle.printable_geometry.is_empty
         has_detail_geometry = bool(region_result.bundle.detail_segments)
         if not has_area_geometry and not has_detail_geometry:
@@ -257,6 +432,7 @@ def generate_image_gcode_route():
             options["invert_y"],
             options["margin_percent"],
         )
+        mapped_selected_bounds = geometry.bounds_from_bundle(mapped)
         geometry.debug_append_bundle(debug_data, "mapped_paths", mapped)
         artwork_scaled = geometry.apply_surface_artwork_scale(
             mapped,
@@ -275,6 +451,7 @@ def generate_image_gcode_route():
             origin_offset_x_mm=options["origin_offset_x_mm"],
             origin_offset_y_mm=options["origin_offset_y_mm"],
         )
+        origin_translation = placed.metadata.get("origin_translation_mm") if isinstance(placed.metadata, dict) else None
         geometry.debug_append_bundle(debug_data, "placed_paths", placed)
         x_span_debug = pipeline_core.validate_bundle_x_span(
             placed,
@@ -288,6 +465,7 @@ def generate_image_gcode_route():
                 float(x_span_debug["width_deg"]),
                 float(x_span_debug["max_width_deg"]),
             )
+        _mark("polygon_cleanup")
         effective_settings = build_effective_settings(options)
         design_bounds = geometry.bounds_from_bundle(placed)
         final_polygon_count = len(pipeline_core.normalize_geometry(placed.printable_geometry)) if placed.printable_geometry is not None and not placed.printable_geometry.is_empty else 0
@@ -338,8 +516,10 @@ def generate_image_gcode_route():
             travel_optimization=options["travel_optimization"],
             allow_pen_down_infill_connectors=options["allow_pen_down_infill_connectors"],
             infill_path_mode=options["infill_path_mode"],
+            expensive_coverage_repair=False,
             debug=debug_data,
         )
+        _mark("fill_path_generation")
         if not toolpaths:
             raise ValueError("No toolpaths were generated from the selected image regions")
 
@@ -351,6 +531,7 @@ def generate_image_gcode_route():
             sum(max(0, len(path.points) - 1) for path in toolpaths if path.kind == "fill-infill"),
         )
         cleaned_toolpaths, projected_toolpaths, cleanup_stats, coordinate_debug, outline_pipeline_debug, region_alignment_debug, sampling_debug, outline_vs_infill_alignment_debug = project_surface_toolpaths(toolpaths, options)
+        _mark("path_ordering")
         gcode, preview = get_gcode_service().generate_from_toolpaths(
             toolpaths=projected_toolpaths,
             header_comment_settings=build_fill_header_settings(options, design_bounds),
@@ -370,6 +551,7 @@ def generate_image_gcode_route():
             include_comments=options["include_comments"],
             debug=debug_data,
         )
+        _mark("gcode_writing")
         machine_motion_debug = pipeline_core.build_machine_motion_debug(
             cleaned_toolpaths,
             projected_toolpaths,
@@ -402,8 +584,13 @@ def generate_image_gcode_route():
             debug_data["outline_vs_infill_alignment"] = outline_vs_infill_alignment_debug
             debug_data["visual_debug_layers"] = [
                 {"key": "detected_printable_polygons", "label": "final printable polygon", "color": "gray"},
+                {"key": "residual_detail_target", "label": "residual area needing detail", "color": "red"},
                 {"key": "outer_walls", "label": "outline centerline before projection", "color": "orange-dashed"},
                 {"key": "clipped_infill_lines", "label": "infill centerlines", "color": "cyan"},
+                {"key": "detail_traces_accepted", "label": "accepted detail traces", "color": "magenta"},
+                {"key": "detail_pen_footprints", "label": "detail pen footprints", "color": "magenta-fill"},
+                {"key": "detail_traces_rejected", "label": "rejected detail traces", "color": "red-dashed"},
+                {"key": "detail_overspill_warning_regions", "label": "detail overspill warnings", "color": "red-fill"},
                 {"key": "projected_machine_deg_toolpaths", "label": "outline centerline after projection", "color": "orange-solid"},
                 {"key": "gcode_preview", "label": "reconstructed G-code path", "color": "purple"},
             ]
@@ -497,6 +684,42 @@ def generate_image_gcode_route():
             last_error=None,
             last_timeout_debug=None,
         )
+        projection_center_debug = coordinate_debug.get("projection_center_latitude") or {}
+        resolved_center_lat_deg = float(projection_center_debug.get("resolved_center_lat_deg", options["placement_offset_y"]))
+        auto_y_band_fit = coordinate_debug.get("auto_y_band_fit") if isinstance(coordinate_debug, dict) else None
+        mask_projection_quad = build_mask_projection_quad(
+            options=options,
+            bounds=region_result.bounds,
+            resolved_center_lat_deg=resolved_center_lat_deg,
+            auto_y_band_fit=auto_y_band_fit if isinstance(auto_y_band_fit, dict) else None,
+            artwork_scale_center_x_mm=(mapped_selected_bounds.min_x + mapped_selected_bounds.max_x) * 0.5,
+            artwork_scale_center_y_mm=(mapped_selected_bounds.min_y + mapped_selected_bounds.max_y) * 0.5,
+            origin_translation_x_mm=float((origin_translation or {}).get("x", 0.0)) if isinstance(origin_translation, dict) else 0.0,
+            origin_translation_y_mm=float((origin_translation or {}).get("y", 0.0)) if isinstance(origin_translation, dict) else 0.0,
+        )
+        mask_projected_preview = build_projected_mask_preview_paths(
+            placed_bundle=placed,
+            center_lon_deg=float(options["placement_offset_x"]),
+            center_lat_deg=float(resolved_center_lat_deg),
+            ball_diameter_mm=float(current_app.config["BALL_DIAMETER_MM"]),
+            pen_width_mm=float(options["line_thickness_mm"]),
+        )
+        _mark("preview_rendering")
+
+        stage_durations = {
+            "input_loading_s": round(float(stage_marks.get("input_loading", 0.0)), 4),
+            "vector_extraction_tracing_s": round(_dur("mask_extraction", "vector_extraction"), 4),
+            "polygon_cleanup_s": round(_dur("vector_extraction", "polygon_cleanup"), 4),
+            "fill_path_generation_s": round(_dur("polygon_cleanup", "fill_path_generation"), 4),
+            "path_ordering_s": round(_dur("fill_path_generation", "path_ordering"), 4),
+            "gcode_writing_s": round(_dur("path_ordering", "gcode_writing"), 4),
+            "preview_rendering_s": round(_dur("gcode_writing", "preview_rendering"), 4),
+            "total_s": round(float(stage_marks.get("preview_rendering", 0.0)), 4),
+        }
+        slow_stages = {name: value for name, value in stage_durations.items() if name.endswith("_s") and name != "total_s" and value > 2.0}
+        current_app.logger.info("Raster generation timings: %s", stage_durations)
+        if slow_stages:
+            current_app.logger.warning("Raster generation slow stages (>2s): %s", slow_stages)
 
         return json_ok(
             gcode=gcode,
@@ -509,6 +732,8 @@ def generate_image_gcode_route():
             source_bounds=asdict(region_result.bounds),
             mask=raster.serialize_mask(mask_result),
             mask_preview=mask_result.mask_preview_url,
+            mask_projection_quad=mask_projection_quad,
+            mask_projected_preview=mask_projected_preview,
             regions=raster.serialize_regions(region_result),
             selected_colors=options["selected_colors"],
             summary=summary,
@@ -524,6 +749,7 @@ def generate_image_gcode_route():
             outline_vs_infill_alignment=outline_vs_infill_alignment_debug,
             infill_debug=(debug_data or {}).get("infill_debug"),
             gcode_stats=gcode_stats,
+            stage_timings=stage_durations,
             debug=debug_data,
         )
     except Exception as exc:

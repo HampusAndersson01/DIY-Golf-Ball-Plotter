@@ -8,6 +8,16 @@ from .raster_analysis_service import RasterAnalysisService
 
 
 class ValidationService:
+    @staticmethod
+    def _normalize_fill_strategy(value: str) -> str:
+        strategy = (value or "").strip().lower()
+        aliases = {
+            "hybrid": "adaptive_angle",
+            "offset": "rotated_scanline",
+            "hatch": "horizontal_scanline",
+        }
+        return aliases.get(strategy, strategy)
+
     ARTWORK_SCALE_PERCENT_MIN = 10.0
     ARTWORK_SCALE_PERCENT_MAX = 200.0
     validate_feed = staticmethod(pipeline_core.validate_feed)
@@ -30,8 +40,10 @@ class ValidationService:
         return value
 
     def _derived_pen_defaults(self, line_thickness_mm: float) -> dict[str, float]:
+        infill_overlap_percent = 20.0
         return {
-            "infill_spacing_mm": line_thickness_mm,
+            "infill_spacing_mm": line_thickness_mm * (1.0 - infill_overlap_percent / 100.0),
+            "infill_overlap_percent": infill_overlap_percent,
             "min_fill_width_mm": line_thickness_mm,
             "min_fill_area_mm2": line_thickness_mm * line_thickness_mm,
         }
@@ -96,8 +108,11 @@ class ValidationService:
                 "Infill spacing",
                 maximum=10,
             ),
+            "infill_overlap_percent": derived_defaults["infill_overlap_percent"],
             "infill_angle_deg": self._parse_float(form, "infill_angle_deg", config["DEFAULT_INFILL_ANGLE_DEG"]),
-            "fill_strategy": form.get("fill_strategy", config.get("DEFAULT_FILL_STRATEGY", "adaptive_angle")),
+            "fill_strategy": self._normalize_fill_strategy(
+                form.get("fill_strategy", config.get("DEFAULT_FILL_STRATEGY", "adaptive_angle"))
+            ),
             "alternate_fill_angle_deg": self._parse_float(form, "alternate_fill_angle_deg", config.get("DEFAULT_ALTERNATE_FILL_ANGLE_DEG", -45.0)),
             "outline_after_fill": self.validate_bool(form.get("outline_after_fill", config["DEFAULT_OUTLINE_AFTER_FILL"])),
             "min_fill_area_mm2": self.validate_non_negative_float(
@@ -231,8 +246,11 @@ class ValidationService:
                 "Infill spacing",
                 maximum=10,
             ),
+            "infill_overlap_percent": derived_defaults["infill_overlap_percent"],
             "infill_angle_deg": self._parse_float(form, "infill_angle_deg", config["DEFAULT_INFILL_ANGLE_DEG"]),
-            "fill_strategy": form.get("fill_strategy", config.get("DEFAULT_FILL_STRATEGY", "adaptive_angle")),
+            "fill_strategy": self._normalize_fill_strategy(
+                form.get("fill_strategy", config.get("DEFAULT_FILL_STRATEGY", "adaptive_angle"))
+            ),
             "alternate_fill_angle_deg": self._parse_float(form, "alternate_fill_angle_deg", config.get("DEFAULT_ALTERNATE_FILL_ANGLE_DEG", -45.0)),
             "outline_after_fill": self.validate_bool(form.get("outline_after_fill", config["DEFAULT_OUTLINE_AFTER_FILL"])),
             "min_fill_area_mm2": self.validate_non_negative_float(

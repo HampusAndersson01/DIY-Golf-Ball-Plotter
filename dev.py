@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parent
@@ -33,6 +34,43 @@ def terminate_process(process: subprocess.Popen) -> None:
     process.wait(timeout=5)
 
 
+def pid_listening_on_port(port: int) -> int | None:
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return None
+    pattern = re.compile(rf"^\s*TCP\s+127\.0\.0\.1:{port}\s+0\.0\.0\.0:0\s+LISTENING\s+(\d+)\s*$", re.IGNORECASE)
+    for line in result.stdout.splitlines():
+        match = pattern.match(line.strip())
+        if match:
+            try:
+                return int(match.group(1))
+            except Exception:
+                return None
+    return None
+
+
+def process_name_for_pid(pid: int) -> str:
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        line = (result.stdout or "").strip()
+        if not line or line.startswith("INFO:"):
+            return "<unknown>"
+        return line.split(",")[0].strip('"')
+    except Exception:
+        return "<unknown>"
+
+
 def main() -> int:
     if not FRONTEND_DIR.exists():
         print("Missing frontend/ directory.", file=sys.stderr)
@@ -41,6 +79,14 @@ def main() -> int:
     backend = None
     frontend = None
     try:
+        frontend_pid = pid_listening_on_port(5173)
+        if frontend_pid is not None:
+            print(
+                f"Port 5173 is already in use by PID {frontend_pid} ({process_name_for_pid(frontend_pid)}). "
+                "Stop it first, then rerun python dev.py.",
+                file=sys.stderr,
+            )
+            return 1
         print("Starting Flask backend on http://127.0.0.1:5000")
         backend = start_process([sys.executable, "run.py"], ROOT)
 
