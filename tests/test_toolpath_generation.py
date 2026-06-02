@@ -10,6 +10,7 @@ from shapely.geometry import LineString, MultiPolygon, Point as ShapelyPoint, Po
 
 from app.models.geometry import Point, Segment, Toolpath
 from app.models.machine_state import MachineState
+from app.services import coverage_planner
 from app.services import pipeline_core
 from app.services.gcode_service import GcodeService
 from app.services.geometry_service import GeometryService
@@ -2055,6 +2056,146 @@ def test_fill_and_outline_share_same_printable_region():
 
     assert outline_region_ids
     assert outline_region_ids.issubset(infill_region_ids)
+
+
+def test_fill_does_not_reserve_outline_space():
+    printable = affinity.rotate(_rect(12.0, 6.0), 28.0, origin="centroid")
+    debug: dict[str, object] = {}
+
+    toolpaths = generate_toolpaths(
+        GeometryBundle(printable_geometry=printable),
+        enable_fill=True,
+        line_width_mm=0.6,
+        wall_count=1,
+        infill_density=100.0,
+        infill_spacing_mm=0.48,
+        infill_angle_deg=45.0,
+        outline_after_fill=True,
+        min_fill_area_mm2=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=False,
+        small_shape_mode="single-wall",
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+        allow_pen_down_infill_connectors=False,
+        debug=debug,
+    )
+
+    assert any(path.kind == "fill-infill" for path in toolpaths)
+    assert debug["fill_uses_outline_clearance"] is False
+    assert debug["outline_overlap_allowed"] is True
+    assert debug["infill_debug"]["endpoint_extension_mm"] == pytest.approx(0.3, abs=1e-6)
+
+
+def test_endpoint_coverage_improves_without_outline_clearance():
+    printable = affinity.rotate(_rect(14.0, 5.0), 31.0, origin="centroid")
+    debug: dict[str, object] = {}
+
+    toolpaths = generate_toolpaths(
+        GeometryBundle(printable_geometry=printable),
+        enable_fill=True,
+        line_width_mm=0.6,
+        wall_count=1,
+        infill_density=100.0,
+        infill_spacing_mm=0.48,
+        infill_angle_deg=45.0,
+        outline_after_fill=True,
+        min_fill_area_mm2=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=False,
+        small_shape_mode="single-wall",
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+        allow_pen_down_infill_connectors=False,
+        expensive_coverage_repair=False,
+        debug=debug,
+    )
+
+    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    assert infill_paths
+    legacy_fill_geometry = printable.buffer(-(0.6 * 0.5), join_style=1)
+    if legacy_fill_geometry.is_empty:
+        legacy_fill_geometry = printable
+    legacy_paths, _legacy_stats = coverage_planner._scanline_fill_paths(
+        legacy_fill_geometry,
+        angle_deg=45.0,
+        spacing_mm=0.48,
+        line_width_mm=0.6,
+        origin_x=0.0,
+        origin_y=0.0,
+        px_per_mm=10.0,
+        component_id=1,
+        allow_connectors=False,
+        max_overflow_mm=0.05,
+        fill_mode_label="serpentine",
+    )
+    current_footprint = _paths_footprint_geometry(infill_paths, 0.6)
+    legacy_footprint = _paths_footprint_geometry([path for path in legacy_paths if path.kind == "fill-infill"], 0.6)
+    current_missed = printable.area - printable.intersection(current_footprint).area
+    legacy_missed = printable.area - printable.intersection(legacy_footprint).area
+
+    assert debug["coverage_before_outline_percent"] > 0.0
+    assert debug["missed_area_before_outline_mm2"] < legacy_missed
+    assert current_missed < legacy_missed
+    assert debug["endpoint_extensions_added"] > 0
+
+
+def test_outline_overlap_is_allowed_for_infill_endpoints():
+    printable = affinity.rotate(_rect(10.0, 4.0), 22.0, origin="centroid")
+    debug: dict[str, object] = {}
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.48,
+        infill_angle_deg=45.0,
+        outline_after_fill=True,
+        allow_pen_down_infill_connectors=False,
+        debug=debug,
+    )
+
+    report = debug["coverage_report"]
+    assert report["infill_outline_overlap_area_mm2"] > 0.0
+    assert debug["outline_overlap_allowed"] is True
+
+
+def test_endpoint_extensions_do_not_create_visible_outside_overflow():
+    printable = affinity.rotate(_rect(11.0, 3.6), 35.0, origin="centroid")
+    debug: dict[str, object] = {}
+
+    _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.48,
+        infill_angle_deg=45.0,
+        outline_after_fill=True,
+        allow_pen_down_infill_connectors=False,
+        debug=debug,
+    )
+
+    report = debug["coverage_report"]
+    assert report["outside_overflow_mm2"] <= 1.0
+    assert debug["endpoint_extensions_clipped"] >= 0
+
+
+def test_endpoint_extension_keeps_spacing_unchanged():
+    printable = affinity.rotate(_rect(12.0, 6.0), 17.0, origin="centroid")
+    debug: dict[str, object] = {}
+
+    _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.48,
+        infill_angle_deg=45.0,
+        outline_after_fill=True,
+        allow_pen_down_infill_connectors=False,
+        debug=debug,
+    )
+
+    assert debug["infill_debug"]["pen_width_mm"] == pytest.approx(0.6, abs=1e-6)
+    assert debug["infill_debug"]["spacing_mm"] == pytest.approx(0.48, abs=1e-6)
 
 
 def test_projected_cleanup_outline_logs_fill_clip_source(caplog):
