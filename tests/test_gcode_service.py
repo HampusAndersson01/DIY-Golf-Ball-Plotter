@@ -258,6 +258,154 @@ def test_preview_and_gcode_share_same_projected_paths_after_surface_anchor_place
     projected_debug = pipeline_core.build_projected_path_debug(prepared, projected, preview)
     assert "preview_and_gcode_share_same_projected_paths" in projected_debug
 
+
+def _project_surface_toolpaths(toolpaths: list[Toolpath], *, pen_width_mm: float = 0.6) -> list[Toolpath]:
+    prepared = pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=pen_width_mm)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(prepared, center_lon_deg=0.0, center_lat_deg=0.0)
+    return pipeline_core.assign_stable_path_ids(projected)
+
+
+def _generate_projected_gcode(toolpaths: list[Toolpath], *, debug: dict[str, object] | None = None) -> tuple[list[str], list[dict[str, object]]]:
+    return GcodeService().generate_from_toolpaths(
+        toolpaths=toolpaths,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=True,
+        header_comment_settings={
+            "lineWidthMm": "0.6000",
+            "infillSpacingMm": "0.4800",
+        },
+        debug=debug,
+    )
+
+
+def test_safe_existing_infill_travel_is_converted_without_changing_geometry():
+    surface_toolpaths = [
+        Toolpath(
+            points=[Point(0.0, 0.0), Point(8.0, 0.0), Point(8.0, 6.0), Point(0.0, 6.0), Point(0.0, 0.0)],
+            kind="outline",
+            closed=True,
+            metadata={"path_role": "PRINT_OUTLINE_FINAL"},
+        ),
+        Toolpath(points=[Point(1.0, 2.0), Point(3.0, 2.0)], kind="fill-infill", closed=False),
+        Toolpath(points=[Point(5.0, 3.0), Point(7.0, 3.0)], kind="fill-infill", closed=False),
+    ]
+    projected = _project_surface_toolpaths(surface_toolpaths)
+    original_fill_points = [
+        [(point.x, point.y) for point in path.points]
+        for path in projected
+        if path.kind == "fill-infill"
+    ]
+    debug: dict[str, object] = {}
+    gcode, preview = _generate_projected_gcode(projected, debug=debug)
+
+    converted_travels = [
+        entry for entry in preview
+        if entry.get("kind") == "travel" and entry.get("travel_mode") == "converted_infill_connector"
+    ]
+    assert len(converted_travels) == 1
+    assert debug["travel_conversion_mode"] == "postprocess_existing_travels_only"
+    assert debug["infill_geometry_changed"] is False
+    assert debug["path_order_changed"] is False
+    assert debug["new_connector_routes_created"] is False
+    assert debug["travels_converted_to_pen_down"] == 1
+    assert debug["travels_left_pen_up"] >= 0
+    assert debug["fill_path_count_before_conversion"] == 2
+    assert debug["fill_path_count_after_conversion"] == 1
+    assert debug["pen_lifts_after_conversion"] < debug["pen_lifts_before_conversion"]
+    assert debug["converted_connectors_outside_outline_area_mm2"] == pytest.approx(0.0, abs=1e-9)
+
+    path_start_fill_count = sum(1 for line in gcode if line.startswith("(PATH_START") and "kind=fill-infill" in line)
+    assert path_start_fill_count == 1
+
+    header_lines = [line for line in gcode if line.startswith("(")]
+    assert any("lineWidthMm: 0.6000" in line for line in header_lines)
+    assert any("infillSpacingMm: 0.4800" in line for line in header_lines)
+
+    preview_toolpaths = [path for path in pipeline_core.preview_entries_to_toolpaths(preview) if path.kind != "travel"]
+    gcode_toolpaths = [path for path in pipeline_core.parse_gcode_machine_motion_paths(gcode, pen_up_s=575, pen_down_s=700) if path.kind != "travel"]
+    assert len(preview_toolpaths) == 2
+    assert len(gcode_toolpaths) == 2
+    assert len(preview_toolpaths[-1].points) == len(gcode_toolpaths[-1].points)
+    assert preview_toolpaths[-1].points[0].x == pytest.approx(gcode_toolpaths[-1].points[0].x, abs=1e-4)
+    assert preview_toolpaths[-1].points[-1].x == pytest.approx(gcode_toolpaths[-1].points[-1].x, abs=1e-4)
+
+    round_tripped_fill_points = [
+        [(point.x, point.y) for point in path.points]
+        for path in projected
+        if path.kind == "fill-infill"
+    ]
+    assert round_tripped_fill_points == original_fill_points
+
+
+def test_unsafe_existing_infill_travel_crossing_hole_stays_pen_up():
+    surface_toolpaths = [
+        Toolpath(
+            points=[Point(0.0, 0.0), Point(10.0, 0.0), Point(10.0, 8.0), Point(0.0, 8.0), Point(0.0, 0.0)],
+            kind="outline",
+            closed=True,
+            metadata={"path_role": "PRINT_OUTLINE_FINAL"},
+        ),
+        Toolpath(
+            points=[Point(4.0, 2.0), Point(6.0, 2.0), Point(6.0, 6.0), Point(4.0, 6.0), Point(4.0, 2.0)],
+            kind="outline",
+            closed=True,
+            metadata={"path_role": "PRINT_OUTLINE_FINAL", "is_hole": True},
+        ),
+        Toolpath(points=[Point(1.0, 3.0), Point(3.0, 3.0)], kind="fill-infill", closed=False),
+        Toolpath(points=[Point(7.0, 5.0), Point(9.0, 5.0)], kind="fill-infill", closed=False),
+    ]
+    projected = _project_surface_toolpaths(surface_toolpaths)
+    debug: dict[str, object] = {}
+    gcode, preview = _generate_projected_gcode(projected, debug=debug)
+
+    converted_travels = [
+        entry for entry in preview
+        if entry.get("kind") == "travel" and entry.get("travel_mode") == "converted_infill_connector"
+    ]
+    pen_up_travels = [entry for entry in preview if entry.get("kind") == "travel" and not entry.get("pen_down")]
+    assert not converted_travels
+    assert pen_up_travels
+    assert debug["travels_converted_to_pen_down"] == 0
+    assert debug["fill_path_count_before_conversion"] == 2
+    assert debug["fill_path_count_after_conversion"] == 2
+    assert debug["rejected_travel_reasons"]["outside_outline_printable_area"] >= 1
+
+
+def test_non_infill_existing_travel_stays_pen_up():
+    surface_toolpaths = [
+        Toolpath(
+            points=[Point(0.0, 0.0), Point(8.0, 0.0), Point(8.0, 6.0), Point(0.0, 6.0), Point(0.0, 0.0)],
+            kind="outline",
+            closed=True,
+            metadata={"path_role": "PRINT_OUTLINE_FINAL"},
+        ),
+        Toolpath(points=[Point(1.0, 1.0), Point(7.0, 1.0)], kind="outline", closed=False),
+        Toolpath(points=[Point(1.0, 4.0), Point(7.0, 4.0)], kind="fill-infill", closed=False),
+    ]
+    projected = _project_surface_toolpaths(surface_toolpaths)
+    debug: dict[str, object] = {}
+    gcode, preview = _generate_projected_gcode(projected, debug=debug)
+
+    converted_travels = [
+        entry for entry in preview
+        if entry.get("kind") == "travel" and entry.get("travel_mode") == "converted_infill_connector"
+    ]
+    assert not converted_travels
+    assert debug["travels_converted_to_pen_down"] == 0
+    assert debug["rejected_travel_reasons"]["previous_not_fill_infill"] >= 1
+
     preview_toolpaths = [path for path in pipeline_core.preview_entries_to_toolpaths(preview) if path.kind != "travel"]
     gcode_toolpaths = [path for path in pipeline_core.parse_gcode_machine_motion_paths(gcode, pen_up_s=575, pen_down_s=700) if path.kind != "travel"]
     assert len(preview_toolpaths) == len(projected)

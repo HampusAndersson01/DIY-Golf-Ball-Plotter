@@ -1554,11 +1554,8 @@ def plan_coverage_first_toolpaths(
         final_paths = [path for path in all_paths if path.kind == "outline"] + ordered_fill
         pre_endpoint_clamp_final_paths = [path for path in pre_endpoint_clamp_paths if path.kind == "outline"] + pre_clamp_ordered_fill
 
-    # Attempt to chain safe pen-down infill connectors into continuous infill strokes
-    final_paths = _chain_pen_down_infill_connectors(final_paths, printable_geometry=printable_geometry)
     final_paths = pipeline_core.merge_connected_toolpaths(final_paths)
     final_paths = pipeline_core.assign_stable_path_ids(final_paths)
-    pre_endpoint_clamp_final_paths = _chain_pen_down_infill_connectors(pre_endpoint_clamp_final_paths, printable_geometry=printable_geometry)
     pre_endpoint_clamp_final_paths = pipeline_core.merge_connected_toolpaths(pre_endpoint_clamp_final_paths)
     pre_endpoint_clamp_final_paths = pipeline_core.assign_stable_path_ids(pre_endpoint_clamp_final_paths)
 

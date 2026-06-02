@@ -4266,6 +4266,10 @@ def project_toolpaths_to_ball_angles(
             coordinate_space="machine_deg",
             metadata={
                 **toolpath.metadata,
+                "surface_points_before_projection": [
+                    {"x": float(point.x), "y": float(point.y)}
+                    for point in toolpath.points
+                ],
                 "coordinate_space_before_projection": toolpath.coordinate_space,
                 "coordinate_space_after_projection": "machine_deg",
                 "projection_function": "surface_mm_to_ball_angles",
@@ -5059,20 +5063,150 @@ def _toolpath_export(path: Toolpath, *, coordinate_space: str | None = None, fee
 
 def preview_entries_to_toolpaths(preview: list[dict[str, Any]]) -> list[Toolpath]:
     toolpaths: list[Toolpath] = []
+    active_chain_index_by_id: dict[str, int] = {}
     for entry in preview or []:
         points = [Point(float(point["x"]), float(point["y"])) for point in entry.get("points") or []]
         if len(points) < 2:
             continue
-        toolpaths.append(Toolpath(
+        chain_path_id = str(entry.get("chain_path_id") or "")
+        kind = str(entry.get("kind") or "outline")
+        if (
+            chain_path_id
+            and entry.get("pen_down")
+            and kind in {"fill-infill", "travel"}
+            and chain_path_id in active_chain_index_by_id
+        ):
+            existing = toolpaths[active_chain_index_by_id[chain_path_id]]
+            if kind == "travel":
+                existing.points.extend(points[1:])
+                continue
+            if kind == "fill-infill":
+                existing.points.extend(points[1:])
+                continue
+        toolpath = Toolpath(
             points=points,
-            kind=str(entry.get("kind") or "outline"),
+            kind=kind,
             closed=bool(entry.get("closed")),
             coordinate_space="machine_deg",
             path_id=str(entry.get("id") or ""),
             source=str(entry.get("source") or "preview"),
             region_id=entry.get("region_id"),
-        ))
+            metadata={"chain_path_id": chain_path_id} if chain_path_id else {},
+        )
+        toolpaths.append(toolpath)
+        if chain_path_id and kind == "fill-infill" and entry.get("pen_down"):
+            active_chain_index_by_id[chain_path_id] = len(toolpaths) - 1
+        elif kind != "travel":
+            active_chain_index_by_id.clear()
     return toolpaths
+
+
+def _surface_points_before_projection(toolpath: Toolpath) -> list[Point]:
+    raw_points = toolpath.metadata.get("surface_points_before_projection")
+    if not isinstance(raw_points, list):
+        return []
+    points: list[Point] = []
+    for raw_point in raw_points:
+        if not isinstance(raw_point, dict):
+            return []
+        try:
+            points.append(Point(float(raw_point["x"]), float(raw_point["y"])))
+        except (KeyError, TypeError, ValueError):
+            return []
+    return points
+
+
+def _surface_footprint_geometry(points: list[Point], *, pen_radius_mm: float) -> Any:
+    if len(points) < 2:
+        return Polygon()
+    line = LineString([(point.x, point.y) for point in points])
+    if line.is_empty:
+        return Polygon()
+    return line.buffer(max(0.01, pen_radius_mm), cap_style=1, join_style=1)
+
+
+def _build_outline_printable_area_from_toolpaths(
+    toolpaths: list[Toolpath],
+    *,
+    pen_radius_mm: float,
+) -> Any:
+    outer_polygons: list[Polygon] = []
+    hole_polygons: list[Polygon] = []
+    drawable_footprints: list[Any] = []
+    outline_footprints: list[Any] = []
+    for toolpath in toolpaths:
+        surface_points = _surface_points_before_projection(toolpath)
+        if len(surface_points) < 2:
+            continue
+        coords = [(point.x, point.y) for point in surface_points]
+        if toolpath.kind == "outline" and toolpath.closed and len(coords) >= 4:
+            polygon = Polygon(coords)
+            if not polygon.is_valid:
+                polygon = make_valid(polygon) if make_valid is not None else polygon.buffer(0)
+            if polygon.is_empty:
+                continue
+            if bool(toolpath.metadata.get("is_hole", False)):
+                hole_polygons.append(polygon)
+            else:
+                outer_polygons.append(polygon)
+            outline_footprints.append(_surface_footprint_geometry(surface_points, pen_radius_mm=pen_radius_mm))
+            continue
+        if toolpath.kind in {"fill-infill", "fill-wall", "detail-trace", "detail-continuation"}:
+            drawable_footprints.append(_surface_footprint_geometry(surface_points, pen_radius_mm=pen_radius_mm))
+    interior = unary_union(outer_polygons) if outer_polygons else Polygon()
+    if hole_polygons and not getattr(interior, "is_empty", True):
+        interior = interior.difference(unary_union(hole_polygons))
+    pieces = [geom for geom in [interior] + outline_footprints + drawable_footprints if geom is not None and not getattr(geom, "is_empty", True)]
+    return unary_union(pieces) if pieces else Polygon()
+
+
+def _evaluate_infill_travel_conversion(
+    previous_toolpath: Toolpath | None,
+    next_toolpath: Toolpath | None,
+    *,
+    printable_area: Any,
+    pen_radius_mm: float,
+) -> dict[str, Any]:
+    result = {
+        "convert": False,
+        "reasons": [],
+        "travel_surface_points": [],
+        "travel_length_mm": 0.0,
+        "outside_area_mm2": 0.0,
+    }
+    if previous_toolpath is None:
+        result["reasons"].append("missing_previous_path")
+        return result
+    if next_toolpath is None:
+        result["reasons"].append("missing_next_path")
+        return result
+    if previous_toolpath.kind != "fill-infill":
+        result["reasons"].append("previous_not_fill_infill")
+    if next_toolpath.kind != "fill-infill":
+        result["reasons"].append("next_not_fill_infill")
+    if result["reasons"]:
+        return result
+    previous_surface_points = _surface_points_before_projection(previous_toolpath)
+    next_surface_points = _surface_points_before_projection(next_toolpath)
+    if len(previous_surface_points) < 2 or len(next_surface_points) < 2:
+        result["reasons"].append("missing_surface_travel_geometry")
+        return result
+    travel_surface_points = [previous_surface_points[-1], next_surface_points[0]]
+    result["travel_surface_points"] = travel_surface_points
+    travel_length_mm = segment_length(travel_surface_points)
+    result["travel_length_mm"] = float(travel_length_mm)
+    if travel_length_mm <= 1e-9:
+        result["reasons"].append("zero_length_travel")
+        return result
+    footprint = _surface_footprint_geometry(travel_surface_points, pen_radius_mm=pen_radius_mm)
+    outside = footprint.difference(printable_area) if printable_area is not None and not getattr(printable_area, "is_empty", True) else footprint
+    outside_area_mm2 = 0.0 if outside is None or getattr(outside, "is_empty", True) else float(outside.area)
+    result["outside_area_mm2"] = outside_area_mm2
+    if outside_area_mm2 > 1e-9:
+        result["reasons"].append("outside_outline_printable_area")
+        return result
+    result["convert"] = True
+    return result
 
 
 def count_toolpath_sequence_mismatches(expected: list[Toolpath], actual: list[Toolpath]) -> int:
@@ -14328,7 +14462,20 @@ def generate_gcode_from_toolpaths(
     long_pen_down_jumps = 0
     max_pen_down_jump = 0.0
     previous_draw_path_id: str | None = None
+    previous_printed_toolpath: Toolpath | None = None
     collinear_points_removed = 0
+    pen_radius_mm = 0.3
+    printable_outline_area = _build_outline_printable_area_from_toolpaths(toolpaths, pen_radius_mm=pen_radius_mm)
+    rejected_travel_reasons: dict[str, int] = {}
+    pending_converted_travel_index: int | None = None
+    pending_converted_travel_length_mm = 0.0
+    active_fill_chain_path_id: str | None = None
+    travels_checked = 0
+    infill_to_infill_travels_checked = 0
+    travels_converted_to_pen_down = 0
+    converted_connector_length_mm = 0.0
+    converted_connectors_outside_outline_area_mm2 = 0.0
+    fill_path_count_after_conversion = 0
 
     def comment(text: str) -> None:
         if include_comments:
@@ -14425,6 +14572,11 @@ def generate_gcode_from_toolpaths(
 
         path_type = classify_path_type(toolpath)
         start = pts[0]
+        continuing_fill_chain = (
+            pending_converted_travel_index == index
+            and toolpath.kind == "fill-infill"
+            and active_fill_chain_path_id is not None
+        )
         if debug is not None:
             debug.setdefault("path_type_counts", {})
             debug["path_type_counts"][path_type] = int(debug["path_type_counts"].get(path_type, 0)) + 1
@@ -14563,7 +14715,11 @@ def generate_gcode_from_toolpaths(
 
         if not nearly_same_point(current_position, start):
             travel_id = f"travel-{index:04d}"
-            if current_pen_down:
+            converted_existing_travel = pending_converted_travel_index == index and current_pen_down
+            travels_checked += 1
+            if previous_printed_toolpath is not None and previous_printed_toolpath.kind == "fill-infill" and toolpath.kind == "fill-infill":
+                infill_to_infill_travels_checked += 1
+            if current_pen_down and not converted_existing_travel:
                 for command in build_pen_position_commands(
                     current_servo,
                     pen_up_s,
@@ -14576,25 +14732,33 @@ def generate_gcode_from_toolpaths(
                 current_servo = pen_up_s
                 current_pen_down = False
                 unexpected_pen_down_travel = True
-            comment(f"Travel to {toolpath.kind} path {index}")
-            travel_line = append_motion("G1", start, travel_feed)
+            travel_feed_to_use = draw_feed if converted_existing_travel else travel_feed
+            if converted_existing_travel:
+                comment(f"Safe converted infill-to-infill connector to {toolpath.kind} path {index}")
+                travels_converted_to_pen_down += 1
+                converted_connector_length_mm += float(pending_converted_travel_length_mm)
+            else:
+                comment(f"Travel to {toolpath.kind} path {index}")
+            travel_line = append_motion("G1", start, travel_feed_to_use)
             pen_state_debug.append({
                 "line_index": travel_line,
                 "command": g[-1],
                 "path_id": travel_id,
                 "kind": "travel",
-                "expected_pen_state": "up",
+                "expected_pen_state": "down" if converted_existing_travel else "up",
                 "actual_pen_state": "down" if current_pen_down else "up",
                 "is_drawing_move": False,
-                "warning": "travel_with_pen_down" if current_pen_down else "",
+                "warning": "" if converted_existing_travel else ("travel_with_pen_down" if current_pen_down else ""),
             })
-            if current_pen_down:
+            if current_pen_down and not converted_existing_travel:
                 travel_moves_with_pen_down += 1
             preview.append({
                 "id": travel_id,
                 "kind": "travel",
                 "closed": False,
                 "pen_down": bool(current_pen_down),
+                "travel_mode": "converted_infill_connector" if converted_existing_travel else "pen_up",
+                "chain_path_id": active_fill_chain_path_id if converted_existing_travel else "",
                 "points": [asdict(_rounded_gcode_point(current_position)), asdict(_rounded_gcode_point(start))],
                 "gcode_start_line": travel_line,
                 "gcode_end_line": travel_line,
@@ -14634,16 +14798,18 @@ def generate_gcode_from_toolpaths(
                         "coordinate_space_before_projection": "generated_in_machine_deg",
                         "source_component_id": toolpath.metadata.get("source_component_id"),
                         "source_contour_id": toolpath.metadata.get("source_contour_id"),
-                        "expected_relation_to_fill": "pen_up_reposition",
+                        "expected_relation_to_fill": "converted_pen_down_connector" if converted_existing_travel else "pen_up_reposition",
                     },
                 ),
                 gcode_motion_count=1,
-                pen_down_motion_count=0,
-                pen_up_motion_count=1,
+                pen_down_motion_count=1 if converted_existing_travel else 0,
+                pen_up_motion_count=0 if converted_existing_travel else 1,
                 uses_same_projected_object_for_preview_and_gcode=True,
             )
             log_preview_gcode_identity_check(travel_id, "travel", [current_position, start], [current_position, start])
             current_position = start
+            pending_converted_travel_index = None
+            pending_converted_travel_length_mm = 0.0
 
         if not current_pen_down:
             for command in build_pen_position_commands(
@@ -14659,15 +14825,23 @@ def generate_gcode_from_toolpaths(
             current_pen_down = True
 
         path_id = toolpath.path_id or f"path-{index:04d}"
+        chain_path_id = active_fill_chain_path_id if continuing_fill_chain else path_id
         draw_start_line = None
         draw_end_line = None
         path_gcode_start_index = len(g)
         max_surface_segment_mm = float(toolpath.metadata.get("max_surface_segment_mm_after_resampling", 0.0))
         source_label = toolpath.metadata.get("source_polygon_id", _path_component_label(toolpath))
-        comment(
-            f"PATH_START id={path_id} kind={toolpath.kind} space={toolpath.coordinate_space} "
-            f"source={source_label} points={len(pts)} max_surface_segment_mm={max_surface_segment_mm:.4f}"
-        )
+        if toolpath.kind == "fill-infill":
+            if active_fill_chain_path_id is None:
+                active_fill_chain_path_id = path_id
+            chain_path_id = active_fill_chain_path_id
+        if not continuing_fill_chain:
+            comment(
+                f"PATH_START id={chain_path_id} kind={toolpath.kind} space={toolpath.coordinate_space} "
+                f"source={source_label} points={len(pts)} max_surface_segment_mm={max_surface_segment_mm:.4f}"
+            )
+            if toolpath.kind == "fill-infill":
+                fill_path_count_after_conversion += 1
         comment(f"{toolpath.kind} path {index}, {len(pts)} points")
         previous_point = pts[0]
         for point in pts[1:]:
@@ -14701,6 +14875,7 @@ def generate_gcode_from_toolpaths(
             "closed": toolpath.closed,
             "pen_down": True,
             "path_type": path_type,
+            "chain_path_id": chain_path_id if toolpath.kind == "fill-infill" else "",
             "points": [asdict(point) for point in emitted_points],
             "gcode_start_line": draw_start_line,
             "gcode_end_line": draw_end_line,
@@ -14718,6 +14893,20 @@ def generate_gcode_from_toolpaths(
             and classify_path_type(next_toolpath) == "PRINT_INFILL"
             and getattr(next_toolpath, "kind", None) in connector_kinds
         )
+        converted_travel = _evaluate_infill_travel_conversion(
+            toolpath,
+            next_toolpath,
+            printable_area=printable_outline_area,
+            pen_radius_mm=pen_radius_mm,
+        ) if next_toolpath is not None else {"convert": False, "reasons": ["missing_next_path"]}
+        if next_toolpath is not None and len(next_toolpath.points) >= 2 and not nearly_same_point(current_position, next_toolpath.points[0]):
+            for reason in converted_travel.get("reasons", []):
+                rejected_travel_reasons[reason] = int(rejected_travel_reasons.get(reason, 0)) + 1
+        keep_down_for_converted_travel = bool(converted_travel.get("convert", False))
+        if keep_down_for_converted_travel:
+            pending_converted_travel_index = index + 1
+            pending_converted_travel_length_mm = float(converted_travel.get("travel_length_mm", 0.0))
+            converted_connectors_outside_outline_area_mm2 += float(converted_travel.get("outside_area_mm2", 0.0))
         keep_down_for_detail_continuation = (
             next_toolpath is not None
             and classify_path_type(next_toolpath) == "PRINT_DETAIL"
@@ -14729,8 +14918,9 @@ def generate_gcode_from_toolpaths(
             and len(next_toolpath.points) >= 1
             and nearly_same_point(current_position, next_toolpath.points[0], 1e-6)
         )
-        if keep_down_for_infill_connector or keep_down_for_detail_continuation or keep_down_for_touching_detail:
-            comment(f"PATH_END id={path_id} (keeping pen down for connector/continuation)")
+        if keep_down_for_infill_connector or keep_down_for_detail_continuation or keep_down_for_touching_detail or keep_down_for_converted_travel:
+            if not keep_down_for_converted_travel:
+                comment(f"PATH_END id={chain_path_id} (keeping pen down for connector/continuation)")
         else:
             for command in build_pen_position_commands(
                 current_servo,
@@ -14743,7 +14933,11 @@ def generate_gcode_from_toolpaths(
                 append_gcode(command)
             current_servo = pen_up_s
             current_pen_down = False
-            comment(f"PATH_END id={path_id}")
+            comment(f"PATH_END id={chain_path_id}")
+            pending_converted_travel_index = None
+            pending_converted_travel_length_mm = 0.0
+            if toolpath.kind == "fill-infill":
+                active_fill_chain_path_id = None
         path_gcode_lines = g[path_gcode_start_index:]
         log_path_pipeline_audit(
             None,
@@ -14766,9 +14960,12 @@ def generate_gcode_from_toolpaths(
             last_gcode_for_path=path_gcode_lines[-3:],
         )
         previous_draw_path_id = path_id
+        previous_printed_toolpath = toolpath
 
     comment("Return to zero with pen up")
     if not nearly_same_point(current_position, Point(0.0, 0.0)):
+        travels_checked += 1
+        rejected_travel_reasons["missing_next_path"] = int(rejected_travel_reasons.get("missing_next_path", 0)) + 1
         return_home_line = append_motion("G1", Point(0.0, 0.0), travel_feed)
         preview.append({
             "id": "travel-home",
@@ -14819,6 +15016,22 @@ def generate_gcode_from_toolpaths(
             "detail_continuation_paths_pen_down": detail_continuation_pen_down_paths,
             "collinear_points_removed": int(collinear_points_removed),
         }
+        fill_path_count_before_conversion = int(sum(1 for path in toolpaths if path.kind == "fill-infill"))
+        debug["travel_conversion_mode"] = "postprocess_existing_travels_only"
+        debug["infill_geometry_changed"] = False
+        debug["path_order_changed"] = False
+        debug["new_connector_routes_created"] = False
+        debug["travels_checked"] = int(travels_checked)
+        debug["infill_to_infill_travels_checked"] = int(infill_to_infill_travels_checked)
+        debug["travels_converted_to_pen_down"] = int(travels_converted_to_pen_down)
+        debug["travels_left_pen_up"] = int(max(0, travels_checked - travels_converted_to_pen_down))
+        debug["fill_path_count_before_conversion"] = fill_path_count_before_conversion
+        debug["fill_path_count_after_conversion"] = int(fill_path_count_after_conversion)
+        debug["pen_lifts_before_conversion"] = int(actual_pen_lift_count + travels_converted_to_pen_down)
+        debug["pen_lifts_after_conversion"] = int(actual_pen_lift_count)
+        debug["converted_connector_length_mm"] = float(converted_connector_length_mm)
+        debug["rejected_travel_reasons"] = dict(sorted(rejected_travel_reasons.items()))
+        debug["converted_connectors_outside_outline_area_mm2"] = float(converted_connectors_outside_outline_area_mm2)
         debug["actual_gcode_pen_lift_count"] = actual_pen_lift_count
         debug["projected_toolpath_hash"] = hash_toolpaths(toolpaths)
 
