@@ -291,6 +291,148 @@ def _clip_extended_segment_to_allowed_area(
     return segment, True
 
 
+def _clone_toolpath(path: Toolpath) -> Toolpath:
+    return Toolpath(
+        points=[Point(float(point.x), float(point.y)) for point in path.points],
+        kind=path.kind,
+        closed=bool(path.closed),
+        source=path.source,
+        metadata=dict(path.metadata or {}),
+        path_id=path.path_id,
+        region_id=path.region_id,
+    )
+
+
+def _endpoint_protrusion_area_mm2(
+    point: Point,
+    *,
+    allowed_geom: Any,
+    pen_radius_mm: float,
+) -> float:
+    if allowed_geom is None or getattr(allowed_geom, "is_empty", True):
+        return 0.0
+    endpoint_cap = ShapelyPoint(float(point.x), float(point.y)).buffer(max(0.01, float(pen_radius_mm)), cap_style=1, join_style=1)
+    return float(endpoint_cap.difference(allowed_geom).area)
+
+
+def _retract_endpoint_along_path(
+    points: list[Point],
+    *,
+    endpoint_index: int,
+    allowed_geom: Any,
+    pen_radius_mm: float,
+    max_retract_mm: float,
+    precision_mm: float,
+) -> tuple[list[Point], float]:
+    if len(points) < 2:
+        return points, 0.0
+    if endpoint_index == 0:
+        outer_point = points[0]
+        inner_point = points[1]
+    else:
+        outer_point = points[-1]
+        inner_point = points[-2]
+
+    dx = float(inner_point.x - outer_point.x)
+    dy = float(inner_point.y - outer_point.y)
+    segment_length = math.hypot(dx, dy)
+    if segment_length <= 1e-9:
+        return points, 0.0
+    if _endpoint_protrusion_area_mm2(outer_point, allowed_geom=allowed_geom, pen_radius_mm=pen_radius_mm) <= 1e-9:
+        return points, 0.0
+
+    ux = dx / segment_length
+    uy = dy / segment_length
+    max_step = max(0.0, min(float(max_retract_mm), max(0.0, segment_length - 1e-6)))
+    if max_step <= 1e-9:
+        return points, 0.0
+
+    def moved_point(distance_mm: float) -> Point:
+        return Point(
+            float(outer_point.x + (ux * distance_mm)),
+            float(outer_point.y + (uy * distance_mm)),
+        )
+
+    def protrusion_at(distance_mm: float) -> float:
+        return _endpoint_protrusion_area_mm2(
+            moved_point(distance_mm),
+            allowed_geom=allowed_geom,
+            pen_radius_mm=pen_radius_mm,
+        )
+
+    high = max_step
+    if protrusion_at(high) > 1e-9:
+        chosen_distance = high
+    else:
+        low = 0.0
+        while (high - low) > max(0.001, float(precision_mm)):
+            mid = (low + high) * 0.5
+            if protrusion_at(mid) <= 1e-9:
+                high = mid
+            else:
+                low = mid
+        chosen_distance = high
+
+    if chosen_distance <= 1e-9:
+        return points, 0.0
+
+    updated = list(points)
+    if endpoint_index == 0:
+        updated[0] = moved_point(chosen_distance)
+    else:
+        updated[-1] = moved_point(chosen_distance)
+    return updated, float(chosen_distance)
+
+
+def _clamp_infill_endpoints_to_outline_limit(
+    paths: list[Toolpath],
+    *,
+    allowed_geom: Any,
+    pen_radius_mm: float,
+    max_retract_mm: float,
+    precision_mm: float,
+) -> tuple[list[Toolpath], dict[str, Any]]:
+    adjusted_paths: list[Toolpath] = []
+    endpoints_checked = 0
+    endpoints_clamped = 0
+    max_endpoint_retract_mm = 0.0
+
+    for path in paths:
+        if path.kind != "fill-infill" or len(path.points) < 2:
+            adjusted_paths.append(_clone_toolpath(path))
+            continue
+        updated_points = [Point(float(point.x), float(point.y)) for point in path.points]
+        for endpoint_index in (0, -1):
+            endpoints_checked += 1
+            updated_points, retract_mm = _retract_endpoint_along_path(
+                updated_points,
+                endpoint_index=endpoint_index,
+                allowed_geom=allowed_geom,
+                pen_radius_mm=pen_radius_mm,
+                max_retract_mm=max_retract_mm,
+                precision_mm=precision_mm,
+            )
+            if retract_mm > 1e-9:
+                endpoints_clamped += 1
+                max_endpoint_retract_mm = max(max_endpoint_retract_mm, float(retract_mm))
+        adjusted_paths.append(Toolpath(
+            points=updated_points,
+            kind=path.kind,
+            closed=path.closed,
+            source=path.source,
+            metadata=dict(path.metadata or {}),
+            path_id=path.path_id,
+            region_id=path.region_id,
+        ))
+
+    return adjusted_paths, {
+        "endpoint_clamp_mode": "postprocess_only",
+        "endpoints_checked": int(endpoints_checked),
+        "endpoints_clamped": int(endpoints_clamped),
+        "max_endpoint_retract_mm": float(max_endpoint_retract_mm),
+    }
+
+
 def _scanline_fill_paths(
     component_geometry: Any,
     *,
@@ -578,6 +720,20 @@ def _paths_footprint_union(paths: Iterable[Toolpath], *, pen_radius_mm: float) -
     if not geometries:
         return Polygon()
     return unary_union(geometries)
+
+
+def _infill_beyond_outline_area_mm2(
+    paths: Iterable[Toolpath],
+    *,
+    allowed_geom: Any,
+    pen_radius_mm: float,
+) -> float:
+    if allowed_geom is None or getattr(allowed_geom, "is_empty", True):
+        return 0.0
+    infill_footprint = _paths_footprint_union((path for path in paths if path.kind == "fill-infill"), pen_radius_mm=pen_radius_mm)
+    if infill_footprint.is_empty:
+        return 0.0
+    return float(infill_footprint.difference(allowed_geom).area)
 
 
 def _mask_to_overlay(mask: np.ndarray, color: tuple[int, int, int]) -> np.ndarray:
@@ -959,6 +1115,18 @@ def _generate_debug_artifacts(
     coverage_report["fill_uses_outline_clearance"] = bool(debug.get("fill_uses_outline_clearance", False))
     coverage_report["outside_overflow_mm2"] = float(debug.get("outside_overflow_mm2", coverage_report.get("overflow_area_mm2", 0.0)))
     coverage_report["coverage_after_outline_percent"] = float(debug.get("coverage_after_outline_percent", coverage_report.get("coverage_percent", 0.0)))
+    coverage_report["endpoint_clamp_mode"] = str(debug.get("endpoint_clamp_mode", "postprocess_only"))
+    coverage_report["line_generation_changed"] = bool(debug.get("line_generation_changed", False))
+    coverage_report["global_fill_mask_changed"] = bool(debug.get("global_fill_mask_changed", False))
+    coverage_report["infill_spacing_mm"] = float(debug.get("infill_debug", {}).get("spacing_mm", 0.0))
+    coverage_report["line_width_mm"] = float(line_width_mm)
+    coverage_report["endpoints_checked"] = int(debug.get("endpoints_checked", 0))
+    coverage_report["endpoints_clamped"] = int(debug.get("endpoints_clamped", 0))
+    coverage_report["max_endpoint_retract_mm"] = float(debug.get("max_endpoint_retract_mm", 0.0))
+    coverage_report["infill_beyond_outline_before_mm2"] = float(debug.get("infill_beyond_outline_before_mm2", 0.0))
+    coverage_report["infill_beyond_outline_after_mm2"] = float(debug.get("infill_beyond_outline_after_mm2", 0.0))
+    coverage_report["coverage_before_endpoint_clamp_percent"] = float(debug.get("coverage_report", {}).get("coverage_before_endpoint_clamp_percent", 0.0))
+    coverage_report["coverage_after_endpoint_clamp_percent"] = float(debug.get("coverage_report", {}).get("coverage_after_endpoint_clamp_percent", 0.0))
     with open(output_dir / "coverage_report.json", "w", encoding="utf-8") as handle:
         json.dump(coverage_report, handle, indent=2)
     with open(output_dir / "repair_candidates.json", "w", encoding="utf-8") as handle:
@@ -987,6 +1155,18 @@ def _generate_debug_artifacts(
             "endpoint_extensions_clipped": int(debug.get("endpoint_extensions_clipped", 0)),
             "outline_overlap_allowed": bool(debug.get("outline_overlap_allowed", True)),
             "fill_uses_outline_clearance": bool(debug.get("fill_uses_outline_clearance", False)),
+            "endpoint_clamp_mode": str(debug.get("endpoint_clamp_mode", "postprocess_only")),
+            "line_generation_changed": bool(debug.get("line_generation_changed", False)),
+            "global_fill_mask_changed": bool(debug.get("global_fill_mask_changed", False)),
+            "infill_spacing_mm": float(debug.get("infill_debug", {}).get("spacing_mm", 0.0)),
+            "line_width_mm": float(line_width_mm),
+            "endpoints_checked": int(debug.get("endpoints_checked", 0)),
+            "endpoints_clamped": int(debug.get("endpoints_clamped", 0)),
+            "max_endpoint_retract_mm": float(debug.get("max_endpoint_retract_mm", 0.0)),
+            "infill_beyond_outline_before_mm2": float(debug.get("infill_beyond_outline_before_mm2", 0.0)),
+            "infill_beyond_outline_after_mm2": float(debug.get("infill_beyond_outline_after_mm2", 0.0)),
+            "coverage_before_endpoint_clamp_percent": float(debug.get("coverage_report", {}).get("coverage_before_endpoint_clamp_percent", 0.0)),
+            "coverage_after_endpoint_clamp_percent": float(debug.get("coverage_report", {}).get("coverage_after_endpoint_clamp_percent", 0.0)),
             "coverage_after_outline_percent": float(debug.get("coverage_after_outline_percent", coverage_report.get("coverage_percent", 0.0))),
             "accepted_connectors": int(sum(1 for path in final_paths if path.kind == "fill-infill-travel")),
         }, handle, indent=2)
@@ -1053,10 +1233,12 @@ def plan_coverage_first_toolpaths(
     component_debug: list[dict[str, Any]] = []
     repair_candidate_rows: list[dict[str, Any]] = []
     accepted_repairs: list[Toolpath] = []
+    pre_endpoint_clamp_paths: list[Toolpath] = []
     travel_distance_mm = 0.0
     detail_paths: list[Toolpath] = []
     fill_uses_outline_clearance = False
     outline_overlap_allowed = True
+    pen_radius_mm = float(line_width_mm) * 0.5
 
     for component_id in component_ids:
         component_mask = (labels == component_id).astype(np.uint8)
@@ -1073,6 +1255,14 @@ def plan_coverage_first_toolpaths(
         min_dim_mm = float(min(xs.max() - xs.min() + 1, ys.max() - ys.min() + 1) / px_per_mm)
         thin_region = bool(width_mm <= line_width_mm * 1.5 or min_dim_mm <= line_width_mm * 1.5)
         angle_deg = _component_fill_angle(component_mask)
+        component_boundary_paths = _boundary_paths_for_component(
+            component_geometry,
+            component_id=component_id,
+            simplify_tolerance_mm=simplify_tolerance_mm,
+            line_width_mm=line_width_mm,
+        )
+        component_outline_footprint = _paths_footprint_union(component_boundary_paths, pen_radius_mm=pen_radius_mm)
+        component_endpoint_limit = component_geometry.union(component_outline_footprint) if component_geometry is not None and not getattr(component_geometry, "is_empty", True) else component_outline_footprint
         if thin_region and thin_detail_mode:
             detail_style = "single_stroke_detail" if width_mm <= line_width_mm * 1.35 else "contour_following"
             thin_paths, thin_stats = _skeleton_paths_for_component(
@@ -1086,6 +1276,7 @@ def plan_coverage_first_toolpaths(
             )
             skeleton_paths.extend(thin_paths)
             all_paths.extend(thin_paths)
+            pre_endpoint_clamp_paths.extend(_clone_toolpath(path) for path in thin_paths)
             component_debug.append({
                 "component_id": int(component_id),
                 "mode": "thin",
@@ -1113,8 +1304,17 @@ def plan_coverage_first_toolpaths(
                 max_overflow_mm=0.05,
                 fill_mode_label=fill_mode_label,
             )
+            unclamped_fill_paths = [_clone_toolpath(path) for path in fill_paths]
+            fill_paths, endpoint_clamp_stats = _clamp_infill_endpoints_to_outline_limit(
+                fill_paths,
+                allowed_geom=component_endpoint_limit,
+                pen_radius_mm=pen_radius_mm,
+                max_retract_mm=pen_radius_mm,
+                precision_mm=0.02,
+            )
             initial_paths.extend(fill_paths)
             all_paths.extend(fill_paths)
+            pre_endpoint_clamp_paths.extend(unclamped_fill_paths)
             component_debug.append({
                 "component_id": int(component_id),
                 "mode": "wide",
@@ -1126,6 +1326,12 @@ def plan_coverage_first_toolpaths(
                 "endpoint_extension_mm": float(fill_stats.get("endpoint_extension_mm", line_width_mm * 0.5)),
                 "endpoint_extensions_added": int(fill_stats.get("endpoint_extensions_added", 0)),
                 "endpoint_extensions_clipped": int(fill_stats.get("endpoint_extensions_clipped", 0)),
+                "endpoint_clamp_mode": str(endpoint_clamp_stats.get("endpoint_clamp_mode", "postprocess_only")),
+                "endpoints_checked": int(endpoint_clamp_stats.get("endpoints_checked", 0)),
+                "endpoints_clamped": int(endpoint_clamp_stats.get("endpoints_clamped", 0)),
+                "max_endpoint_retract_mm": float(endpoint_clamp_stats.get("max_endpoint_retract_mm", 0.0)),
+                "infill_beyond_outline_before_mm2": float(_infill_beyond_outline_area_mm2(unclamped_fill_paths, allowed_geom=component_endpoint_limit, pen_radius_mm=pen_radius_mm)),
+                "infill_beyond_outline_after_mm2": float(_infill_beyond_outline_area_mm2(fill_paths, allowed_geom=component_endpoint_limit, pen_radius_mm=pen_radius_mm)),
             })
 
     detail_clip_region = None
@@ -1166,13 +1372,16 @@ def plan_coverage_first_toolpaths(
 
     if detail_paths:
         all_paths.extend(detail_paths)
+        pre_endpoint_clamp_paths.extend(_clone_toolpath(path) for path in detail_paths)
 
         boundary = _boundary_paths_for_component(component_geometry, component_id=component_id, simplify_tolerance_mm=simplify_tolerance_mm, line_width_mm=line_width_mm)
         boundary_paths.extend(boundary)
         if outline_after_fill:
             all_paths.extend(boundary)
+            pre_endpoint_clamp_paths.extend(_clone_toolpath(path) for path in boundary)
         else:
             all_paths = boundary + all_paths
+            pre_endpoint_clamp_paths = [_clone_toolpath(path) for path in boundary] + pre_endpoint_clamp_paths
 
     if debug is not None:
         hole_count = sum(len(poly.interiors) for poly in _geometry_parts(printable_geometry))
@@ -1185,6 +1394,11 @@ def plan_coverage_first_toolpaths(
         endpoint_extension_mm = float(max((float(item.get("endpoint_extension_mm", 0.0)) for item in component_debug), default=line_width_mm * 0.5))
         endpoint_extensions_added = int(sum(int(item.get("endpoint_extensions_added", 0)) for item in component_debug))
         endpoint_extensions_clipped = int(sum(int(item.get("endpoint_extensions_clipped", 0)) for item in component_debug))
+        endpoints_checked = int(sum(int(item.get("endpoints_checked", 0)) for item in component_debug))
+        endpoints_clamped = int(sum(int(item.get("endpoints_clamped", 0)) for item in component_debug))
+        max_endpoint_retract_mm = float(max((float(item.get("max_endpoint_retract_mm", 0.0)) for item in component_debug), default=0.0))
+        infill_beyond_outline_before_mm2 = float(sum(float(item.get("infill_beyond_outline_before_mm2", 0.0)) for item in component_debug))
+        infill_beyond_outline_after_mm2 = float(sum(float(item.get("infill_beyond_outline_after_mm2", 0.0)) for item in component_debug))
         debug["infill_debug"] = {
                 "fill_strategy": str(fill_strategy),
                 "infill_path_mode": str(infill_path_mode),
@@ -1194,9 +1408,17 @@ def plan_coverage_first_toolpaths(
                 "pen_width_mm": float(line_width_mm),
                 "fill_uses_outline_clearance": bool(fill_uses_outline_clearance),
                 "outline_overlap_allowed": bool(outline_overlap_allowed),
+                "endpoint_clamp_mode": "postprocess_only",
+                "line_generation_changed": False,
+                "global_fill_mask_changed": False,
                 "endpoint_extension_mm": float(endpoint_extension_mm),
                 "endpoint_extensions_added": int(endpoint_extensions_added),
                 "endpoint_extensions_clipped": int(endpoint_extensions_clipped),
+                "endpoints_checked": int(endpoints_checked),
+                "endpoints_clamped": int(endpoints_clamped),
+                "max_endpoint_retract_mm": float(max_endpoint_retract_mm),
+                "infill_beyond_outline_before_mm2": float(infill_beyond_outline_before_mm2),
+                "infill_beyond_outline_after_mm2": float(infill_beyond_outline_after_mm2),
             "diagnostics": {
                 "narrower_than_2x_pen_regions": thin_region_count,
                 "narrower_than_2x_pen_with_centerline": thin_region_count,
@@ -1249,6 +1471,12 @@ def plan_coverage_first_toolpaths(
         debug["largest_missed_blob_before_outline_mm"] = float(_largest_blob_diameter_mm(missed_mask, px_per_mm))
         debug["endpoint_extensions_added"] = int(sum(int(item.get("endpoint_extensions_added", 0)) for item in component_debug))
         debug["endpoint_extensions_clipped"] = int(sum(int(item.get("endpoint_extensions_clipped", 0)) for item in component_debug))
+        debug["endpoint_clamp_mode"] = "postprocess_only"
+        debug["line_generation_changed"] = False
+        debug["global_fill_mask_changed"] = False
+        debug["endpoints_checked"] = int(sum(int(item.get("endpoints_checked", 0)) for item in component_debug))
+        debug["endpoints_clamped"] = int(sum(int(item.get("endpoints_clamped", 0)) for item in component_debug))
+        debug["max_endpoint_retract_mm"] = float(max((float(item.get("max_endpoint_retract_mm", 0.0)) for item in component_debug), default=0.0))
         debug["outline_overlap_allowed"] = bool(outline_overlap_allowed)
         debug["fill_uses_outline_clearance"] = bool(fill_uses_outline_clearance)
 
@@ -1311,24 +1539,31 @@ def plan_coverage_first_toolpaths(
                     trial_overflow = np.count_nonzero((trial_painted > 0) & ~(allowed > 0))
                     if trial_missed < np.count_nonzero((target_mask > 0) & ~(current_painted > 0)) or (trial_missed == 0 and trial_overflow <= np.count_nonzero((current_painted > 0) & ~(allowed > 0))):
                         all_paths = trial_paths
+                        pre_endpoint_clamp_paths = pre_endpoint_clamp_paths + [_clone_toolpath(best_candidate)]
                         current_painted = trial_painted
                         accepted_repairs.append(best_candidate)
                         if trial_missed == 0:
                             break
 
+    ordered_fill = pipeline_core.optimize_toolpath_order([path for path in all_paths if path.kind != "outline"], strategy=travel_optimization)
+    pre_clamp_ordered_fill = pipeline_core.optimize_toolpath_order([path for path in pre_endpoint_clamp_paths if path.kind != "outline"], strategy=travel_optimization)
     if outline_after_fill:
-        ordered_fill = pipeline_core.optimize_toolpath_order([path for path in all_paths if path.kind != "outline"], strategy=travel_optimization)
         final_paths = ordered_fill + [path for path in all_paths if path.kind == "outline"]
+        pre_endpoint_clamp_final_paths = pre_clamp_ordered_fill + [path for path in pre_endpoint_clamp_paths if path.kind == "outline"]
     else:
-        ordered_fill = pipeline_core.optimize_toolpath_order([path for path in all_paths if path.kind != "outline"], strategy=travel_optimization)
         final_paths = [path for path in all_paths if path.kind == "outline"] + ordered_fill
+        pre_endpoint_clamp_final_paths = [path for path in pre_endpoint_clamp_paths if path.kind == "outline"] + pre_clamp_ordered_fill
 
     # Attempt to chain safe pen-down infill connectors into continuous infill strokes
     final_paths = _chain_pen_down_infill_connectors(final_paths, printable_geometry=printable_geometry)
     final_paths = pipeline_core.merge_connected_toolpaths(final_paths)
     final_paths = pipeline_core.assign_stable_path_ids(final_paths)
+    pre_endpoint_clamp_final_paths = _chain_pen_down_infill_connectors(pre_endpoint_clamp_final_paths, printable_geometry=printable_geometry)
+    pre_endpoint_clamp_final_paths = pipeline_core.merge_connected_toolpaths(pre_endpoint_clamp_final_paths)
+    pre_endpoint_clamp_final_paths = pipeline_core.assign_stable_path_ids(pre_endpoint_clamp_final_paths)
 
     if debug is not None:
+        pre_endpoint_clamp_painted = _path_points_to_mask(pre_endpoint_clamp_final_paths, shape=target_mask.shape, current_to_source_matrix=current_to_source, pen_radius_px=max(1, int(round(line_width_mm * px_per_mm / 2.0))))
         current_painted = _path_points_to_mask(final_paths, shape=target_mask.shape, current_to_source_matrix=current_to_source, pen_radius_px=max(1, int(round(line_width_mm * px_per_mm / 2.0))))
         target = target_mask > 0
         allowed = allowed_mask > 0
@@ -1372,12 +1607,29 @@ def plan_coverage_first_toolpaths(
             "outline_overlap_allowed": bool(debug.get("outline_overlap_allowed", True)),
             "fill_uses_outline_clearance": bool(debug.get("fill_uses_outline_clearance", False)),
             "outside_overflow_mm2": float(debug.get("outside_overflow_mm2", float(overflow_area_px) / max(1e-9, px_per_mm * px_per_mm))),
+            "endpoint_clamp_mode": "postprocess_only",
+            "line_generation_changed": False,
+            "global_fill_mask_changed": False,
+            "infill_spacing_mm": float(infill_spacing_mm if infill_spacing_mm > 0 else fallback_spacing),
+            "line_width_mm": float(line_width_mm),
+            "endpoints_checked": int(debug.get("endpoints_checked", 0)),
+            "endpoints_clamped": int(debug.get("endpoints_clamped", 0)),
+            "max_endpoint_retract_mm": float(debug.get("max_endpoint_retract_mm", 0.0)),
+            "coverage_before_endpoint_clamp_percent": float((100.0 * np.count_nonzero(target & (pre_endpoint_clamp_painted > 0)) / target_area_px) if target_area_px > 0 else 100.0),
+            "coverage_after_endpoint_clamp_percent": float((100.0 * np.count_nonzero(target & (current_painted > 0)) / target_area_px) if target_area_px > 0 else 100.0),
         }
-        pen_radius_mm = float(line_width_mm) * 0.5
         infill_footprint = _paths_footprint_union((path for path in final_paths if path.kind == "fill-infill"), pen_radius_mm=pen_radius_mm)
+        pre_clamp_infill_footprint = _paths_footprint_union((path for path in pre_endpoint_clamp_final_paths if path.kind == "fill-infill"), pen_radius_mm=pen_radius_mm)
         outline_cleanup_area = printable_geometry.boundary.buffer(pen_radius_mm, cap_style=1, join_style=1) if printable_geometry is not None and not getattr(printable_geometry, "is_empty", True) else Polygon()
         coverage_report["infill_outline_overlap_area_mm2"] = float(infill_footprint.intersection(outline_cleanup_area).area) if not infill_footprint.is_empty and not outline_cleanup_area.is_empty else 0.0
+        outline_paths = [path for path in final_paths if path.kind == "outline"]
+        outline_footprint = _paths_footprint_union(outline_paths, pen_radius_mm=pen_radius_mm)
+        outline_limit_area = printable_geometry.union(outline_footprint) if printable_geometry is not None and not getattr(printable_geometry, "is_empty", True) else outline_footprint
+        coverage_report["infill_beyond_outline_before_mm2"] = _infill_beyond_outline_area_mm2(pre_endpoint_clamp_final_paths, allowed_geom=outline_limit_area, pen_radius_mm=pen_radius_mm)
+        coverage_report["infill_beyond_outline_after_mm2"] = _infill_beyond_outline_area_mm2(final_paths, allowed_geom=outline_limit_area, pen_radius_mm=pen_radius_mm)
         debug["coverage_report"] = coverage_report
+        debug["infill_beyond_outline_before_mm2"] = float(coverage_report["infill_beyond_outline_before_mm2"])
+        debug["infill_beyond_outline_after_mm2"] = float(coverage_report["infill_beyond_outline_after_mm2"])
         debug["pen_lifts_after_optimization"] = int(pen_lifts)
         debug["repair_candidates"] = [{key: value for key, value in row.items() if key != "candidate"} for row in repair_candidate_rows]
         debug["path_stats"] = {

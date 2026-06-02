@@ -2085,6 +2085,9 @@ def test_fill_does_not_reserve_outline_space():
     assert any(path.kind == "fill-infill" for path in toolpaths)
     assert debug["fill_uses_outline_clearance"] is False
     assert debug["outline_overlap_allowed"] is True
+    assert debug["line_generation_changed"] is False
+    assert debug["global_fill_mask_changed"] is False
+    assert debug["endpoint_clamp_mode"] == "postprocess_only"
     assert debug["infill_debug"]["endpoint_extension_mm"] == pytest.approx(0.3, abs=1e-6)
 
 
@@ -2176,7 +2179,13 @@ def test_endpoint_extensions_do_not_create_visible_outside_overflow():
     )
 
     report = debug["coverage_report"]
+    assert report["line_generation_changed"] is False
+    assert report["global_fill_mask_changed"] is False
+    assert report["line_width_mm"] == pytest.approx(0.6, abs=1e-9)
+    assert report["infill_spacing_mm"] == pytest.approx(0.48, abs=1e-9)
     assert report["outside_overflow_mm2"] <= 1.0
+    assert report["infill_beyond_outline_after_mm2"] < report["infill_beyond_outline_before_mm2"]
+    assert report["coverage_after_endpoint_clamp_percent"] == pytest.approx(report["coverage_before_endpoint_clamp_percent"], abs=0.25)
     assert debug["endpoint_extensions_clipped"] >= 0
 
 
@@ -2196,6 +2205,72 @@ def test_endpoint_extension_keeps_spacing_unchanged():
 
     assert debug["infill_debug"]["pen_width_mm"] == pytest.approx(0.6, abs=1e-6)
     assert debug["infill_debug"]["spacing_mm"] == pytest.approx(0.48, abs=1e-6)
+    assert debug["line_generation_changed"] is False
+    assert debug["global_fill_mask_changed"] is False
+
+
+def test_endpoint_clamp_moves_only_segment_endpoints_parallel_to_row_direction():
+    printable = affinity.rotate(_rect(8.0, 2.4), 17.0, origin="centroid")
+    fill_paths, _fill_stats = coverage_planner._scanline_fill_paths(
+        printable,
+        angle_deg=17.0,
+        spacing_mm=0.48,
+        line_width_mm=0.6,
+        origin_x=0.0,
+        origin_y=0.0,
+        px_per_mm=10.0,
+        component_id=1,
+        allow_connectors=False,
+        max_overflow_mm=0.05,
+        fill_mode_label="serpentine",
+    )
+    outline_paths = coverage_planner._boundary_paths_for_component(
+        printable,
+        component_id=1,
+        simplify_tolerance_mm=0.0,
+        line_width_mm=0.6,
+    )
+    outline_footprint = coverage_planner._paths_footprint_union(outline_paths, pen_radius_mm=0.3)
+    outline_limit = printable.union(outline_footprint)
+
+    clamped_paths, clamp_stats = coverage_planner._clamp_infill_endpoints_to_outline_limit(
+        fill_paths,
+        allowed_geom=outline_limit,
+        pen_radius_mm=0.3,
+        max_retract_mm=0.3,
+        precision_mm=0.02,
+    )
+
+    assert clamp_stats["endpoints_checked"] == len(fill_paths) * 2
+    assert clamp_stats["endpoints_clamped"] > 0
+
+    for original, clamped in zip(fill_paths, clamped_paths):
+        assert len(original.points) == len(clamped.points)
+        assert clamped.points[1:-1] == original.points[1:-1]
+        if len(original.points) < 2:
+            continue
+
+        start_dir = (
+            float(original.points[1].x - original.points[0].x),
+            float(original.points[1].y - original.points[0].y),
+        )
+        start_move = (
+            float(clamped.points[0].x - original.points[0].x),
+            float(clamped.points[0].y - original.points[0].y),
+        )
+        end_dir = (
+            float(original.points[-2].x - original.points[-1].x),
+            float(original.points[-2].y - original.points[-1].y),
+        )
+        end_move = (
+            float(clamped.points[-1].x - original.points[-1].x),
+            float(clamped.points[-1].y - original.points[-1].y),
+        )
+
+        assert abs((start_move[0] * start_dir[1]) - (start_move[1] * start_dir[0])) <= 1e-6
+        assert abs((end_move[0] * end_dir[1]) - (end_move[1] * end_dir[0])) <= 1e-6
+        assert ((start_move[0] * start_dir[0]) + (start_move[1] * start_dir[1])) >= -1e-9
+        assert ((end_move[0] * end_dir[0]) + (end_move[1] * end_dir[1])) >= -1e-9
 
 
 def test_projected_cleanup_outline_logs_fill_clip_source(caplog):
