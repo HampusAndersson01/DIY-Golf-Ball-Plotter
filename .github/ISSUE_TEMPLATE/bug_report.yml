@@ -1,0 +1,82 @@
+name: Bug report
+description: Report a defect in plotting, geometry, raster analysis, frontend behavior, or test coverage.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the observed problem in one or two sentences.
+      placeholder: Small detail outlines are missing in the Arsenal logo preview.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary area
+      description: Choose the part of the system most affected.
+      options:
+        - Path planning
+        - Geometry
+        - Outline/detail tracing
+        - Image processing
+        - Color analysis
+        - Frontend
+        - G-code/export
+        - Tests
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the image/input, relevant settings, and exact actions.
+      placeholder: |
+        1. Upload the Arsenal logo
+        2. Open preview
+        3. Enable outlines
+        4. Observe missing small internal traces
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: Small detail traces should remain visible when the pen footprint stays inside the intended shape.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: Small details are dropped or over-pruned.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics or evidence
+      description: Include screenshots, preview notes, logs, affected test names, or suspected thresholds.
+      placeholder: Logs show short detail paths rejected after overlap checks.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Suggested acceptance criteria
+      description: List concrete conditions that would make the issue complete.
+      placeholder: |
+        - Missing detail traces are restored
+        - HA output remains unchanged
+        - Regression tests cover the failing case
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope checks
+      options:
+        - label: I verified this is not already covered by an open issue.
+          required: true
+        - label: I included enough detail to reproduce or investigate the problem.
+          required: true

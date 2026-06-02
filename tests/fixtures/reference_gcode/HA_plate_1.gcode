@@ -1,1945 +1,14865 @@
-; HEADER_BLOCK_START
-; BambuStudio 02.03.00.70
-; model printing time: 1m 39s; total estimated time: 9m 22s
-; total layer number: 1
-; total filament length [mm] : 32.85
-; total filament volume [cm^3] : 79.01
-; total filament weight [g] : 0.10
-; filament_density: 1.26
-; filament_diameter: 1.75
-; max_z_height: 0.10
-; filament: 1
-; HEADER_BLOCK_END
-
-; CONFIG_BLOCK_START
-; accel_to_decel_enable = 0
-; accel_to_decel_factor = 50%
-; activate_air_filtration = 0
-; additional_cooling_fan_speed = 70
-; apply_scarf_seam_on_circles = 1
-; apply_top_surface_compensation = 0
-; auxiliary_fan = 0
-; avoid_crossing_wall_includes_support = 0
-; bed_custom_model = 
-; bed_custom_texture = 
-; bed_exclude_area = 
-; bed_temperature_formula = by_first_filament
-; before_layer_change_gcode = 
-; best_object_pos = 0.5,0.5
-; bottom_color_penetration_layers = 5
-; bottom_shell_layers = 0
-; bottom_shell_thickness = 0
-; bottom_surface_pattern = monotonic
-; bridge_angle = 0
-; bridge_flow = 1
-; bridge_no_support = 0
-; bridge_speed = 50
-; brim_object_gap = 0.1
-; brim_type = auto_brim
-; brim_width = 5
-; chamber_temperatures = 0
-; change_filament_gcode = ;===== A1 20250822 =======================\nM1007 S0 ; turn off mass estimation\nG392 S0\nM620 S[next_extruder]A\nM204 S9000\nG1 Z{max_layer_z + 3.0} F1200\n\nM400\nM106 P1 S0\nM106 P2 S0\n{if nozzle_temperature[previous_extruder] > 142 && next_extruder < 255}\nM104 S{nozzle_temperature[previous_extruder]}\n{endif}\n\nG1 X267 F18000\n\n{if long_retractions_when_cut[previous_extruder]}\nM620.11 S1 I[previous_extruder] E-{retraction_distances_when_cut[previous_extruder]} F1200\n{else}\nM620.11 S0\n{endif}\nM400\n\nM620.1 E F{flush_volumetric_speeds[previous_extruder]/2.4053*60} T{flush_temperatures[previous_extruder]}\nM620.10 A0 F{flush_volumetric_speeds[previous_extruder]/2.4053*60}\nT[next_extruder]\nM620.1 E F{flush_volumetric_speeds[next_extruder]/2.4053*60} T{flush_temperatures[next_extruder]}\nM620.10 A1 F{flush_volumetric_speeds[next_extruder]/2.4053*60} L[flush_length] H[nozzle_diameter] T{flush_temperatures[next_extruder]}\n\nG1 Y128 F9000\n\n{if next_extruder < 255}\n\n{if long_retractions_when_cut[previous_extruder]}\nM620.11 S1 I[previous_extruder] E{retraction_distances_when_cut[previous_extruder]} F{flush_volumetric_speeds[previous_extruder]/2.4053*60}\nM628 S1\nG92 E0\nG1 E{retraction_distances_when_cut[previous_extruder]} F{flush_volumetric_speeds[previous_extruder]/2.4053*60}\nM400\nM629 S1\n{else}\nM620.11 S0\n{endif}\n\nM400\nG92 E0\nM628 S0\n\n{if flush_length_1 > 1}\n; FLUSH_START\n; always use highest temperature to flush\nM400\nM1002 set_filament_type:UNKNOWN\nM109 S[flush_temperatures[next_extruder]]\nM106 P1 S60\n{if flush_length_1 > 23.7}\nG1 E23.7 F{flush_volumetric_speeds[previous_extruder]/2.4053*60} ; do not need pulsatile flushing for start part\nG1 E{(flush_length_1 - 23.7) * 0.02} F50\nG1 E{(flush_length_1 - 23.7) * 0.23} F{flush_volumetric_speeds[previous_extruder]/2.4053*60}\nG1 E{(flush_length_1 - 23.7) * 0.02} F50\nG1 E{(flush_length_1 - 23.7) * 0.23} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{(flush_length_1 - 23.7) * 0.02} F50\nG1 E{(flush_length_1 - 23.7) * 0.23} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{(flush_length_1 - 23.7) * 0.02} F50\nG1 E{(flush_length_1 - 23.7) * 0.23} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\n{else}\nG1 E{flush_length_1} F{flush_volumetric_speeds[previous_extruder]/2.4053*60}\n{endif}\n; FLUSH_END\nG1 E-[old_retract_length_toolchange] F1800\nG1 E[old_retract_length_toolchange] F300\nM400\nM1002 set_filament_type:{filament_type[next_extruder]}\n{endif}\n\n{if flush_length_1 > 45 && flush_length_2 > 1}\n; WIPE\nM400\nM106 P1 S178\nM400 S3\nG1 X-38.2 F18000\nG1 X-48.2 F3000\nG1 X-38.2 F18000\nG1 X-48.2 F3000\nG1 X-38.2 F18000\nG1 X-48.2 F3000\nM400\nM106 P1 S0\n{endif}\n\n{if flush_length_2 > 1}\nM106 P1 S60\n; FLUSH_START\nG1 E{flush_length_2 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{flush_length_2 * 0.02} F50\nG1 E{flush_length_2 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{flush_length_2 * 0.02} F50\nG1 E{flush_length_2 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{flush_length_2 * 0.02} F50\nG1 E{flush_length_2 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{flush_length_2 * 0.02} F50\nG1 E{flush_length_2 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{flush_length_2 * 0.02} F50\n; FLUSH_END\nG1 E-[new_retract_length_toolchange] F1800\nG1 E[new_retract_length_toolchange] F300\n{endif}\n\n{if flush_length_2 > 45 && flush_length_3 > 1}\n; WIPE\nM400\nM106 P1 S178\nM400 S3\nG1 X-38.2 F18000\nG1 X-48.2 F3000\nG1 X-38.2 F18000\nG1 X-48.2 F3000\nG1 X-38.2 F18000\nG1 X-48.2 F3000\nM400\nM106 P1 S0\n{endif}\n\n{if flush_length_3 > 1}\nM106 P1 S60\n; FLUSH_START\nG1 E{flush_length_3 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{flush_length_3 * 0.02} F50\nG1 E{flush_length_3 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{flush_length_3 * 0.02} F50\nG1 E{flush_length_3 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{flush_length_3 * 0.02} F50\nG1 E{flush_length_3 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{flush_length_3 * 0.02} F50\nG1 E{flush_length_3 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{flush_length_3 * 0.02} F50\n; FLUSH_END\nG1 E-[new_retract_length_toolchange] F1800\nG1 E[new_retract_length_toolchange] F300\n{endif}\n\n{if flush_length_3 > 45 && flush_length_4 > 1}\n; WIPE\nM400\nM106 P1 S178\nM400 S3\nG1 X-38.2 F18000\nG1 X-48.2 F3000\nG1 X-38.2 F18000\nG1 X-48.2 F3000\nG1 X-38.2 F18000\nG1 X-48.2 F3000\nM400\nM106 P1 S0\n{endif}\n\n{if flush_length_4 > 1}\nM106 P1 S60\n; FLUSH_START\nG1 E{flush_length_4 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{flush_length_4 * 0.02} F50\nG1 E{flush_length_4 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{flush_length_4 * 0.02} F50\nG1 E{flush_length_4 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{flush_length_4 * 0.02} F50\nG1 E{flush_length_4 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{flush_length_4 * 0.02} F50\nG1 E{flush_length_4 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.4053*60}\nG1 E{flush_length_4 * 0.02} F50\n; FLUSH_END\n{endif}\n\nM629\n\nM400\nM106 P1 S60\nM109 S{nozzle_temperature[next_extruder]}\nG1 E6 F{flush_volumetric_speeds[next_extruder]/2.4053*60} ;Compensate for filament spillage during waiting temperature\nM400\nG92 E0\nG1 E-[new_retract_length_toolchange] F1800\nM400\nM106 P1 S178\nM400 S3\nG1 X-38.2 F18000\nG1 X-48.2 F3000\nG1 X-38.2 F18000\nG1 X-48.2 F3000\nG1 X-38.2 F18000\nG1 X-48.2 F3000\nG1 X-38.2 F18000\nG1 X-48.2 F3000\nM400\nG1 Z{max_layer_z + 3.0} F3000\nM106 P1 S0\n{if layer_z <= (initial_layer_print_height + 0.001)}\nM204 S[initial_layer_acceleration]\n{else}\nM204 S[default_acceleration]\n{endif}\n{else}\nG1 X[x_after_toolchange] Y[y_after_toolchange] Z[z_after_toolchange] F12000\n{endif}\n\nM622.1 S0\nM9833 F{outer_wall_volumetric_speed/2.4} A0.3 ; cali dynamic extrusion compensation\nM1002 judge_flag filament_need_cali_flag\nM622 J1\n  G92 E0\n  G1 E-[new_retract_length_toolchange] F1800\n  M400\n  \n  M106 P1 S178\n  M400 S4\n  G1 X-38.2 F18000\n  G1 X-48.2 F3000\n  G1 X-38.2 F18000 ;wipe and shake\n  G1 X-48.2 F3000\n  G1 X-38.2 F12000 ;wipe and shake\n  G1 X-48.2 F3000\n  M400\n  M106 P1 S0 \nM623\n\nM621 S[next_extruder]A\nG392 S0\n\nM1007 S1\n
-; circle_compensation_manual_offset = 0
-; circle_compensation_speed = 200
-; close_fan_the_first_x_layers = 1
-; complete_print_exhaust_fan_speed = 70
-; cool_plate_temp = 35
-; cool_plate_temp_initial_layer = 35
-; counter_coef_1 = 0
-; counter_coef_2 = 0.008
-; counter_coef_3 = -0.041
-; counter_limit_max = 0.033
-; counter_limit_min = -0.035
-; curr_bed_type = Textured PEI Plate
-; default_acceleration = 4000
-; default_filament_colour = ""
-; default_filament_profile = "Bambu PLA Basic @BBL A1 0.2 nozzle"
-; default_jerk = 0
-; default_nozzle_volume_type = Standard
-; default_print_profile = 0.10mm Standard @BBL A1 0.2 nozzle
-; deretraction_speed = 30
-; detect_floating_vertical_shell = 1
-; detect_narrow_internal_solid_infill = 1
-; detect_overhang_wall = 1
-; detect_thin_wall = 0
-; diameter_limit = 50
-; different_settings_to_system = bottom_shell_layers;skeleton_infill_density;skin_infill_density;sparse_infill_density;sparse_infill_pattern;top_shell_layers;;
-; draft_shield = disabled
-; during_print_exhaust_fan_speed = 70
-; elefant_foot_compensation = 0.075
-; enable_arc_fitting = 1
-; enable_circle_compensation = 0
-; enable_height_slowdown = 0
-; enable_long_retraction_when_cut = 2
-; enable_overhang_bridge_fan = 1
-; enable_overhang_speed = 1
-; enable_pre_heating = 0
-; enable_pressure_advance = 0
-; enable_prime_tower = 0
-; enable_support = 0
-; enable_wrapping_detection = 0
-; enforce_support_layers = 0
-; eng_plate_temp = 0
-; eng_plate_temp_initial_layer = 0
-; ensure_vertical_shell_thickness = enabled
-; exclude_object = 1
-; extruder_ams_count = 1#0|4#0;1#0|4#0
-; extruder_clearance_dist_to_rod = 56.5
-; extruder_clearance_height_to_lid = 256
-; extruder_clearance_height_to_rod = 25
-; extruder_clearance_max_radius = 73
-; extruder_colour = #018001
-; extruder_offset = 0x0
-; extruder_printable_area = 
-; extruder_type = Direct Drive
-; extruder_variant_list = "Direct Drive Standard"
-; fan_cooling_layer_time = 80
-; fan_direction = undefine
-; fan_max_speed = 80
-; fan_min_speed = 60
-; filament_adaptive_volumetric_speed = 0
-; filament_adhesiveness_category = 100
-; filament_change_length = 5
-; filament_colour = #0080FF
-; filament_colour_type = 1
-; filament_cost = 24.99
-; filament_density = 1.26
-; filament_diameter = 1.75
-; filament_end_gcode = "; filament end gcode \n\n"
-; filament_extruder_variant = "Direct Drive Standard"
-; filament_flow_ratio = 0.98
-; filament_flush_temp = 0
-; filament_flush_volumetric_speed = 0
-; filament_ids = GFA00
-; filament_is_support = 0
-; filament_long_retractions_when_cut = 1
-; filament_map = 1
-; filament_map_mode = Auto For Flush
-; filament_max_volumetric_speed = 2
-; filament_minimal_purge_on_wipe_tower = 15
-; filament_multi_colour = #0080FF
-; filament_notes = 
-; filament_pre_cooling_temperature = 0
-; filament_prime_volume = 30
-; filament_printable = 3
-; filament_ramming_travel_time = 0
-; filament_ramming_volumetric_speed = -1
-; filament_retraction_distances_when_cut = 18
-; filament_scarf_gap = 0%
-; filament_scarf_height = 10%
-; filament_scarf_length = 10
-; filament_scarf_seam_type = none
-; filament_self_index = 1
-; filament_settings_id = "Bambu PLA Basic @BBL A1 0.2 nozzle"
-; filament_shrink = 100%
-; filament_soluble = 0
-; filament_start_gcode = "; filament start gcode\n{if  (bed_temperature[current_extruder] >55)||(bed_temperature_initial_layer[current_extruder] >55)}M106 P3 S200\n{elsif(bed_temperature[current_extruder] >50)||(bed_temperature_initial_layer[current_extruder] >50)}M106 P3 S150\n{elsif(bed_temperature[current_extruder] >45)||(bed_temperature_initial_layer[current_extruder] >45)}M106 P3 S50\n{endif}\n\n{if activate_air_filtration[current_extruder] && support_air_filtration}\nM106 P3 S{during_print_exhaust_fan_speed_num[current_extruder]} \n{endif}"
-; filament_type = PLA
-; filament_velocity_adaptation_factor = 1
-; filament_vendor = "Bambu Lab"
-; filename_format = {input_filename_base}_{filament_type[0]}_{print_time}.gcode
-; filter_out_gap_fill = 0
-; first_layer_print_sequence = 0
-; first_x_layer_fan_speed = 0
-; flush_into_infill = 0
-; flush_into_objects = 0
-; flush_into_support = 1
-; flush_multiplier = 1
-; flush_volumes_matrix = 0
-; flush_volumes_vector = 140,140
-; full_fan_speed_layer = 0
-; fuzzy_skin = none
-; fuzzy_skin_point_distance = 0.8
-; fuzzy_skin_thickness = 0.3
-; gap_infill_speed = 50
-; gcode_add_line_number = 0
-; gcode_flavor = marlin
-; grab_length = 17.4
-; has_scarf_joint_seam = 0
-; head_wrap_detect_zone = 226x224,256x224,256x256,226x256
-; hole_coef_1 = 0
-; hole_coef_2 = -0.008
-; hole_coef_3 = 0.23415
-; hole_limit_max = 0.22
-; hole_limit_min = 0.088
-; host_type = octoprint
-; hot_plate_temp = 65
-; hot_plate_temp_initial_layer = 65
-; hotend_cooling_rate = 2
-; hotend_heating_rate = 2
-; impact_strength_z = 13.8
-; independent_support_layer_height = 1
-; infill_combination = 0
-; infill_direction = 45
-; infill_jerk = 9
-; infill_lock_depth = 1
-; infill_rotate_step = 0
-; infill_shift_step = 0.4
-; infill_wall_overlap = 15%
-; initial_layer_acceleration = 500
-; initial_layer_flow_ratio = 1
-; initial_layer_infill_speed = 28
-; initial_layer_jerk = 9
-; initial_layer_line_width = 0.25
-; initial_layer_print_height = 0.1
-; initial_layer_speed = 16
-; initial_layer_travel_acceleration = 6000
-; inner_wall_acceleration = 0
-; inner_wall_jerk = 9
-; inner_wall_line_width = 0.22
-; inner_wall_speed = 150
-; interface_shells = 0
-; interlocking_beam = 0
-; interlocking_beam_layer_count = 2
-; interlocking_beam_width = 0.8
-; interlocking_boundary_avoidance = 2
-; interlocking_depth = 2
-; interlocking_orientation = 22.5
-; internal_bridge_support_thickness = 0.8
-; internal_solid_infill_line_width = 0.22
-; internal_solid_infill_pattern = zig-zag
-; internal_solid_infill_speed = 150
-; ironing_direction = 45
-; ironing_flow = 10%
-; ironing_inset = 0.11
-; ironing_pattern = zig-zag
-; ironing_spacing = 0.15
-; ironing_speed = 30
-; ironing_type = no ironing
-; is_infill_first = 0
-; layer_change_gcode = ; layer num/total_layer_count: {layer_num+1}/[total_layer_count]\n; update layer progress\nM73 L{layer_num+1}\nM991 S0 P{layer_num} ;notify layer change
-; layer_height = 0.08
-; line_width = 0.22
-; locked_skeleton_infill_pattern = zigzag
-; locked_skin_infill_pattern = crosszag
-; long_retractions_when_cut = 0
-; long_retractions_when_ec = 0
-; machine_end_gcode = ;===== date: 20231229 =====================\nG392 S0 ;turn off nozzle clog detect\n\nM400 ; wait for buffer to clear\nG92 E0 ; zero the extruder\nG1 E-0.8 F1800 ; retract\nG1 Z{max_layer_z + 0.5} F900 ; lower z a little\nG1 X0 Y{first_layer_center_no_wipe_tower[1]} F18000 ; move to safe pos\nG1 X-13.0 F3000 ; move to safe pos\n{if !spiral_mode && print_sequence != "by object"}\nM1002 judge_flag timelapse_record_flag\nM622 J1\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM400 P100\nM971 S11 C11 O0\nM991 S0 P-1 ;end timelapse at safe pos\nM623\n{endif}\n\nM140 S0 ; turn off bed\nM106 S0 ; turn off fan\nM106 P2 S0 ; turn off remote part cooling fan\nM106 P3 S0 ; turn off chamber cooling fan\n\n;G1 X27 F15000 ; wipe\n\n; pull back filament to AMS\nM620 S255\nG1 X267 F15000\nT255\nG1 X-28.5 F18000\nG1 X-48.2 F3000\nG1 X-28.5 F18000\nG1 X-48.2 F3000\nM621 S255\n\nM104 S0 ; turn off hotend\n\nM400 ; wait all motion done\nM17 S\nM17 Z0.4 ; lower z motor current to reduce impact if there is something in the bottom\n{if (max_layer_z + 100.0) < 256}\n    G1 Z{max_layer_z + 100.0} F600\n    G1 Z{max_layer_z +98.0}\n{else}\n    G1 Z256 F600\n    G1 Z256\n{endif}\nM400 P100\nM17 R ; restore z current\n\nG90\nG1 X-48 Y180 F3600\n\nM220 S100  ; Reset feedrate magnitude\nM201.2 K1.0 ; Reset acc magnitude\nM73.2   R1.0 ;Reset left time magnitude\nM1002 set_gcode_claim_speed_level : 0\n\n;=====printer finish  sound=========\nM17\nM400 S1\nM1006 S1\nM1006 A0 B20 L100 C37 D20 M40 E42 F20 N60\nM1006 A0 B10 L100 C44 D10 M60 E44 F10 N60\nM1006 A0 B10 L100 C46 D10 M80 E46 F10 N80\nM1006 A44 B20 L100 C39 D20 M60 E48 F20 N60\nM1006 A0 B10 L100 C44 D10 M60 E44 F10 N60\nM1006 A0 B10 L100 C0 D10 M60 E0 F10 N60\nM1006 A0 B10 L100 C39 D10 M60 E39 F10 N60\nM1006 A0 B10 L100 C0 D10 M60 E0 F10 N60\nM1006 A0 B10 L100 C44 D10 M60 E44 F10 N60\nM1006 A0 B10 L100 C0 D10 M60 E0 F10 N60\nM1006 A0 B10 L100 C39 D10 M60 E39 F10 N60\nM1006 A0 B10 L100 C0 D10 M60 E0 F10 N60\nM1006 A0 B10 L100 C48 D10 M60 E44 F10 N80\nM1006 A0 B10 L100 C0 D10 M60 E0 F10  N80\nM1006 A44 B20 L100 C49 D20 M80 E41 F20 N80\nM1006 A0 B20 L100 C0 D20 M60 E0 F20 N80\nM1006 A0 B20 L100 C37 D20 M30 E37 F20 N60\nM1006 W\n;=====printer finish  sound=========\n\n;M17 X0.8 Y0.8 Z0.5 ; lower motor current to 45% power\nM400\nM18 X Y Z\n\n
-; machine_load_filament_time = 25
-; machine_max_acceleration_e = 5000,5000
-; machine_max_acceleration_extruding = 12000,12000
-; machine_max_acceleration_retracting = 5000,5000
-; machine_max_acceleration_travel = 9000,9000
-; machine_max_acceleration_x = 12000,12000
-; machine_max_acceleration_y = 12000,12000
-; machine_max_acceleration_z = 1500,1500
-; machine_max_jerk_e = 3,3
-; machine_max_jerk_x = 9,9
-; machine_max_jerk_y = 9,9
-; machine_max_jerk_z = 3,3
-; machine_max_speed_e = 30,30
-; machine_max_speed_x = 500,200
-; machine_max_speed_y = 500,200
-; machine_max_speed_z = 30,30
-; machine_min_extruding_rate = 0,0
-; machine_min_travel_rate = 0,0
-; machine_pause_gcode = M400 U1
-; machine_prepare_compensation_time = 260
-; machine_start_gcode = ;===== machine: A1 =========================\n;===== date: 20250822 ==================\nG392 S0\nM9833.2\n;M400\n;M73 P1.717\n\n;===== start to heat heatbead&hotend==========\nM1002 gcode_claim_action : 2\nM1002 set_filament_type:{filament_type[initial_no_support_extruder]}\nM104 S140\nM140 S[bed_temperature_initial_layer_single]\n\n;=====start printer sound ===================\nM17\nM400 S1\nM1006 S1\nM1006 A0 B10 L100 C37 D10 M60 E37 F10 N60\nM1006 A0 B10 L100 C41 D10 M60 E41 F10 N60\nM1006 A0 B10 L100 C44 D10 M60 E44 F10 N60\nM1006 A0 B10 L100 C0 D10 M60 E0 F10 N60\nM1006 A43 B10 L100 C46 D10 M70 E39 F10 N80\nM1006 A0 B10 L100 C0 D10 M60 E0 F10 N80\nM1006 A0 B10 L100 C43 D10 M60 E39 F10 N80\nM1006 A0 B10 L100 C0 D10 M60 E0 F10 N80\nM1006 A0 B10 L100 C41 D10 M80 E41 F10 N80\nM1006 A0 B10 L100 C44 D10 M80 E44 F10 N80\nM1006 A0 B10 L100 C49 D10 M80 E49 F10 N80\nM1006 A0 B10 L100 C0 D10 M80 E0 F10 N80\nM1006 A44 B10 L100 C48 D10 M60 E39 F10 N80\nM1006 A0 B10 L100 C0 D10 M60 E0 F10 N80\nM1006 A0 B10 L100 C44 D10 M80 E39 F10 N80\nM1006 A0 B10 L100 C0 D10 M60 E0 F10 N80\nM1006 A43 B10 L100 C46 D10 M60 E39 F10 N80\nM1006 W\nM18 \n;=====start printer sound ===================\n\n;=====avoid end stop =================\nG91\nG380 S2 Z40 F1200\nG380 S3 Z-15 F1200\nG90\n\n;===== reset machine status =================\n;M290 X39 Y39 Z8\nM204 S6000\n\nM630 S0 P0\nG91\nM17 Z0.3 ; lower the z-motor current\n\nG90\nM17 X0.65 Y1.2 Z0.6 ; reset motor current to default\nM960 S5 P1 ; turn on logo lamp\nG90\nM220 S100 ;Reset Feedrate\nM221 S100 ;Reset Flowrate\nM73.2   R1.0 ;Reset left time magnitude\n;M211 X0 Y0 Z0 ; turn off soft endstop to prevent protential logic problem\n\n;====== cog noise reduction=================\nM982.2 S1 ; turn on cog noise reduction\n\nM1002 gcode_claim_action : 13\n\nG28 X\nG91\nG1 Z5 F1200\nG90\nG0 X128 F30000\nG0 Y254 F3000\nG91\nG1 Z-5 F1200\n\nM109 S25 H140\n\nM17 E0.3\nM83\nG1 E10 F1200\nG1 E-0.5 F30\nM17 D\n\nG28 Z P0 T140; home z with low precision,permit 300deg temperature\nM104 S{nozzle_temperature_initial_layer[initial_extruder]}\n\nM1002 judge_flag build_plate_detect_flag\nM622 S1\n  G39.4\n  G90\n  G1 Z5 F1200\nM623\n\n;M400\n;M73 P1.717\n\n;===== prepare print temperature and material ==========\nM1002 gcode_claim_action : 24\n\nM400\n;G392 S1\nM211 X0 Y0 Z0 ;turn off soft endstop\nM975 S1 ; turn on\n\nG90\nG1 X-28.5 F30000\nG1 X-48.2 F3000\n\nM620 M ;enable remap\nM620 S[initial_no_support_extruder]A   ; switch material if AMS exist\n    M1002 gcode_claim_action : 4\n    M400\n    M1002 set_filament_type:UNKNOWN\n    M109 S[nozzle_temperature_initial_layer]\n    M104 S250\n    M400\n    T[initial_no_support_extruder]\n    G1 X-48.2 F3000\n    M400\n\n    M620.1 E F{flush_volumetric_speeds[initial_no_support_extruder]/2.4053*60} T{flush_temperatures[initial_no_support_extruder]}\n    M109 S250 ;set nozzle to common flush temp\n    M106 P1 S0\n    G92 E0\n    G1 E50 F200\n    M400\n    M1002 set_filament_type:{filament_type[initial_no_support_extruder]}\nM621 S[initial_no_support_extruder]A\n\nM109 S{flush_temperatures[initial_no_support_extruder]} H300\nG92 E0\nG1 E50 F200 ; lower extrusion speed to avoid clog\nM400\nM106 P1 S178\nG92 E0\nG1 E5 F200\nM104 S{nozzle_temperature_initial_layer[initial_no_support_extruder]}\nG92 E0\nG1 E-0.5 F300\n\nG1 X-28.5 F30000\nG1 X-48.2 F3000\nG1 X-28.5 F30000 ;wipe and shake\nG1 X-48.2 F3000\nG1 X-28.5 F30000 ;wipe and shake\nG1 X-48.2 F3000\n\n;G392 S0\n\nM400\nM106 P1 S0\n;===== prepare print temperature and material end =====\n\n;M400\n;M73 P1.717\n\n;===== auto extrude cali start =========================\nM975 S1\n;G392 S1\n\nG90\nM83\nT1000\nG1 X-48.2 Y0 Z10 F10000\nM400\nM1002 set_filament_type:UNKNOWN\n\nM412 S1 ;  ===turn on  filament runout detection===\nM400 P10\nM620.3 W1; === turn on filament tangle detection===\nM400 S2\n\nM1002 set_filament_type:{filament_type[initial_no_support_extruder]}\n\n;M1002 set_flag extrude_cali_flag=1\nM1002 judge_flag extrude_cali_flag\n\nM622 J1\n    M1002 gcode_claim_action : 8\n\n    M109 S{nozzle_temperature[initial_extruder]}\n    G1 E10 F{outer_wall_volumetric_speed/2.4*60}\n    M983 F{outer_wall_volumetric_speed/2.4} A0.3 H[nozzle_diameter]; cali dynamic extrusion compensation\n\n    M106 P1 S255\n    M400 S5\n    G1 X-28.5 F18000\n    G1 X-48.2 F3000\n    G1 X-28.5 F18000 ;wipe and shake\n    G1 X-48.2 F3000\n    G1 X-28.5 F12000 ;wipe and shake\n    G1 X-48.2 F3000\n    M400\n    M106 P1 S0\n\n    M1002 judge_last_extrude_cali_success\n    M622 J0\n        M983 F{outer_wall_volumetric_speed/2.4} A0.3 H[nozzle_diameter]; cali dynamic extrusion compensation\n        M106 P1 S255\n        M400 S5\n        G1 X-28.5 F18000\n        G1 X-48.2 F3000\n        G1 X-28.5 F18000 ;wipe and shake\n        G1 X-48.2 F3000\n        G1 X-28.5 F12000 ;wipe and shake\n        M400\n        M106 P1 S0\n    M623\n    \n    G1 X-48.2 F3000\n    M400\n    M984 A0.1 E1 S1 F{outer_wall_volumetric_speed/2.4} H[nozzle_diameter]\n    M106 P1 S178\n    M400 S7\n    G1 X-28.5 F18000\n    G1 X-48.2 F3000\n    G1 X-28.5 F18000 ;wipe and shake\n    G1 X-48.2 F3000\n    G1 X-28.5 F12000 ;wipe and shake\n    G1 X-48.2 F3000\n    M400\n    M106 P1 S0\nM623 ; end of "draw extrinsic para cali paint"\n\n;G392 S0\n;===== auto extrude cali end ========================\n\n;M400\n;M73 P1.717\n\nM104 S170 ; prepare to wipe nozzle\nM106 S255 ; turn on fan\n\n;===== mech mode fast check start =====================\nM1002 gcode_claim_action : 3\n\nG1 X128 Y128 F20000\nG1 Z5 F1200\nM400 P200\nM970.3 Q1 A5 K0 O3\nM974 Q1 S2 P0\n\nM970.2 Q1 K1 W58 Z0.1\nM974 S2\n\nG1 X128 Y128 F20000\nG1 Z5 F1200\nM400 P200\nM970.3 Q0 A10 K0 O1\nM974 Q0 S2 P0\n\nM970.2 Q0 K1 W78 Z0.1\nM974 S2\n\nM975 S1\nG1 F30000\nG1 X0 Y5\nG28 X ; re-home XY\n\nG1 Z4 F1200\n\n;===== mech mode fast check end =======================\n\n;M400\n;M73 P1.717\n\n;===== wipe nozzle ===============================\nM1002 gcode_claim_action : 14\n\nM975 S1\nM106 S255 ; turn on fan (G28 has turn off fan)\nM211 S; push soft endstop status\nM211 X0 Y0 Z0 ;turn off Z axis endstop\n\n;===== remove waste by touching start =====\n\nM104 S170 ; set temp down to heatbed acceptable\n\nM83\nG1 E-1 F500\nG90\nM83\n\nM109 S170\nG0 X108 Y-0.5 F30000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X110 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X112 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X114 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X116 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X118 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X120 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X122 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X124 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X126 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X128 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X130 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X132 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X134 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X136 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X138 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X140 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X142 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X144 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X146 F10000\nG380 S3 Z-5 F1200\nG1 Z2 F1200\nG1 X148 F10000\nG380 S3 Z-5 F1200\n\nG1 Z5 F30000\n;===== remove waste by touching end =====\n\nG1 Z10 F1200\nG0 X118 Y261 F30000\nG1 Z5 F1200\nM109 S{nozzle_temperature_initial_layer[initial_extruder]-50}\n\nG28 Z P0 T300; home z with low precision,permit 300deg temperature\nG29.2 S0 ; turn off ABL\nM104 S140 ; prepare to abl\nG0 Z5 F20000\n\nG0 X128 Y261 F20000  ; move to exposed steel surface\nG0 Z-1.01 F1200      ; stop the nozzle\n\nG91\nG2 I1 J0 X2 Y0 F2000.1\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\n\nG90\nG1 Z10 F1200\n\n;===== brush material wipe nozzle =====\n\nG90\nG1 Y250 F30000\nG1 X55\nG1 Z1.300 F1200\nG1 Y262.5 F6000\nG91\nG1 X-35 F30000\nG1 Y-0.5\nG1 X45\nG1 Y-0.5\nG1 X-45\nG1 Y-0.5\nG1 X45\nG1 Y-0.5\nG1 X-45\nG1 Y-0.5\nG1 X45\nG1 Z5.000 F1200\n\nG90\nG1 X30 Y250.000 F30000\nG1 Z1.300 F1200\nG1 Y262.5 F6000\nG91\nG1 X35 F30000\nG1 Y-0.5\nG1 X-45\nG1 Y-0.5\nG1 X45\nG1 Y-0.5\nG1 X-45\nG1 Y-0.5\nG1 X45\nG1 Y-0.5\nG1 X-45\nG1 Z10.000 F1200\n\n;===== brush material wipe nozzle end =====\n\nG90\n;G0 X128 Y261 F20000  ; move to exposed steel surface\nG1 Y250 F30000\nG1 X138\nG1 Y261\nG0 Z-1.01 F1200      ; stop the nozzle\n\nG91\nG2 I1 J0 X2 Y0 F2000.1\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\nG2 I1 J0 X2\nG2 I-0.75 J0 X-1.5\n\nM109 S140\nM106 S255 ; turn on fan (G28 has turn off fan)\n\nM211 R; pop softend status\n\n;===== wipe nozzle end ================================\n\n;M400\n;M73 P1.717\n\n;===== bed leveling ==================================\nM1002 judge_flag g29_before_print_flag\n\nG90\nG1 Z5 F1200\nG1 X0 Y0 F30000\nG29.2 S1 ; turn on ABL\n\nM190 S[bed_temperature_initial_layer_single]; ensure bed temp\nM109 S140\nM106 S0 ; turn off fan , too noisy\n\nM622 J1\n    M1002 gcode_claim_action : 1\n    G29 A1 X{first_layer_print_min[0]} Y{first_layer_print_min[1]} I{first_layer_print_size[0]} J{first_layer_print_size[1]}\n    M400\n    M500 ; save cali data\nM623\n;===== bed leveling end ================================\n\n;===== home after wipe mouth============================\nM1002 judge_flag g29_before_print_flag\nM622 J0\n\n    M1002 gcode_claim_action : 13\n    G28\n\nM623\n\n;===== home after wipe mouth end =======================\n\n;M400\n;M73 P1.717\n\nG1 X108.000 Y-0.500 F30000\nG1 Z0.300 F1200\nM400\nG2814 Z0.32\n\nM104 S{nozzle_temperature_initial_layer[initial_extruder]} ; prepare to print\n\n;===== nozzle load line ===============================\n;G90\n;M83\n;G1 Z5 F1200\n;G1 X88 Y-0.5 F20000\n;G1 Z0.3 F1200\n\n;M109 S{nozzle_temperature_initial_layer[initial_extruder]}\n\n;G1 E2 F300\n;G1 X168 E4.989 F6000\n;G1 Z1 F1200\n;===== nozzle load line end ===========================\n\n;===== extrude cali test ===============================\n\nM400\n    M900 S\n    M900 C\n    G90\n    M83\n\n    M109 S{nozzle_temperature_initial_layer[initial_extruder]}\n    G0 X128 E8  F{outer_wall_volumetric_speed/(24/20)    * 60}\n    G0 X133 E.3742  F{outer_wall_volumetric_speed/(0.3*0.5)/4     * 60}\n    G0 X138 E.3742  F{outer_wall_volumetric_speed/(0.3*0.5)     * 60}\n    G0 X143 E.3742  F{outer_wall_volumetric_speed/(0.3*0.5)/4     * 60}\n    G0 X148 E.3742  F{outer_wall_volumetric_speed/(0.3*0.5)     * 60}\n    G0 X153 E.3742  F{outer_wall_volumetric_speed/(0.3*0.5)/4     * 60}\n    G91\n    G1 X1 Z-0.300\n    G1 X4\n    G1 Z1 F1200\n    G90\n    M400\n\nM900 R\n\nM1002 judge_flag extrude_cali_flag\nM622 J1\n    G90\n    G1 X108.000 Y1.000 F30000\n    G91\n    G1 Z-0.700 F1200\n    G90\n    M83\n    G0 X128 E10  F{outer_wall_volumetric_speed/(24/20)    * 60}\n    G0 X133 E.3742  F{outer_wall_volumetric_speed/(0.3*0.5)/4     * 60}\n    G0 X138 E.3742  F{outer_wall_volumetric_speed/(0.3*0.5)     * 60}\n    G0 X143 E.3742  F{outer_wall_volumetric_speed/(0.3*0.5)/4     * 60}\n    G0 X148 E.3742  F{outer_wall_volumetric_speed/(0.3*0.5)     * 60}\n    G0 X153 E.3742  F{outer_wall_volumetric_speed/(0.3*0.5)/4     * 60}\n    G91\n    G1 X1 Z-0.300\n    G1 X4\n    G1 Z1 F1200\n    G90\n    M400\nM623\n\nG1 Z0.2\n\n;M400\n;M73 P1.717\n\n;========turn off light and wait extrude temperature =============\nM1002 gcode_claim_action : 0\nM400\n\n;===== for Textured PEI Plate , lower the nozzle as the nozzle was touching topmost of the texture when homing ==\n;curr_bed_type={curr_bed_type}\n{if curr_bed_type=="Textured PEI Plate"}\nG29.1 Z{-0.02} ; for Textured PEI Plate\n{endif}\n\nM960 S1 P0 ; turn off laser\nM960 S2 P0 ; turn off laser\nM106 S0 ; turn off fan\nM106 P2 S0 ; turn off big fan\nM106 P3 S0 ; turn off chamber fan\n\nM975 S1 ; turn on mech mode supression\nG90\nM83\nT1000\n\nM211 X0 Y0 Z0 ;turn off soft endstop\n;G392 S1 ; turn on clog detection\nM1007 S1 ; turn on mass estimation\nG29.4\n
-; machine_switch_extruder_time = 0
-; machine_unload_filament_time = 29
-; master_extruder_id = 1
-; max_bridge_length = 0
-; max_layer_height = 0.14
-; max_travel_detour_distance = 0
-; min_bead_width = 85%
-; min_feature_size = 25%
-; min_layer_height = 0.04
-; minimum_sparse_infill_area = 15
-; mmu_segmented_region_interlocking_depth = 0
-; mmu_segmented_region_max_width = 0
-; no_slow_down_for_cooling_on_outwalls = 0
-; nozzle_diameter = 0.2
-; nozzle_flush_dataset = 0
-; nozzle_height = 4.76
-; nozzle_temperature = 220
-; nozzle_temperature_initial_layer = 220
-; nozzle_temperature_range_high = 240
-; nozzle_temperature_range_low = 190
-; nozzle_type = stainless_steel
-; nozzle_volume = 92
-; nozzle_volume_type = Standard
-; only_one_wall_first_layer = 0
-; ooze_prevention = 0
-; other_layers_print_sequence = 0
-; other_layers_print_sequence_nums = 0
-; outer_wall_acceleration = 2000
-; outer_wall_jerk = 9
-; outer_wall_line_width = 0.22
-; outer_wall_speed = 60
-; overhang_1_4_speed = 0
-; overhang_2_4_speed = 50
-; overhang_3_4_speed = 30
-; overhang_4_4_speed = 10
-; overhang_fan_speed = 100
-; overhang_fan_threshold = 50%
-; overhang_threshold_participating_cooling = 95%
-; overhang_totally_speed = 10
-; override_filament_scarf_seam_setting = 0
-; physical_extruder_map = 0
-; post_process = 
-; pre_start_fan_time = 2
-; precise_outer_wall = 0
-; precise_z_height = 0
-; pressure_advance = 0.02
-; prime_tower_brim_width = 3
-; prime_tower_enable_framework = 0
-; prime_tower_extra_rib_length = 0
-; prime_tower_fillet_wall = 1
-; prime_tower_flat_ironing = 0
-; prime_tower_infill_gap = 150%
-; prime_tower_lift_height = -1
-; prime_tower_lift_speed = 90
-; prime_tower_max_speed = 90
-; prime_tower_rib_wall = 1
-; prime_tower_rib_width = 8
-; prime_tower_skip_points = 1
-; prime_tower_width = 35
-; print_compatible_printers = "Bambu Lab A1 0.2 nozzle"
-; print_extruder_id = 1
-; print_extruder_variant = "Direct Drive Standard"
-; print_flow_ratio = 1
-; print_sequence = by layer
-; print_settings_id = 0.08mm High Quality @BBL A1 0.2 nozzle
-; printable_area = 0x0,256x0,256x256,0x256
-; printable_height = 256
-; printer_extruder_id = 1
-; printer_extruder_variant = "Direct Drive Standard"
-; printer_model = Bambu Lab A1
-; printer_notes = 
-; printer_settings_id = Bambu Lab A1 0.2 nozzle
-; printer_structure = i3
-; printer_technology = FFF
-; printer_variant = 0.2
-; printhost_authorization_type = key
-; printhost_ssl_ignore_revoke = 0
-; printing_by_object_gcode = 
-; process_notes = 
-; raft_contact_distance = 0.1
-; raft_expansion = 1.5
-; raft_first_layer_density = 90%
-; raft_first_layer_expansion = -1
-; raft_layers = 0
-; reduce_crossing_wall = 0
-; reduce_fan_stop_start_freq = 1
-; reduce_infill_retraction = 1
-; required_nozzle_HRC = 3
-; resolution = 0.012
-; retract_before_wipe = 0%
-; retract_length_toolchange = 2
-; retract_lift_above = 0
-; retract_lift_below = 255
-; retract_restart_extra = 0
-; retract_restart_extra_toolchange = 0
-; retract_when_changing_layer = 1
-; retraction_distances_when_cut = 18
-; retraction_distances_when_ec = 0
-; retraction_length = 0.8
-; retraction_minimum_travel = 1
-; retraction_speed = 30
-; role_base_wipe_speed = 1
-; scan_first_layer = 0
-; scarf_angle_threshold = 155
-; seam_gap = 15%
-; seam_placement_away_from_overhangs = 0
-; seam_position = aligned
-; seam_slope_conditional = 1
-; seam_slope_entire_loop = 0
-; seam_slope_gap = 0
-; seam_slope_inner_walls = 1
-; seam_slope_min_length = 10
-; seam_slope_start_height = 10%
-; seam_slope_steps = 10
-; seam_slope_type = none
-; silent_mode = 0
-; single_extruder_multi_material = 1
-; skeleton_infill_density = 100%
-; skeleton_infill_line_width = 0.22
-; skin_infill_density = 100%
-; skin_infill_depth = 2
-; skin_infill_line_width = 0.22
-; skirt_distance = 2
-; skirt_height = 1
-; skirt_loops = 0
-; slice_closing_radius = 0.049
-; slicing_mode = regular
-; slow_down_for_layer_cooling = 1
-; slow_down_layer_time = 6
-; slow_down_min_speed = 20
-; slowdown_end_acc = 100000
-; slowdown_end_height = 400
-; slowdown_end_speed = 1000
-; slowdown_start_acc = 100000
-; slowdown_start_height = 0
-; slowdown_start_speed = 1000
-; small_perimeter_speed = 50%
-; small_perimeter_threshold = 0
-; smooth_coefficient = 80
-; smooth_speed_discontinuity_area = 1
-; solid_infill_filament = 1
-; sparse_infill_acceleration = 100%
-; sparse_infill_anchor = 400%
-; sparse_infill_anchor_max = 20
-; sparse_infill_density = 100%
-; sparse_infill_filament = 1
-; sparse_infill_line_width = 0.22
-; sparse_infill_pattern = zig-zag
-; sparse_infill_speed = 100
-; spiral_mode = 0
-; spiral_mode_max_xy_smoothing = 200%
-; spiral_mode_smooth = 0
-; standby_temperature_delta = -5
-; start_end_points = 30x-3,54x245
-; supertack_plate_temp = 45
-; supertack_plate_temp_initial_layer = 45
-; support_air_filtration = 0
-; support_angle = 0
-; support_base_pattern = default
-; support_base_pattern_spacing = 2.5
-; support_bottom_interface_spacing = 0.5
-; support_bottom_z_distance = 0.08
-; support_chamber_temp_control = 0
-; support_critical_regions_only = 0
-; support_expansion = 0
-; support_filament = 0
-; support_interface_bottom_layers = 2
-; support_interface_filament = 0
-; support_interface_loop_pattern = 0
-; support_interface_not_for_body = 1
-; support_interface_pattern = auto
-; support_interface_spacing = 0.5
-; support_interface_speed = 80
-; support_interface_top_layers = 2
-; support_line_width = 0.22
-; support_object_first_layer_gap = 0.2
-; support_object_skip_flush = 0
-; support_object_xy_distance = 0.35
-; support_on_build_plate_only = 0
-; support_remove_small_overhang = 1
-; support_speed = 150
-; support_style = default
-; support_threshold_angle = 30
-; support_top_z_distance = 0.08
-; support_type = tree(auto)
-; symmetric_infill_y_axis = 0
-; temperature_vitrification = 45
-; template_custom_gcode = 
-; textured_plate_temp = 65
-; textured_plate_temp_initial_layer = 65
-; thick_bridges = 0
-; thumbnail_size = 50x50
-; time_lapse_gcode = ;===================== date: 20250206 =====================\n{if !spiral_mode && print_sequence != "by object"}\n; don't support timelapse gcode in spiral_mode and by object sequence for I3 structure printer\n; SKIPPABLE_START\n; SKIPTYPE: timelapse\nM622.1 S1 ; for prev firmware, default turned on\nM1002 judge_flag timelapse_record_flag\nM622 J1\nG92 E0\nG1 Z{max_layer_z + 0.4}\nG1 X0 Y{first_layer_center_no_wipe_tower[1]} F18000 ; move to safe pos\nG1 X-48.2 F3000 ; move to safe pos\nM400\nM1004 S5 P1  ; external shutter\nM400 P300\nM971 S11 C11 O0\nG92 E0\nG1 X0 F18000\nM623\n\n; SKIPTYPE: head_wrap_detect\nM622.1 S1\nM1002 judge_flag g39_3rd_layer_detect_flag\nM622 J1\n    ; enable nozzle clog detect at 3rd layer\n    {if layer_num == 2}\n      M400\n      G90\n      M83\n      M204 S5000\n      G0 Z2 F4000\n      G0 X261 Y250 F20000\n      M400 P200\n      G39 S1\n      G0 Z2 F4000\n    {endif}\n\n\n    M622.1 S1\n    M1002 judge_flag g39_detection_flag\n    M622 J1\n      {if !in_head_wrap_detect_zone}\n        M622.1 S0\n        M1002 judge_flag g39_mass_exceed_flag\n        M622 J1\n        {if layer_num > 2}\n            G392 S0\n            M400\n            G90\n            M83\n            M204 S5000\n            G0 Z{max_layer_z + 0.4} F4000\n            G39.3 S1\n            G0 Z{max_layer_z + 0.4} F4000\n            G392 S0\n          {endif}\n        M623\n    {endif}\n    M623\nM623\n; SKIPPABLE_END\n{endif}\n
-; timelapse_type = 0
-; top_area_threshold = 200%
-; top_color_penetration_layers = 7
-; top_one_wall_type = all top
-; top_shell_layers = 0
-; top_shell_thickness = 0.8
-; top_solid_infill_flow_ratio = 1
-; top_surface_acceleration = 2000
-; top_surface_jerk = 9
-; top_surface_line_width = 0.22
-; top_surface_pattern = monotonicline
-; top_surface_speed = 150
-; top_z_overrides_xy_distance = 0
-; travel_acceleration = 10000
-; travel_jerk = 9
-; travel_speed = 700
-; travel_speed_z = 0
-; tree_support_branch_angle = 45
-; tree_support_branch_diameter = 2
-; tree_support_branch_diameter_angle = 5
-; tree_support_branch_distance = 5
-; tree_support_wall_count = -1
-; upward_compatible_machine = "Bambu Lab H2D 0.2 nozzle";"Bambu Lab H2D Pro 0.2 nozzle";"Bambu Lab H2S 0.2 nozzle";"Bambu Lab P2S 0.2 nozzle"
-; use_firmware_retraction = 0
-; use_relative_e_distances = 1
-; vertical_shell_speed = 80%
-; volumetric_speed_coefficients = "0 0 0 0 0 0"
-; wall_distribution_count = 1
-; wall_filament = 1
-; wall_generator = classic
-; wall_loops = 4
-; wall_sequence = inner wall/outer wall
-; wall_transition_angle = 10
-; wall_transition_filter_deviation = 25%
-; wall_transition_length = 100%
-; wipe = 1
-; wipe_distance = 2
-; wipe_speed = 80%
-; wipe_tower_no_sparse_layers = 0
-; wipe_tower_rotation_angle = 0
-; wipe_tower_x = 15
-; wipe_tower_y = 206.296
-; wrapping_detection_gcode = 
-; wrapping_detection_layers = 20
-; wrapping_exclude_area = 
-; xy_contour_compensation = 0
-; xy_hole_compensation = 0
-; z_direction_outwall_speed_continuous = 0
-; z_hop = 0.4
-; z_hop_types = Auto Lift
-; CONFIG_BLOCK_END
-
-; EXECUTABLE_BLOCK_START
-M73 P0 R9
-M201 X12000 Y12000 Z1500 E5000
-M203 X500 Y500 Z30 E30
-M204 P12000 R5000 T12000
-M205 X9.00 Y9.00 Z3.00 E3.00
-; FEATURE: Custom
-;===== machine: A1 =========================
-;===== date: 20250822 ==================
-G392 S0
-M9833.2
-;M400
-;M73 P1.717
-
-;===== start to heat heatbead&hotend==========
-M1002 gcode_claim_action : 2
-M1002 set_filament_type:PLA
-M104 S140
-M140 S65
-
-;=====start printer sound ===================
-M17
-M400 S1
-M1006 S1
-M1006 A0 B10 L100 C37 D10 M60 E37 F10 N60
-M1006 A0 B10 L100 C41 D10 M60 E41 F10 N60
-M1006 A0 B10 L100 C44 D10 M60 E44 F10 N60
-M1006 A0 B10 L100 C0 D10 M60 E0 F10 N60
-M1006 A43 B10 L100 C46 D10 M70 E39 F10 N80
-M1006 A0 B10 L100 C0 D10 M60 E0 F10 N80
-M1006 A0 B10 L100 C43 D10 M60 E39 F10 N80
-M1006 A0 B10 L100 C0 D10 M60 E0 F10 N80
-M1006 A0 B10 L100 C41 D10 M80 E41 F10 N80
-M1006 A0 B10 L100 C44 D10 M80 E44 F10 N80
-M1006 A0 B10 L100 C49 D10 M80 E49 F10 N80
-M1006 A0 B10 L100 C0 D10 M80 E0 F10 N80
-M1006 A44 B10 L100 C48 D10 M60 E39 F10 N80
-M1006 A0 B10 L100 C0 D10 M60 E0 F10 N80
-M1006 A0 B10 L100 C44 D10 M80 E39 F10 N80
-M1006 A0 B10 L100 C0 D10 M60 E0 F10 N80
-M1006 A43 B10 L100 C46 D10 M60 E39 F10 N80
-M1006 W
-M18 
-;=====start printer sound ===================
-
-;=====avoid end stop =================
-G91
-G380 S2 Z40 F1200
-G380 S3 Z-15 F1200
-G90
-
-;===== reset machine status =================
-;M290 X39 Y39 Z8
-M204 S6000
-
-M630 S0 P0
-G91
-M17 Z0.3 ; lower the z-motor current
-
-G90
-M17 X0.65 Y1.2 Z0.6 ; reset motor current to default
-M960 S5 P1 ; turn on logo lamp
-G90
-M220 S100 ;Reset Feedrate
-M221 S100 ;Reset Flowrate
-M73.2   R1.0 ;Reset left time magnitude
-;M211 X0 Y0 Z0 ; turn off soft endstop to prevent protential logic problem
-
-;====== cog noise reduction=================
-M982.2 S1 ; turn on cog noise reduction
-
-M1002 gcode_claim_action : 13
-
-G28 X
-G91
-G1 Z5 F1200
-G90
-G0 X128 F30000
-G0 Y254 F3000
-G91
-G1 Z-5 F1200
-
-M109 S25 H140
-
-M17 E0.3
-M83
-G1 E10 F1200
-G1 E-0.5 F30
-M17 D
-
-G28 Z P0 T140; home z with low precision,permit 300deg temperature
-M104 S220
-
-M1002 judge_flag build_plate_detect_flag
-M622 S1
-  G39.4
-  G90
-M73 P1 R9
-  G1 Z5 F1200
-M623
-
-;M400
-;M73 P1.717
-
-;===== prepare print temperature and material ==========
-M1002 gcode_claim_action : 24
-
-M400
-;G392 S1
-M211 X0 Y0 Z0 ;turn off soft endstop
-M975 S1 ; turn on
-
-G90
-G1 X-28.5 F30000
-G1 X-48.2 F3000
-
-M620 M ;enable remap
-M620 S0A   ; switch material if AMS exist
-    M1002 gcode_claim_action : 4
-    M400
-    M1002 set_filament_type:UNKNOWN
-    M109 S220
-    M104 S250
-    M400
-    T0
-    G1 X-48.2 F3000
-    M400
-
-    M620.1 E F49.8898 T240
-    M109 S250 ;set nozzle to common flush temp
-    M106 P1 S0
-    G92 E0
-    G1 E50 F200
-    M400
-    M1002 set_filament_type:PLA
-M621 S0A
-
-M109 S240 H300
-G92 E0
-G1 E50 F200 ; lower extrusion speed to avoid clog
-M400
-M106 P1 S178
-G92 E0
-G1 E5 F200
-M104 S220
-G92 E0
-M73 P6 R8
-G1 E-0.5 F300
-
-G1 X-28.5 F30000
-M73 P8 R8
-G1 X-48.2 F3000
-M73 P11 R8
-G1 X-28.5 F30000 ;wipe and shake
-G1 X-48.2 F3000
-G1 X-28.5 F30000 ;wipe and shake
-G1 X-48.2 F3000
-
-;G392 S0
-
-M400
-M106 P1 S0
-;===== prepare print temperature and material end =====
-
-;M400
-;M73 P1.717
-
-;===== auto extrude cali start =========================
-M975 S1
-;G392 S1
-
-G90
-M83
-T1000
-G1 X-48.2 Y0 Z10 F10000
-M400
-M1002 set_filament_type:UNKNOWN
-
-M412 S1 ;  ===turn on  filament runout detection===
-M400 P10
-M620.3 W1; === turn on filament tangle detection===
-M400 S2
-
-M1002 set_filament_type:PLA
-
-;M1002 set_flag extrude_cali_flag=1
-M1002 judge_flag extrude_cali_flag
-
-M622 J1
-    M1002 gcode_claim_action : 8
-
-    M109 S220
-    G1 E10 F24.3398
-    M983 F0.405664 A0.3 H0.2; cali dynamic extrusion compensation
-
-    M106 P1 S255
-    M400 S5
-    G1 X-28.5 F18000
-    G1 X-48.2 F3000
-M73 P12 R8
-    G1 X-28.5 F18000 ;wipe and shake
-    G1 X-48.2 F3000
-M73 P18 R7
-    G1 X-28.5 F12000 ;wipe and shake
-    G1 X-48.2 F3000
-    M400
-    M106 P1 S0
-
-    M1002 judge_last_extrude_cali_success
-    M622 J0
-        M983 F0.405664 A0.3 H0.2; cali dynamic extrusion compensation
-        M106 P1 S255
-        M400 S5
-        G1 X-28.5 F18000
-        G1 X-48.2 F3000
-M73 P19 R7
-        G1 X-28.5 F18000 ;wipe and shake
-        G1 X-48.2 F3000
-        G1 X-28.5 F12000 ;wipe and shake
-        M400
-        M106 P1 S0
-    M623
-    
-M73 P20 R7
-    G1 X-48.2 F3000
-    M400
-    M984 A0.1 E1 S1 F0.405664 H0.2
-    M106 P1 S178
-    M400 S7
-    G1 X-28.5 F18000
-    G1 X-48.2 F3000
-    G1 X-28.5 F18000 ;wipe and shake
-    G1 X-48.2 F3000
-    G1 X-28.5 F12000 ;wipe and shake
-    G1 X-48.2 F3000
-    M400
-    M106 P1 S0
-M623 ; end of "draw extrinsic para cali paint"
-
-;G392 S0
-;===== auto extrude cali end ========================
-
-;M400
-;M73 P1.717
-
-M104 S170 ; prepare to wipe nozzle
-M106 S255 ; turn on fan
-
-;===== mech mode fast check start =====================
-M1002 gcode_claim_action : 3
-
-G1 X128 Y128 F20000
-G1 Z5 F1200
-M400 P200
-M970.3 Q1 A5 K0 O3
-M974 Q1 S2 P0
-
-M970.2 Q1 K1 W58 Z0.1
-M974 S2
-
-G1 X128 Y128 F20000
-G1 Z5 F1200
-M400 P200
-M970.3 Q0 A10 K0 O1
-M974 Q0 S2 P0
-
-M970.2 Q0 K1 W78 Z0.1
-M974 S2
-
-M975 S1
-G1 F30000
-M73 P21 R7
-G1 X0 Y5
-G28 X ; re-home XY
-
-G1 Z4 F1200
-
-;===== mech mode fast check end =======================
-
-;M400
-;M73 P1.717
-
-;===== wipe nozzle ===============================
-M1002 gcode_claim_action : 14
-
-M975 S1
-M106 S255 ; turn on fan (G28 has turn off fan)
-M211 S; push soft endstop status
-M211 X0 Y0 Z0 ;turn off Z axis endstop
-
-;===== remove waste by touching start =====
-
-M104 S170 ; set temp down to heatbed acceptable
-
-M83
-G1 E-1 F500
-G90
-M83
-
-M109 S170
-G0 X108 Y-0.5 F30000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X110 F10000
-G380 S3 Z-5 F1200
-M73 P67 R3
-G1 Z2 F1200
-G1 X112 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X114 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X116 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X118 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X120 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X122 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X124 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X126 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X128 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X130 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X132 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X134 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X136 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X138 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X140 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X142 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X144 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X146 F10000
-G380 S3 Z-5 F1200
-G1 Z2 F1200
-G1 X148 F10000
-G380 S3 Z-5 F1200
-
-G1 Z5 F30000
-;===== remove waste by touching end =====
-
-G1 Z10 F1200
-G0 X118 Y261 F30000
-G1 Z5 F1200
-M109 S170
-
-G28 Z P0 T300; home z with low precision,permit 300deg temperature
-G29.2 S0 ; turn off ABL
-M104 S140 ; prepare to abl
-G0 Z5 F20000
-
-G0 X128 Y261 F20000  ; move to exposed steel surface
-G0 Z-1.01 F1200      ; stop the nozzle
-
-G91
-G2 I1 J0 X2 Y0 F2000.1
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-M73 P68 R3
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-M73 P68 R2
-G2 I-0.75 J0 X-1.5
-
-G90
-G1 Z10 F1200
-
-;===== brush material wipe nozzle =====
-
-G90
-G1 Y250 F30000
-G1 X55
-G1 Z1.300 F1200
-G1 Y262.5 F6000
-G91
-G1 X-35 F30000
-G1 Y-0.5
-G1 X45
-G1 Y-0.5
-G1 X-45
-G1 Y-0.5
-G1 X45
-G1 Y-0.5
-G1 X-45
-G1 Y-0.5
-G1 X45
-G1 Z5.000 F1200
-
-G90
-G1 X30 Y250.000 F30000
-G1 Z1.300 F1200
-G1 Y262.5 F6000
-G91
-G1 X35 F30000
-G1 Y-0.5
-G1 X-45
-G1 Y-0.5
-G1 X45
-G1 Y-0.5
-G1 X-45
-G1 Y-0.5
-G1 X45
-G1 Y-0.5
-G1 X-45
-G1 Z10.000 F1200
-
-;===== brush material wipe nozzle end =====
-
-G90
-;G0 X128 Y261 F20000  ; move to exposed steel surface
-G1 Y250 F30000
-G1 X138
-G1 Y261
-G0 Z-1.01 F1200      ; stop the nozzle
-
-G91
-G2 I1 J0 X2 Y0 F2000.1
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-M73 P69 R2
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-G2 I1 J0 X2
-G2 I-0.75 J0 X-1.5
-
-M109 S140
-M106 S255 ; turn on fan (G28 has turn off fan)
-
-M211 R; pop softend status
-
-;===== wipe nozzle end ================================
-
-;M400
-;M73 P1.717
-
-;===== bed leveling ==================================
-M1002 judge_flag g29_before_print_flag
-
-G90
-G1 Z5 F1200
-G1 X0 Y0 F30000
-G29.2 S1 ; turn on ABL
-
-M190 S65; ensure bed temp
-M109 S140
-M106 S0 ; turn off fan , too noisy
-
-M622 J1
-    M1002 gcode_claim_action : 1
-    G29 A1 X119.094 Y132.427 I22.9487 J20
-    M400
-    M500 ; save cali data
-M623
-;===== bed leveling end ================================
-
-;===== home after wipe mouth============================
-M1002 judge_flag g29_before_print_flag
-M622 J0
-
-    M1002 gcode_claim_action : 13
-    G28
-
-M623
-
-;===== home after wipe mouth end =======================
-
-;M400
-;M73 P1.717
-
-G1 X108.000 Y-0.500 F30000
-G1 Z0.300 F1200
-M400
-G2814 Z0.32
-
-M104 S220 ; prepare to print
-
-;===== nozzle load line ===============================
-;G90
-;M83
-;G1 Z5 F1200
-;G1 X88 Y-0.5 F20000
-;G1 Z0.3 F1200
-
-;M109 S220
-
-;G1 E2 F300
-;G1 X168 E4.989 F6000
-;G1 Z1 F1200
-;===== nozzle load line end ===========================
-
-;===== extrude cali test ===============================
-
-M400
-    M900 S
-    M900 C
-    G90
-    M83
-
-    M109 S220
-    G0 X128 E8  F58.4156
-    G0 X133 E.3742  F97.3593
-    G0 X138 E.3742  F389.437
-    G0 X143 E.3742  F97.3593
-    G0 X148 E.3742  F389.437
-    G0 X153 E.3742  F97.3593
-    G91
-    G1 X1 Z-0.300
-    G1 X4
-    G1 Z1 F1200
-    G90
-    M400
-
-M900 R
-
-M1002 judge_flag extrude_cali_flag
-M622 J1
-    G90
-    G1 X108.000 Y1.000 F30000
-    G91
-    G1 Z-0.700 F1200
-    G90
-    M83
-    G0 X128 E10  F58.4156
-    G0 X133 E.3742  F97.3593
-    G0 X138 E.3742  F389.437
-    G0 X143 E.3742  F97.3593
-    G0 X148 E.3742  F389.437
-    G0 X153 E.3742  F97.3593
-    G91
-    G1 X1 Z-0.300
-    G1 X4
-    G1 Z1 F1200
-    G90
-    M400
-M623
-
-G1 Z0.2
-
-;M400
-;M73 P1.717
-
-;========turn off light and wait extrude temperature =============
-M1002 gcode_claim_action : 0
-M400
-
-;===== for Textured PEI Plate , lower the nozzle as the nozzle was touching topmost of the texture when homing ==
-;curr_bed_type=Textured PEI Plate
-
-G29.1 Z-0.02 ; for Textured PEI Plate
-
-
-M960 S1 P0 ; turn off laser
-M960 S2 P0 ; turn off laser
-M106 S0 ; turn off fan
-M106 P2 S0 ; turn off big fan
-M106 P3 S0 ; turn off chamber fan
-
-M975 S1 ; turn on mech mode supression
-G90
-M83
-T1000
-
-M211 X0 Y0 Z0 ;turn off soft endstop
-;G392 S1 ; turn on clog detection
-M1007 S1 ; turn on mass estimation
-G29.4
-; MACHINE_START_GCODE_END
-; filament start gcode
-M106 P3 S200
-
-
-;VT0
-G90
+(Generated for golf ball plotter)
+(Units are angular degrees. X=-180..180 ball rotation, Y=-45..45 arm tilt)
 G21
-M83 ; use relative distances for extrusion
-M981 S1 P20000 ;open spaghetti detector
-; CHANGE_LAYER
-; Z_HEIGHT: 0.1
-; LAYER_HEIGHT: 0.1
-G1 E-.8 F1800
-; layer num/total_layer_count: 1/1
-; update layer progress
-M73 L1
-M991 S0 P0 ;notify layer change
-M106 S0
-; OBJECT_ID: 91
-G1 X136.232 Y141.623 F42000
-M204 S6000
-G1 Z.4
-G1 Z.1
-G1 E.8 F1800
-; FEATURE: Outer wall
-; LINE_WIDTH: 0.25
-M73 P73 R2
-G1 F960
-M204 S500
-M73 P74 R2
-G1 X134.138 Y150.256 E.08272
-G1 X133.323 Y150.256 E.00759
-G1 X131.432 Y142.459 E.07471
-G1 X135.484 Y141.753 E.0383
-M73 P75 R2
-G1 X136.202 Y141.628 E.00678
-; WIPE_START
-G1 X135.737 Y143.573 E-.76
-; WIPE_END
-M73 P76 R2
-G1 E-.04 F1800
-M204 S6000
-G1 X128.248 Y142.099 Z.5 F42000
-G1 X122.564 Y140.98 Z.5
-G1 Z.1
-M73 P79 R1
-G1 E.8 F1800
-M73 P80 R1
-G1 F960
-M204 S500
-G1 X127.588 Y140.105 E.04748
-M73 P81 R1
-G1 X125.675 Y132.627 E.07187
-G1 X129.042 Y132.627 E.03135
-G1 X129.121 Y132.954 E.00313
-G1 X130.728 Y139.559 E.06329
-M73 P82 R1
-G1 X136.999 Y138.467 E.05927
-G1 X138.419 Y132.627 E.05596
-G1 X141.785 Y132.627 E.03135
-G1 X136.772 Y152.227 E.18838
-G1 X130.688 Y152.227 E.05665
-G1 X128.328 Y142.999 E.0887
-G1 X122.564 Y144.002 E.05448
-G1 X122.564 Y152.227 E.07659
-G1 X119.294 Y152.227 E.03045
-G1 X119.294 Y132.627 E.18251
-G1 X122.564 Y132.627 E.03045
-G1 X122.564 Y140.95 E.07749
-; WIPE_START
-G1 X124.537 Y140.618 E-.76
-; WIPE_END
-G1 E-.04 F1800
-M204 S6000
-G17
-G3 Z.5 I1.217 J0 P1  F42000
-;===================== date: 20250206 =====================
-
-; don't support timelapse gcode in spiral_mode and by object sequence for I3 structure printer
-; SKIPPABLE_START
-; SKIPTYPE: timelapse
-M622.1 S1 ; for prev firmware, default turned on
-M1002 judge_flag timelapse_record_flag
-M622 J1
-G92 E0
-G1 Z0.5
-G1 X0 Y142.427 F18000 ; move to safe pos
-G1 X-48.2 F3000 ; move to safe pos
-M400
-M1004 S5 P1  ; external shutter
-M400 P300
-M971 S11 C11 O0
-G92 E0
-G1 X0 F18000
-M623
-
-; SKIPTYPE: head_wrap_detect
-M622.1 S1
-M1002 judge_flag g39_3rd_layer_detect_flag
-M622 J1
-    ; enable nozzle clog detect at 3rd layer
-    
-
-
-    M622.1 S1
-    M1002 judge_flag g39_detection_flag
-    M622 J1
-      
-        M622.1 S0
-        M1002 judge_flag g39_mass_exceed_flag
-        M622 J1
-        
-        M623
-    
-    M623
-M623
-; SKIPPABLE_END
-
-
-G1 X124.972 Y143.492 F42000
-G1 Z.1
-G1 E.8 F1800
-; FEATURE: Sparse infill
-G1 F960
-M204 S500
-G1 X122.632 Y141.152 E.03081
-G1 X122.877 Y141.109 E.00232
-G1 X125.138 Y143.37 E.02977
-G1 X125.383 Y143.327 E.00232
-M73 P83 R1
-G1 X123.122 Y141.067 E.02977
-G1 X123.368 Y141.024 E.00232
-G1 X125.628 Y143.285 E.02977
-G1 X125.874 Y143.242 E.00232
-G1 X123.613 Y140.981 E.02977
-G1 X123.858 Y140.938 E.00232
-G1 X126.119 Y143.199 E.02977
-G1 X126.364 Y143.157 E.00232
-G1 X124.103 Y140.896 E.02977
-G1 X124.349 Y140.853 E.00232
-M73 P84 R1
-G1 X126.609 Y143.114 E.02977
-G1 X126.855 Y143.071 E.00232
-G1 X124.594 Y140.81 E.02977
-G1 X124.839 Y140.768 E.00232
-G1 X127.1 Y143.029 E.02977
-G1 X127.345 Y142.986 E.00232
-G1 X125.084 Y140.725 E.02977
-G1 X125.329 Y140.682 E.00232
-G1 X127.59 Y142.943 E.02977
-G1 X127.835 Y142.901 E.00232
-G1 X125.575 Y140.64 E.02977
-G1 X125.82 Y140.597 E.00232
-G1 X128.16 Y142.937 E.03081
-M204 S6000
-G1 X133.833 Y139.11 F42000
-G1 F960
-M204 S500
-G1 X136.173 Y141.449 E.03081
-G1 X135.928 Y141.492 E.00232
-G1 X133.667 Y139.231 E.02977
-G1 X133.422 Y139.274 E.00232
-G1 X135.683 Y141.535 E.02977
-G1 X135.437 Y141.577 E.00232
-G1 X133.177 Y139.317 E.02977
-G1 X132.931 Y139.359 E.00232
-G1 X135.192 Y141.62 E.02977
-G1 X134.947 Y141.663 E.00232
-G1 X132.686 Y139.402 E.02977
-G1 X132.441 Y139.445 E.00232
-G1 X134.702 Y141.705 E.02977
-G1 X134.456 Y141.748 E.00232
-G1 X132.196 Y139.487 E.02977
-G1 X131.95 Y139.53 E.00232
-G1 X134.211 Y141.791 E.02977
-G1 X133.966 Y141.833 E.00232
-G1 X131.705 Y139.573 E.02977
-G1 X131.46 Y139.615 E.00232
-G1 X133.721 Y141.876 E.02977
-G1 X133.476 Y141.919 E.00232
-G1 X131.215 Y139.658 E.02977
-G1 X130.97 Y139.701 E.00232
-G1 X133.23 Y141.962 E.02977
-G1 X132.985 Y142.004 E.00232
-M73 P85 R1
-G1 X126.637 Y135.656 E.08359
-G1 X126.736 Y136.043 E.00372
-G1 X132.74 Y142.047 E.07906
-G1 X132.495 Y142.09 E.00232
-G1 X126.835 Y136.43 E.07453
-G1 X126.934 Y136.817 E.00372
-G1 X132.249 Y142.132 E.07
-G1 X132.004 Y142.175 E.00232
-G1 X127.033 Y137.204 E.06546
-G1 X127.132 Y137.591 E.00372
-G1 X131.759 Y142.218 E.06093
-G1 X131.514 Y142.26 E.00232
-G1 X127.231 Y137.977 E.0564
-G1 X127.33 Y138.364 E.00372
-G1 X131.269 Y142.303 E.05187
-G1 X131.21 Y142.313 E.00056
-G1 X131.28 Y142.602 E.00277
-G1 X127.429 Y138.751 E.05071
-G1 X127.528 Y139.138 E.00372
-G1 X131.372 Y142.982 E.05062
-G1 X131.464 Y143.362 E.00364
-G1 X127.627 Y139.525 E.05054
-G1 X127.726 Y139.912 E.00372
-G1 X131.556 Y143.742 E.05045
-G1 X131.649 Y144.123 E.00364
-G1 X127.782 Y140.256 E.05092
-G1 X127.536 Y140.298 E.00232
-G1 X131.741 Y144.503 E.05537
-G1 X131.833 Y144.883 E.00364
-G1 X127.291 Y140.341 E.05981
-G1 X127.046 Y140.384 E.00232
-G1 X131.925 Y145.263 E.06425
-G1 X132.017 Y145.643 E.00364
-G1 X126.801 Y140.426 E.0687
-G1 X126.556 Y140.469 E.00232
-G1 X132.11 Y146.023 E.07314
-M73 P86 R1
-G1 X132.202 Y146.403 E.00364
-G1 X126.31 Y140.512 E.07758
-G1 X126.065 Y140.554 E.00232
-G1 X132.294 Y146.783 E.08202
-G1 X132.386 Y147.163 E.00364
-G1 X128.616 Y143.393 E.04964
-G1 X128.715 Y143.78 E.00372
-G1 X132.478 Y147.543 E.04956
-G1 X132.571 Y147.924 E.00364
-G1 X128.814 Y144.167 E.04947
-G1 X128.913 Y144.554 E.00372
-G1 X132.663 Y148.304 E.04938
-G1 X132.755 Y148.684 E.00364
-G1 X129.012 Y144.941 E.04929
-G1 X129.111 Y145.328 E.00372
-G1 X132.847 Y149.064 E.0492
-G1 X132.939 Y149.444 E.00364
-G1 X129.21 Y145.714 E.04911
-G1 X129.309 Y146.101 E.00372
-G1 X133.031 Y149.824 E.04902
-G1 X133.124 Y150.204 E.00364
-G1 X129.408 Y146.488 E.04893
-G1 X129.507 Y146.875 E.00372
-G1 X134.678 Y152.046 E.06809
-G1 X134.966 Y152.046 E.00268
-G1 X133.357 Y150.437 E.02118
-G1 X133.645 Y150.437 E.00268
-M73 P87 R1
-G1 X135.254 Y152.046 E.02118
-G1 X135.541 Y152.046 E.00268
-G1 X133.933 Y150.437 E.02118
-G1 X134.221 Y150.437 E.00268
-G1 X135.829 Y152.046 E.02118
-G1 X136.117 Y152.046 E.00268
-G1 X134.325 Y150.254 E.0236
-G1 X134.381 Y150.022 E.00222
-G1 X136.405 Y152.046 E.02665
-G1 X136.631 Y152.046 E.00211
-G1 X136.644 Y151.997 E.00047
-G1 X134.437 Y149.79 E.02906
-G1 X134.494 Y149.559 E.00222
-G1 X136.703 Y151.768 E.02909
-G1 X136.761 Y151.538 E.0022
-G1 X134.55 Y149.327 E.02912
-G1 X134.606 Y149.095 E.00222
-G1 X136.82 Y151.309 E.02915
-G1 X136.879 Y151.08 E.0022
-G1 X134.662 Y148.864 E.02919
-G1 X134.718 Y148.632 E.00222
-G1 X136.937 Y150.851 E.02922
-G1 X136.996 Y150.621 E.0022
-G1 X134.775 Y148.4 E.02925
-G1 X134.831 Y148.168 E.00222
-G1 X137.054 Y150.392 E.02928
-G1 X137.113 Y150.163 E.0022
-G1 X134.887 Y147.937 E.02931
-G1 X134.943 Y147.705 E.00222
-G1 X137.172 Y149.934 E.02935
-G1 X137.23 Y149.704 E.0022
-G1 X134.999 Y147.473 E.02938
-G1 X135.056 Y147.242 E.00222
-G1 X137.289 Y149.475 E.02941
-G1 X137.348 Y149.246 E.0022
-M73 P88 R1
-G1 X135.112 Y147.01 E.02944
-G1 X135.168 Y146.778 E.00222
-G1 X137.406 Y149.017 E.02948
-G1 X137.465 Y148.787 E.0022
-G1 X135.224 Y146.547 E.02951
-G1 X135.28 Y146.315 E.00222
-G1 X137.524 Y148.558 E.02954
-G1 X137.582 Y148.329 E.0022
-G1 X135.337 Y146.083 E.02957
-G1 X135.393 Y145.851 E.00222
-G1 X137.641 Y148.1 E.0296
-G1 X137.7 Y147.87 E.0022
-G1 X135.449 Y145.62 E.02964
-G1 X135.505 Y145.388 E.00222
-G1 X137.758 Y147.641 E.02967
-G1 X137.817 Y147.412 E.0022
-G1 X135.561 Y145.156 E.0297
-G1 X135.618 Y144.925 E.00222
-G1 X137.875 Y147.182 E.02973
-G1 X137.934 Y146.953 E.0022
-G1 X135.674 Y144.693 E.02976
-G1 X135.73 Y144.461 E.00222
-G1 X137.993 Y146.724 E.0298
-G1 X138.051 Y146.495 E.0022
-G1 X135.786 Y144.229 E.02983
-G1 X135.842 Y143.998 E.00222
-G1 X138.11 Y146.265 E.02986
-G1 X138.169 Y146.036 E.0022
-G1 X135.899 Y143.766 E.02989
-G1 X135.955 Y143.534 E.00222
-G1 X138.227 Y145.807 E.02993
-G1 X138.286 Y145.578 E.0022
-G1 X136.011 Y143.303 E.02996
-G1 X136.067 Y143.071 E.00222
-G1 X138.345 Y145.348 E.02999
-G1 X138.403 Y145.119 E.0022
-G1 X136.123 Y142.839 E.03002
-G1 X136.18 Y142.608 E.00222
-G1 X138.462 Y144.89 E.03005
-G1 X138.521 Y144.661 E.0022
-G1 X136.236 Y142.376 E.03009
-G1 X136.292 Y142.144 E.00222
-G1 X138.579 Y144.431 E.03012
-G1 X138.638 Y144.202 E.0022
-G1 X136.348 Y141.912 E.03015
-G1 X136.404 Y141.681 E.00222
-G1 X138.696 Y143.973 E.03018
-G1 X138.755 Y143.743 E.0022
-G1 X134.157 Y139.146 E.06054
-G1 X134.403 Y139.103 E.00232
-G1 X138.814 Y143.514 E.05809
-G1 X138.872 Y143.285 E.0022
-M73 P89 R1
-G1 X134.648 Y139.06 E.05563
-G1 X134.893 Y139.018 E.00232
-G1 X138.931 Y143.056 E.05317
-G1 X138.99 Y142.826 E.0022
-G1 X135.138 Y138.975 E.05072
-G1 X135.384 Y138.932 E.00232
-G1 X139.048 Y142.597 E.04826
-G1 X139.107 Y142.368 E.0022
-G1 X135.629 Y138.89 E.0458
-G1 X135.874 Y138.847 E.00232
-G1 X139.166 Y142.139 E.04335
-G1 X139.224 Y141.909 E.0022
-G1 X136.119 Y138.804 E.04089
-G1 X136.364 Y138.762 E.00232
-G1 X139.283 Y141.68 E.03843
-G1 X139.341 Y141.451 E.0022
-G1 X136.61 Y138.719 E.03597
-G1 X136.855 Y138.676 E.00232
-G1 X139.4 Y141.222 E.03352
-G1 X139.459 Y140.992 E.0022
-M73 P89 R0
-G1 X137.1 Y138.634 E.03106
-G1 X137.192 Y138.438 E.00201
-G1 X139.517 Y140.763 E.03062
-G1 X139.576 Y140.534 E.0022
-G1 X137.249 Y138.206 E.03065
-G1 X137.305 Y137.975 E.00222
-G1 X139.635 Y140.304 E.03068
-G1 X139.693 Y140.075 E.0022
-G1 X137.361 Y137.743 E.03071
-G1 X137.418 Y137.512 E.00222
-G1 X139.752 Y139.846 E.03074
-G1 X139.811 Y139.617 E.0022
-G1 X137.474 Y137.28 E.03077
-G1 X137.53 Y137.049 E.00222
-G1 X139.869 Y139.387 E.0308
-G1 X139.928 Y139.158 E.0022
-G1 X137.587 Y136.817 E.03083
-G1 X137.643 Y136.585 E.00222
-M73 P90 R0
-G1 X139.987 Y138.929 E.03086
-G1 X140.045 Y138.7 E.0022
-G1 X137.699 Y136.354 E.03089
-G1 X137.756 Y136.122 E.00222
-G1 X140.104 Y138.47 E.03092
-G1 X140.162 Y138.241 E.0022
-G1 X137.812 Y135.891 E.03095
-G1 X137.868 Y135.659 E.00222
-G1 X140.221 Y138.012 E.03098
-G1 X140.28 Y137.783 E.0022
-G1 X137.925 Y135.428 E.03101
-G1 X137.981 Y135.196 E.00222
-G1 X140.338 Y137.553 E.03104
-G1 X140.397 Y137.324 E.0022
-G1 X138.037 Y134.964 E.03107
-G1 X138.094 Y134.733 E.00222
-G1 X140.456 Y137.095 E.0311
-G1 X140.514 Y136.866 E.0022
-G1 X138.15 Y134.501 E.03113
-G1 X138.206 Y134.27 E.00222
-G1 X140.573 Y136.636 E.03116
-G1 X140.632 Y136.407 E.0022
-G1 X138.263 Y134.038 E.03119
-G1 X138.319 Y133.807 E.00222
-G1 X140.69 Y136.178 E.03122
-G1 X140.749 Y135.948 E.0022
-G1 X138.375 Y133.575 E.03125
-G1 X138.432 Y133.343 E.00222
-G1 X140.807 Y135.719 E.03129
-G1 X140.866 Y135.49 E.0022
-G1 X138.488 Y133.112 E.03132
-G1 X138.544 Y132.88 E.00222
-G1 X140.925 Y135.261 E.03135
-G1 X140.983 Y135.031 E.0022
-G1 X138.761 Y132.809 E.02927
-G1 X139.049 Y132.809 E.00268
-G1 X141.042 Y134.802 E.02625
-G1 X141.101 Y134.573 E.0022
-G1 X139.337 Y132.809 E.02323
-G1 X139.625 Y132.809 E.00268
-G1 X141.159 Y134.344 E.02021
-G1 X141.218 Y134.114 E.0022
-G1 X139.912 Y132.809 E.01719
-G1 X140.2 Y132.809 E.00268
-G1 X141.277 Y133.885 E.01417
-G1 X141.335 Y133.656 E.0022
-G1 X140.488 Y132.809 E.01115
-G1 X140.776 Y132.809 E.00268
-M73 P91 R0
-G1 X141.394 Y133.427 E.00813
-G1 X141.453 Y133.197 E.0022
-G1 X141.064 Y132.809 E.00512
-G3 X141.586 Y133.043 I.144 J.378 E.00592
-; WIPE_START
-G1 X141.352 Y132.809 E-.12587
-G1 X141.064 Y132.809 E-.10941
-G1 X141.453 Y133.197 E-.20876
-G1 X141.394 Y133.427 E-.08992
-G1 X140.973 Y133.006 E-.22604
-; WIPE_END
-G1 E-.04 F1800
-M204 S6000
-G1 X133.342 Y133.141 Z.5 F42000
-G1 X129.092 Y133.217 Z.5
-G1 Z.1
-G1 E.8 F1800
-G1 F960
-M204 S500
-G1 X128.684 Y132.809 E.00537
-G1 X128.396 Y132.809 E.00268
-G1 X129.061 Y133.473 E.00875
-G1 X129.153 Y133.854 E.00365
-G1 X128.108 Y132.809 E.01376
-G1 X127.82 Y132.809 E.00268
-G1 X129.246 Y134.234 E.01877
-G1 X129.338 Y134.615 E.00365
-G1 X127.533 Y132.809 E.02378
-G1 X127.245 Y132.809 E.00268
-G1 X129.431 Y134.995 E.02879
-G1 X129.523 Y135.376 E.00365
-G1 X126.957 Y132.809 E.0338
-G1 X126.669 Y132.809 E.00268
-G1 X129.616 Y135.756 E.03881
-G1 X129.709 Y136.136 E.00365
-G1 X126.381 Y132.809 E.04382
-G1 X126.093 Y132.809 E.00268
-G1 X129.801 Y136.517 E.04883
-G1 X129.894 Y136.897 E.00365
-G1 X125.945 Y132.948 E.052
-G1 X126.044 Y133.335 E.00372
-G1 X129.986 Y137.278 E.05192
-G1 X130.079 Y137.658 E.00365
-G1 X126.142 Y133.722 E.05183
-G1 X126.241 Y134.109 E.00372
-G1 X130.171 Y138.039 E.05175
-G1 X130.264 Y138.419 E.00365
-G1 X126.34 Y134.496 E.05167
-G1 X126.439 Y134.883 E.00372
-G1 X130.356 Y138.8 E.05158
-G1 X130.449 Y139.18 E.00365
-G1 X126.412 Y135.143 E.05316
-; WIPE_START
-G1 X127.826 Y136.557 E-.76
-; WIPE_END
-G1 E-.04 F1800
-M204 S6000
-G1 X122.474 Y132.933 Z.5 F42000
-G1 Z.1
-G1 E.8 F1800
-G1 F960
-M204 S500
-G2 X122.062 Y132.809 I-.268 J.144 E.00445
-G1 X122.383 Y133.129 E.00422
-G1 X122.383 Y133.417 E.00268
-G1 X121.774 Y132.809 E.00801
-G1 X121.486 Y132.809 E.00268
-G1 X122.383 Y133.705 E.0118
-G1 X122.383 Y133.993 E.00268
-G1 X121.199 Y132.809 E.0156
-G1 X120.911 Y132.809 E.00268
-M73 P92 R0
-G1 X122.383 Y134.281 E.01939
-G1 X122.383 Y134.569 E.00268
-G1 X120.623 Y132.809 E.02318
-G1 X120.335 Y132.809 E.00268
-G1 X122.383 Y134.857 E.02697
-G1 X122.383 Y135.145 E.00268
-G1 X120.047 Y132.809 E.03076
-G1 X119.759 Y132.809 E.00268
-G1 X122.383 Y135.433 E.03455
-G1 X122.383 Y135.721 E.00268
-G1 X119.476 Y132.813 E.03828
-G1 X119.476 Y133.101 E.00268
-G1 X122.383 Y136.008 E.03828
-G1 X122.383 Y136.296 E.00268
-G1 X119.476 Y133.389 E.03828
-G1 X119.476 Y133.677 E.00268
-G1 X122.383 Y136.584 E.03828
-G1 X122.383 Y136.872 E.00268
-G1 X119.476 Y133.965 E.03828
-G1 X119.476 Y134.253 E.00268
-G1 X122.383 Y137.16 E.03828
-G1 X122.383 Y137.448 E.00268
-G1 X119.476 Y134.541 E.03828
-G1 X119.476 Y134.829 E.00268
-G1 X122.383 Y137.736 E.03828
-G1 X122.383 Y138.024 E.00268
-G1 X119.476 Y135.117 E.03828
-G1 X119.476 Y135.405 E.00268
-G1 X122.383 Y138.312 E.03828
-G1 X122.383 Y138.6 E.00268
-G1 X119.476 Y135.693 E.03828
-G1 X119.476 Y135.98 E.00268
-G1 X122.383 Y138.887 E.03828
-G1 X122.383 Y139.175 E.00268
-G1 X119.476 Y136.268 E.03828
-G1 X119.476 Y136.556 E.00268
-G1 X122.383 Y139.463 E.03828
-G1 X122.383 Y139.751 E.00268
-G1 X119.476 Y136.844 E.03828
-G1 X119.476 Y137.132 E.00268
-G1 X122.383 Y140.039 E.03828
-G1 X122.383 Y140.327 E.00268
-G1 X119.476 Y137.42 E.03828
-G1 X119.476 Y137.708 E.00268
-G1 X122.383 Y140.615 E.03828
-G1 X122.383 Y140.903 E.00268
-G1 X119.476 Y137.996 E.03828
-G1 X119.476 Y138.284 E.00268
-M73 P93 R0
-G1 X124.648 Y143.455 E.0681
-G1 X124.402 Y143.498 E.00232
-G1 X119.476 Y138.572 E.06487
-G1 X119.476 Y138.859 E.00268
-G1 X124.157 Y143.541 E.06165
-G1 X123.912 Y143.583 E.00232
-G1 X119.476 Y139.147 E.05842
-G1 X119.476 Y139.435 E.00268
-G1 X123.667 Y143.626 E.05519
-G1 X123.421 Y143.669 E.00232
-G1 X119.476 Y139.723 E.05196
-G1 X119.476 Y140.011 E.00268
-G1 X123.176 Y143.711 E.04873
-G1 X122.931 Y143.754 E.00232
-G1 X119.476 Y140.299 E.0455
-G1 X119.476 Y140.587 E.00268
-G1 X122.686 Y143.797 E.04227
-G1 X122.441 Y143.84 E.00232
-G1 X119.476 Y140.875 E.03904
-G1 X119.476 Y141.163 E.00268
-G1 X122.383 Y144.07 E.03828
-G1 X122.383 Y144.358 E.00268
-G1 X119.476 Y141.451 E.03828
-G1 X119.476 Y141.739 E.00268
-G1 X122.383 Y144.646 E.03828
-G1 X122.383 Y144.934 E.00268
-G1 X119.476 Y142.026 E.03828
-G1 X119.476 Y142.314 E.00268
-G1 X122.383 Y145.221 E.03828
-G1 X122.383 Y145.509 E.00268
-G1 X119.476 Y142.602 E.03828
-G1 X119.476 Y142.89 E.00268
-G1 X122.383 Y145.797 E.03828
-G1 X122.383 Y146.085 E.00268
-M73 P94 R0
-G1 X119.476 Y143.178 E.03828
-G1 X119.476 Y143.466 E.00268
-G1 X122.383 Y146.373 E.03828
-G1 X122.383 Y146.661 E.00268
-G1 X119.476 Y143.754 E.03828
-G1 X119.476 Y144.042 E.00268
-G1 X122.383 Y146.949 E.03828
-G1 X122.383 Y147.237 E.00268
-G1 X119.476 Y144.33 E.03828
-G1 X119.476 Y144.618 E.00268
-G1 X122.383 Y147.525 E.03828
-G1 X122.383 Y147.813 E.00268
-G1 X119.476 Y144.905 E.03828
-G1 X119.476 Y145.193 E.00268
-G1 X122.383 Y148.1 E.03828
-G1 X122.383 Y148.388 E.00268
-G1 X119.476 Y145.481 E.03828
-G1 X119.476 Y145.769 E.00268
-G1 X122.383 Y148.676 E.03828
-G1 X122.383 Y148.964 E.00268
-G1 X119.476 Y146.057 E.03828
-G1 X119.476 Y146.345 E.00268
-G1 X122.383 Y149.252 E.03828
-G1 X122.383 Y149.54 E.00268
-G1 X119.476 Y146.633 E.03828
-G1 X119.476 Y146.921 E.00268
-G1 X122.383 Y149.828 E.03828
-G1 X122.383 Y150.116 E.00268
-G1 X119.476 Y147.209 E.03828
-G1 X119.476 Y147.497 E.00268
-G1 X122.383 Y150.404 E.03828
-G1 X122.383 Y150.692 E.00268
-G1 X119.476 Y147.785 E.03828
-G1 X119.476 Y148.072 E.00268
-G1 X122.383 Y150.98 E.03828
-G1 X122.383 Y151.267 E.00268
-G1 X119.476 Y148.36 E.03828
-G1 X119.476 Y148.648 E.00268
-M73 P95 R0
-G1 X122.383 Y151.555 E.03828
-G1 X122.383 Y151.843 E.00268
-G1 X119.476 Y148.936 E.03828
-G1 X119.476 Y149.224 E.00268
-G1 X122.298 Y152.046 E.03716
-G1 X122.01 Y152.046 E.00268
-G1 X119.476 Y149.512 E.03337
-G1 X119.476 Y149.8 E.00268
-G1 X121.722 Y152.046 E.02958
-G1 X121.434 Y152.046 E.00268
-G1 X119.476 Y150.088 E.02579
-G1 X119.476 Y150.376 E.00268
-G1 X121.146 Y152.046 E.022
-G1 X120.858 Y152.046 E.00268
-G1 X119.476 Y150.664 E.0182
-G1 X119.476 Y150.952 E.00268
-G1 X120.57 Y152.046 E.01441
-G1 X120.282 Y152.046 E.00268
-G1 X119.476 Y151.239 E.01062
-G1 X119.476 Y151.527 E.00268
-G1 X119.995 Y152.046 E.00683
-G1 X119.707 Y152.046 E.00268
-G1 X119.385 Y151.724 E.00424
-; WIPE_START
-G1 X119.707 Y152.046 E-.17308
-G1 X119.995 Y152.046 E-.10941
-G1 X119.476 Y151.527 E-.27876
-G1 X119.476 Y151.239 E-.1094
-G1 X119.642 Y151.406 E-.08935
-; WIPE_END
-G1 E-.04 F1800
-M204 S6000
-G1 X127.27 Y151.663 Z.5 F42000
-G1 X130.666 Y151.778 Z.5
-G1 Z.1
-G1 E.8 F1800
-G1 F960
-M204 S500
-G1 X130.935 Y152.046 E.00354
-G1 X131.223 Y152.046 E.00268
-G1 X130.694 Y151.517 E.00696
-G1 X130.595 Y151.13 E.00372
-G1 X131.511 Y152.046 E.01206
-G1 X131.799 Y152.046 E.00268
-G1 X130.496 Y150.744 E.01715
-G1 X130.397 Y150.357 E.00372
-G1 X132.087 Y152.046 E.02225
-G1 X132.374 Y152.046 E.00268
-M73 P96 R0
-G1 X130.298 Y149.97 E.02734
-G1 X130.199 Y149.583 E.00372
-G1 X132.662 Y152.046 E.03243
-G1 X132.95 Y152.046 E.00268
-G1 X130.1 Y149.196 E.03753
-G1 X130.001 Y148.809 E.00372
-G1 X133.238 Y152.046 E.04262
-G1 X133.526 Y152.046 E.00268
-G1 X129.902 Y148.422 E.04772
-G1 X129.804 Y148.036 E.00372
-G1 X133.814 Y152.046 E.05281
-G1 X134.102 Y152.046 E.00268
-G1 X129.705 Y147.649 E.05791
-G1 X129.606 Y147.262 E.00372
-G1 X134.481 Y152.137 E.0642
-; WIPE_START
-G1 F960
-G1 X133.067 Y150.723 E-.76
-; WIPE_END
-G1 E-.04 F1800
-M106 S0
-M981 S0 P20000 ; close spaghetti detector
-; FEATURE: Custom
-; MACHINE_END_GCODE_START
-; filament end gcode 
-
-;===== date: 20231229 =====================
-G392 S0 ;turn off nozzle clog detect
-
-M400 ; wait for buffer to clear
-G92 E0 ; zero the extruder
-G1 E-0.8 F1800 ; retract
-G1 Z0.6 F900 ; lower z a little
-G1 X0 Y142.427 F18000 ; move to safe pos
-G1 X-13.0 F3000 ; move to safe pos
-
-M1002 judge_flag timelapse_record_flag
-M622 J1
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M400 P100
-M971 S11 C11 O0
-M991 S0 P-1 ;end timelapse at safe pos
-M623
-
-
-M140 S0 ; turn off bed
-M106 S0 ; turn off fan
-M106 P2 S0 ; turn off remote part cooling fan
-M106 P3 S0 ; turn off chamber cooling fan
-
-;G1 X27 F15000 ; wipe
-
-; pull back filament to AMS
-M620 S255
-G1 X267 F15000
-T255
-G1 X-28.5 F18000
-G1 X-48.2 F3000
-G1 X-28.5 F18000
-G1 X-48.2 F3000
-M621 S255
-
-M104 S0 ; turn off hotend
-
-M400 ; wait all motion done
-M17 S
-M17 Z0.4 ; lower z motor current to reduce impact if there is something in the bottom
-
-    G1 Z100.1 F600
-    G1 Z98.1
-
-M400 P100
-M17 R ; restore z current
-
 G90
-G1 X-48 Y180 F3600
-
-M220 S100  ; Reset feedrate magnitude
-M201.2 K1.0 ; Reset acc magnitude
-M73.2   R1.0 ;Reset left time magnitude
-M1002 set_gcode_claim_speed_level : 0
-
-;=====printer finish  sound=========
-M17
-M400 S1
-M1006 S1
-M1006 A0 B20 L100 C37 D20 M40 E42 F20 N60
-M1006 A0 B10 L100 C44 D10 M60 E44 F10 N60
-M1006 A0 B10 L100 C46 D10 M80 E46 F10 N80
-M1006 A44 B20 L100 C39 D20 M60 E48 F20 N60
-M1006 A0 B10 L100 C44 D10 M60 E44 F10 N60
-M1006 A0 B10 L100 C0 D10 M60 E0 F10 N60
-M1006 A0 B10 L100 C39 D10 M60 E39 F10 N60
-M1006 A0 B10 L100 C0 D10 M60 E0 F10 N60
-M1006 A0 B10 L100 C44 D10 M60 E44 F10 N60
-M1006 A0 B10 L100 C0 D10 M60 E0 F10 N60
-M1006 A0 B10 L100 C39 D10 M60 E39 F10 N60
-M1006 A0 B10 L100 C0 D10 M60 E0 F10 N60
-M1006 A0 B10 L100 C48 D10 M60 E44 F10 N80
-M1006 A0 B10 L100 C0 D10 M60 E0 F10  N80
-M1006 A44 B20 L100 C49 D20 M80 E41 F20 N80
-M1006 A0 B20 L100 C0 D20 M60 E0 F20 N80
-M1006 A0 B20 L100 C37 D20 M30 E37 F20 N60
-M1006 W
-;=====printer finish  sound=========
-
-;M17 X0.8 Y0.8 Z0.5 ; lower motor current to 45% power
-M400
-M18 X Y Z
-
-M73 P100 R0
-; EXECUTABLE_BLOCK_END
-
+M3 S575
+G4 P0.030
+(Travel to fill-infill path 1)
+G1 X-4.4592 Y2.4802 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_001 kind=fill-infill space=machine_deg source=component_002 points=39 max_surface_segment_mm=0.0979)
+(fill-infill path 1, 39 points)
+G1 X-4.1964 Y2.4656 F1200.000
+G1 X-3.9335 Y2.4510
+G1 X-3.6706 Y2.4363
+G1 X-3.4077 Y2.4217
+G1 X-3.1448 Y2.4071
+G1 X-2.8820 Y2.3925
+G1 X-2.6191 Y2.3778
+G1 X-2.3563 Y2.3632
+G1 X-2.0934 Y2.3486
+G1 X-1.8306 Y2.3339
+G1 X-1.5678 Y2.3193
+G1 X-1.3049 Y2.3047
+G1 X-1.0421 Y2.2900
+G1 X-0.7793 Y2.2754
+G1 X-0.5165 Y2.2608
+G1 X-0.2537 Y2.2462
+G1 X0.0091 Y2.2315
+G1 X0.2719 Y2.2169
+G1 X0.5347 Y2.2023
+G1 X0.7975 Y2.1876
+G1 X1.0603 Y2.1730
+G1 X1.3231 Y2.1584
+G1 X1.5858 Y2.1437
+G1 X1.8486 Y2.1291
+G1 X2.1114 Y2.1145
+G1 X2.3741 Y2.0999
+G1 X2.6369 Y2.0852
+G1 X2.8996 Y2.0706
+G1 X3.1624 Y2.0560
+G1 X3.4251 Y2.0413
+G1 X3.6878 Y2.0267
+G1 X3.9506 Y2.0121
+G1 X4.2133 Y1.9974
+G1 X4.4760 Y1.9828
+G1 X4.7387 Y1.9682
+G1 X5.0014 Y1.9536
+G1 X5.2641 Y1.9389
+G1 X5.5269 Y1.9243
+(Safe converted infill-to-infill connector to fill-infill path 2)
+G1 X5.6991 Y1.2422
+(fill-infill path 2, 141 points)
+G1 X5.4324 Y1.2570
+G1 X5.1656 Y1.2719
+G1 X4.8989 Y1.2868
+G1 X4.6321 Y1.3016
+G1 X4.3653 Y1.3165
+G1 X4.0986 Y1.3313
+G1 X3.8318 Y1.3462
+G1 X3.5650 Y1.3611
+G1 X3.2983 Y1.3759
+G1 X3.0315 Y1.3908
+G1 X2.7647 Y1.4056
+G1 X2.4979 Y1.4205
+G1 X2.2311 Y1.4353
+G1 X1.9643 Y1.4502
+G1 X1.6975 Y1.4651
+G1 X1.4307 Y1.4799
+G1 X1.1639 Y1.4948
+G1 X0.8971 Y1.5096
+G1 X0.6303 Y1.5245
+G1 X0.3635 Y1.5394
+G1 X0.0967 Y1.5542
+G1 X-0.1701 Y1.5691
+G1 X-0.4369 Y1.5839
+G1 X-0.7038 Y1.5988
+G1 X-0.9706 Y1.6137
+G1 X-1.2374 Y1.6285
+G1 X-1.5043 Y1.6434
+G1 X-1.7711 Y1.6582
+G1 X-2.0379 Y1.6731
+G1 X-2.3048 Y1.6880
+G1 X-2.5716 Y1.7028
+G1 X-2.8385 Y1.7177
+G1 X-3.1054 Y1.7325
+G1 X-3.3722 Y1.7474
+G1 X-3.6391 Y1.7623
+G1 X-3.9060 Y1.7771
+G1 X-4.1729 Y1.7920
+G1 X-4.4398 Y1.8068
+G1 X-4.7066 Y1.8217
+G1 X-4.9735 Y1.8366
+G1 X-5.2404 Y1.8514
+G1 X-5.5073 Y1.8663
+G1 X-5.7743 Y1.8811
+G1 X-6.0412 Y1.8960
+G1 X-6.3081 Y1.9108
+G1 X-6.5750 Y1.9257
+G1 X-6.8419 Y1.9406
+G1 X-7.1089 Y1.9554
+G1 X-7.3758 Y1.9703
+G1 X-7.6428 Y1.9851
+G1 X-7.9097 Y2.0000
+G1 X-8.1767 Y2.0149
+G1 X-8.4436 Y2.0297
+G1 X-8.7106 Y2.0446
+G1 X-8.9776 Y2.0594
+G1 X-9.2445 Y2.0743
+G1 X-9.5115 Y2.0892
+G1 X-9.7785 Y2.1040
+G1 X-10.0455 Y2.1189
+G1 X-10.3125 Y2.1337
+G1 X-10.5795 Y2.1486
+G1 X-10.8465 Y2.1635
+G1 X-11.1135 Y2.1783
+G1 X-11.3806 Y2.1932
+G1 X-11.6476 Y2.2080
+G1 X-11.9146 Y2.2229
+G1 X-12.1817 Y2.2378
+G1 X-12.4487 Y2.2526
+G1 X-12.7158 Y2.2675
+G1 X-12.9828 Y2.2823
+G1 X-13.2499 Y2.2972
+G1 X-13.5170 Y2.3121
+G1 X-13.7841 Y2.3269
+G1 X-14.0512 Y2.3418
+G1 X-14.3183 Y2.3566
+G1 X-14.5854 Y2.3715
+G1 X-14.8525 Y2.3863
+G1 X-15.1196 Y2.4012
+G1 X-15.3867 Y2.4161
+G1 X-15.6538 Y2.4309
+G1 X-15.9210 Y2.4458
+G1 X-16.1881 Y2.4606
+G1 X-16.4553 Y2.4755
+G1 X-16.7224 Y2.4904
+G1 X-16.9896 Y2.5052
+G1 X-17.2567 Y2.5201
+G1 X-17.5239 Y2.5349
+G1 X-17.7911 Y2.5498
+G1 X-18.0583 Y2.5647
+G1 X-18.3255 Y2.5795
+G1 X-18.5927 Y2.5944
+G1 X-18.8599 Y2.6092
+G1 X-19.1271 Y2.6241
+G1 X-19.3944 Y2.6390
+G1 X-19.6616 Y2.6538
+G1 X-19.9289 Y2.6687
+G1 X-20.1961 Y2.6835
+G1 X-20.4634 Y2.6984
+G1 X-20.7306 Y2.7133
+G1 X-20.9979 Y2.7281
+G1 X-21.2652 Y2.7430
+G1 X-21.5325 Y2.7578
+G1 X-21.7998 Y2.7727
+G1 X-22.0671 Y2.7876
+G1 X-22.3344 Y2.8024
+G1 X-22.6017 Y2.8173
+G1 X-22.8691 Y2.8321
+G1 X-23.1364 Y2.8470
+G1 X-23.4038 Y2.8618
+G1 X-23.6711 Y2.8767
+G1 X-23.9385 Y2.8916
+G1 X-24.2059 Y2.9064
+G1 X-24.4733 Y2.9213
+G1 X-24.7407 Y2.9361
+G1 X-25.0081 Y2.9510
+G1 X-25.2755 Y2.9659
+G1 X-25.5429 Y2.9807
+G1 X-25.8103 Y2.9956
+G1 X-26.0778 Y3.0104
+G1 X-26.3452 Y3.0253
+G1 X-26.6127 Y3.0402
+G1 X-26.8801 Y3.0550
+G1 X-27.1476 Y3.0699
+G1 X-27.4151 Y3.0847
+G1 X-27.6826 Y3.0996
+G1 X-27.9501 Y3.1145
+G1 X-28.2176 Y3.1293
+G1 X-28.4851 Y3.1442
+G1 X-28.7527 Y3.1590
+G1 X-29.0202 Y3.1739
+G1 X-29.2878 Y3.1888
+G1 X-29.5553 Y3.2036
+G1 X-29.8229 Y3.2185
+G1 X-30.0905 Y3.2333
+G1 X-30.3581 Y3.2482
+G1 X-30.6257 Y3.2631
+G1 X-30.8933 Y3.2779
+G1 X-31.1609 Y3.2928
+G1 X-31.4285 Y3.3076
+G1 X-31.6962 Y3.3225
+(Safe converted infill-to-infill connector to fill-infill path 3)
+G1 X-31.7199 Y3.9949
+(fill-infill path 3, 98 points)
+G1 X-31.4518 Y3.9800
+G1 X-31.1836 Y3.9652
+G1 X-30.9155 Y3.9503
+G1 X-30.6474 Y3.9354
+G1 X-30.3792 Y3.9206
+G1 X-30.1111 Y3.9057
+G1 X-29.8430 Y3.8908
+G1 X-29.5750 Y3.8759
+G1 X-29.3069 Y3.8611
+G1 X-29.0388 Y3.8462
+G1 X-28.7708 Y3.8313
+G1 X-28.5027 Y3.8164
+G1 X-28.2347 Y3.8016
+G1 X-27.9667 Y3.7867
+G1 X-27.6987 Y3.7718
+G1 X-27.4307 Y3.7570
+G1 X-27.1627 Y3.7421
+G1 X-26.8947 Y3.7272
+G1 X-26.6268 Y3.7123
+G1 X-26.3588 Y3.6975
+G1 X-26.0909 Y3.6826
+G1 X-25.8230 Y3.6677
+G1 X-25.5550 Y3.6529
+G1 X-25.2871 Y3.6380
+G1 X-25.0192 Y3.6231
+G1 X-24.7513 Y3.6082
+G1 X-24.4835 Y3.5934
+G1 X-24.2156 Y3.5785
+G1 X-23.9478 Y3.5636
+G1 X-23.6799 Y3.5488
+G1 X-23.4121 Y3.5339
+G1 X-23.1442 Y3.5190
+G1 X-22.8764 Y3.5041
+G1 X-22.6086 Y3.4893
+G1 X-22.3408 Y3.4744
+G1 X-22.0730 Y3.4595
+G1 X-21.8053 Y3.4446
+G1 X-21.5375 Y3.4298
+G1 X-21.2698 Y3.4149
+G1 X-21.0020 Y3.4000
+G1 X-20.7343 Y3.3852
+G1 X-20.4665 Y3.3703
+G1 X-20.1988 Y3.3554
+G1 X-19.9311 Y3.3405
+G1 X-19.6634 Y3.3257
+G1 X-19.3957 Y3.3108
+G1 X-19.1281 Y3.2959
+G1 X-18.8604 Y3.2811
+G1 X-18.5927 Y3.2662
+G1 X-18.3251 Y3.2513
+G1 X-18.0574 Y3.2364
+G1 X-17.7898 Y3.2216
+G1 X-17.5222 Y3.2067
+G1 X-17.2546 Y3.1918
+G1 X-16.9870 Y3.1770
+G1 X-16.7194 Y3.1621
+G1 X-16.4518 Y3.1472
+G1 X-16.1842 Y3.1323
+G1 X-15.9166 Y3.1175
+G1 X-15.6491 Y3.1026
+G1 X-15.3815 Y3.0877
+G1 X-15.1140 Y3.0728
+G1 X-14.8464 Y3.0580
+G1 X-14.5789 Y3.0431
+G1 X-14.3114 Y3.0282
+G1 X-14.0439 Y3.0134
+G1 X-13.7764 Y2.9985
+G1 X-13.5089 Y2.9836
+G1 X-13.2414 Y2.9687
+G1 X-12.9739 Y2.9539
+G1 X-12.7064 Y2.9390
+G1 X-12.4390 Y2.9241
+G1 X-12.1715 Y2.9093
+G1 X-11.9041 Y2.8944
+G1 X-11.6366 Y2.8795
+G1 X-11.3692 Y2.8646
+G1 X-11.1018 Y2.8498
+G1 X-10.8344 Y2.8349
+G1 X-10.5669 Y2.8200
+G1 X-10.2995 Y2.8052
+G1 X-10.0322 Y2.7903
+G1 X-9.7648 Y2.7754
+G1 X-9.4974 Y2.7605
+G1 X-9.2300 Y2.7457
+G1 X-8.9627 Y2.7308
+G1 X-8.6953 Y2.7159
+G1 X-8.4279 Y2.7010
+G1 X-8.1606 Y2.6862
+G1 X-7.8933 Y2.6713
+G1 X-7.6259 Y2.6564
+G1 X-7.3586 Y2.6416
+G1 X-7.0913 Y2.6267
+G1 X-6.8240 Y2.6118
+G1 X-6.5567 Y2.5969
+G1 X-6.2894 Y2.5821
+G1 X-6.0221 Y2.5672
+G1 X-5.7548 Y2.5523
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_001)
+(Travel to fill-infill path 4)
+G1 X-4.5651 Y3.1584 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_004 kind=fill-infill space=machine_deg source=component_002 points=41 max_surface_segment_mm=0.0982)
+(fill-infill path 4, 41 points)
+G1 X-4.3012 Y3.1437 F1200.000
+G1 X-4.0373 Y3.1290
+G1 X-3.7735 Y3.1144
+G1 X-3.5096 Y3.0997
+G1 X-3.2458 Y3.0850
+G1 X-2.9820 Y3.0703
+G1 X-2.7181 Y3.0557
+G1 X-2.4543 Y3.0410
+G1 X-2.1905 Y3.0263
+G1 X-1.9267 Y3.0116
+G1 X-1.6629 Y2.9970
+G1 X-1.3991 Y2.9823
+G1 X-1.1354 Y2.9676
+G1 X-0.8716 Y2.9529
+G1 X-0.6078 Y2.9383
+G1 X-0.3441 Y2.9236
+G1 X-0.0803 Y2.9089
+G1 X0.1834 Y2.8943
+G1 X0.4472 Y2.8796
+G1 X0.7109 Y2.8649
+G1 X0.9746 Y2.8502
+G1 X1.2383 Y2.8356
+G1 X1.5021 Y2.8209
+G1 X1.7658 Y2.8062
+G1 X2.0295 Y2.7915
+G1 X2.2931 Y2.7769
+G1 X2.5568 Y2.7622
+G1 X2.8205 Y2.7475
+G1 X3.0842 Y2.7328
+G1 X3.3478 Y2.7182
+G1 X3.6115 Y2.7035
+G1 X3.8752 Y2.6888
+G1 X4.1388 Y2.6741
+G1 X4.4024 Y2.6595
+G1 X4.6661 Y2.6448
+G1 X4.9297 Y2.6301
+G1 X5.1933 Y2.6154
+G1 X5.4570 Y2.6008
+G1 X5.7206 Y2.5861
+G1 X5.9842 Y2.5714
+(Safe converted infill-to-infill connector to fill-infill path 5)
+G1 X5.8554 Y3.2512
+(fill-infill path 5, 38 points)
+G1 X5.5874 Y3.2661
+G1 X5.3194 Y3.2810
+G1 X5.0514 Y3.2959
+G1 X4.7834 Y3.3108
+G1 X4.5154 Y3.3257
+G1 X4.2473 Y3.3407
+G1 X3.9793 Y3.3556
+G1 X3.7113 Y3.3705
+G1 X3.4432 Y3.3854
+G1 X3.1751 Y3.4003
+G1 X2.9071 Y3.4152
+G1 X2.6390 Y3.4301
+G1 X2.3709 Y3.4450
+G1 X2.1028 Y3.4599
+G1 X1.8347 Y3.4749
+G1 X1.5666 Y3.4898
+G1 X1.2985 Y3.5047
+G1 X1.0303 Y3.5196
+G1 X0.7622 Y3.5345
+G1 X0.4940 Y3.5494
+G1 X0.2259 Y3.5643
+G1 X-0.0423 Y3.5792
+G1 X-0.3105 Y3.5941
+G1 X-0.5786 Y3.6091
+G1 X-0.8468 Y3.6240
+G1 X-1.1150 Y3.6389
+G1 X-1.3832 Y3.6538
+G1 X-1.6515 Y3.6687
+G1 X-1.9197 Y3.6836
+G1 X-2.1879 Y3.6985
+G1 X-2.4562 Y3.7134
+G1 X-2.7244 Y3.7283
+G1 X-2.9927 Y3.7433
+G1 X-3.2610 Y3.7582
+G1 X-3.5292 Y3.7731
+G1 X-3.7975 Y3.7880
+G1 X-4.0658 Y3.8029
+(Safe converted infill-to-infill connector to fill-infill path 6)
+G1 X-4.1827 Y4.4816
+(fill-infill path 6, 41 points)
+G1 X-3.9190 Y4.4670
+G1 X-3.6554 Y4.4523
+G1 X-3.3917 Y4.4377
+G1 X-3.1280 Y4.4231
+G1 X-2.8644 Y4.4084
+G1 X-2.6007 Y4.3938
+G1 X-2.3371 Y4.3791
+G1 X-2.0735 Y4.3645
+G1 X-1.8099 Y4.3498
+G1 X-1.5463 Y4.3352
+G1 X-1.2827 Y4.3206
+G1 X-1.0191 Y4.3059
+G1 X-0.7556 Y4.2913
+G1 X-0.4920 Y4.2766
+G1 X-0.2285 Y4.2620
+G1 X0.0351 Y4.2474
+G1 X0.2986 Y4.2327
+G1 X0.5621 Y4.2181
+G1 X0.8256 Y4.2034
+G1 X1.0891 Y4.1888
+G1 X1.3526 Y4.1741
+G1 X1.6161 Y4.1595
+G1 X1.8795 Y4.1449
+G1 X2.1430 Y4.1302
+G1 X2.4064 Y4.1156
+G1 X2.6699 Y4.1009
+G1 X2.9333 Y4.0863
+G1 X3.1967 Y4.0717
+G1 X3.4601 Y4.0570
+G1 X3.7235 Y4.0424
+G1 X3.9869 Y4.0277
+G1 X4.2503 Y4.0131
+G1 X4.5136 Y3.9985
+G1 X4.7770 Y3.9838
+G1 X5.0404 Y3.9692
+G1 X5.3037 Y3.9545
+G1 X5.5670 Y3.9399
+G1 X5.8304 Y3.9252
+G1 X6.0937 Y3.9106
+G1 X6.3570 Y3.8960
+(Safe converted infill-to-infill connector to fill-infill path 7)
+G1 X6.1880 Y4.5781
+(fill-infill path 7, 38 points)
+G1 X5.9201 Y4.5930
+G1 X5.6523 Y4.6078
+G1 X5.3844 Y4.6227
+G1 X5.1165 Y4.6376
+G1 X4.8486 Y4.6525
+G1 X4.5807 Y4.6674
+G1 X4.3127 Y4.6823
+G1 X4.0448 Y4.6971
+G1 X3.7769 Y4.7120
+G1 X3.5089 Y4.7269
+G1 X3.2409 Y4.7418
+G1 X2.9729 Y4.7567
+G1 X2.7050 Y4.7716
+G1 X2.4369 Y4.7864
+G1 X2.1689 Y4.8013
+G1 X1.9009 Y4.8162
+G1 X1.6329 Y4.8311
+G1 X1.3648 Y4.8460
+G1 X1.0967 Y4.8608
+G1 X0.8287 Y4.8757
+G1 X0.5606 Y4.8906
+G1 X0.2925 Y4.9055
+G1 X0.0244 Y4.9204
+G1 X-0.2437 Y4.9353
+G1 X-0.5119 Y4.9501
+G1 X-0.7800 Y4.9650
+G1 X-1.0482 Y4.9799
+G1 X-1.3164 Y4.9948
+G1 X-1.5845 Y5.0097
+G1 X-1.8527 Y5.0246
+G1 X-2.1209 Y5.0394
+G1 X-2.3892 Y5.0543
+G1 X-2.6574 Y5.0692
+G1 X-2.9256 Y5.0841
+G1 X-3.1939 Y5.0990
+G1 X-3.4622 Y5.1138
+G1 X-3.7305 Y5.1287
+(Safe converted infill-to-infill connector to fill-infill path 8)
+G1 X-3.8426 Y5.8071
+(fill-infill path 8, 41 points)
+G1 X-3.5790 Y5.7925
+G1 X-3.3153 Y5.7779
+G1 X-3.0517 Y5.7633
+G1 X-2.7881 Y5.7487
+G1 X-2.5246 Y5.7341
+G1 X-2.2610 Y5.7195
+G1 X-1.9975 Y5.7049
+G1 X-1.7339 Y5.6903
+G1 X-1.4704 Y5.6757
+G1 X-1.2069 Y5.6611
+G1 X-0.9434 Y5.6465
+G1 X-0.6799 Y5.6318
+G1 X-0.4165 Y5.6172
+G1 X-0.1530 Y5.6026
+G1 X0.1104 Y5.5880
+G1 X0.3739 Y5.5734
+G1 X0.6373 Y5.5588
+G1 X0.9007 Y5.5442
+G1 X1.1641 Y5.5296
+G1 X1.4275 Y5.5150
+G1 X1.6908 Y5.5004
+G1 X1.9542 Y5.4858
+G1 X2.2175 Y5.4712
+G1 X2.4808 Y5.4566
+G1 X2.7441 Y5.4420
+G1 X3.0074 Y5.4274
+G1 X3.2707 Y5.4127
+G1 X3.5340 Y5.3981
+G1 X3.7973 Y5.3835
+G1 X4.0605 Y5.3689
+G1 X4.3238 Y5.3543
+G1 X4.5870 Y5.3397
+G1 X4.8502 Y5.3251
+G1 X5.1134 Y5.3105
+G1 X5.3766 Y5.2959
+G1 X5.6398 Y5.2813
+G1 X5.9029 Y5.2667
+G1 X6.1661 Y5.2521
+G1 X6.4292 Y5.2375
+G1 X6.6924 Y5.2229
+(Safe converted infill-to-infill connector to fill-infill path 9)
+G1 X6.5251 Y5.9050
+(fill-infill path 9, 38 points)
+G1 X6.2576 Y5.9198
+G1 X5.9900 Y5.9347
+G1 X5.7223 Y5.9495
+G1 X5.4547 Y5.9643
+G1 X5.1871 Y5.9792
+G1 X4.9194 Y5.9940
+G1 X4.6517 Y6.0088
+G1 X4.3840 Y6.0237
+G1 X4.1163 Y6.0385
+G1 X3.8486 Y6.0534
+G1 X3.5809 Y6.0682
+G1 X3.3131 Y6.0830
+G1 X3.0454 Y6.0979
+G1 X2.7776 Y6.1127
+G1 X2.5098 Y6.1275
+G1 X2.2420 Y6.1424
+G1 X1.9742 Y6.1572
+G1 X1.7063 Y6.1721
+G1 X1.4385 Y6.1869
+G1 X1.1706 Y6.2017
+G1 X0.9027 Y6.2166
+G1 X0.6348 Y6.2314
+G1 X0.3669 Y6.2463
+G1 X0.0990 Y6.2611
+G1 X-0.1689 Y6.2759
+G1 X-0.4369 Y6.2908
+G1 X-0.7049 Y6.3056
+G1 X-0.9729 Y6.3204
+G1 X-1.2409 Y6.3353
+G1 X-1.5089 Y6.3501
+G1 X-1.7769 Y6.3650
+G1 X-2.0450 Y6.3798
+G1 X-2.3130 Y6.3946
+G1 X-2.5811 Y6.4095
+G1 X-2.8492 Y6.4243
+G1 X-3.1173 Y6.4392
+G1 X-3.3854 Y6.4540
+(Safe converted infill-to-infill connector to fill-infill path 10)
+G1 X-3.5611 Y7.1359
+(fill-infill path 10, 41 points)
+G1 X-3.2960 Y7.1212
+G1 X-3.0308 Y7.1066
+G1 X-2.7657 Y7.0919
+G1 X-2.5006 Y7.0772
+G1 X-2.2355 Y7.0626
+G1 X-1.9704 Y7.0479
+G1 X-1.7053 Y7.0333
+G1 X-1.4403 Y7.0186
+G1 X-1.1752 Y7.0040
+G1 X-0.9102 Y6.9893
+G1 X-0.6452 Y6.9747
+G1 X-0.3802 Y6.9600
+G1 X-0.1153 Y6.9454
+G1 X0.1497 Y6.9307
+G1 X0.4146 Y6.9161
+G1 X0.6795 Y6.9014
+G1 X0.9444 Y6.8868
+G1 X1.2093 Y6.8721
+G1 X1.4742 Y6.8575
+G1 X1.7390 Y6.8428
+G1 X2.0039 Y6.8282
+G1 X2.2687 Y6.8135
+G1 X2.5335 Y6.7988
+G1 X2.7983 Y6.7842
+G1 X3.0630 Y6.7695
+G1 X3.3278 Y6.7549
+G1 X3.5925 Y6.7402
+G1 X3.8573 Y6.7256
+G1 X4.1220 Y6.7109
+G1 X4.3867 Y6.6963
+G1 X4.6513 Y6.6816
+G1 X4.9160 Y6.6670
+G1 X5.1806 Y6.6523
+G1 X5.4453 Y6.6377
+G1 X5.7099 Y6.6230
+G1 X5.9745 Y6.6084
+G1 X6.2391 Y6.5937
+G1 X6.5036 Y6.5791
+G1 X6.7682 Y6.5644
+G1 X7.0327 Y6.5497
+(Safe converted infill-to-infill connector to fill-infill path 11)
+G1 X6.8895 Y7.2306
+(fill-infill path 11, 38 points)
+G1 X6.6209 Y7.2455
+G1 X6.3523 Y7.2604
+G1 X6.0836 Y7.2752
+G1 X5.8150 Y7.2901
+G1 X5.5463 Y7.3049
+G1 X5.2776 Y7.3198
+G1 X5.0089 Y7.3347
+G1 X4.7401 Y7.3495
+G1 X4.4714 Y7.3644
+G1 X4.2026 Y7.3792
+G1 X3.9338 Y7.3941
+G1 X3.6650 Y7.4089
+G1 X3.3962 Y7.4238
+G1 X3.1274 Y7.4387
+G1 X2.8585 Y7.4535
+G1 X2.5896 Y7.4684
+G1 X2.3207 Y7.4832
+G1 X2.0518 Y7.4981
+G1 X1.7829 Y7.5129
+G1 X1.5139 Y7.5278
+G1 X1.2450 Y7.5427
+G1 X0.9760 Y7.5575
+G1 X0.7070 Y7.5724
+G1 X0.4379 Y7.5872
+G1 X0.1689 Y7.6021
+G1 X-0.1002 Y7.6170
+G1 X-0.3692 Y7.6318
+G1 X-0.6383 Y7.6467
+G1 X-0.9075 Y7.6615
+G1 X-1.1766 Y7.6764
+G1 X-1.4457 Y7.6912
+G1 X-1.7149 Y7.7061
+G1 X-1.9841 Y7.7210
+G1 X-2.2533 Y7.7358
+G1 X-2.5226 Y7.7507
+G1 X-2.7918 Y7.7655
+G1 X-3.0611 Y7.7804
+(Safe converted infill-to-infill connector to fill-infill path 12)
+G1 X-3.1569 Y8.4578
+(fill-infill path 12, 41 points)
+G1 X-2.8921 Y8.4432
+G1 X-2.6274 Y8.4286
+G1 X-2.3626 Y8.4141
+G1 X-2.0979 Y8.3995
+G1 X-1.8332 Y8.3849
+G1 X-1.5686 Y8.3703
+G1 X-1.3039 Y8.3557
+G1 X-1.0393 Y8.3411
+G1 X-0.7746 Y8.3265
+G1 X-0.5100 Y8.3120
+G1 X-0.2455 Y8.2974
+G1 X0.0191 Y8.2828
+G1 X0.2836 Y8.2682
+G1 X0.5481 Y8.2536
+G1 X0.8126 Y8.2390
+G1 X1.0771 Y8.2245
+G1 X1.3416 Y8.2099
+G1 X1.6060 Y8.1953
+G1 X1.8704 Y8.1807
+G1 X2.1348 Y8.1661
+G1 X2.3992 Y8.1515
+G1 X2.6636 Y8.1369
+G1 X2.9279 Y8.1224
+G1 X3.1923 Y8.1078
+G1 X3.4566 Y8.0932
+G1 X3.7209 Y8.0786
+G1 X3.9851 Y8.0640
+G1 X4.2494 Y8.0494
+G1 X4.5136 Y8.0349
+G1 X4.7778 Y8.0203
+G1 X5.0420 Y8.0057
+G1 X5.3062 Y7.9911
+G1 X5.5703 Y7.9765
+G1 X5.8345 Y7.9619
+G1 X6.0986 Y7.9473
+G1 X6.3627 Y7.9328
+G1 X6.6268 Y7.9182
+G1 X6.8909 Y7.9036
+G1 X7.1549 Y7.8890
+G1 X7.4189 Y7.8744
+(Safe converted infill-to-infill connector to fill-infill path 13)
+G1 X7.2154 Y8.5588
+(fill-infill path 13, 38 points)
+G1 X6.9477 Y8.5735
+G1 X6.6801 Y8.5883
+G1 X6.4123 Y8.6030
+G1 X6.1446 Y8.6178
+G1 X5.8769 Y8.6326
+G1 X5.6091 Y8.6473
+G1 X5.3413 Y8.6621
+G1 X5.0735 Y8.6769
+G1 X4.8057 Y8.6916
+G1 X4.5378 Y8.7064
+G1 X4.2700 Y8.7211
+G1 X4.0021 Y8.7359
+G1 X3.7341 Y8.7507
+G1 X3.4662 Y8.7654
+G1 X3.1983 Y8.7802
+G1 X2.9303 Y8.7949
+G1 X2.6623 Y8.8097
+G1 X2.3943 Y8.8245
+G1 X2.1262 Y8.8392
+G1 X1.8582 Y8.8540
+G1 X1.5901 Y8.8687
+G1 X1.3220 Y8.8835
+G1 X1.0538 Y8.8983
+G1 X0.7857 Y8.9130
+G1 X0.5175 Y8.9278
+G1 X0.2493 Y8.9425
+G1 X-0.0189 Y8.9573
+G1 X-0.2871 Y8.9721
+G1 X-0.5554 Y8.9868
+G1 X-0.8236 Y9.0016
+G1 X-1.0920 Y9.0164
+G1 X-1.3603 Y9.0311
+G1 X-1.6286 Y9.0459
+G1 X-1.8970 Y9.0606
+G1 X-2.1654 Y9.0754
+G1 X-2.4338 Y9.0902
+G1 X-2.7022 Y9.1049
+(Safe converted infill-to-infill connector to fill-infill path 14)
+G1 X-2.8416 Y9.7847
+(fill-infill path 14, 40 points)
+G1 X-2.5701 Y9.7698
+G1 X-2.2986 Y9.7549
+G1 X-2.0271 Y9.7400
+G1 X-1.7556 Y9.7251
+G1 X-1.4842 Y9.7102
+G1 X-1.2128 Y9.6953
+G1 X-0.9414 Y9.6804
+G1 X-0.6700 Y9.6655
+G1 X-0.3986 Y9.6506
+G1 X-0.1273 Y9.6357
+G1 X0.1440 Y9.6208
+G1 X0.4153 Y9.6059
+G1 X0.6865 Y9.5910
+G1 X0.9577 Y9.5761
+G1 X1.2289 Y9.5612
+G1 X1.5001 Y9.5463
+G1 X1.7713 Y9.5314
+G1 X2.0424 Y9.5165
+G1 X2.3135 Y9.5016
+G1 X2.5846 Y9.4867
+G1 X2.8557 Y9.4718
+G1 X3.1267 Y9.4569
+G1 X3.3977 Y9.4420
+G1 X3.6687 Y9.4271
+G1 X3.9397 Y9.4122
+G1 X4.2106 Y9.3973
+G1 X4.4816 Y9.3824
+G1 X4.7525 Y9.3675
+G1 X5.0233 Y9.3526
+G1 X5.2942 Y9.3377
+G1 X5.5650 Y9.3227
+G1 X5.8358 Y9.3078
+G1 X6.1066 Y9.2929
+G1 X6.3774 Y9.2780
+G1 X6.6481 Y9.2631
+G1 X6.9189 Y9.2482
+G1 X7.1896 Y9.2333
+G1 X7.4602 Y9.2184
+G1 X7.7309 Y9.2035
+(Safe converted infill-to-infill connector to fill-infill path 15)
+G1 X7.5697 Y9.8857
+(fill-infill path 15, 38 points)
+G1 X7.3011 Y9.9004
+G1 X7.0325 Y9.9152
+G1 X6.7638 Y9.9299
+G1 X6.4951 Y9.9447
+G1 X6.2264 Y9.9595
+G1 X5.9577 Y9.9742
+G1 X5.6889 Y9.9890
+G1 X5.4201 Y10.0037
+G1 X5.1513 Y10.0185
+G1 X4.8825 Y10.0333
+G1 X4.6136 Y10.0480
+G1 X4.3447 Y10.0628
+G1 X4.0758 Y10.0775
+G1 X3.8069 Y10.0923
+G1 X3.5379 Y10.1071
+G1 X3.2690 Y10.1218
+G1 X3.0000 Y10.1366
+G1 X2.7309 Y10.1514
+G1 X2.4619 Y10.1661
+G1 X2.1928 Y10.1809
+G1 X1.9237 Y10.1956
+G1 X1.6546 Y10.2104
+G1 X1.3854 Y10.2252
+G1 X1.1162 Y10.2399
+G1 X0.8470 Y10.2547
+G1 X0.5778 Y10.2694
+G1 X0.3086 Y10.2842
+G1 X0.0393 Y10.2990
+G1 X-0.2300 Y10.3137
+G1 X-0.4993 Y10.3285
+G1 X-0.7687 Y10.3432
+G1 X-1.0381 Y10.3580
+G1 X-1.3075 Y10.3728
+G1 X-1.5769 Y10.3875
+G1 X-1.8463 Y10.4023
+G1 X-2.1158 Y10.4170
+G1 X-2.3853 Y10.4318
+(Safe converted infill-to-infill connector to fill-infill path 16)
+G1 X-2.5254 Y11.1116
+(fill-infill path 16, 40 points)
+G1 X-2.2538 Y11.0968
+G1 X-1.9822 Y11.0819
+G1 X-1.7106 Y11.0671
+G1 X-1.4391 Y11.0522
+G1 X-1.1676 Y11.0374
+G1 X-0.8962 Y11.0225
+G1 X-0.6247 Y11.0077
+G1 X-0.3533 Y10.9929
+G1 X-0.0819 Y10.9780
+G1 X0.1895 Y10.9632
+G1 X0.4608 Y10.9483
+G1 X0.7321 Y10.9335
+G1 X1.0034 Y10.9187
+G1 X1.2746 Y10.9038
+G1 X1.5459 Y10.8890
+G1 X1.8170 Y10.8741
+G1 X2.0882 Y10.8593
+G1 X2.3594 Y10.8444
+G1 X2.6305 Y10.8296
+G1 X2.9016 Y10.8148
+G1 X3.1726 Y10.7999
+G1 X3.4437 Y10.7851
+G1 X3.7147 Y10.7702
+G1 X3.9857 Y10.7554
+G1 X4.2566 Y10.7405
+G1 X4.5276 Y10.7257
+G1 X4.7985 Y10.7109
+G1 X5.0694 Y10.6960
+G1 X5.3402 Y10.6812
+G1 X5.6110 Y10.6663
+G1 X5.8818 Y10.6515
+G1 X6.1526 Y10.6367
+G1 X6.4234 Y10.6218
+G1 X6.6941 Y10.6070
+G1 X6.9648 Y10.5921
+G1 X7.2355 Y10.5773
+G1 X7.5061 Y10.5624
+G1 X7.7767 Y10.5476
+G1 X8.0473 Y10.5328
+(Safe converted infill-to-infill connector to fill-infill path 17)
+G1 X7.9310 Y11.2125
+(fill-infill path 17, 38 points)
+G1 X7.6612 Y11.2273
+G1 X7.3915 Y11.2421
+G1 X7.1217 Y11.2568
+G1 X6.8519 Y11.2716
+G1 X6.5821 Y11.2864
+G1 X6.3123 Y11.3011
+G1 X6.0424 Y11.3159
+G1 X5.7725 Y11.3306
+G1 X5.5025 Y11.3454
+G1 X5.2326 Y11.3602
+G1 X4.9626 Y11.3749
+G1 X4.6926 Y11.3897
+G1 X4.4225 Y11.4044
+G1 X4.1525 Y11.4192
+G1 X3.8824 Y11.4340
+G1 X3.6122 Y11.4487
+G1 X3.3421 Y11.4635
+G1 X3.0719 Y11.4782
+G1 X2.8017 Y11.4930
+G1 X2.5314 Y11.5078
+G1 X2.2612 Y11.5225
+G1 X1.9909 Y11.5373
+G1 X1.7205 Y11.5521
+G1 X1.4502 Y11.5668
+G1 X1.1798 Y11.5816
+G1 X0.9094 Y11.5963
+G1 X0.6390 Y11.6111
+G1 X0.3685 Y11.6259
+G1 X0.0980 Y11.6406
+G1 X-0.1725 Y11.6554
+G1 X-0.4431 Y11.6701
+G1 X-0.7137 Y11.6849
+G1 X-0.9843 Y11.6997
+G1 X-1.2549 Y11.7144
+G1 X-1.5256 Y11.7292
+G1 X-1.7963 Y11.7439
+G1 X-2.0670 Y11.7587
+(Safe converted infill-to-infill connector to fill-infill path 18)
+G1 X-2.2076 Y12.4385
+(fill-infill path 18, 40 points)
+G1 X-1.9336 Y12.4236
+G1 X-1.6596 Y12.4087
+G1 X-1.3856 Y12.3938
+G1 X-1.1117 Y12.3789
+G1 X-0.8378 Y12.3640
+G1 X-0.5640 Y12.3491
+G1 X-0.2901 Y12.3342
+G1 X-0.0163 Y12.3193
+G1 X0.2574 Y12.3044
+G1 X0.5312 Y12.2895
+G1 X0.8049 Y12.2746
+G1 X1.0786 Y12.2597
+G1 X1.3522 Y12.2448
+G1 X1.6258 Y12.2299
+G1 X1.8994 Y12.2150
+G1 X2.1729 Y12.2001
+G1 X2.4465 Y12.1852
+G1 X2.7200 Y12.1703
+G1 X2.9934 Y12.1554
+G1 X3.2669 Y12.1405
+G1 X3.5403 Y12.1256
+G1 X3.8136 Y12.1107
+G1 X4.0870 Y12.0958
+G1 X4.3603 Y12.0808
+G1 X4.6335 Y12.0659
+G1 X4.9068 Y12.0510
+G1 X5.1800 Y12.0361
+G1 X5.4532 Y12.0212
+G1 X5.7264 Y12.0063
+G1 X5.9995 Y11.9914
+G1 X6.2726 Y11.9765
+G1 X6.5457 Y11.9616
+G1 X6.8187 Y11.9467
+G1 X7.0917 Y11.9318
+G1 X7.3647 Y11.9169
+G1 X7.6376 Y11.9020
+G1 X7.9106 Y11.8871
+G1 X8.1835 Y11.8722
+G1 X8.4563 Y11.8573
+(Safe converted infill-to-infill connector to fill-infill path 19)
+G1 X8.2998 Y12.5394
+(fill-infill path 19, 38 points)
+G1 X8.0297 Y12.5542
+G1 X7.7596 Y12.5689
+G1 X7.4894 Y12.5836
+G1 X7.2192 Y12.5983
+G1 X6.9490 Y12.6130
+G1 X6.6787 Y12.6277
+G1 X6.4085 Y12.6424
+G1 X6.1381 Y12.6572
+G1 X5.8678 Y12.6719
+G1 X5.5974 Y12.6866
+G1 X5.3270 Y12.7013
+G1 X5.0566 Y12.7160
+G1 X4.7861 Y12.7307
+G1 X4.5156 Y12.7454
+G1 X4.2451 Y12.7602
+G1 X3.9745 Y12.7749
+G1 X3.7039 Y12.7896
+G1 X3.4333 Y12.8043
+G1 X3.1626 Y12.8190
+G1 X2.8919 Y12.8337
+G1 X2.6212 Y12.8484
+G1 X2.3504 Y12.8631
+G1 X2.0797 Y12.8779
+G1 X1.8088 Y12.8926
+G1 X1.5380 Y12.9073
+G1 X1.2671 Y12.9220
+G1 X0.9962 Y12.9367
+G1 X0.7253 Y12.9514
+G1 X0.4543 Y12.9661
+G1 X0.1833 Y12.9809
+G1 X-0.0878 Y12.9956
+G1 X-0.3588 Y13.0103
+G1 X-0.6299 Y13.0250
+G1 X-0.9011 Y13.0397
+G1 X-1.1723 Y13.0544
+G1 X-1.4435 Y13.0691
+G1 X-1.7147 Y13.0839
+(Safe converted infill-to-infill connector to fill-infill path 20)
+G1 X-1.8371 Y13.7626
+(fill-infill path 20, 40 points)
+G1 X-1.5630 Y13.7478
+G1 X-1.2888 Y13.7330
+G1 X-1.0147 Y13.7182
+G1 X-0.7406 Y13.7033
+G1 X-0.4666 Y13.6885
+G1 X-0.1925 Y13.6737
+G1 X0.0814 Y13.6588
+G1 X0.3554 Y13.6440
+G1 X0.6293 Y13.6292
+G1 X0.9032 Y13.6143
+G1 X1.1770 Y13.5995
+G1 X1.4508 Y13.5847
+G1 X1.7246 Y13.5698
+G1 X1.9983 Y13.5550
+G1 X2.2720 Y13.5402
+G1 X2.5457 Y13.5253
+G1 X2.8193 Y13.5105
+G1 X3.0930 Y13.4957
+G1 X3.3665 Y13.4808
+G1 X3.6401 Y13.4660
+G1 X3.9136 Y13.4512
+G1 X4.1870 Y13.4364
+G1 X4.4605 Y13.4215
+G1 X4.7339 Y13.4067
+G1 X5.0072 Y13.3919
+G1 X5.2806 Y13.3770
+G1 X5.5539 Y13.3622
+G1 X5.8271 Y13.3474
+G1 X6.1004 Y13.3325
+G1 X6.3736 Y13.3177
+G1 X6.6467 Y13.3029
+G1 X6.9199 Y13.2880
+G1 X7.1930 Y13.2732
+G1 X7.4661 Y13.2584
+G1 X7.7391 Y13.2435
+G1 X8.0121 Y13.2287
+G1 X8.2851 Y13.2139
+G1 X8.5580 Y13.1990
+G1 X8.8309 Y13.1842
+(Safe converted infill-to-infill connector to fill-infill path 21)
+G1 X8.6770 Y13.8663
+(fill-infill path 21, 38 points)
+G1 X8.4065 Y13.8810
+G1 X8.1359 Y13.8957
+G1 X7.8654 Y13.9103
+G1 X7.5947 Y13.9250
+G1 X7.3241 Y13.9396
+G1 X7.0534 Y13.9543
+G1 X6.7827 Y13.9690
+G1 X6.5120 Y13.9836
+G1 X6.2412 Y13.9983
+G1 X5.9704 Y14.0129
+G1 X5.6995 Y14.0276
+G1 X5.4287 Y14.0423
+G1 X5.1577 Y14.0569
+G1 X4.8868 Y14.0716
+G1 X4.6158 Y14.0862
+G1 X4.3448 Y14.1009
+G1 X4.0737 Y14.1156
+G1 X3.8026 Y14.1302
+G1 X3.5315 Y14.1449
+G1 X3.2604 Y14.1595
+G1 X2.9892 Y14.1742
+G1 X2.7179 Y14.1889
+G1 X2.4467 Y14.2035
+G1 X2.1754 Y14.2182
+G1 X1.9041 Y14.2328
+G1 X1.6327 Y14.2475
+G1 X1.3613 Y14.2622
+G1 X1.0899 Y14.2768
+G1 X0.8184 Y14.2915
+G1 X0.5469 Y14.3061
+G1 X0.2753 Y14.3208
+G1 X0.0037 Y14.3355
+G1 X-0.2679 Y14.3501
+G1 X-0.5395 Y14.3648
+G1 X-0.8112 Y14.3794
+G1 X-1.0829 Y14.3941
+G1 X-1.3547 Y14.4088
+(Safe converted infill-to-infill connector to fill-infill path 22)
+G1 X-1.5252 Y15.0901
+(fill-infill path 22, 40 points)
+G1 X-1.2502 Y15.0753
+G1 X-0.9753 Y15.0605
+G1 X-0.7004 Y15.0458
+G1 X-0.4255 Y15.0310
+G1 X-0.1507 Y15.0162
+G1 X0.1241 Y15.0014
+G1 X0.3989 Y14.9866
+G1 X0.6736 Y14.9718
+G1 X0.9483 Y14.9570
+G1 X1.2229 Y14.9423
+G1 X1.4975 Y14.9275
+G1 X1.7721 Y14.9127
+G1 X2.0466 Y14.8979
+G1 X2.3211 Y14.8831
+G1 X2.5955 Y14.8683
+G1 X2.8699 Y14.8535
+G1 X3.1443 Y14.8387
+G1 X3.4186 Y14.8240
+G1 X3.6929 Y14.8092
+G1 X3.9672 Y14.7944
+G1 X4.2414 Y14.7796
+G1 X4.5156 Y14.7648
+G1 X4.7898 Y14.7500
+G1 X5.0639 Y14.7352
+G1 X5.3379 Y14.7205
+G1 X5.6120 Y14.7057
+G1 X5.8860 Y14.6909
+G1 X6.1600 Y14.6761
+G1 X6.4339 Y14.6613
+G1 X6.7078 Y14.6465
+G1 X6.9816 Y14.6317
+G1 X7.2555 Y14.6169
+G1 X7.5292 Y14.6022
+G1 X7.8030 Y14.5874
+G1 X8.0767 Y14.5726
+G1 X8.3504 Y14.5578
+G1 X8.6240 Y14.5430
+G1 X8.8976 Y14.5282
+G1 X9.1712 Y14.5134
+(Safe converted infill-to-infill connector to fill-infill path 23)
+G1 X9.0715 Y15.1928
+(fill-infill path 23, 38 points)
+G1 X8.7996 Y15.2074
+G1 X8.5276 Y15.2221
+G1 X8.2557 Y15.2367
+G1 X7.9836 Y15.2514
+G1 X7.7116 Y15.2660
+G1 X7.4395 Y15.2807
+G1 X7.1674 Y15.2953
+G1 X6.8952 Y15.3100
+G1 X6.6230 Y15.3246
+G1 X6.3508 Y15.3393
+G1 X6.0785 Y15.3539
+G1 X5.8062 Y15.3686
+G1 X5.5338 Y15.3833
+G1 X5.2614 Y15.3979
+G1 X4.9890 Y15.4126
+G1 X4.7165 Y15.4272
+G1 X4.4440 Y15.4419
+G1 X4.1714 Y15.4565
+G1 X3.8989 Y15.4712
+G1 X3.6262 Y15.4858
+G1 X3.3536 Y15.5005
+G1 X3.0809 Y15.5151
+G1 X2.8081 Y15.5298
+G1 X2.5354 Y15.5444
+G1 X2.2625 Y15.5591
+G1 X1.9897 Y15.5737
+G1 X1.7168 Y15.5884
+G1 X1.4439 Y15.6030
+G1 X1.1709 Y15.6177
+G1 X0.8979 Y15.6323
+G1 X0.6248 Y15.6470
+G1 X0.3517 Y15.6616
+G1 X0.0786 Y15.6763
+G1 X-0.1946 Y15.6909
+G1 X-0.4678 Y15.7056
+G1 X-0.7410 Y15.7202
+G1 X-1.0143 Y15.7349
+(Safe converted infill-to-infill connector to fill-infill path 24)
+G1 X-1.1555 Y16.4147
+(fill-infill path 24, 40 points)
+G1 X-0.8788 Y16.3999
+G1 X-0.6021 Y16.3851
+G1 X-0.3254 Y16.3703
+G1 X-0.0488 Y16.3555
+G1 X0.2278 Y16.3407
+G1 X0.5044 Y16.3260
+G1 X0.7809 Y16.3112
+G1 X1.0574 Y16.2964
+G1 X1.3338 Y16.2816
+G1 X1.6102 Y16.2668
+G1 X1.8865 Y16.2520
+G1 X2.1628 Y16.2372
+G1 X2.4391 Y16.2225
+G1 X2.7153 Y16.2077
+G1 X2.9914 Y16.1929
+G1 X3.2676 Y16.1781
+G1 X3.5437 Y16.1633
+G1 X3.8197 Y16.1485
+G1 X4.0957 Y16.1337
+G1 X4.3717 Y16.1189
+G1 X4.6476 Y16.1042
+G1 X4.9235 Y16.0894
+G1 X5.1994 Y16.0746
+G1 X5.4752 Y16.0598
+G1 X5.7509 Y16.0450
+G1 X6.0266 Y16.0302
+G1 X6.3023 Y16.0154
+G1 X6.5780 Y16.0007
+G1 X6.8536 Y15.9859
+G1 X7.1291 Y15.9711
+G1 X7.4047 Y15.9563
+G1 X7.6801 Y15.9415
+G1 X7.9556 Y15.9267
+G1 X8.2310 Y15.9119
+G1 X8.5063 Y15.8971
+G1 X8.7817 Y15.8824
+G1 X9.0570 Y15.8676
+G1 X9.3322 Y15.8528
+G1 X9.6074 Y15.8380
+(Safe converted infill-to-infill connector to fill-infill path 25)
+G1 X9.4591 Y16.5201
+(fill-infill path 25, 38 points)
+G1 X9.1856 Y16.5348
+G1 X8.9120 Y16.5494
+G1 X8.6384 Y16.5641
+G1 X8.3647 Y16.5787
+G1 X8.0910 Y16.5934
+G1 X7.8173 Y16.6080
+G1 X7.5435 Y16.6227
+G1 X7.2697 Y16.6373
+G1 X6.9958 Y16.6519
+G1 X6.7219 Y16.6666
+G1 X6.4480 Y16.6812
+G1 X6.1740 Y16.6959
+G1 X5.8999 Y16.7105
+G1 X5.6259 Y16.7252
+G1 X5.3517 Y16.7398
+G1 X5.0776 Y16.7545
+G1 X4.8034 Y16.7691
+G1 X4.5291 Y16.7838
+G1 X4.2549 Y16.7984
+G1 X3.9805 Y16.8131
+G1 X3.7062 Y16.8277
+G1 X3.4318 Y16.8424
+G1 X3.1573 Y16.8570
+G1 X2.8828 Y16.8717
+G1 X2.6083 Y16.8863
+G1 X2.3337 Y16.9010
+G1 X2.0591 Y16.9156
+G1 X1.7844 Y16.9302
+G1 X1.5097 Y16.9449
+G1 X1.2350 Y16.9595
+G1 X0.9602 Y16.9742
+G1 X0.6853 Y16.9888
+G1 X0.4105 Y17.0035
+G1 X0.1355 Y17.0181
+G1 X-0.1394 Y17.0328
+G1 X-0.4144 Y17.0474
+G1 X-0.6895 Y17.0621
+(Safe converted infill-to-infill connector to fill-infill path 26)
+G1 X-0.8254 Y17.7416
+(fill-infill path 26, 40 points)
+G1 X-0.5467 Y17.7268
+G1 X-0.2680 Y17.7120
+G1 X0.0106 Y17.6972
+G1 X0.2891 Y17.6824
+G1 X0.5677 Y17.6676
+G1 X0.8462 Y17.6529
+G1 X1.1246 Y17.6381
+G1 X1.4030 Y17.6233
+G1 X1.6813 Y17.6085
+G1 X1.9596 Y17.5937
+G1 X2.2379 Y17.5789
+G1 X2.5161 Y17.5641
+G1 X2.7943 Y17.5493
+G1 X3.0724 Y17.5346
+G1 X3.3504 Y17.5198
+G1 X3.6285 Y17.5050
+G1 X3.9065 Y17.4902
+G1 X4.1844 Y17.4754
+G1 X4.4623 Y17.4606
+G1 X4.7401 Y17.4458
+G1 X5.0179 Y17.4311
+G1 X5.2957 Y17.4163
+G1 X5.5734 Y17.4015
+G1 X5.8511 Y17.3867
+G1 X6.1287 Y17.3719
+G1 X6.4063 Y17.3571
+G1 X6.6838 Y17.3423
+G1 X6.9613 Y17.3275
+G1 X7.2388 Y17.3128
+G1 X7.5162 Y17.2980
+G1 X7.7935 Y17.2832
+G1 X8.0708 Y17.2684
+G1 X8.3481 Y17.2536
+G1 X8.6253 Y17.2388
+G1 X8.9025 Y17.2240
+G1 X9.1797 Y17.2093
+G1 X9.4568 Y17.1945
+G1 X9.7338 Y17.1797
+G1 X10.0108 Y17.1649
+(Safe converted infill-to-infill connector to fill-infill path 27)
+G1 X9.8657 Y17.8470
+(fill-infill path 27, 38 points)
+G1 X9.5905 Y17.8616
+G1 X9.3153 Y17.8763
+G1 X9.0401 Y17.8909
+G1 X8.7648 Y17.9055
+G1 X8.4895 Y17.9202
+G1 X8.2141 Y17.9348
+G1 X7.9387 Y17.9494
+G1 X7.6632 Y17.9641
+G1 X7.3877 Y17.9787
+G1 X7.1121 Y17.9933
+G1 X6.8365 Y18.0080
+G1 X6.5609 Y18.0226
+G1 X6.2852 Y18.0372
+G1 X6.0095 Y18.0519
+G1 X5.7337 Y18.0665
+G1 X5.4578 Y18.0811
+G1 X5.1820 Y18.0958
+G1 X4.9061 Y18.1104
+G1 X4.6301 Y18.1250
+G1 X4.3541 Y18.1397
+G1 X4.0780 Y18.1543
+G1 X3.8019 Y18.1689
+G1 X3.5258 Y18.1836
+G1 X3.2496 Y18.1982
+G1 X2.9733 Y18.2128
+G1 X2.6970 Y18.2275
+G1 X2.4207 Y18.2421
+G1 X2.1443 Y18.2567
+G1 X1.8679 Y18.2714
+G1 X1.5914 Y18.2860
+G1 X1.3149 Y18.3006
+G1 X1.0384 Y18.3153
+G1 X0.7617 Y18.3299
+G1 X0.4851 Y18.3445
+G1 X0.2084 Y18.3592
+G1 X-0.0684 Y18.3738
+G1 X-0.3452 Y18.3884
+(Safe converted infill-to-infill connector to fill-infill path 28)
+G1 X-0.4817 Y19.0680
+(fill-infill path 28, 40 points)
+G1 X-0.2010 Y19.0532
+G1 X0.0795 Y19.0384
+G1 X0.3600 Y19.0237
+G1 X0.6405 Y19.0089
+G1 X0.9209 Y18.9941
+G1 X1.2012 Y18.9793
+G1 X1.4815 Y18.9646
+G1 X1.7618 Y18.9498
+G1 X2.0420 Y18.9350
+G1 X2.3221 Y18.9202
+G1 X2.6023 Y18.9055
+G1 X2.8823 Y18.8907
+G1 X3.1623 Y18.8759
+G1 X3.4423 Y18.8611
+G1 X3.7222 Y18.8464
+G1 X4.0020 Y18.8316
+G1 X4.2819 Y18.8168
+G1 X4.5616 Y18.8020
+G1 X4.8413 Y18.7873
+G1 X5.1210 Y18.7725
+G1 X5.4006 Y18.7577
+G1 X5.6802 Y18.7430
+G1 X5.9597 Y18.7282
+G1 X6.2392 Y18.7134
+G1 X6.5186 Y18.6986
+G1 X6.7980 Y18.6839
+G1 X7.0773 Y18.6691
+G1 X7.3566 Y18.6543
+G1 X7.6358 Y18.6395
+G1 X7.9150 Y18.6248
+G1 X8.1941 Y18.6100
+G1 X8.4732 Y18.5952
+G1 X8.7523 Y18.5804
+G1 X9.0312 Y18.5657
+G1 X9.3102 Y18.5509
+G1 X9.5891 Y18.5361
+G1 X9.8679 Y18.5213
+G1 X10.1467 Y18.5066
+G1 X10.4255 Y18.4918
+(Safe converted infill-to-infill connector to fill-infill path 29)
+G1 X10.2836 Y19.1739
+(fill-infill path 29, 38 points)
+G1 X10.0071 Y19.1885
+G1 X9.7306 Y19.2031
+G1 X9.4540 Y19.2177
+G1 X9.1773 Y19.2323
+G1 X8.9006 Y19.2469
+G1 X8.6239 Y19.2615
+G1 X8.3471 Y19.2761
+G1 X8.0703 Y19.2907
+G1 X7.7934 Y19.3053
+G1 X7.5164 Y19.3199
+G1 X7.2395 Y19.3345
+G1 X6.9624 Y19.3491
+G1 X6.6853 Y19.3637
+G1 X6.4082 Y19.3783
+G1 X6.1310 Y19.3929
+G1 X5.8538 Y19.4075
+G1 X5.5765 Y19.4220
+G1 X5.2992 Y19.4366
+G1 X5.0218 Y19.4512
+G1 X4.7443 Y19.4658
+G1 X4.4669 Y19.4804
+G1 X4.1893 Y19.4950
+G1 X3.9118 Y19.5096
+G1 X3.6341 Y19.5242
+G1 X3.3564 Y19.5388
+G1 X3.0787 Y19.5534
+G1 X2.8009 Y19.5680
+G1 X2.5231 Y19.5826
+G1 X2.2452 Y19.5972
+G1 X1.9673 Y19.6118
+G1 X1.6893 Y19.6264
+G1 X1.4113 Y19.6410
+G1 X1.1332 Y19.6556
+G1 X0.8551 Y19.6702
+G1 X0.5769 Y19.6848
+G1 X0.2986 Y19.6994
+G1 X0.0204 Y19.7140
+(Safe converted infill-to-infill connector to fill-infill path 30)
+G1 X-0.0870 Y20.3920
+(fill-infill path 30, 40 points)
+G1 X0.1945 Y20.3773
+G1 X0.4759 Y20.3626
+G1 X0.7573 Y20.3479
+G1 X1.0386 Y20.3332
+G1 X1.3199 Y20.3185
+G1 X1.6011 Y20.3038
+G1 X1.8823 Y20.2891
+G1 X2.1634 Y20.2744
+G1 X2.4445 Y20.2597
+G1 X2.7255 Y20.2450
+G1 X3.0065 Y20.2303
+G1 X3.2874 Y20.2156
+G1 X3.5683 Y20.2009
+G1 X3.8491 Y20.1862
+G1 X4.1298 Y20.1715
+G1 X4.4105 Y20.1568
+G1 X4.6912 Y20.1421
+G1 X4.9718 Y20.1274
+G1 X5.2523 Y20.1127
+G1 X5.5328 Y20.0980
+G1 X5.8132 Y20.0833
+G1 X6.0936 Y20.0686
+G1 X6.3739 Y20.0539
+G1 X6.6542 Y20.0392
+G1 X6.9345 Y20.0245
+G1 X7.2146 Y20.0098
+G1 X7.4948 Y19.9951
+G1 X7.7748 Y19.9804
+G1 X8.0549 Y19.9657
+G1 X8.3348 Y19.9510
+G1 X8.6147 Y19.9363
+G1 X8.8946 Y19.9216
+G1 X9.1744 Y19.9069
+G1 X9.4542 Y19.8922
+G1 X9.7339 Y19.8775
+G1 X10.0136 Y19.8628
+G1 X10.2932 Y19.8481
+G1 X10.5727 Y19.8334
+G1 X10.8522 Y19.8187
+(Safe converted infill-to-infill connector to fill-infill path 31)
+G1 X10.7140 Y20.5008
+(fill-infill path 31, 38 points)
+G1 X10.4351 Y20.5154
+G1 X10.1562 Y20.5300
+G1 X9.8772 Y20.5446
+G1 X9.5981 Y20.5592
+G1 X9.3190 Y20.5738
+G1 X9.0399 Y20.5884
+G1 X8.7607 Y20.6030
+G1 X8.4814 Y20.6176
+G1 X8.2021 Y20.6322
+G1 X7.9228 Y20.6469
+G1 X7.6434 Y20.6615
+G1 X7.3639 Y20.6761
+G1 X7.0844 Y20.6907
+G1 X6.8048 Y20.7053
+G1 X6.5252 Y20.7199
+G1 X6.2455 Y20.7345
+G1 X5.9658 Y20.7491
+G1 X5.6860 Y20.7637
+G1 X5.4062 Y20.7783
+G1 X5.1263 Y20.7929
+G1 X4.8463 Y20.8075
+G1 X4.5663 Y20.8221
+G1 X4.2863 Y20.8367
+G1 X4.0062 Y20.8513
+G1 X3.7260 Y20.8659
+G1 X3.4458 Y20.8805
+G1 X3.1655 Y20.8951
+G1 X2.8852 Y20.9097
+G1 X2.6048 Y20.9243
+G1 X2.3244 Y20.9389
+G1 X2.0439 Y20.9536
+G1 X1.7634 Y20.9682
+G1 X1.4828 Y20.9828
+G1 X1.2021 Y20.9974
+G1 X0.9214 Y21.0120
+G1 X0.6407 Y21.0266
+G1 X0.3599 Y21.0412
+(Safe converted infill-to-infill connector to fill-infill path 32)
+G1 X0.2246 Y21.7207
+(fill-infill path 32, 40 points)
+G1 X0.5095 Y21.7059
+G1 X0.7943 Y21.6912
+G1 X1.0790 Y21.6765
+G1 X1.3637 Y21.6617
+G1 X1.6484 Y21.6470
+G1 X1.9329 Y21.6322
+G1 X2.2175 Y21.6175
+G1 X2.5019 Y21.6027
+G1 X2.7863 Y21.5880
+G1 X3.0707 Y21.5732
+G1 X3.3550 Y21.5585
+G1 X3.6392 Y21.5437
+G1 X3.9234 Y21.5290
+G1 X4.2075 Y21.5142
+G1 X4.4916 Y21.4995
+G1 X4.7756 Y21.4847
+G1 X5.0595 Y21.4700
+G1 X5.3434 Y21.4553
+G1 X5.6273 Y21.4405
+G1 X5.9110 Y21.4258
+G1 X6.1948 Y21.4110
+G1 X6.4784 Y21.3963
+G1 X6.7620 Y21.3815
+G1 X7.0456 Y21.3668
+G1 X7.3291 Y21.3520
+G1 X7.6125 Y21.3373
+G1 X7.8959 Y21.3225
+G1 X8.1792 Y21.3078
+G1 X8.4625 Y21.2930
+G1 X8.7457 Y21.2783
+G1 X9.0288 Y21.2635
+G1 X9.3119 Y21.2488
+G1 X9.5950 Y21.2341
+G1 X9.8780 Y21.2193
+G1 X10.1609 Y21.2046
+G1 X10.4438 Y21.1898
+G1 X10.7266 Y21.1751
+G1 X11.0094 Y21.1603
+G1 X11.2921 Y21.1456
+(Safe converted infill-to-infill connector to fill-infill path 33)
+G1 X11.1576 Y21.8277
+(fill-infill path 33, 38 points)
+G1 X10.8775 Y21.8422
+G1 X10.5974 Y21.8568
+G1 X10.3172 Y21.8713
+G1 X10.0370 Y21.8859
+G1 X9.7566 Y21.9004
+G1 X9.4763 Y21.9149
+G1 X9.1959 Y21.9295
+G1 X8.9154 Y21.9440
+G1 X8.6348 Y21.9586
+G1 X8.3542 Y21.9731
+G1 X8.0736 Y21.9877
+G1 X7.7929 Y22.0022
+G1 X7.5121 Y22.0167
+G1 X7.2313 Y22.0313
+G1 X6.9504 Y22.0458
+G1 X6.6695 Y22.0604
+G1 X6.3885 Y22.0749
+G1 X6.1074 Y22.0895
+G1 X5.8263 Y22.1040
+G1 X5.5452 Y22.1185
+G1 X5.2640 Y22.1331
+G1 X4.9827 Y22.1476
+G1 X4.7013 Y22.1622
+G1 X4.4199 Y22.1767
+G1 X4.1385 Y22.1913
+G1 X3.8570 Y22.2058
+G1 X3.5754 Y22.2203
+G1 X3.2938 Y22.2349
+G1 X3.0121 Y22.2494
+G1 X2.7303 Y22.2640
+G1 X2.4485 Y22.2785
+G1 X2.1667 Y22.2931
+G1 X1.8848 Y22.3076
+G1 X1.6028 Y22.3221
+G1 X1.3207 Y22.3367
+G1 X1.0386 Y22.3512
+G1 X0.7565 Y22.3658
+(Safe converted infill-to-infill connector to fill-infill path 34)
+G1 X0.5765 Y23.0476
+(fill-infill path 34, 40 points)
+G1 X0.8655 Y23.0328
+G1 X1.1545 Y23.0180
+G1 X1.4434 Y23.0031
+G1 X1.7322 Y22.9883
+G1 X2.0210 Y22.9735
+G1 X2.3098 Y22.9587
+G1 X2.5984 Y22.9439
+G1 X2.8870 Y22.9290
+G1 X3.1755 Y22.9142
+G1 X3.4640 Y22.8994
+G1 X3.7524 Y22.8846
+G1 X4.0408 Y22.8697
+G1 X4.3290 Y22.8549
+G1 X4.6172 Y22.8401
+G1 X4.9054 Y22.8253
+G1 X5.1935 Y22.8105
+G1 X5.4815 Y22.7956
+G1 X5.7695 Y22.7808
+G1 X6.0574 Y22.7660
+G1 X6.3452 Y22.7512
+G1 X6.6330 Y22.7363
+G1 X6.9207 Y22.7215
+G1 X7.2084 Y22.7067
+G1 X7.4960 Y22.6919
+G1 X7.7835 Y22.6771
+G1 X8.0710 Y22.6622
+G1 X8.3584 Y22.6474
+G1 X8.6458 Y22.6326
+G1 X8.9331 Y22.6178
+G1 X9.2203 Y22.6029
+G1 X9.5075 Y22.5881
+G1 X9.7946 Y22.5733
+G1 X10.0816 Y22.5585
+G1 X10.3686 Y22.5437
+G1 X10.6555 Y22.5288
+G1 X10.9424 Y22.5140
+G1 X11.2292 Y22.4992
+G1 X11.5159 Y22.4844
+G1 X11.8026 Y22.4695
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_004)
+(Travel to fill-infill path 35)
+G1 X13.6127 Y22.3759 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_035 kind=fill-infill space=machine_deg source=component_002 points=41 max_surface_segment_mm=0.0983)
+(fill-infill path 35, 41 points)
+G1 X13.8962 Y22.3612 F1200.000
+G1 X14.1797 Y22.3465
+G1 X14.4631 Y22.3318
+G1 X14.7465 Y22.3172
+G1 X15.0297 Y22.3025
+G1 X15.3130 Y22.2878
+G1 X15.5961 Y22.2731
+G1 X15.8792 Y22.2584
+G1 X16.1623 Y22.2437
+G1 X16.4453 Y22.2291
+G1 X16.7282 Y22.2144
+G1 X17.0111 Y22.1997
+G1 X17.2939 Y22.1850
+G1 X17.5767 Y22.1703
+G1 X17.8594 Y22.1557
+G1 X18.1420 Y22.1410
+G1 X18.4246 Y22.1263
+G1 X18.7072 Y22.1116
+G1 X18.9896 Y22.0969
+G1 X19.2720 Y22.0822
+G1 X19.5544 Y22.0676
+G1 X19.8367 Y22.0529
+G1 X20.1189 Y22.0382
+G1 X20.4011 Y22.0235
+G1 X20.6833 Y22.0088
+G1 X20.9653 Y21.9942
+G1 X21.2473 Y21.9795
+G1 X21.5293 Y21.9648
+G1 X21.8112 Y21.9501
+G1 X22.0930 Y21.9354
+G1 X22.3748 Y21.9207
+G1 X22.6566 Y21.9061
+G1 X22.9382 Y21.8914
+G1 X23.2199 Y21.8767
+G1 X23.5014 Y21.8620
+G1 X23.7829 Y21.8473
+G1 X24.0644 Y21.8327
+G1 X24.3458 Y21.8180
+G1 X24.6271 Y21.8033
+G1 X24.9084 Y21.7886
+(Safe converted infill-to-infill connector to fill-infill path 36)
+G1 X24.6591 Y21.1232
+(fill-infill path 36, 39 points)
+G1 X24.3804 Y21.1379
+G1 X24.1016 Y21.1525
+G1 X23.8228 Y21.1671
+G1 X23.5439 Y21.1817
+G1 X23.2650 Y21.1963
+G1 X22.9860 Y21.2109
+G1 X22.7069 Y21.2255
+G1 X22.4278 Y21.2401
+G1 X22.1486 Y21.2547
+G1 X21.8694 Y21.2693
+G1 X21.5901 Y21.2840
+G1 X21.3108 Y21.2986
+G1 X21.0314 Y21.3132
+G1 X20.7520 Y21.3278
+G1 X20.4725 Y21.3424
+G1 X20.1930 Y21.3570
+G1 X19.9134 Y21.3716
+G1 X19.6337 Y21.3862
+G1 X19.3540 Y21.4008
+G1 X19.0743 Y21.4154
+G1 X18.7945 Y21.4301
+G1 X18.5146 Y21.4447
+G1 X18.2347 Y21.4593
+G1 X17.9547 Y21.4739
+G1 X17.6747 Y21.4885
+G1 X17.3946 Y21.5031
+G1 X17.1144 Y21.5177
+G1 X16.8342 Y21.5323
+G1 X16.5540 Y21.5469
+G1 X16.2737 Y21.5615
+G1 X15.9933 Y21.5762
+G1 X15.7129 Y21.5908
+G1 X15.4324 Y21.6054
+G1 X15.1519 Y21.6200
+G1 X14.8713 Y21.6346
+G1 X14.5907 Y21.6492
+G1 X14.3100 Y21.6638
+G1 X14.0292 Y21.6784
+(Safe converted infill-to-infill connector to fill-infill path 37)
+G1 X13.7851 Y21.0154
+(fill-infill path 37, 41 points)
+G1 X14.0684 Y21.0006
+G1 X14.3517 Y20.9858
+G1 X14.6349 Y20.9710
+G1 X14.9181 Y20.9562
+G1 X15.2012 Y20.9414
+G1 X15.4843 Y20.9266
+G1 X15.7673 Y20.9118
+G1 X16.0503 Y20.8969
+G1 X16.3332 Y20.8821
+G1 X16.6161 Y20.8673
+G1 X16.8988 Y20.8525
+G1 X17.1816 Y20.8377
+G1 X17.4643 Y20.8229
+G1 X17.7469 Y20.8081
+G1 X18.0295 Y20.7933
+G1 X18.3120 Y20.7785
+G1 X18.5945 Y20.7637
+G1 X18.8769 Y20.7489
+G1 X19.1593 Y20.7341
+G1 X19.4416 Y20.7192
+G1 X19.7238 Y20.7044
+G1 X20.0060 Y20.6896
+G1 X20.2882 Y20.6748
+G1 X20.5703 Y20.6600
+G1 X20.8523 Y20.6452
+G1 X21.1343 Y20.6304
+G1 X21.4162 Y20.6156
+G1 X21.6981 Y20.6008
+G1 X21.9799 Y20.5860
+G1 X22.2617 Y20.5712
+G1 X22.5434 Y20.5564
+G1 X22.8251 Y20.5415
+G1 X23.1067 Y20.5267
+G1 X23.3883 Y20.5119
+G1 X23.6698 Y20.4971
+G1 X23.9512 Y20.4823
+G1 X24.2326 Y20.4675
+G1 X24.5140 Y20.4527
+G1 X24.7953 Y20.4379
+G1 X25.0765 Y20.4231
+(Safe converted infill-to-infill connector to fill-infill path 38)
+G1 X24.8470 Y19.7571
+(fill-infill path 38, 39 points)
+G1 X24.5691 Y19.7718
+G1 X24.2911 Y19.7865
+G1 X24.0131 Y19.8012
+G1 X23.7350 Y19.8159
+G1 X23.4569 Y19.8306
+G1 X23.1788 Y19.8453
+G1 X22.9006 Y19.8599
+G1 X22.6223 Y19.8746
+G1 X22.3440 Y19.8893
+G1 X22.0656 Y19.9040
+G1 X21.7872 Y19.9187
+G1 X21.5088 Y19.9334
+G1 X21.2303 Y19.9481
+G1 X20.9517 Y19.9628
+G1 X20.6731 Y19.9775
+G1 X20.3944 Y19.9922
+G1 X20.1157 Y20.0068
+G1 X19.8369 Y20.0215
+G1 X19.5581 Y20.0362
+G1 X19.2793 Y20.0509
+G1 X19.0003 Y20.0656
+G1 X18.7214 Y20.0803
+G1 X18.4424 Y20.0950
+G1 X18.1633 Y20.1097
+G1 X17.8842 Y20.1244
+G1 X17.6050 Y20.1391
+G1 X17.3258 Y20.1537
+G1 X17.0465 Y20.1684
+G1 X16.7672 Y20.1831
+G1 X16.4878 Y20.1978
+G1 X16.2084 Y20.2125
+G1 X15.9289 Y20.2272
+G1 X15.6493 Y20.2419
+G1 X15.3698 Y20.2566
+G1 X15.0901 Y20.2713
+G1 X14.8104 Y20.2860
+G1 X14.5307 Y20.3006
+G1 X14.2509 Y20.3153
+(Safe converted infill-to-infill connector to fill-infill path 39)
+G1 X14.0063 Y19.6526
+(fill-infill path 39, 41 points)
+G1 X14.2889 Y19.6377
+G1 X14.5715 Y19.6228
+G1 X14.8541 Y19.6079
+G1 X15.1366 Y19.5930
+G1 X15.4190 Y19.5781
+G1 X15.7014 Y19.5632
+G1 X15.9838 Y19.5483
+G1 X16.2661 Y19.5334
+G1 X16.5483 Y19.5185
+G1 X16.8305 Y19.5036
+G1 X17.1126 Y19.4887
+G1 X17.3947 Y19.4738
+G1 X17.6768 Y19.4589
+G1 X17.9587 Y19.4440
+G1 X18.2407 Y19.4291
+G1 X18.5226 Y19.4142
+G1 X18.8044 Y19.3993
+G1 X19.0862 Y19.3844
+G1 X19.3679 Y19.3695
+G1 X19.6496 Y19.3546
+G1 X19.9313 Y19.3397
+G1 X20.2128 Y19.3248
+G1 X20.4944 Y19.3099
+G1 X20.7759 Y19.2950
+G1 X21.0573 Y19.2801
+G1 X21.3387 Y19.2652
+G1 X21.6200 Y19.2503
+G1 X21.9013 Y19.2354
+G1 X22.1825 Y19.2205
+G1 X22.4637 Y19.2056
+G1 X22.7449 Y19.1907
+G1 X23.0260 Y19.1758
+G1 X23.3070 Y19.1609
+G1 X23.5880 Y19.1460
+G1 X23.8689 Y19.1311
+G1 X24.1498 Y19.1162
+G1 X24.4307 Y19.1013
+G1 X24.7115 Y19.0864
+G1 X24.9922 Y19.0715
+G1 X25.2729 Y19.0566
+(Safe converted infill-to-infill connector to fill-infill path 40)
+G1 X24.9958 Y18.3936
+(fill-infill path 40, 39 points)
+G1 X24.7197 Y18.4083
+G1 X24.4435 Y18.4230
+G1 X24.1673 Y18.4378
+G1 X23.8911 Y18.4525
+G1 X23.6148 Y18.4672
+G1 X23.3385 Y18.4819
+G1 X23.0621 Y18.4966
+G1 X22.7857 Y18.5113
+G1 X22.5092 Y18.5260
+G1 X22.2327 Y18.5407
+G1 X21.9561 Y18.5554
+G1 X21.6795 Y18.5701
+G1 X21.4028 Y18.5848
+G1 X21.1261 Y18.5995
+G1 X20.8494 Y18.6143
+G1 X20.5726 Y18.6290
+G1 X20.2958 Y18.6437
+G1 X20.0189 Y18.6584
+G1 X19.7419 Y18.6731
+G1 X19.4650 Y18.6878
+G1 X19.1879 Y18.7025
+G1 X18.9109 Y18.7172
+G1 X18.6337 Y18.7319
+G1 X18.3566 Y18.7466
+G1 X18.0793 Y18.7613
+G1 X17.8021 Y18.7760
+G1 X17.5248 Y18.7907
+G1 X17.2474 Y18.8055
+G1 X16.9700 Y18.8202
+G1 X16.6926 Y18.8349
+G1 X16.4151 Y18.8496
+G1 X16.1375 Y18.8643
+G1 X15.8599 Y18.8790
+G1 X15.5823 Y18.8937
+G1 X15.3046 Y18.9084
+G1 X15.0268 Y18.9231
+G1 X14.7491 Y18.9378
+G1 X14.4712 Y18.9525
+(Safe converted infill-to-infill connector to fill-infill path 41)
+G1 X14.2316 Y18.2898
+(fill-infill path 41, 41 points)
+G1 X14.5123 Y18.2749
+G1 X14.7929 Y18.2600
+G1 X15.0735 Y18.2451
+G1 X15.3540 Y18.2302
+G1 X15.6345 Y18.2152
+G1 X15.9149 Y18.2003
+G1 X16.1953 Y18.1854
+G1 X16.4757 Y18.1705
+G1 X16.7560 Y18.1556
+G1 X17.0362 Y18.1407
+G1 X17.3164 Y18.1258
+G1 X17.5966 Y18.1109
+G1 X17.8767 Y18.0959
+G1 X18.1567 Y18.0810
+G1 X18.4367 Y18.0661
+G1 X18.7167 Y18.0512
+G1 X18.9966 Y18.0363
+G1 X19.2765 Y18.0214
+G1 X19.5563 Y18.0065
+G1 X19.8361 Y17.9916
+G1 X20.1158 Y17.9766
+G1 X20.3955 Y17.9617
+G1 X20.6752 Y17.9468
+G1 X20.9548 Y17.9319
+G1 X21.2343 Y17.9170
+G1 X21.5138 Y17.9021
+G1 X21.7933 Y17.8872
+G1 X22.0727 Y17.8723
+G1 X22.3521 Y17.8573
+G1 X22.6314 Y17.8424
+G1 X22.9107 Y17.8275
+G1 X23.1899 Y17.8126
+G1 X23.4691 Y17.7977
+G1 X23.7483 Y17.7828
+G1 X24.0274 Y17.7679
+G1 X24.3064 Y17.7530
+G1 X24.5854 Y17.7380
+G1 X24.8644 Y17.7231
+G1 X25.1433 Y17.7082
+G1 X25.4222 Y17.6933
+(Safe converted infill-to-infill connector to fill-infill path 42)
+G1 X25.1532 Y17.0303
+(fill-infill path 42, 39 points)
+G1 X24.8810 Y17.0449
+G1 X24.6087 Y17.0595
+G1 X24.3365 Y17.0741
+G1 X24.0641 Y17.0887
+G1 X23.7918 Y17.1033
+G1 X23.5194 Y17.1179
+G1 X23.2469 Y17.1325
+G1 X22.9744 Y17.1471
+G1 X22.7019 Y17.1617
+G1 X22.4293 Y17.1764
+G1 X22.1567 Y17.1910
+G1 X21.8841 Y17.2056
+G1 X21.6114 Y17.2202
+G1 X21.3386 Y17.2348
+G1 X21.0658 Y17.2494
+G1 X20.7930 Y17.2640
+G1 X20.5202 Y17.2786
+G1 X20.2473 Y17.2932
+G1 X19.9743 Y17.3078
+G1 X19.7013 Y17.3224
+G1 X19.4283 Y17.3370
+G1 X19.1552 Y17.3516
+G1 X18.8821 Y17.3662
+G1 X18.6089 Y17.3808
+G1 X18.3357 Y17.3954
+G1 X18.0625 Y17.4100
+G1 X17.7892 Y17.4246
+G1 X17.5159 Y17.4392
+G1 X17.2425 Y17.4538
+G1 X16.9691 Y17.4684
+G1 X16.6956 Y17.4830
+G1 X16.4221 Y17.4976
+G1 X16.1486 Y17.5122
+G1 X15.8750 Y17.5268
+G1 X15.6014 Y17.5414
+G1 X15.3277 Y17.5560
+G1 X15.0540 Y17.5706
+G1 X14.7802 Y17.5852
+(Safe converted infill-to-infill connector to fill-infill path 43)
+G1 X14.5453 Y16.9225
+(fill-infill path 43, 41 points)
+G1 X14.8210 Y16.9078
+G1 X15.0966 Y16.8930
+G1 X15.3721 Y16.8783
+G1 X15.6476 Y16.8635
+G1 X15.9231 Y16.8488
+G1 X16.1986 Y16.8340
+G1 X16.4740 Y16.8192
+G1 X16.7493 Y16.8045
+G1 X17.0246 Y16.7897
+G1 X17.2999 Y16.7750
+G1 X17.5751 Y16.7602
+G1 X17.8503 Y16.7455
+G1 X18.1254 Y16.7307
+G1 X18.4005 Y16.7160
+G1 X18.6756 Y16.7012
+G1 X18.9506 Y16.6865
+G1 X19.2256 Y16.6717
+G1 X19.5005 Y16.6570
+G1 X19.7754 Y16.6422
+G1 X20.0503 Y16.6274
+G1 X20.3251 Y16.6127
+G1 X20.5999 Y16.5979
+G1 X20.8746 Y16.5832
+G1 X21.1493 Y16.5684
+G1 X21.4240 Y16.5537
+G1 X21.6986 Y16.5389
+G1 X21.9731 Y16.5242
+G1 X22.2477 Y16.5094
+G1 X22.5222 Y16.4947
+G1 X22.7966 Y16.4799
+G1 X23.0710 Y16.4652
+G1 X23.3454 Y16.4504
+G1 X23.6197 Y16.4357
+G1 X23.8940 Y16.4209
+G1 X24.1682 Y16.4061
+G1 X24.4424 Y16.3914
+G1 X24.7166 Y16.3766
+G1 X24.9907 Y16.3619
+G1 X25.2648 Y16.3471
+G1 X25.5389 Y16.3324
+(Safe converted infill-to-infill connector to fill-infill path 44)
+G1 X25.3783 Y15.6640
+(fill-infill path 44, 39 points)
+G1 X25.1054 Y15.6787
+G1 X24.8324 Y15.6935
+G1 X24.5593 Y15.7082
+G1 X24.2863 Y15.7229
+G1 X24.0132 Y15.7377
+G1 X23.7400 Y15.7524
+G1 X23.4668 Y15.7672
+G1 X23.1936 Y15.7819
+G1 X22.9204 Y15.7966
+G1 X22.6471 Y15.8114
+G1 X22.3737 Y15.8261
+G1 X22.1004 Y15.8409
+G1 X21.8269 Y15.8556
+G1 X21.5535 Y15.8703
+G1 X21.2800 Y15.8851
+G1 X21.0065 Y15.8998
+G1 X20.7329 Y15.9146
+G1 X20.4593 Y15.9293
+G1 X20.1857 Y15.9440
+G1 X19.9120 Y15.9588
+G1 X19.6383 Y15.9735
+G1 X19.3645 Y15.9883
+G1 X19.0907 Y16.0030
+G1 X18.8169 Y16.0177
+G1 X18.5430 Y16.0325
+G1 X18.2691 Y16.0472
+G1 X17.9951 Y16.0619
+G1 X17.7211 Y16.0767
+G1 X17.4471 Y16.0914
+G1 X17.1730 Y16.1062
+G1 X16.8989 Y16.1209
+G1 X16.6247 Y16.1356
+G1 X16.3505 Y16.1504
+G1 X16.0763 Y16.1651
+G1 X15.8020 Y16.1799
+G1 X15.5277 Y16.1946
+G1 X15.2534 Y16.2093
+G1 X14.9790 Y16.2241
+(Safe converted infill-to-infill connector to fill-infill path 45)
+G1 X14.7794 Y15.5597
+(fill-infill path 45, 41 points)
+G1 X15.0538 Y15.5449
+G1 X15.3282 Y15.5301
+G1 X15.6025 Y15.5154
+G1 X15.8767 Y15.5006
+G1 X16.1510 Y15.4858
+G1 X16.4252 Y15.4710
+G1 X16.6994 Y15.4562
+G1 X16.9735 Y15.4414
+G1 X17.2476 Y15.4267
+G1 X17.5216 Y15.4119
+G1 X17.7956 Y15.3971
+G1 X18.0696 Y15.3823
+G1 X18.3435 Y15.3675
+G1 X18.6174 Y15.3527
+G1 X18.8913 Y15.3379
+G1 X19.1651 Y15.3232
+G1 X19.4389 Y15.3084
+G1 X19.7127 Y15.2936
+G1 X19.9864 Y15.2788
+G1 X20.2601 Y15.2640
+G1 X20.5337 Y15.2492
+G1 X20.8073 Y15.2345
+G1 X21.0809 Y15.2197
+G1 X21.3544 Y15.2049
+G1 X21.6279 Y15.1901
+G1 X21.9013 Y15.1753
+G1 X22.1747 Y15.1605
+G1 X22.4481 Y15.1457
+G1 X22.7215 Y15.1310
+G1 X22.9948 Y15.1162
+G1 X23.2680 Y15.1014
+G1 X23.5413 Y15.0866
+G1 X23.8145 Y15.0718
+G1 X24.0876 Y15.0570
+G1 X24.3607 Y15.0423
+G1 X24.6338 Y15.0275
+G1 X24.9069 Y15.0127
+G1 X25.1799 Y14.9979
+G1 X25.4529 Y14.9831
+G1 X25.7258 Y14.9683
+(Safe converted infill-to-infill connector to fill-infill path 46)
+G1 X25.5593 Y14.3007
+(fill-infill path 46, 39 points)
+G1 X25.2884 Y14.3154
+G1 X25.0176 Y14.3301
+G1 X24.7467 Y14.3448
+G1 X24.4758 Y14.3595
+G1 X24.2048 Y14.3742
+G1 X23.9338 Y14.3889
+G1 X23.6628 Y14.4036
+G1 X23.3918 Y14.4184
+G1 X23.1207 Y14.4331
+G1 X22.8495 Y14.4478
+G1 X22.5784 Y14.4625
+G1 X22.3072 Y14.4772
+G1 X22.0360 Y14.4919
+G1 X21.7647 Y14.5066
+G1 X21.4934 Y14.5213
+G1 X21.2221 Y14.5360
+G1 X20.9507 Y14.5507
+G1 X20.6793 Y14.5655
+G1 X20.4079 Y14.5802
+G1 X20.1364 Y14.5949
+G1 X19.8649 Y14.6096
+G1 X19.5933 Y14.6243
+G1 X19.3218 Y14.6390
+G1 X19.0502 Y14.6537
+G1 X18.7785 Y14.6684
+G1 X18.5068 Y14.6831
+G1 X18.2351 Y14.6978
+G1 X17.9634 Y14.7125
+G1 X17.6916 Y14.7273
+G1 X17.4197 Y14.7420
+G1 X17.1479 Y14.7567
+G1 X16.8760 Y14.7714
+G1 X16.6041 Y14.7861
+G1 X16.3321 Y14.8008
+G1 X16.0601 Y14.8155
+G1 X15.7881 Y14.8302
+G1 X15.5160 Y14.8449
+G1 X15.2439 Y14.8596
+(Safe converted infill-to-infill connector to fill-infill path 47)
+G1 X15.0187 Y14.1969
+(fill-infill path 47, 41 points)
+G1 X15.2939 Y14.1820
+G1 X15.5690 Y14.1671
+G1 X15.8440 Y14.1522
+G1 X16.1191 Y14.1373
+G1 X16.3941 Y14.1223
+G1 X16.6690 Y14.1074
+G1 X16.9440 Y14.0925
+G1 X17.2189 Y14.0776
+G1 X17.4937 Y14.0627
+G1 X17.7685 Y14.0478
+G1 X18.0433 Y14.0329
+G1 X18.3181 Y14.0179
+G1 X18.5928 Y14.0030
+G1 X18.8675 Y13.9881
+G1 X19.1421 Y13.9732
+G1 X19.4168 Y13.9583
+G1 X19.6914 Y13.9434
+G1 X19.9659 Y13.9285
+G1 X20.2404 Y13.9135
+G1 X20.5149 Y13.8986
+G1 X20.7893 Y13.8837
+G1 X21.0638 Y13.8688
+G1 X21.3381 Y13.8539
+G1 X21.6125 Y13.8390
+G1 X21.8868 Y13.8240
+G1 X22.1611 Y13.8091
+G1 X22.4353 Y13.7942
+G1 X22.7095 Y13.7793
+G1 X22.9837 Y13.7644
+G1 X23.2579 Y13.7495
+G1 X23.5320 Y13.7346
+G1 X23.8061 Y13.7196
+G1 X24.0801 Y13.7047
+G1 X24.3541 Y13.6898
+G1 X24.6281 Y13.6749
+G1 X24.9020 Y13.6600
+G1 X25.1760 Y13.6451
+G1 X25.4498 Y13.6302
+G1 X25.7237 Y13.6152
+G1 X25.9975 Y13.6003
+(Safe converted infill-to-infill connector to fill-infill path 48)
+G1 X25.7550 Y12.9372
+(fill-infill path 48, 39 points)
+G1 X25.4853 Y12.9520
+G1 X25.2155 Y12.9667
+G1 X24.9458 Y12.9814
+G1 X24.6760 Y12.9961
+G1 X24.4061 Y13.0109
+G1 X24.1362 Y13.0256
+G1 X23.8663 Y13.0403
+G1 X23.5964 Y13.0550
+G1 X23.3264 Y13.0698
+G1 X23.0565 Y13.0845
+G1 X22.7864 Y13.0992
+G1 X22.5164 Y13.1139
+G1 X22.2463 Y13.1287
+G1 X21.9762 Y13.1434
+G1 X21.7060 Y13.1581
+G1 X21.4358 Y13.1729
+G1 X21.1656 Y13.1876
+G1 X20.8954 Y13.2023
+G1 X20.6251 Y13.2170
+G1 X20.3548 Y13.2318
+G1 X20.0845 Y13.2465
+G1 X19.8141 Y13.2612
+G1 X19.5437 Y13.2759
+G1 X19.2733 Y13.2907
+G1 X19.0028 Y13.3054
+G1 X18.7323 Y13.3201
+G1 X18.4618 Y13.3348
+G1 X18.1913 Y13.3496
+G1 X17.9207 Y13.3643
+G1 X17.6501 Y13.3790
+G1 X17.3794 Y13.3938
+G1 X17.1087 Y13.4085
+G1 X16.8380 Y13.4232
+G1 X16.5673 Y13.4379
+G1 X16.2965 Y13.4527
+G1 X16.0257 Y13.4674
+G1 X15.7548 Y13.4821
+G1 X15.4840 Y13.4968
+(Safe converted infill-to-infill connector to fill-infill path 49)
+G1 X15.2636 Y12.8341
+(fill-infill path 49, 42 points)
+G1 X15.5312 Y12.8195
+G1 X15.7988 Y12.8049
+G1 X16.0663 Y12.7904
+G1 X16.3339 Y12.7758
+G1 X16.6013 Y12.7612
+G1 X16.8688 Y12.7466
+G1 X17.1362 Y12.7320
+G1 X17.4036 Y12.7174
+G1 X17.6710 Y12.7028
+G1 X17.9383 Y12.6883
+G1 X18.2056 Y12.6737
+G1 X18.4729 Y12.6591
+G1 X18.7402 Y12.6445
+G1 X19.0074 Y12.6299
+G1 X19.2746 Y12.6153
+G1 X19.5417 Y12.6008
+G1 X19.8089 Y12.5862
+G1 X20.0760 Y12.5716
+G1 X20.3430 Y12.5570
+G1 X20.6101 Y12.5424
+G1 X20.8771 Y12.5278
+G1 X21.1441 Y12.5132
+G1 X21.4110 Y12.4987
+G1 X21.6780 Y12.4841
+G1 X21.9449 Y12.4695
+G1 X22.2117 Y12.4549
+G1 X22.4786 Y12.4403
+G1 X22.7454 Y12.4257
+G1 X23.0122 Y12.4111
+G1 X23.2789 Y12.3966
+G1 X23.5457 Y12.3820
+G1 X23.8124 Y12.3674
+G1 X24.0791 Y12.3528
+G1 X24.3457 Y12.3382
+G1 X24.6123 Y12.3236
+G1 X24.8789 Y12.3090
+G1 X25.1455 Y12.2945
+G1 X25.4120 Y12.2799
+G1 X25.6785 Y12.2653
+G1 X25.9450 Y12.2507
+G1 X26.2114 Y12.2361
+(Safe converted infill-to-infill connector to fill-infill path 50)
+G1 X25.9512 Y11.5744
+(fill-infill path 50, 39 points)
+G1 X25.6828 Y11.5891
+G1 X25.4143 Y11.6039
+G1 X25.1457 Y11.6186
+G1 X24.8772 Y11.6333
+G1 X24.6086 Y11.6481
+G1 X24.3400 Y11.6628
+G1 X24.0714 Y11.6775
+G1 X23.8027 Y11.6922
+G1 X23.5340 Y11.7070
+G1 X23.2653 Y11.7217
+G1 X22.9965 Y11.7364
+G1 X22.7278 Y11.7511
+G1 X22.4590 Y11.7659
+G1 X22.1902 Y11.7806
+G1 X21.9213 Y11.7953
+G1 X21.6524 Y11.8101
+G1 X21.3835 Y11.8248
+G1 X21.1146 Y11.8395
+G1 X20.8456 Y11.8542
+G1 X20.5766 Y11.8690
+G1 X20.3076 Y11.8837
+G1 X20.0386 Y11.8984
+G1 X19.7695 Y11.9131
+G1 X19.5004 Y11.9279
+G1 X19.2313 Y11.9426
+G1 X18.9621 Y11.9573
+G1 X18.6929 Y11.9720
+G1 X18.4237 Y11.9868
+G1 X18.1545 Y12.0015
+G1 X17.8852 Y12.0162
+G1 X17.6159 Y12.0310
+G1 X17.3466 Y12.0457
+G1 X17.0772 Y12.0604
+G1 X16.8078 Y12.0751
+G1 X16.5384 Y12.0899
+G1 X16.2690 Y12.1046
+G1 X15.9995 Y12.1193
+G1 X15.7300 Y12.1340
+(Safe converted infill-to-infill connector to fill-infill path 51)
+G1 X15.5023 Y11.4720
+(fill-infill path 51, 42 points)
+G1 X15.7701 Y11.4573
+G1 X16.0378 Y11.4427
+G1 X16.3056 Y11.4280
+G1 X16.5733 Y11.4133
+G1 X16.8410 Y11.3987
+G1 X17.1086 Y11.3840
+G1 X17.3763 Y11.3693
+G1 X17.6439 Y11.3547
+G1 X17.9114 Y11.3400
+G1 X18.1790 Y11.3253
+G1 X18.4465 Y11.3107
+G1 X18.7140 Y11.2960
+G1 X18.9815 Y11.2813
+G1 X19.2489 Y11.2667
+G1 X19.5164 Y11.2520
+G1 X19.7838 Y11.2373
+G1 X20.0511 Y11.2227
+G1 X20.3185 Y11.2080
+G1 X20.5858 Y11.1933
+G1 X20.8531 Y11.1787
+G1 X21.1203 Y11.1640
+G1 X21.3876 Y11.1493
+G1 X21.6548 Y11.1347
+G1 X21.9220 Y11.1200
+G1 X22.1892 Y11.1053
+G1 X22.4563 Y11.0907
+G1 X22.7234 Y11.0760
+G1 X22.9905 Y11.0613
+G1 X23.2576 Y11.0467
+G1 X23.5246 Y11.0320
+G1 X23.7916 Y11.0173
+G1 X24.0586 Y11.0027
+G1 X24.3256 Y10.9880
+G1 X24.5925 Y10.9733
+G1 X24.8594 Y10.9587
+G1 X25.1263 Y10.9440
+G1 X25.3932 Y10.9293
+G1 X25.6600 Y10.9147
+G1 X25.9268 Y10.9000
+G1 X26.1936 Y10.8854
+G1 X26.4604 Y10.8707
+(Safe converted infill-to-infill connector to fill-infill path 52)
+G1 X26.2313 Y10.2077
+(fill-infill path 52, 39 points)
+G1 X25.9620 Y10.2225
+G1 X25.6928 Y10.2374
+G1 X25.4235 Y10.2522
+G1 X25.1541 Y10.2670
+G1 X24.8848 Y10.2819
+G1 X24.6154 Y10.2967
+G1 X24.3460 Y10.3115
+G1 X24.0766 Y10.3263
+G1 X23.8071 Y10.3412
+G1 X23.5376 Y10.3560
+G1 X23.2681 Y10.3708
+G1 X22.9986 Y10.3857
+G1 X22.7291 Y10.4005
+G1 X22.4595 Y10.4153
+G1 X22.1899 Y10.4302
+G1 X21.9203 Y10.4450
+G1 X21.6506 Y10.4598
+G1 X21.3810 Y10.4746
+G1 X21.1113 Y10.4895
+G1 X20.8416 Y10.5043
+G1 X20.5718 Y10.5191
+G1 X20.3021 Y10.5340
+G1 X20.0323 Y10.5488
+G1 X19.7625 Y10.5636
+G1 X19.4926 Y10.5785
+G1 X19.2228 Y10.5933
+G1 X18.9529 Y10.6081
+G1 X18.6830 Y10.6229
+G1 X18.4130 Y10.6378
+G1 X18.1431 Y10.6526
+G1 X17.8731 Y10.6674
+G1 X17.6031 Y10.6823
+G1 X17.3330 Y10.6971
+G1 X17.0630 Y10.7119
+G1 X16.7929 Y10.7268
+G1 X16.5228 Y10.7416
+G1 X16.2526 Y10.7564
+G1 X15.9824 Y10.7712
+(Safe converted infill-to-infill connector to fill-infill path 53)
+G1 X15.7522 Y10.1096
+(fill-infill path 53, 42 points)
+G1 X16.0182 Y10.0950
+G1 X16.2842 Y10.0803
+G1 X16.5502 Y10.0657
+G1 X16.8162 Y10.0511
+G1 X17.0821 Y10.0364
+G1 X17.3481 Y10.0218
+G1 X17.6139 Y10.0072
+G1 X17.8798 Y9.9925
+G1 X18.1457 Y9.9779
+G1 X18.4115 Y9.9633
+G1 X18.6773 Y9.9486
+G1 X18.9431 Y9.9340
+G1 X19.2089 Y9.9194
+G1 X19.4746 Y9.9047
+G1 X19.7403 Y9.8901
+G1 X20.0060 Y9.8755
+G1 X20.2717 Y9.8609
+G1 X20.5373 Y9.8462
+G1 X20.8029 Y9.8316
+G1 X21.0686 Y9.8170
+G1 X21.3341 Y9.8023
+G1 X21.5997 Y9.7877
+G1 X21.8652 Y9.7731
+G1 X22.1307 Y9.7584
+G1 X22.3962 Y9.7438
+G1 X22.6617 Y9.7292
+G1 X22.9272 Y9.7145
+G1 X23.1926 Y9.6999
+G1 X23.4580 Y9.6853
+G1 X23.7234 Y9.6706
+G1 X23.9888 Y9.6560
+G1 X24.2541 Y9.6414
+G1 X24.5194 Y9.6268
+G1 X24.7847 Y9.6121
+G1 X25.0500 Y9.5975
+G1 X25.3153 Y9.5829
+G1 X25.5805 Y9.5682
+G1 X25.8457 Y9.5536
+G1 X26.1109 Y9.5390
+G1 X26.3761 Y9.5243
+G1 X26.6412 Y9.5097
+(Safe converted infill-to-infill connector to fill-infill path 54)
+G1 X26.4633 Y8.8443
+(fill-infill path 54, 39 points)
+G1 X26.1947 Y8.8592
+G1 X25.9260 Y8.8740
+G1 X25.6574 Y8.8889
+G1 X25.3887 Y8.9037
+G1 X25.1200 Y8.9186
+G1 X24.8513 Y8.9334
+G1 X24.5826 Y8.9482
+G1 X24.3138 Y8.9631
+G1 X24.0451 Y8.9779
+G1 X23.7763 Y8.9928
+G1 X23.5074 Y9.0076
+G1 X23.2386 Y9.0225
+G1 X22.9698 Y9.0373
+G1 X22.7009 Y9.0522
+G1 X22.4320 Y9.0670
+G1 X22.1631 Y9.0819
+G1 X21.8941 Y9.0967
+G1 X21.6252 Y9.1115
+G1 X21.3562 Y9.1264
+G1 X21.0872 Y9.1412
+G1 X20.8182 Y9.1561
+G1 X20.5492 Y9.1709
+G1 X20.2801 Y9.1858
+G1 X20.0110 Y9.2006
+G1 X19.7419 Y9.2155
+G1 X19.4728 Y9.2303
+G1 X19.2036 Y9.2451
+G1 X18.9345 Y9.2600
+G1 X18.6653 Y9.2748
+G1 X18.3961 Y9.2897
+G1 X18.1268 Y9.3045
+G1 X17.8576 Y9.3194
+G1 X17.5883 Y9.3342
+G1 X17.3190 Y9.3491
+G1 X17.0497 Y9.3639
+G1 X16.7803 Y9.3788
+G1 X16.5110 Y9.3936
+G1 X16.2416 Y9.4084
+(Safe converted infill-to-infill connector to fill-infill path 55)
+G1 X16.0355 Y8.7457
+(fill-infill path 55, 42 points)
+G1 X16.3016 Y8.7310
+G1 X16.5677 Y8.7163
+G1 X16.8338 Y8.7016
+G1 X17.0998 Y8.6870
+G1 X17.3658 Y8.6723
+G1 X17.6318 Y8.6576
+G1 X17.8978 Y8.6429
+G1 X18.1637 Y8.6282
+G1 X18.4297 Y8.6135
+G1 X18.6956 Y8.5988
+G1 X18.9615 Y8.5841
+G1 X19.2274 Y8.5695
+G1 X19.4932 Y8.5548
+G1 X19.7591 Y8.5401
+G1 X20.0249 Y8.5254
+G1 X20.2907 Y8.5107
+G1 X20.5565 Y8.4960
+G1 X20.8223 Y8.4813
+G1 X21.0880 Y8.4666
+G1 X21.3537 Y8.4520
+G1 X21.6194 Y8.4373
+G1 X21.8851 Y8.4226
+G1 X22.1508 Y8.4079
+G1 X22.4165 Y8.3932
+G1 X22.6821 Y8.3785
+G1 X22.9477 Y8.3638
+G1 X23.2133 Y8.3491
+G1 X23.4789 Y8.3345
+G1 X23.7444 Y8.3198
+G1 X24.0100 Y8.3051
+G1 X24.2755 Y8.2904
+G1 X24.5410 Y8.2757
+G1 X24.8065 Y8.2610
+G1 X25.0720 Y8.2463
+G1 X25.3374 Y8.2316
+G1 X25.6029 Y8.2170
+G1 X25.8683 Y8.2023
+G1 X26.1337 Y8.1876
+G1 X26.3990 Y8.1729
+G1 X26.6644 Y8.1582
+G1 X26.9297 Y8.1435
+(Safe converted infill-to-infill connector to fill-infill path 56)
+G1 X26.7395 Y7.4792
+(fill-infill path 56, 39 points)
+G1 X26.4705 Y7.4941
+G1 X26.2016 Y7.5091
+G1 X25.9326 Y7.5240
+G1 X25.6636 Y7.5389
+G1 X25.3946 Y7.5538
+G1 X25.1256 Y7.5687
+G1 X24.8566 Y7.5836
+G1 X24.5875 Y7.5985
+G1 X24.3185 Y7.6134
+G1 X24.0494 Y7.6283
+G1 X23.7803 Y7.6432
+G1 X23.5112 Y7.6581
+G1 X23.2420 Y7.6730
+G1 X22.9729 Y7.6879
+G1 X22.7037 Y7.7028
+G1 X22.4345 Y7.7177
+G1 X22.1653 Y7.7326
+G1 X21.8961 Y7.7475
+G1 X21.6269 Y7.7624
+G1 X21.3576 Y7.7773
+G1 X21.0883 Y7.7923
+G1 X20.8190 Y7.8072
+G1 X20.5497 Y7.8221
+G1 X20.2804 Y7.8370
+G1 X20.0110 Y7.8519
+G1 X19.7417 Y7.8668
+G1 X19.4723 Y7.8817
+G1 X19.2029 Y7.8966
+G1 X18.9335 Y7.9115
+G1 X18.6640 Y7.9264
+G1 X18.3946 Y7.9413
+G1 X18.1251 Y7.9562
+G1 X17.8556 Y7.9711
+G1 X17.5861 Y7.9860
+G1 X17.3166 Y8.0009
+G1 X17.0470 Y8.0158
+G1 X16.7775 Y8.0307
+G1 X16.5079 Y8.0456
+(Safe converted infill-to-infill connector to fill-infill path 57)
+G1 X16.3065 Y7.3829
+(fill-infill path 57, 42 points)
+G1 X16.5726 Y7.3682
+G1 X16.8386 Y7.3535
+G1 X17.1046 Y7.3387
+G1 X17.3706 Y7.3240
+G1 X17.6366 Y7.3093
+G1 X17.9025 Y7.2945
+G1 X18.1685 Y7.2798
+G1 X18.4344 Y7.2651
+G1 X18.7003 Y7.2503
+G1 X18.9662 Y7.2356
+G1 X19.2321 Y7.2209
+G1 X19.4980 Y7.2062
+G1 X19.7638 Y7.1914
+G1 X20.0297 Y7.1767
+G1 X20.2955 Y7.1620
+G1 X20.5613 Y7.1472
+G1 X20.8271 Y7.1325
+G1 X21.0928 Y7.1178
+G1 X21.3586 Y7.1031
+G1 X21.6243 Y7.0883
+G1 X21.8900 Y7.0736
+G1 X22.1558 Y7.0589
+G1 X22.4214 Y7.0441
+G1 X22.6871 Y7.0294
+G1 X22.9528 Y7.0147
+G1 X23.2184 Y6.9999
+G1 X23.4841 Y6.9852
+G1 X23.7497 Y6.9705
+G1 X24.0153 Y6.9558
+G1 X24.2809 Y6.9410
+G1 X24.5464 Y6.9263
+G1 X24.8120 Y6.9116
+G1 X25.0775 Y6.8968
+G1 X25.3431 Y6.8821
+G1 X25.6086 Y6.8674
+G1 X25.8741 Y6.8527
+G1 X26.1395 Y6.8379
+G1 X26.4050 Y6.8232
+G1 X26.6705 Y6.8085
+G1 X26.9359 Y6.7937
+G1 X27.2013 Y6.7790
+(Safe converted infill-to-infill connector to fill-infill path 58)
+G1 X27.0187 Y6.1147
+(fill-infill path 58, 40 points)
+G1 X26.7564 Y6.1293
+G1 X26.4942 Y6.1439
+G1 X26.2319 Y6.1584
+G1 X25.9697 Y6.1730
+G1 X25.7074 Y6.1876
+G1 X25.4451 Y6.2021
+G1 X25.1828 Y6.2167
+G1 X24.9204 Y6.2313
+G1 X24.6581 Y6.2458
+G1 X24.3957 Y6.2604
+G1 X24.1334 Y6.2750
+G1 X23.8710 Y6.2895
+G1 X23.6086 Y6.3041
+G1 X23.3462 Y6.3187
+G1 X23.0838 Y6.3332
+G1 X22.8214 Y6.3478
+G1 X22.5589 Y6.3624
+G1 X22.2965 Y6.3769
+G1 X22.0340 Y6.3915
+G1 X21.7715 Y6.4061
+G1 X21.5090 Y6.4206
+G1 X21.2465 Y6.4352
+G1 X20.9840 Y6.4498
+G1 X20.7214 Y6.4643
+G1 X20.4589 Y6.4789
+G1 X20.1963 Y6.4935
+G1 X19.9337 Y6.5080
+G1 X19.6711 Y6.5226
+G1 X19.4085 Y6.5372
+G1 X19.1459 Y6.5517
+G1 X18.8833 Y6.5663
+G1 X18.6206 Y6.5809
+G1 X18.3580 Y6.5954
+G1 X18.0953 Y6.6100
+G1 X17.8326 Y6.6246
+G1 X17.5699 Y6.6391
+G1 X17.3072 Y6.6537
+G1 X17.0444 Y6.6683
+G1 X16.7817 Y6.6828
+(Safe converted infill-to-infill connector to fill-infill path 59)
+G1 X16.6271 Y6.0178
+(fill-infill path 59, 42 points)
+G1 X16.8913 Y6.0031
+G1 X17.1554 Y5.9885
+G1 X17.4195 Y5.9738
+G1 X17.6836 Y5.9591
+G1 X17.9477 Y5.9445
+G1 X18.2117 Y5.9298
+G1 X18.4758 Y5.9152
+G1 X18.7399 Y5.9005
+G1 X19.0039 Y5.8858
+G1 X19.2679 Y5.8712
+G1 X19.5319 Y5.8565
+G1 X19.7959 Y5.8419
+G1 X20.0599 Y5.8272
+G1 X20.3239 Y5.8125
+G1 X20.5878 Y5.7979
+G1 X20.8518 Y5.7832
+G1 X21.1157 Y5.7686
+G1 X21.3796 Y5.7539
+G1 X21.6435 Y5.7392
+G1 X21.9074 Y5.7246
+G1 X22.1713 Y5.7099
+G1 X22.4352 Y5.6953
+G1 X22.6990 Y5.6806
+G1 X22.9629 Y5.6659
+G1 X23.2267 Y5.6513
+G1 X23.4905 Y5.6366
+G1 X23.7544 Y5.6220
+G1 X24.0182 Y5.6073
+G1 X24.2820 Y5.5926
+G1 X24.5457 Y5.5780
+G1 X24.8095 Y5.5633
+G1 X25.0732 Y5.5487
+G1 X25.3370 Y5.5340
+G1 X25.6007 Y5.5193
+G1 X25.8644 Y5.5047
+G1 X26.1282 Y5.4900
+G1 X26.3919 Y5.4754
+G1 X26.6555 Y5.4607
+G1 X26.9192 Y5.4461
+G1 X27.1829 Y5.4314
+G1 X27.4465 Y5.4167
+(Safe converted infill-to-infill connector to fill-infill path 60)
+G1 X27.2897 Y4.7514
+(fill-infill path 60, 40 points)
+G1 X27.0277 Y4.7660
+G1 X26.7657 Y4.7806
+G1 X26.5036 Y4.7952
+G1 X26.2416 Y4.8098
+G1 X25.9795 Y4.8243
+G1 X25.7175 Y4.8389
+G1 X25.4554 Y4.8535
+G1 X25.1933 Y4.8681
+G1 X24.9312 Y4.8827
+G1 X24.6691 Y4.8972
+G1 X24.4070 Y4.9118
+G1 X24.1448 Y4.9264
+G1 X23.8827 Y4.9410
+G1 X23.6205 Y4.9556
+G1 X23.3584 Y4.9701
+G1 X23.0962 Y4.9847
+G1 X22.8340 Y4.9993
+G1 X22.5718 Y5.0139
+G1 X22.3096 Y5.0284
+G1 X22.0474 Y5.0430
+G1 X21.7852 Y5.0576
+G1 X21.5230 Y5.0722
+G1 X21.2607 Y5.0868
+G1 X20.9985 Y5.1013
+G1 X20.7362 Y5.1159
+G1 X20.4740 Y5.1305
+G1 X20.2117 Y5.1451
+G1 X19.9494 Y5.1597
+G1 X19.6871 Y5.1742
+G1 X19.4248 Y5.1888
+G1 X19.1624 Y5.2034
+G1 X18.9001 Y5.2180
+G1 X18.6377 Y5.2326
+G1 X18.3754 Y5.2471
+G1 X18.1130 Y5.2617
+G1 X17.8506 Y5.2763
+G1 X17.5882 Y5.2909
+G1 X17.3258 Y5.3055
+G1 X17.0634 Y5.3200
+(Safe converted infill-to-infill connector to fill-infill path 61)
+G1 X16.9523 Y4.6528
+(fill-infill path 61, 42 points)
+G1 X17.2161 Y4.6382
+G1 X17.4798 Y4.6235
+G1 X17.7436 Y4.6088
+G1 X18.0073 Y4.5942
+G1 X18.2710 Y4.5795
+G1 X18.5347 Y4.5648
+G1 X18.7984 Y4.5502
+G1 X19.0621 Y4.5355
+G1 X19.3258 Y4.5208
+G1 X19.5895 Y4.5062
+G1 X19.8531 Y4.4915
+G1 X20.1168 Y4.4768
+G1 X20.3804 Y4.4622
+G1 X20.6441 Y4.4475
+G1 X20.9077 Y4.4328
+G1 X21.1713 Y4.4182
+G1 X21.4349 Y4.4035
+G1 X21.6985 Y4.3888
+G1 X21.9621 Y4.3742
+G1 X22.2257 Y4.3595
+G1 X22.4893 Y4.3448
+G1 X22.7529 Y4.3302
+G1 X23.0164 Y4.3155
+G1 X23.2800 Y4.3008
+G1 X23.5435 Y4.2862
+G1 X23.8070 Y4.2715
+G1 X24.0706 Y4.2568
+G1 X24.3341 Y4.2422
+G1 X24.5976 Y4.2275
+G1 X24.8611 Y4.2128
+G1 X25.1246 Y4.1982
+G1 X25.3880 Y4.1835
+G1 X25.6515 Y4.1688
+G1 X25.9150 Y4.1542
+G1 X26.1784 Y4.1395
+G1 X26.4419 Y4.1248
+G1 X26.7053 Y4.1102
+G1 X26.9688 Y4.0955
+G1 X27.2322 Y4.0808
+G1 X27.4956 Y4.0662
+G1 X27.7590 Y4.0515
+(Safe converted infill-to-infill connector to fill-infill path 62)
+G1 X27.6019 Y3.3867
+(fill-infill path 62, 39 points)
+G1 X27.3343 Y3.4016
+G1 X27.0667 Y3.4165
+G1 X26.7992 Y3.4314
+G1 X26.5316 Y3.4463
+G1 X26.2640 Y3.4612
+G1 X25.9964 Y3.4761
+G1 X25.7289 Y3.4910
+G1 X25.4613 Y3.5059
+G1 X25.1937 Y3.5208
+G1 X24.9260 Y3.5357
+G1 X24.6584 Y3.5506
+G1 X24.3908 Y3.5655
+G1 X24.1232 Y3.5804
+G1 X23.8555 Y3.5953
+G1 X23.5879 Y3.6102
+G1 X23.3202 Y3.6251
+G1 X23.0526 Y3.6400
+G1 X22.7849 Y3.6549
+G1 X22.5172 Y3.6698
+G1 X22.2495 Y3.6847
+G1 X21.9819 Y3.6996
+G1 X21.7142 Y3.7145
+G1 X21.4465 Y3.7294
+G1 X21.1787 Y3.7443
+G1 X20.9110 Y3.7592
+G1 X20.6433 Y3.7741
+G1 X20.3756 Y3.7891
+G1 X20.1078 Y3.8040
+G1 X19.8401 Y3.8189
+G1 X19.5723 Y3.8338
+G1 X19.3045 Y3.8487
+G1 X19.0368 Y3.8636
+G1 X18.7690 Y3.8785
+G1 X18.5012 Y3.8934
+G1 X18.2334 Y3.9083
+G1 X17.9656 Y3.9232
+G1 X17.6977 Y3.9381
+G1 X17.4299 Y3.9530
+(Safe converted infill-to-infill connector to fill-infill path 63)
+G1 X17.1965 Y3.2928
+(fill-infill path 63, 42 points)
+G1 X17.4618 Y3.2781
+G1 X17.7271 Y3.2633
+G1 X17.9923 Y3.2485
+G1 X18.2575 Y3.2338
+G1 X18.5228 Y3.2190
+G1 X18.7880 Y3.2042
+G1 X19.0532 Y3.1895
+G1 X19.3184 Y3.1747
+G1 X19.5836 Y3.1599
+G1 X19.8488 Y3.1452
+G1 X20.1140 Y3.1304
+G1 X20.3792 Y3.1156
+G1 X20.6444 Y3.1009
+G1 X20.9096 Y3.0861
+G1 X21.1748 Y3.0713
+G1 X21.4399 Y3.0565
+G1 X21.7051 Y3.0418
+G1 X21.9702 Y3.0270
+G1 X22.2354 Y3.0122
+G1 X22.5005 Y2.9975
+G1 X22.7657 Y2.9827
+G1 X23.0308 Y2.9679
+G1 X23.2959 Y2.9532
+G1 X23.5610 Y2.9384
+G1 X23.8262 Y2.9236
+G1 X24.0913 Y2.9089
+G1 X24.3564 Y2.8941
+G1 X24.6215 Y2.8793
+G1 X24.8866 Y2.8646
+G1 X25.1516 Y2.8498
+G1 X25.4167 Y2.8350
+G1 X25.6818 Y2.8203
+G1 X25.9469 Y2.8055
+G1 X26.2119 Y2.7907
+G1 X26.4770 Y2.7760
+G1 X26.7421 Y2.7612
+G1 X27.0071 Y2.7464
+G1 X27.2722 Y2.7317
+G1 X27.5372 Y2.7169
+G1 X27.8023 Y2.7021
+G1 X28.0673 Y2.6873
+(Safe converted infill-to-infill connector to fill-infill path 64)
+G1 X27.9309 Y2.0218
+(fill-infill path 64, 40 points)
+G1 X27.6692 Y2.0364
+G1 X27.4075 Y2.0509
+G1 X27.1458 Y2.0655
+G1 X26.8841 Y2.0801
+G1 X26.6224 Y2.0947
+G1 X26.3606 Y2.1093
+G1 X26.0989 Y2.1239
+G1 X25.8372 Y2.1384
+G1 X25.5754 Y2.1530
+G1 X25.3137 Y2.1676
+G1 X25.0520 Y2.1822
+G1 X24.7902 Y2.1968
+G1 X24.5285 Y2.2114
+G1 X24.2667 Y2.2260
+G1 X24.0050 Y2.2405
+G1 X23.7432 Y2.2551
+G1 X23.4814 Y2.2697
+G1 X23.2197 Y2.2843
+G1 X22.9579 Y2.2989
+G1 X22.6961 Y2.3135
+G1 X22.4343 Y2.3281
+G1 X22.1726 Y2.3426
+G1 X21.9108 Y2.3572
+G1 X21.6490 Y2.3718
+G1 X21.3872 Y2.3864
+G1 X21.1254 Y2.4010
+G1 X20.8636 Y2.4156
+G1 X20.6018 Y2.4302
+G1 X20.3400 Y2.4447
+G1 X20.0782 Y2.4593
+G1 X19.8163 Y2.4739
+G1 X19.5545 Y2.4885
+G1 X19.2927 Y2.5031
+G1 X19.0308 Y2.5177
+G1 X18.7690 Y2.5322
+G1 X18.5072 Y2.5468
+G1 X18.2453 Y2.5614
+G1 X17.9835 Y2.5760
+G1 X17.7216 Y2.5906
+(Safe converted infill-to-infill connector to fill-infill path 65)
+G1 X17.5509 Y1.9272
+(fill-infill path 65, 42 points)
+G1 X17.8151 Y1.9125
+G1 X18.0793 Y1.8978
+G1 X18.3434 Y1.8831
+G1 X18.6076 Y1.8683
+G1 X18.8718 Y1.8536
+G1 X19.1360 Y1.8389
+G1 X19.4001 Y1.8242
+G1 X19.6643 Y1.8095
+G1 X19.9285 Y1.7948
+G1 X20.1926 Y1.7800
+G1 X20.4568 Y1.7653
+G1 X20.7209 Y1.7506
+G1 X20.9851 Y1.7359
+G1 X21.2492 Y1.7212
+G1 X21.5134 Y1.7064
+G1 X21.7775 Y1.6917
+G1 X22.0417 Y1.6770
+G1 X22.3058 Y1.6623
+G1 X22.5699 Y1.6476
+G1 X22.8341 Y1.6328
+G1 X23.0982 Y1.6181
+G1 X23.3623 Y1.6034
+G1 X23.6265 Y1.5887
+G1 X23.8906 Y1.5740
+G1 X24.1547 Y1.5593
+G1 X24.4188 Y1.5445
+G1 X24.6829 Y1.5298
+G1 X24.9470 Y1.5151
+G1 X25.2112 Y1.5004
+G1 X25.4753 Y1.4857
+G1 X25.7394 Y1.4709
+G1 X26.0035 Y1.4562
+G1 X26.2676 Y1.4415
+G1 X26.5317 Y1.4268
+G1 X26.7958 Y1.4121
+G1 X27.0599 Y1.3974
+G1 X27.3240 Y1.3826
+G1 X27.5881 Y1.3679
+G1 X27.8522 Y1.3532
+G1 X28.1163 Y1.3385
+G1 X28.3804 Y1.3238
+(Safe converted infill-to-infill connector to fill-infill path 66)
+G1 X28.2452 Y0.6585
+(fill-infill path 66, 40 points)
+G1 X27.9831 Y0.6732
+G1 X27.7210 Y0.6878
+G1 X27.4589 Y0.7024
+G1 X27.1968 Y0.7170
+G1 X26.9346 Y0.7316
+G1 X26.6725 Y0.7462
+G1 X26.4104 Y0.7608
+G1 X26.1483 Y0.7754
+G1 X25.8862 Y0.7900
+G1 X25.6241 Y0.8046
+G1 X25.3620 Y0.8192
+G1 X25.0999 Y0.8338
+G1 X24.8378 Y0.8484
+G1 X24.5757 Y0.8630
+G1 X24.3136 Y0.8776
+G1 X24.0515 Y0.8922
+G1 X23.7893 Y0.9069
+G1 X23.5272 Y0.9215
+G1 X23.2651 Y0.9361
+G1 X23.0030 Y0.9507
+G1 X22.7409 Y0.9653
+G1 X22.4788 Y0.9799
+G1 X22.2167 Y0.9945
+G1 X21.9546 Y1.0091
+G1 X21.6924 Y1.0237
+G1 X21.4303 Y1.0383
+G1 X21.1682 Y1.0529
+G1 X20.9061 Y1.0675
+G1 X20.6440 Y1.0821
+G1 X20.3818 Y1.0967
+G1 X20.1197 Y1.1113
+G1 X19.8576 Y1.1259
+G1 X19.5955 Y1.1406
+G1 X19.3333 Y1.1552
+G1 X19.0712 Y1.1698
+G1 X18.8091 Y1.1844
+G1 X18.5470 Y1.1990
+G1 X18.2848 Y1.2136
+G1 X18.0227 Y1.2282
+(Safe converted infill-to-infill connector to fill-infill path 67)
+G1 X17.8641 Y0.5644
+(fill-infill path 67, 42 points)
+G1 X18.1283 Y0.5497
+G1 X18.3925 Y0.5350
+G1 X18.6568 Y0.5203
+G1 X18.9210 Y0.5055
+G1 X19.1852 Y0.4908
+G1 X19.4494 Y0.4761
+G1 X19.7137 Y0.4614
+G1 X19.9779 Y0.4466
+G1 X20.2421 Y0.4319
+G1 X20.5063 Y0.4172
+G1 X20.7706 Y0.4025
+G1 X21.0348 Y0.3878
+G1 X21.2990 Y0.3730
+G1 X21.5632 Y0.3583
+G1 X21.8275 Y0.3436
+G1 X22.0917 Y0.3289
+G1 X22.3559 Y0.3141
+G1 X22.6201 Y0.2994
+G1 X22.8844 Y0.2847
+G1 X23.1486 Y0.2700
+G1 X23.4128 Y0.2553
+G1 X23.6771 Y0.2405
+G1 X23.9413 Y0.2258
+G1 X24.2055 Y0.2111
+G1 X24.4698 Y0.1964
+G1 X24.7340 Y0.1816
+G1 X24.9982 Y0.1669
+G1 X25.2625 Y0.1522
+G1 X25.5267 Y0.1375
+G1 X25.7910 Y0.1228
+G1 X26.0552 Y0.1080
+G1 X26.3195 Y0.0933
+G1 X26.5837 Y0.0786
+G1 X26.8479 Y0.0639
+G1 X27.1122 Y0.0491
+G1 X27.3764 Y0.0344
+G1 X27.6407 Y0.0197
+G1 X27.9050 Y0.0050
+G1 X28.1692 Y-0.0097
+G1 X28.4335 Y-0.0245
+G1 X28.6977 Y-0.0392
+(Safe converted infill-to-infill connector to fill-infill path 68)
+G1 X28.6250 Y-0.7074
+(fill-infill path 68, 40 points)
+G1 X28.3617 Y-0.6928
+G1 X28.0984 Y-0.6781
+G1 X27.8352 Y-0.6635
+G1 X27.5719 Y-0.6488
+G1 X27.3087 Y-0.6341
+G1 X27.0454 Y-0.6195
+G1 X26.7822 Y-0.6048
+G1 X26.5189 Y-0.5902
+G1 X26.2557 Y-0.5755
+G1 X25.9924 Y-0.5608
+G1 X25.7292 Y-0.5462
+G1 X25.4660 Y-0.5315
+G1 X25.2027 Y-0.5168
+G1 X24.9395 Y-0.5022
+G1 X24.6763 Y-0.4875
+G1 X24.4131 Y-0.4729
+G1 X24.1498 Y-0.4582
+G1 X23.8866 Y-0.4435
+G1 X23.6234 Y-0.4289
+G1 X23.3602 Y-0.4142
+G1 X23.0970 Y-0.3996
+G1 X22.8338 Y-0.3849
+G1 X22.5706 Y-0.3702
+G1 X22.3074 Y-0.3556
+G1 X22.0442 Y-0.3409
+G1 X21.7810 Y-0.3263
+G1 X21.5178 Y-0.3116
+G1 X21.2546 Y-0.2969
+G1 X20.9914 Y-0.2823
+G1 X20.7282 Y-0.2676
+G1 X20.4650 Y-0.2529
+G1 X20.2018 Y-0.2383
+G1 X19.9386 Y-0.2236
+G1 X19.6755 Y-0.2090
+G1 X19.4123 Y-0.1943
+G1 X19.1491 Y-0.1796
+G1 X18.8859 Y-0.1650
+G1 X18.6228 Y-0.1503
+G1 X18.3596 Y-0.1357
+(Safe converted infill-to-infill connector to fill-infill path 69)
+G1 X18.1873 Y-0.7984
+(fill-infill path 69, 42 points)
+G1 X18.4530 Y-0.8132
+G1 X18.7188 Y-0.8280
+G1 X18.9845 Y-0.8428
+G1 X19.2503 Y-0.8576
+G1 X19.5161 Y-0.8724
+G1 X19.7818 Y-0.8872
+G1 X20.0476 Y-0.9020
+G1 X20.3134 Y-0.9168
+G1 X20.5791 Y-0.9316
+G1 X20.8449 Y-0.9464
+G1 X21.1107 Y-0.9612
+G1 X21.3765 Y-0.9760
+G1 X21.6423 Y-0.9908
+G1 X21.9081 Y-1.0056
+G1 X22.1739 Y-1.0204
+G1 X22.4397 Y-1.0352
+G1 X22.7055 Y-1.0500
+G1 X22.9713 Y-1.0648
+G1 X23.2372 Y-1.0796
+G1 X23.5030 Y-1.0944
+G1 X23.7688 Y-1.1092
+G1 X24.0346 Y-1.1240
+G1 X24.3005 Y-1.1388
+G1 X24.5663 Y-1.1536
+G1 X24.8322 Y-1.1684
+G1 X25.0980 Y-1.1832
+G1 X25.3639 Y-1.1980
+G1 X25.6297 Y-1.2128
+G1 X25.8956 Y-1.2276
+G1 X26.1614 Y-1.2424
+G1 X26.4273 Y-1.2572
+G1 X26.6932 Y-1.2720
+G1 X26.9591 Y-1.2868
+G1 X27.2250 Y-1.3016
+G1 X27.4908 Y-1.3164
+G1 X27.7567 Y-1.3312
+G1 X28.0226 Y-1.3460
+G1 X28.2885 Y-1.3608
+G1 X28.5545 Y-1.3756
+G1 X28.8204 Y-1.3904
+G1 X29.0863 Y-1.4052
+(Safe converted infill-to-infill connector to fill-infill path 70)
+G1 X28.9812 Y-2.0712
+(fill-infill path 70, 40 points)
+G1 X28.7164 Y-2.0565
+G1 X28.4515 Y-2.0417
+G1 X28.1866 Y-2.0270
+G1 X27.9217 Y-2.0123
+G1 X27.6568 Y-1.9975
+G1 X27.3920 Y-1.9828
+G1 X27.1271 Y-1.9681
+G1 X26.8623 Y-1.9533
+G1 X26.5975 Y-1.9386
+G1 X26.3326 Y-1.9239
+G1 X26.0678 Y-1.9091
+G1 X25.8030 Y-1.8944
+G1 X25.5382 Y-1.8797
+G1 X25.2733 Y-1.8649
+G1 X25.0085 Y-1.8502
+G1 X24.7438 Y-1.8355
+G1 X24.4790 Y-1.8207
+G1 X24.2142 Y-1.8060
+G1 X23.9494 Y-1.7913
+G1 X23.6846 Y-1.7765
+G1 X23.4199 Y-1.7618
+G1 X23.1551 Y-1.7471
+G1 X22.8903 Y-1.7323
+G1 X22.6256 Y-1.7176
+G1 X22.3608 Y-1.7029
+G1 X22.0961 Y-1.6881
+G1 X21.8314 Y-1.6734
+G1 X21.5667 Y-1.6587
+G1 X21.3019 Y-1.6439
+G1 X21.0372 Y-1.6292
+G1 X20.7725 Y-1.6145
+G1 X20.5078 Y-1.5997
+G1 X20.2431 Y-1.5850
+G1 X19.9784 Y-1.5703
+G1 X19.7137 Y-1.5555
+G1 X19.4490 Y-1.5408
+G1 X19.1843 Y-1.5261
+G1 X18.9197 Y-1.5113
+G1 X18.6550 Y-1.4966
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_035)
+(Travel to fill-infill path 71)
+G1 X16.3573 Y-1.3687 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_071 kind=fill-infill space=machine_deg source=component_002 points=180 max_surface_segment_mm=0.1000)
+(fill-infill path 71, 180 points)
+G1 X16.0890 Y-1.3538 F1200.000
+G1 X15.8207 Y-1.3388
+G1 X15.5524 Y-1.3239
+G1 X15.2841 Y-1.3089
+G1 X15.0158 Y-1.2940
+G1 X14.7475 Y-1.2791
+G1 X14.4792 Y-1.2641
+G1 X14.2110 Y-1.2492
+G1 X13.9427 Y-1.2343
+G1 X13.6744 Y-1.2193
+G1 X13.4062 Y-1.2044
+G1 X13.1379 Y-1.1894
+G1 X12.8696 Y-1.1745
+G1 X12.6014 Y-1.1596
+G1 X12.3331 Y-1.1446
+G1 X12.0649 Y-1.1297
+G1 X11.7966 Y-1.1147
+G1 X11.5284 Y-1.0998
+G1 X11.2602 Y-1.0849
+G1 X10.9919 Y-1.0699
+G1 X10.7237 Y-1.0550
+G1 X10.4555 Y-1.0401
+G1 X10.1872 Y-1.0251
+G1 X9.9190 Y-1.0102
+G1 X9.6508 Y-0.9952
+G1 X9.3826 Y-0.9803
+G1 X9.1144 Y-0.9654
+G1 X8.8462 Y-0.9504
+G1 X8.5780 Y-0.9355
+G1 X8.3098 Y-0.9206
+G1 X8.0416 Y-0.9056
+G1 X7.7734 Y-0.8907
+G1 X7.5052 Y-0.8757
+G1 X7.2370 Y-0.8608
+G1 X6.9688 Y-0.8459
+G1 X6.7006 Y-0.8309
+G1 X6.4324 Y-0.8160
+G1 X6.1642 Y-0.8010
+G1 X5.8961 Y-0.7861
+G1 X5.6279 Y-0.7712
+G1 X5.3597 Y-0.7562
+G1 X5.0915 Y-0.7413
+G1 X4.8234 Y-0.7264
+G1 X4.5552 Y-0.7114
+G1 X4.2870 Y-0.6965
+G1 X4.0189 Y-0.6815
+G1 X3.7507 Y-0.6666
+G1 X3.4826 Y-0.6517
+G1 X3.2144 Y-0.6367
+G1 X2.9462 Y-0.6218
+G1 X2.6781 Y-0.6069
+G1 X2.4099 Y-0.5919
+G1 X2.1418 Y-0.5770
+G1 X1.8736 Y-0.5620
+G1 X1.6055 Y-0.5471
+G1 X1.3373 Y-0.5322
+G1 X1.0692 Y-0.5172
+G1 X0.8011 Y-0.5023
+G1 X0.5329 Y-0.4873
+G1 X0.2648 Y-0.4724
+G1 X-0.0034 Y-0.4575
+G1 X-0.2715 Y-0.4425
+G1 X-0.5397 Y-0.4276
+G1 X-0.8078 Y-0.4127
+G1 X-1.0759 Y-0.3977
+G1 X-1.3441 Y-0.3828
+G1 X-1.6122 Y-0.3678
+G1 X-1.8803 Y-0.3529
+G1 X-2.1485 Y-0.3380
+G1 X-2.4166 Y-0.3230
+G1 X-2.6847 Y-0.3081
+G1 X-2.9529 Y-0.2932
+G1 X-3.2210 Y-0.2782
+G1 X-3.4891 Y-0.2633
+G1 X-3.7572 Y-0.2483
+G1 X-4.0254 Y-0.2334
+G1 X-4.2935 Y-0.2185
+G1 X-4.5616 Y-0.2035
+G1 X-4.8298 Y-0.1886
+G1 X-5.0979 Y-0.1737
+G1 X-5.3660 Y-0.1587
+G1 X-5.6342 Y-0.1438
+G1 X-5.9023 Y-0.1288
+G1 X-6.1704 Y-0.1139
+G1 X-6.4385 Y-0.0990
+G1 X-6.7067 Y-0.0840
+G1 X-6.9748 Y-0.0691
+G1 X-7.2429 Y-0.0541
+G1 X-7.5111 Y-0.0392
+G1 X-7.7792 Y-0.0243
+G1 X-8.0473 Y-0.0093
+G1 X-8.3154 Y0.0056
+G1 X-8.5836 Y0.0205
+G1 X-8.8517 Y0.0355
+G1 X-9.1198 Y0.0504
+G1 X-9.3880 Y0.0654
+G1 X-9.6561 Y0.0803
+G1 X-9.9242 Y0.0952
+G1 X-10.1924 Y0.1102
+G1 X-10.4605 Y0.1251
+G1 X-10.7287 Y0.1400
+G1 X-10.9968 Y0.1550
+G1 X-11.2649 Y0.1699
+G1 X-11.5331 Y0.1849
+G1 X-11.8012 Y0.1998
+G1 X-12.0694 Y0.2147
+G1 X-12.3375 Y0.2297
+G1 X-12.6057 Y0.2446
+G1 X-12.8738 Y0.2596
+G1 X-13.1420 Y0.2745
+G1 X-13.4101 Y0.2894
+G1 X-13.6783 Y0.3044
+G1 X-13.9464 Y0.3193
+G1 X-14.2146 Y0.3342
+G1 X-14.4827 Y0.3492
+G1 X-14.7509 Y0.3641
+G1 X-15.0191 Y0.3791
+G1 X-15.2872 Y0.3940
+G1 X-15.5554 Y0.4089
+G1 X-15.8236 Y0.4239
+G1 X-16.0917 Y0.4388
+G1 X-16.3599 Y0.4537
+G1 X-16.6281 Y0.4687
+G1 X-16.8963 Y0.4836
+G1 X-17.1644 Y0.4986
+G1 X-17.4326 Y0.5135
+G1 X-17.7008 Y0.5284
+G1 X-17.9690 Y0.5434
+G1 X-18.2372 Y0.5583
+G1 X-18.5054 Y0.5733
+G1 X-18.7736 Y0.5882
+G1 X-19.0418 Y0.6031
+G1 X-19.3100 Y0.6181
+G1 X-19.5782 Y0.6330
+G1 X-19.8464 Y0.6479
+G1 X-20.1146 Y0.6629
+G1 X-20.3828 Y0.6778
+G1 X-20.6510 Y0.6928
+G1 X-20.9192 Y0.7077
+G1 X-21.1874 Y0.7226
+G1 X-21.4557 Y0.7376
+G1 X-21.7239 Y0.7525
+G1 X-21.9921 Y0.7674
+G1 X-22.2604 Y0.7824
+G1 X-22.5286 Y0.7973
+G1 X-22.7968 Y0.8123
+G1 X-23.0651 Y0.8272
+G1 X-23.3333 Y0.8421
+G1 X-23.6016 Y0.8571
+G1 X-23.8698 Y0.8720
+G1 X-24.1381 Y0.8870
+G1 X-24.4064 Y0.9019
+G1 X-24.6746 Y0.9168
+G1 X-24.9429 Y0.9318
+G1 X-25.2112 Y0.9467
+G1 X-25.4794 Y0.9616
+G1 X-25.7477 Y0.9766
+G1 X-26.0160 Y0.9915
+G1 X-26.2843 Y1.0065
+G1 X-26.5526 Y1.0214
+G1 X-26.8209 Y1.0363
+G1 X-27.0892 Y1.0513
+G1 X-27.3575 Y1.0662
+G1 X-27.6258 Y1.0811
+G1 X-27.8941 Y1.0961
+G1 X-28.1625 Y1.1110
+G1 X-28.4308 Y1.1260
+G1 X-28.6991 Y1.1409
+G1 X-28.9675 Y1.1558
+G1 X-29.2358 Y1.1708
+G1 X-29.5041 Y1.1857
+G1 X-29.7725 Y1.2007
+G1 X-30.0409 Y1.2156
+G1 X-30.3092 Y1.2305
+G1 X-30.5776 Y1.2455
+G1 X-30.8459 Y1.2604
+G1 X-31.1143 Y1.2753
+G1 X-31.3827 Y1.2903
+G1 X-31.6511 Y1.3052
+(Safe converted infill-to-infill connector to fill-infill path 72)
+G1 X-31.6448 Y0.6328
+(fill-infill path 72, 229 points)
+G1 X-31.3769 Y0.6179
+G1 X-31.1089 Y0.6030
+G1 X-30.8410 Y0.5880
+G1 X-30.5731 Y0.5731
+G1 X-30.3052 Y0.5582
+G1 X-30.0373 Y0.5433
+G1 X-29.7694 Y0.5283
+G1 X-29.5014 Y0.5134
+G1 X-29.2335 Y0.4985
+G1 X-28.9656 Y0.4836
+G1 X-28.6977 Y0.4687
+G1 X-28.4299 Y0.4537
+G1 X-28.1620 Y0.4388
+G1 X-27.8941 Y0.4239
+G1 X-27.6262 Y0.4090
+G1 X-27.3583 Y0.3941
+G1 X-27.0904 Y0.3791
+G1 X-26.8225 Y0.3642
+G1 X-26.5547 Y0.3493
+G1 X-26.2868 Y0.3344
+G1 X-26.0189 Y0.3195
+G1 X-25.7511 Y0.3045
+G1 X-25.4832 Y0.2896
+G1 X-25.2153 Y0.2747
+G1 X-24.9475 Y0.2598
+G1 X-24.6796 Y0.2448
+G1 X-24.4118 Y0.2299
+G1 X-24.1439 Y0.2150
+G1 X-23.8761 Y0.2001
+G1 X-23.6082 Y0.1852
+G1 X-23.3404 Y0.1702
+G1 X-23.0725 Y0.1553
+G1 X-22.8047 Y0.1404
+G1 X-22.5368 Y0.1255
+G1 X-22.2690 Y0.1106
+G1 X-22.0012 Y0.0956
+G1 X-21.7333 Y0.0807
+G1 X-21.4655 Y0.0658
+G1 X-21.1976 Y0.0509
+G1 X-20.9298 Y0.0360
+G1 X-20.6620 Y0.0210
+G1 X-20.3942 Y0.0061
+G1 X-20.1263 Y-0.0088
+G1 X-19.8585 Y-0.0237
+G1 X-19.5907 Y-0.0387
+G1 X-19.3229 Y-0.0536
+G1 X-19.0550 Y-0.0685
+G1 X-18.7872 Y-0.0834
+G1 X-18.5194 Y-0.0983
+G1 X-18.2516 Y-0.1133
+G1 X-17.9838 Y-0.1282
+G1 X-17.7159 Y-0.1431
+G1 X-17.4481 Y-0.1580
+G1 X-17.1803 Y-0.1729
+G1 X-16.9125 Y-0.1879
+G1 X-16.6447 Y-0.2028
+G1 X-16.3769 Y-0.2177
+G1 X-16.1091 Y-0.2326
+G1 X-15.8413 Y-0.2475
+G1 X-15.5734 Y-0.2625
+G1 X-15.3056 Y-0.2774
+G1 X-15.0378 Y-0.2923
+G1 X-14.7700 Y-0.3072
+G1 X-14.5022 Y-0.3222
+G1 X-14.2344 Y-0.3371
+G1 X-13.9666 Y-0.3520
+G1 X-13.6988 Y-0.3669
+G1 X-13.4310 Y-0.3818
+G1 X-13.1632 Y-0.3968
+G1 X-12.8953 Y-0.4117
+G1 X-12.6275 Y-0.4266
+G1 X-12.3597 Y-0.4415
+G1 X-12.0919 Y-0.4564
+G1 X-11.8241 Y-0.4714
+G1 X-11.5563 Y-0.4863
+G1 X-11.2885 Y-0.5012
+G1 X-11.0207 Y-0.5161
+G1 X-10.7529 Y-0.5310
+G1 X-10.4851 Y-0.5460
+G1 X-10.2172 Y-0.5609
+G1 X-9.9494 Y-0.5758
+G1 X-9.6816 Y-0.5907
+G1 X-9.4138 Y-0.6057
+G1 X-9.1460 Y-0.6206
+G1 X-8.8782 Y-0.6355
+G1 X-8.6103 Y-0.6504
+G1 X-8.3425 Y-0.6653
+G1 X-8.0747 Y-0.6803
+G1 X-7.8069 Y-0.6952
+G1 X-7.5391 Y-0.7101
+G1 X-7.2712 Y-0.7250
+G1 X-7.0034 Y-0.7399
+G1 X-6.7356 Y-0.7549
+G1 X-6.4678 Y-0.7698
+G1 X-6.1999 Y-0.7847
+G1 X-5.9321 Y-0.7996
+G1 X-5.6643 Y-0.8146
+G1 X-5.3964 Y-0.8295
+G1 X-5.1286 Y-0.8444
+G1 X-4.8608 Y-0.8593
+G1 X-4.5929 Y-0.8742
+G1 X-4.3251 Y-0.8892
+G1 X-4.0572 Y-0.9041
+G1 X-3.7894 Y-0.9190
+G1 X-3.5215 Y-0.9339
+G1 X-3.2537 Y-0.9488
+G1 X-2.9859 Y-0.9638
+G1 X-2.7180 Y-0.9787
+G1 X-2.4501 Y-0.9936
+G1 X-2.1823 Y-1.0085
+G1 X-1.9144 Y-1.0234
+G1 X-1.6466 Y-1.0384
+G1 X-1.3787 Y-1.0533
+G1 X-1.1108 Y-1.0682
+G1 X-0.8430 Y-1.0831
+G1 X-0.5751 Y-1.0981
+G1 X-0.3072 Y-1.1130
+G1 X-0.0393 Y-1.1279
+G1 X0.2285 Y-1.1428
+G1 X0.4964 Y-1.1577
+G1 X0.7643 Y-1.1727
+G1 X1.0322 Y-1.1876
+G1 X1.3001 Y-1.2025
+G1 X1.5680 Y-1.2174
+G1 X1.8359 Y-1.2323
+G1 X2.1038 Y-1.2473
+G1 X2.3717 Y-1.2622
+G1 X2.6396 Y-1.2771
+G1 X2.9075 Y-1.2920
+G1 X3.1754 Y-1.3069
+G1 X3.4433 Y-1.3219
+G1 X3.7112 Y-1.3368
+G1 X3.9792 Y-1.3517
+G1 X4.2471 Y-1.3666
+G1 X4.5150 Y-1.3816
+G1 X4.7830 Y-1.3965
+G1 X5.0509 Y-1.4114
+G1 X5.3188 Y-1.4263
+G1 X5.5868 Y-1.4412
+G1 X5.8547 Y-1.4562
+G1 X6.1227 Y-1.4711
+G1 X6.3907 Y-1.4860
+G1 X6.6586 Y-1.5009
+G1 X6.9266 Y-1.5158
+G1 X7.1946 Y-1.5308
+G1 X7.4625 Y-1.5457
+G1 X7.7305 Y-1.5606
+G1 X7.9985 Y-1.5755
+G1 X8.2665 Y-1.5904
+G1 X8.5345 Y-1.6054
+G1 X8.8025 Y-1.6203
+G1 X9.0705 Y-1.6352
+G1 X9.3385 Y-1.6501
+G1 X9.6065 Y-1.6651
+G1 X9.8745 Y-1.6800
+G1 X10.1425 Y-1.6949
+G1 X10.4105 Y-1.7098
+G1 X10.6786 Y-1.7247
+G1 X10.9466 Y-1.7397
+G1 X11.2146 Y-1.7546
+G1 X11.4827 Y-1.7695
+G1 X11.7507 Y-1.7844
+G1 X12.0188 Y-1.7993
+G1 X12.2868 Y-1.8143
+G1 X12.5549 Y-1.8292
+G1 X12.8230 Y-1.8441
+G1 X13.0911 Y-1.8590
+G1 X13.3591 Y-1.8739
+G1 X13.6272 Y-1.8889
+G1 X13.8953 Y-1.9038
+G1 X14.1634 Y-1.9187
+G1 X14.4315 Y-1.9336
+G1 X14.6996 Y-1.9486
+G1 X14.9677 Y-1.9635
+G1 X15.2359 Y-1.9784
+G1 X15.5040 Y-1.9933
+G1 X15.7721 Y-2.0082
+G1 X16.0403 Y-2.0232
+G1 X16.3084 Y-2.0381
+G1 X16.5766 Y-2.0530
+G1 X16.8447 Y-2.0679
+G1 X17.1129 Y-2.0828
+G1 X17.3810 Y-2.0978
+G1 X17.6492 Y-2.1127
+G1 X17.9174 Y-2.1276
+G1 X18.1856 Y-2.1425
+G1 X18.4538 Y-2.1574
+G1 X18.7220 Y-2.1724
+G1 X18.9902 Y-2.1873
+G1 X19.2584 Y-2.2022
+G1 X19.5266 Y-2.2171
+G1 X19.7949 Y-2.2321
+G1 X20.0631 Y-2.2470
+G1 X20.3313 Y-2.2619
+G1 X20.5996 Y-2.2768
+G1 X20.8678 Y-2.2917
+G1 X21.1361 Y-2.3067
+G1 X21.4044 Y-2.3216
+G1 X21.6726 Y-2.3365
+G1 X21.9409 Y-2.3514
+G1 X22.2092 Y-2.3663
+G1 X22.4775 Y-2.3813
+G1 X22.7458 Y-2.3962
+G1 X23.0141 Y-2.4111
+G1 X23.2824 Y-2.4260
+G1 X23.5508 Y-2.4409
+G1 X23.8191 Y-2.4559
+G1 X24.0875 Y-2.4708
+G1 X24.3558 Y-2.4857
+G1 X24.6242 Y-2.5006
+G1 X24.8925 Y-2.5156
+G1 X25.1609 Y-2.5305
+G1 X25.4293 Y-2.5454
+G1 X25.6977 Y-2.5603
+G1 X25.9661 Y-2.5752
+G1 X26.2345 Y-2.5902
+G1 X26.5029 Y-2.6051
+G1 X26.7713 Y-2.6200
+G1 X27.0397 Y-2.6349
+G1 X27.3082 Y-2.6498
+G1 X27.5766 Y-2.6648
+G1 X27.8451 Y-2.6797
+G1 X28.1135 Y-2.6946
+G1 X28.3820 Y-2.7095
+G1 X28.6505 Y-2.7244
+G1 X28.9190 Y-2.7394
+G1 X29.1875 Y-2.7543
+G1 X29.4560 Y-2.7692
+(Safe converted infill-to-infill connector to fill-infill path 73)
+G1 X29.3468 Y-3.4345
+(fill-infill path 73, 228 points)
+G1 X29.0787 Y-3.4197
+G1 X28.8107 Y-3.4048
+G1 X28.5426 Y-3.3899
+G1 X28.2746 Y-3.3750
+G1 X28.0065 Y-3.3601
+G1 X27.7385 Y-3.3452
+G1 X27.4704 Y-3.3304
+G1 X27.2024 Y-3.3155
+G1 X26.9344 Y-3.3006
+G1 X26.6664 Y-3.2857
+G1 X26.3984 Y-3.2708
+G1 X26.1305 Y-3.2559
+G1 X25.8625 Y-3.2410
+G1 X25.5945 Y-3.2262
+G1 X25.3266 Y-3.2113
+G1 X25.0587 Y-3.1964
+G1 X24.7907 Y-3.1815
+G1 X24.5228 Y-3.1666
+G1 X24.2549 Y-3.1517
+G1 X23.9870 Y-3.1369
+G1 X23.7191 Y-3.1220
+G1 X23.4512 Y-3.1071
+G1 X23.1834 Y-3.0922
+G1 X22.9155 Y-3.0773
+G1 X22.6476 Y-3.0624
+G1 X22.3798 Y-3.0476
+G1 X22.1120 Y-3.0327
+G1 X21.8441 Y-3.0178
+G1 X21.5763 Y-3.0029
+G1 X21.3085 Y-2.9880
+G1 X21.0407 Y-2.9731
+G1 X20.7729 Y-2.9583
+G1 X20.5051 Y-2.9434
+G1 X20.2374 Y-2.9285
+G1 X19.9696 Y-2.9136
+G1 X19.7018 Y-2.8987
+G1 X19.4341 Y-2.8838
+G1 X19.1663 Y-2.8690
+G1 X18.8986 Y-2.8541
+G1 X18.6309 Y-2.8392
+G1 X18.3632 Y-2.8243
+G1 X18.0954 Y-2.8094
+G1 X17.8277 Y-2.7945
+G1 X17.5601 Y-2.7797
+G1 X17.2924 Y-2.7648
+G1 X17.0247 Y-2.7499
+G1 X16.7570 Y-2.7350
+G1 X16.4894 Y-2.7201
+G1 X16.2217 Y-2.7052
+G1 X15.9541 Y-2.6904
+G1 X15.6864 Y-2.6755
+G1 X15.4188 Y-2.6606
+G1 X15.1512 Y-2.6457
+G1 X14.8835 Y-2.6308
+G1 X14.6159 Y-2.6159
+G1 X14.3483 Y-2.6011
+G1 X14.0807 Y-2.5862
+G1 X13.8132 Y-2.5713
+G1 X13.5456 Y-2.5564
+G1 X13.2780 Y-2.5415
+G1 X13.0104 Y-2.5266
+G1 X12.7429 Y-2.5118
+G1 X12.4753 Y-2.4969
+G1 X12.2078 Y-2.4820
+G1 X11.9402 Y-2.4671
+G1 X11.6727 Y-2.4522
+G1 X11.4052 Y-2.4373
+G1 X11.1377 Y-2.4225
+G1 X10.8702 Y-2.4076
+G1 X10.6027 Y-2.3927
+G1 X10.3352 Y-2.3778
+G1 X10.0677 Y-2.3629
+G1 X9.8002 Y-2.3480
+G1 X9.5327 Y-2.3332
+G1 X9.2652 Y-2.3183
+G1 X8.9978 Y-2.3034
+G1 X8.7303 Y-2.2885
+G1 X8.4629 Y-2.2736
+G1 X8.1954 Y-2.2587
+G1 X7.9280 Y-2.2439
+G1 X7.6605 Y-2.2290
+G1 X7.3931 Y-2.2141
+G1 X7.1257 Y-2.1992
+G1 X6.8583 Y-2.1843
+G1 X6.5908 Y-2.1694
+G1 X6.3234 Y-2.1545
+G1 X6.0560 Y-2.1397
+G1 X5.7886 Y-2.1248
+G1 X5.5213 Y-2.1099
+G1 X5.2539 Y-2.0950
+G1 X4.9865 Y-2.0801
+G1 X4.7191 Y-2.0652
+G1 X4.4517 Y-2.0504
+G1 X4.1844 Y-2.0355
+G1 X3.9170 Y-2.0206
+G1 X3.6497 Y-2.0057
+G1 X3.3823 Y-1.9908
+G1 X3.1150 Y-1.9759
+G1 X2.8476 Y-1.9611
+G1 X2.5803 Y-1.9462
+G1 X2.3130 Y-1.9313
+G1 X2.0457 Y-1.9164
+G1 X1.7783 Y-1.9015
+G1 X1.5110 Y-1.8866
+G1 X1.2437 Y-1.8718
+G1 X0.9764 Y-1.8569
+G1 X0.7091 Y-1.8420
+G1 X0.4418 Y-1.8271
+G1 X0.1745 Y-1.8122
+G1 X-0.0928 Y-1.7973
+G1 X-0.3600 Y-1.7825
+G1 X-0.6273 Y-1.7676
+G1 X-0.8946 Y-1.7527
+G1 X-1.1619 Y-1.7378
+G1 X-1.4291 Y-1.7229
+G1 X-1.6964 Y-1.7080
+G1 X-1.9636 Y-1.6932
+G1 X-2.2309 Y-1.6783
+G1 X-2.4981 Y-1.6634
+G1 X-2.7654 Y-1.6485
+G1 X-3.0326 Y-1.6336
+G1 X-3.2999 Y-1.6187
+G1 X-3.5671 Y-1.6039
+G1 X-3.8343 Y-1.5890
+G1 X-4.1015 Y-1.5741
+G1 X-4.3688 Y-1.5592
+G1 X-4.6360 Y-1.5443
+G1 X-4.9032 Y-1.5294
+G1 X-5.1704 Y-1.5146
+G1 X-5.4376 Y-1.4997
+G1 X-5.7048 Y-1.4848
+G1 X-5.9720 Y-1.4699
+G1 X-6.2392 Y-1.4550
+G1 X-6.5064 Y-1.4401
+G1 X-6.7736 Y-1.4253
+G1 X-7.0408 Y-1.4104
+G1 X-7.3080 Y-1.3955
+G1 X-7.5752 Y-1.3806
+G1 X-7.8424 Y-1.3657
+G1 X-8.1095 Y-1.3508
+G1 X-8.3767 Y-1.3360
+G1 X-8.6439 Y-1.3211
+G1 X-8.9111 Y-1.3062
+G1 X-9.1782 Y-1.2913
+G1 X-9.4454 Y-1.2764
+G1 X-9.7126 Y-1.2615
+G1 X-9.9797 Y-1.2467
+G1 X-10.2469 Y-1.2318
+G1 X-10.5140 Y-1.2169
+G1 X-10.7812 Y-1.2020
+G1 X-11.0483 Y-1.1871
+G1 X-11.3155 Y-1.1722
+G1 X-11.5826 Y-1.1574
+G1 X-11.8498 Y-1.1425
+G1 X-12.1169 Y-1.1276
+G1 X-12.3841 Y-1.1127
+G1 X-12.6512 Y-1.0978
+G1 X-12.9184 Y-1.0829
+G1 X-13.1855 Y-1.0680
+G1 X-13.4526 Y-1.0532
+G1 X-13.7198 Y-1.0383
+G1 X-13.9869 Y-1.0234
+G1 X-14.2540 Y-1.0085
+G1 X-14.5211 Y-0.9936
+G1 X-14.7883 Y-0.9787
+G1 X-15.0554 Y-0.9639
+G1 X-15.3225 Y-0.9490
+G1 X-15.5896 Y-0.9341
+G1 X-15.8568 Y-0.9192
+G1 X-16.1239 Y-0.9043
+G1 X-16.3910 Y-0.8894
+G1 X-16.6581 Y-0.8746
+G1 X-16.9252 Y-0.8597
+G1 X-17.1924 Y-0.8448
+G1 X-17.4595 Y-0.8299
+G1 X-17.7266 Y-0.8150
+G1 X-17.9937 Y-0.8001
+G1 X-18.2608 Y-0.7853
+G1 X-18.5279 Y-0.7704
+G1 X-18.7950 Y-0.7555
+G1 X-19.0622 Y-0.7406
+G1 X-19.3293 Y-0.7257
+G1 X-19.5964 Y-0.7108
+G1 X-19.8635 Y-0.6960
+G1 X-20.1306 Y-0.6811
+G1 X-20.3977 Y-0.6662
+G1 X-20.6648 Y-0.6513
+G1 X-20.9319 Y-0.6364
+G1 X-21.1990 Y-0.6215
+G1 X-21.4661 Y-0.6067
+G1 X-21.7333 Y-0.5918
+G1 X-22.0004 Y-0.5769
+G1 X-22.2675 Y-0.5620
+G1 X-22.5346 Y-0.5471
+G1 X-22.8017 Y-0.5322
+G1 X-23.0688 Y-0.5174
+G1 X-23.3359 Y-0.5025
+G1 X-23.6030 Y-0.4876
+G1 X-23.8701 Y-0.4727
+G1 X-24.1372 Y-0.4578
+G1 X-24.4044 Y-0.4429
+G1 X-24.6715 Y-0.4281
+G1 X-24.9386 Y-0.4132
+G1 X-25.2057 Y-0.3983
+G1 X-25.4728 Y-0.3834
+G1 X-25.7399 Y-0.3685
+G1 X-26.0070 Y-0.3536
+G1 X-26.2742 Y-0.3388
+G1 X-26.5413 Y-0.3239
+G1 X-26.8084 Y-0.3090
+G1 X-27.0755 Y-0.2941
+G1 X-27.3426 Y-0.2792
+G1 X-27.6098 Y-0.2643
+G1 X-27.8769 Y-0.2495
+G1 X-28.1440 Y-0.2346
+G1 X-28.4111 Y-0.2197
+G1 X-28.6783 Y-0.2048
+G1 X-28.9454 Y-0.1899
+G1 X-29.2125 Y-0.1750
+G1 X-29.4796 Y-0.1602
+G1 X-29.7468 Y-0.1453
+G1 X-30.0139 Y-0.1304
+G1 X-30.2811 Y-0.1155
+G1 X-30.5482 Y-0.1006
+G1 X-30.8153 Y-0.0857
+G1 X-31.0825 Y-0.0709
+G1 X-31.3496 Y-0.0560
+(Safe converted infill-to-infill connector to fill-infill path 74)
+G1 X-31.6453 Y-0.7121
+(fill-infill path 74, 231 points)
+G1 X-31.3783 Y-0.7269
+G1 X-31.1113 Y-0.7418
+G1 X-30.8443 Y-0.7567
+G1 X-30.5773 Y-0.7716
+G1 X-30.3103 Y-0.7865
+G1 X-30.0433 Y-0.8013
+G1 X-29.7763 Y-0.8162
+G1 X-29.5093 Y-0.8311
+G1 X-29.2423 Y-0.8460
+G1 X-28.9753 Y-0.8609
+G1 X-28.7083 Y-0.8757
+G1 X-28.4413 Y-0.8906
+G1 X-28.1743 Y-0.9055
+G1 X-27.9073 Y-0.9204
+G1 X-27.6403 Y-0.9352
+G1 X-27.3733 Y-0.9501
+G1 X-27.1063 Y-0.9650
+G1 X-26.8393 Y-0.9799
+G1 X-26.5722 Y-0.9948
+G1 X-26.3052 Y-1.0096
+G1 X-26.0382 Y-1.0245
+G1 X-25.7712 Y-1.0394
+G1 X-25.5042 Y-1.0543
+G1 X-25.2372 Y-1.0692
+G1 X-24.9702 Y-1.0840
+G1 X-24.7032 Y-1.0989
+G1 X-24.4362 Y-1.1138
+G1 X-24.1692 Y-1.1287
+G1 X-23.9021 Y-1.1436
+G1 X-23.6351 Y-1.1584
+G1 X-23.3681 Y-1.1733
+G1 X-23.1011 Y-1.1882
+G1 X-22.8341 Y-1.2031
+G1 X-22.5670 Y-1.2180
+G1 X-22.3000 Y-1.2328
+G1 X-22.0330 Y-1.2477
+G1 X-21.7660 Y-1.2626
+G1 X-21.4989 Y-1.2775
+G1 X-21.2319 Y-1.2924
+G1 X-20.9649 Y-1.3072
+G1 X-20.6979 Y-1.3221
+G1 X-20.4308 Y-1.3370
+G1 X-20.1638 Y-1.3519
+G1 X-19.8967 Y-1.3668
+G1 X-19.6297 Y-1.3816
+G1 X-19.3627 Y-1.3965
+G1 X-19.0956 Y-1.4114
+G1 X-18.8286 Y-1.4263
+G1 X-18.5615 Y-1.4412
+G1 X-18.2945 Y-1.4560
+G1 X-18.0274 Y-1.4709
+G1 X-17.7604 Y-1.4858
+G1 X-17.4933 Y-1.5007
+G1 X-17.2262 Y-1.5156
+G1 X-16.9592 Y-1.5304
+G1 X-16.6921 Y-1.5453
+G1 X-16.4250 Y-1.5602
+G1 X-16.1580 Y-1.5751
+G1 X-15.8909 Y-1.5900
+G1 X-15.6238 Y-1.6048
+G1 X-15.3567 Y-1.6197
+G1 X-15.0897 Y-1.6346
+G1 X-14.8226 Y-1.6495
+G1 X-14.5555 Y-1.6644
+G1 X-14.2884 Y-1.6792
+G1 X-14.0213 Y-1.6941
+G1 X-13.7542 Y-1.7090
+G1 X-13.4871 Y-1.7239
+G1 X-13.2200 Y-1.7388
+G1 X-12.9529 Y-1.7536
+G1 X-12.6858 Y-1.7685
+G1 X-12.4187 Y-1.7834
+G1 X-12.1516 Y-1.7983
+G1 X-11.8844 Y-1.8132
+G1 X-11.6173 Y-1.8280
+G1 X-11.3502 Y-1.8429
+G1 X-11.0831 Y-1.8578
+G1 X-10.8159 Y-1.8727
+G1 X-10.5488 Y-1.8876
+G1 X-10.2816 Y-1.9024
+G1 X-10.0145 Y-1.9173
+G1 X-9.7473 Y-1.9322
+G1 X-9.4802 Y-1.9471
+G1 X-9.2130 Y-1.9620
+G1 X-8.9459 Y-1.9768
+G1 X-8.6787 Y-1.9917
+G1 X-8.4115 Y-2.0066
+G1 X-8.1444 Y-2.0215
+G1 X-7.8772 Y-2.0364
+G1 X-7.6100 Y-2.0512
+G1 X-7.3428 Y-2.0661
+G1 X-7.0756 Y-2.0810
+G1 X-6.8084 Y-2.0959
+G1 X-6.5412 Y-2.1108
+G1 X-6.2740 Y-2.1256
+G1 X-6.0068 Y-2.1405
+G1 X-5.7396 Y-2.1554
+G1 X-5.4723 Y-2.1703
+G1 X-5.2051 Y-2.1852
+G1 X-4.9379 Y-2.2000
+G1 X-4.6706 Y-2.2149
+G1 X-4.4034 Y-2.2298
+G1 X-4.1362 Y-2.2447
+G1 X-3.8689 Y-2.2596
+G1 X-3.6017 Y-2.2744
+G1 X-3.3344 Y-2.2893
+G1 X-3.0671 Y-2.3042
+G1 X-2.7998 Y-2.3191
+G1 X-2.5326 Y-2.3340
+G1 X-2.2653 Y-2.3488
+G1 X-1.9980 Y-2.3637
+G1 X-1.7307 Y-2.3786
+G1 X-1.4634 Y-2.3935
+G1 X-1.1961 Y-2.4084
+G1 X-0.9288 Y-2.4232
+G1 X-0.6615 Y-2.4381
+G1 X-0.3941 Y-2.4530
+G1 X-0.1268 Y-2.4679
+G1 X0.1405 Y-2.4828
+G1 X0.4079 Y-2.4976
+G1 X0.6752 Y-2.5125
+G1 X0.9426 Y-2.5274
+G1 X1.2099 Y-2.5423
+G1 X1.4773 Y-2.5572
+G1 X1.7447 Y-2.5720
+G1 X2.0120 Y-2.5869
+G1 X2.2794 Y-2.6018
+G1 X2.5468 Y-2.6167
+G1 X2.8142 Y-2.6316
+G1 X3.0816 Y-2.6464
+G1 X3.3490 Y-2.6613
+G1 X3.6165 Y-2.6762
+G1 X3.8839 Y-2.6911
+G1 X4.1513 Y-2.7060
+G1 X4.4188 Y-2.7208
+G1 X4.6862 Y-2.7357
+G1 X4.9537 Y-2.7506
+G1 X5.2211 Y-2.7655
+G1 X5.4886 Y-2.7804
+G1 X5.7561 Y-2.7952
+G1 X6.0235 Y-2.8101
+G1 X6.2910 Y-2.8250
+G1 X6.5585 Y-2.8399
+G1 X6.8260 Y-2.8547
+G1 X7.0935 Y-2.8696
+G1 X7.3611 Y-2.8845
+G1 X7.6286 Y-2.8994
+G1 X7.8961 Y-2.9143
+G1 X8.1637 Y-2.9291
+G1 X8.4312 Y-2.9440
+G1 X8.6988 Y-2.9589
+G1 X8.9663 Y-2.9738
+G1 X9.2339 Y-2.9887
+G1 X9.5015 Y-3.0035
+G1 X9.7691 Y-3.0184
+G1 X10.0367 Y-3.0333
+G1 X10.3043 Y-3.0482
+G1 X10.5719 Y-3.0631
+G1 X10.8395 Y-3.0779
+G1 X11.1071 Y-3.0928
+G1 X11.3747 Y-3.1077
+G1 X11.6424 Y-3.1226
+G1 X11.9100 Y-3.1375
+G1 X12.1777 Y-3.1523
+G1 X12.4454 Y-3.1672
+G1 X12.7131 Y-3.1821
+G1 X12.9807 Y-3.1970
+G1 X13.2484 Y-3.2119
+G1 X13.5161 Y-3.2267
+G1 X13.7839 Y-3.2416
+G1 X14.0516 Y-3.2565
+G1 X14.3193 Y-3.2714
+G1 X14.5870 Y-3.2863
+G1 X14.8548 Y-3.3011
+G1 X15.1225 Y-3.3160
+G1 X15.3903 Y-3.3309
+G1 X15.6581 Y-3.3458
+G1 X15.9259 Y-3.3607
+G1 X16.1937 Y-3.3755
+G1 X16.4615 Y-3.3904
+G1 X16.7293 Y-3.4053
+G1 X16.9971 Y-3.4202
+G1 X17.2649 Y-3.4351
+G1 X17.5328 Y-3.4499
+G1 X17.8006 Y-3.4648
+G1 X18.0685 Y-3.4797
+G1 X18.3364 Y-3.4946
+G1 X18.6042 Y-3.5095
+G1 X18.8721 Y-3.5243
+G1 X19.1400 Y-3.5392
+G1 X19.4079 Y-3.5541
+G1 X19.6759 Y-3.5690
+G1 X19.9438 Y-3.5839
+G1 X20.2117 Y-3.5987
+G1 X20.4797 Y-3.6136
+G1 X20.7476 Y-3.6285
+G1 X21.0156 Y-3.6434
+G1 X21.2836 Y-3.6583
+G1 X21.5516 Y-3.6731
+G1 X21.8196 Y-3.6880
+G1 X22.0876 Y-3.7029
+G1 X22.3556 Y-3.7178
+G1 X22.6236 Y-3.7327
+G1 X22.8917 Y-3.7475
+G1 X23.1597 Y-3.7624
+G1 X23.4278 Y-3.7773
+G1 X23.6959 Y-3.7922
+G1 X23.9640 Y-3.8071
+G1 X24.2321 Y-3.8219
+G1 X24.5002 Y-3.8368
+G1 X24.7683 Y-3.8517
+G1 X25.0364 Y-3.8666
+G1 X25.3046 Y-3.8815
+G1 X25.5727 Y-3.8963
+G1 X25.8409 Y-3.9112
+G1 X26.1090 Y-3.9261
+G1 X26.3772 Y-3.9410
+G1 X26.6454 Y-3.9559
+G1 X26.9136 Y-3.9707
+G1 X27.1819 Y-3.9856
+G1 X27.4501 Y-4.0005
+G1 X27.7183 Y-4.0154
+G1 X27.9866 Y-4.0303
+G1 X28.2548 Y-4.0451
+G1 X28.5231 Y-4.0600
+G1 X28.7914 Y-4.0749
+G1 X29.0597 Y-4.0898
+G1 X29.3280 Y-4.1047
+G1 X29.5964 Y-4.1195
+G1 X29.8647 Y-4.1344
+(Safe converted infill-to-infill connector to fill-infill path 75)
+G1 X29.7186 Y-4.7972
+(fill-infill path 75, 229 points)
+G1 X29.4497 Y-4.7823
+G1 X29.1807 Y-4.7674
+G1 X28.9118 Y-4.7525
+G1 X28.6429 Y-4.7376
+G1 X28.3739 Y-4.7228
+G1 X28.1050 Y-4.7079
+G1 X27.8362 Y-4.6930
+G1 X27.5673 Y-4.6781
+G1 X27.2984 Y-4.6632
+G1 X27.0296 Y-4.6483
+G1 X26.7607 Y-4.6334
+G1 X26.4919 Y-4.6185
+G1 X26.2231 Y-4.6036
+G1 X25.9543 Y-4.5887
+G1 X25.6855 Y-4.5738
+G1 X25.4168 Y-4.5589
+G1 X25.1480 Y-4.5440
+G1 X24.8793 Y-4.5291
+G1 X24.6105 Y-4.5142
+G1 X24.3418 Y-4.4993
+G1 X24.0731 Y-4.4844
+G1 X23.8044 Y-4.4695
+G1 X23.5357 Y-4.4546
+G1 X23.2671 Y-4.4397
+G1 X22.9984 Y-4.4248
+G1 X22.7298 Y-4.4099
+G1 X22.4612 Y-4.3950
+G1 X22.1925 Y-4.3801
+G1 X21.9239 Y-4.3652
+G1 X21.6553 Y-4.3503
+G1 X21.3868 Y-4.3354
+G1 X21.1182 Y-4.3205
+G1 X20.8496 Y-4.3056
+G1 X20.5811 Y-4.2907
+G1 X20.3125 Y-4.2759
+G1 X20.0440 Y-4.2610
+G1 X19.7755 Y-4.2461
+G1 X19.5070 Y-4.2312
+G1 X19.2385 Y-4.2163
+G1 X18.9701 Y-4.2014
+G1 X18.7016 Y-4.1865
+G1 X18.4331 Y-4.1716
+G1 X18.1647 Y-4.1567
+G1 X17.8963 Y-4.1418
+G1 X17.6279 Y-4.1269
+G1 X17.3594 Y-4.1120
+G1 X17.0910 Y-4.0971
+G1 X16.8227 Y-4.0822
+G1 X16.5543 Y-4.0673
+G1 X16.2859 Y-4.0524
+G1 X16.0176 Y-4.0375
+G1 X15.7492 Y-4.0226
+G1 X15.4809 Y-4.0077
+G1 X15.2126 Y-3.9928
+G1 X14.9443 Y-3.9779
+G1 X14.6760 Y-3.9630
+G1 X14.4077 Y-3.9481
+G1 X14.1394 Y-3.9332
+G1 X13.8712 Y-3.9183
+G1 X13.6029 Y-3.9034
+G1 X13.3347 Y-3.8885
+G1 X13.0664 Y-3.8736
+G1 X12.7982 Y-3.8587
+G1 X12.5300 Y-3.8439
+G1 X12.2618 Y-3.8290
+G1 X11.9936 Y-3.8141
+G1 X11.7254 Y-3.7992
+G1 X11.4572 Y-3.7843
+G1 X11.1891 Y-3.7694
+G1 X10.9209 Y-3.7545
+G1 X10.6528 Y-3.7396
+G1 X10.3846 Y-3.7247
+G1 X10.1165 Y-3.7098
+G1 X9.8484 Y-3.6949
+G1 X9.5803 Y-3.6800
+G1 X9.3122 Y-3.6651
+G1 X9.0441 Y-3.6502
+G1 X8.7760 Y-3.6353
+G1 X8.5080 Y-3.6204
+G1 X8.2399 Y-3.6055
+G1 X7.9719 Y-3.5906
+G1 X7.7038 Y-3.5757
+G1 X7.4358 Y-3.5608
+G1 X7.1678 Y-3.5459
+G1 X6.8998 Y-3.5310
+G1 X6.6318 Y-3.5161
+G1 X6.3638 Y-3.5012
+G1 X6.0958 Y-3.4863
+G1 X5.8278 Y-3.4714
+G1 X5.5599 Y-3.4565
+G1 X5.2919 Y-3.4416
+G1 X5.0240 Y-3.4267
+G1 X4.7560 Y-3.4119
+G1 X4.4881 Y-3.3970
+G1 X4.2202 Y-3.3821
+G1 X3.9522 Y-3.3672
+G1 X3.6843 Y-3.3523
+G1 X3.4164 Y-3.3374
+G1 X3.1486 Y-3.3225
+G1 X2.8807 Y-3.3076
+G1 X2.6128 Y-3.2927
+G1 X2.3449 Y-3.2778
+G1 X2.0771 Y-3.2629
+G1 X1.8092 Y-3.2480
+G1 X1.5414 Y-3.2331
+G1 X1.2736 Y-3.2182
+G1 X1.0057 Y-3.2033
+G1 X0.7379 Y-3.1884
+G1 X0.4701 Y-3.1735
+G1 X0.2023 Y-3.1586
+G1 X-0.0655 Y-3.1437
+G1 X-0.3333 Y-3.1288
+G1 X-0.6010 Y-3.1139
+G1 X-0.8688 Y-3.0990
+G1 X-1.1366 Y-3.0841
+G1 X-1.4043 Y-3.0692
+G1 X-1.6721 Y-3.0543
+G1 X-1.9398 Y-3.0394
+G1 X-2.2075 Y-3.0245
+G1 X-2.4753 Y-3.0096
+G1 X-2.7430 Y-2.9947
+G1 X-3.0107 Y-2.9799
+G1 X-3.2784 Y-2.9650
+G1 X-3.5461 Y-2.9501
+G1 X-3.8138 Y-2.9352
+G1 X-4.0815 Y-2.9203
+G1 X-4.3491 Y-2.9054
+G1 X-4.6168 Y-2.8905
+G1 X-4.8845 Y-2.8756
+G1 X-5.1521 Y-2.8607
+G1 X-5.4198 Y-2.8458
+G1 X-5.6874 Y-2.8309
+G1 X-5.9551 Y-2.8160
+G1 X-6.2227 Y-2.8011
+G1 X-6.4903 Y-2.7862
+G1 X-6.7579 Y-2.7713
+G1 X-7.0256 Y-2.7564
+G1 X-7.2932 Y-2.7415
+G1 X-7.5608 Y-2.7266
+G1 X-7.8283 Y-2.7117
+G1 X-8.0959 Y-2.6968
+G1 X-8.3635 Y-2.6819
+G1 X-8.6311 Y-2.6670
+G1 X-8.8987 Y-2.6521
+G1 X-9.1662 Y-2.6372
+G1 X-9.4338 Y-2.6223
+G1 X-9.7013 Y-2.6074
+G1 X-9.9689 Y-2.5925
+G1 X-10.2364 Y-2.5776
+G1 X-10.5040 Y-2.5627
+G1 X-10.7715 Y-2.5479
+G1 X-11.0390 Y-2.5330
+G1 X-11.3065 Y-2.5181
+G1 X-11.5740 Y-2.5032
+G1 X-11.8415 Y-2.4883
+G1 X-12.1091 Y-2.4734
+G1 X-12.3765 Y-2.4585
+G1 X-12.6440 Y-2.4436
+G1 X-12.9115 Y-2.4287
+G1 X-13.1790 Y-2.4138
+G1 X-13.4465 Y-2.3989
+G1 X-13.7140 Y-2.3840
+G1 X-13.9814 Y-2.3691
+G1 X-14.2489 Y-2.3542
+G1 X-14.5163 Y-2.3393
+G1 X-14.7838 Y-2.3244
+G1 X-15.0512 Y-2.3095
+G1 X-15.3187 Y-2.2946
+G1 X-15.5861 Y-2.2797
+G1 X-15.8536 Y-2.2648
+G1 X-16.1210 Y-2.2499
+G1 X-16.3884 Y-2.2350
+G1 X-16.6558 Y-2.2201
+G1 X-16.9233 Y-2.2052
+G1 X-17.1907 Y-2.1903
+G1 X-17.4581 Y-2.1754
+G1 X-17.7255 Y-2.1605
+G1 X-17.9929 Y-2.1456
+G1 X-18.2603 Y-2.1307
+G1 X-18.5277 Y-2.1159
+G1 X-18.7951 Y-2.1010
+G1 X-19.0625 Y-2.0861
+G1 X-19.3298 Y-2.0712
+G1 X-19.5972 Y-2.0563
+G1 X-19.8646 Y-2.0414
+G1 X-20.1320 Y-2.0265
+G1 X-20.3993 Y-2.0116
+G1 X-20.6667 Y-1.9967
+G1 X-20.9340 Y-1.9818
+G1 X-21.2014 Y-1.9669
+G1 X-21.4688 Y-1.9520
+G1 X-21.7361 Y-1.9371
+G1 X-22.0035 Y-1.9222
+G1 X-22.2708 Y-1.9073
+G1 X-22.5381 Y-1.8924
+G1 X-22.8055 Y-1.8775
+G1 X-23.0728 Y-1.8626
+G1 X-23.3401 Y-1.8477
+G1 X-23.6075 Y-1.8328
+G1 X-23.8748 Y-1.8179
+G1 X-24.1421 Y-1.8030
+G1 X-24.4094 Y-1.7881
+G1 X-24.6768 Y-1.7732
+G1 X-24.9441 Y-1.7583
+G1 X-25.2114 Y-1.7434
+G1 X-25.4787 Y-1.7285
+G1 X-25.7460 Y-1.7136
+G1 X-26.0133 Y-1.6987
+G1 X-26.2806 Y-1.6838
+G1 X-26.5479 Y-1.6690
+G1 X-26.8152 Y-1.6541
+G1 X-27.0825 Y-1.6392
+G1 X-27.3498 Y-1.6243
+G1 X-27.6171 Y-1.6094
+G1 X-27.8844 Y-1.5945
+G1 X-28.1517 Y-1.5796
+G1 X-28.4189 Y-1.5647
+G1 X-28.6862 Y-1.5498
+G1 X-28.9535 Y-1.5349
+G1 X-29.2208 Y-1.5200
+G1 X-29.4881 Y-1.5051
+G1 X-29.7553 Y-1.4902
+G1 X-30.0226 Y-1.4753
+G1 X-30.2899 Y-1.4604
+G1 X-30.5572 Y-1.4455
+G1 X-30.8244 Y-1.4306
+G1 X-31.0917 Y-1.4157
+G1 X-31.3590 Y-1.4008
+(Safe converted infill-to-infill connector to fill-infill path 76)
+G1 X-31.6633 Y-2.0569
+(fill-infill path 76, 232 points)
+G1 X-31.3958 Y-2.0718
+G1 X-31.1283 Y-2.0867
+G1 X-30.8607 Y-2.1016
+G1 X-30.5932 Y-2.1165
+G1 X-30.3257 Y-2.1315
+G1 X-30.0582 Y-2.1464
+G1 X-29.7906 Y-2.1613
+G1 X-29.5231 Y-2.1762
+G1 X-29.2556 Y-2.1911
+G1 X-28.9880 Y-2.2060
+G1 X-28.7205 Y-2.2209
+G1 X-28.4529 Y-2.2358
+G1 X-28.1854 Y-2.2507
+G1 X-27.9178 Y-2.2656
+G1 X-27.6503 Y-2.2806
+G1 X-27.3827 Y-2.2955
+G1 X-27.1151 Y-2.3104
+G1 X-26.8476 Y-2.3253
+G1 X-26.5800 Y-2.3402
+G1 X-26.3124 Y-2.3551
+G1 X-26.0448 Y-2.3700
+G1 X-25.7773 Y-2.3849
+G1 X-25.5097 Y-2.3998
+G1 X-25.2421 Y-2.4147
+G1 X-24.9745 Y-2.4297
+G1 X-24.7069 Y-2.4446
+G1 X-24.4393 Y-2.4595
+G1 X-24.1717 Y-2.4744
+G1 X-23.9040 Y-2.4893
+G1 X-23.6364 Y-2.5042
+G1 X-23.3688 Y-2.5191
+G1 X-23.1012 Y-2.5340
+G1 X-22.8335 Y-2.5489
+G1 X-22.5659 Y-2.5639
+G1 X-22.2983 Y-2.5788
+G1 X-22.0306 Y-2.5937
+G1 X-21.7630 Y-2.6086
+G1 X-21.4953 Y-2.6235
+G1 X-21.2277 Y-2.6384
+G1 X-20.9600 Y-2.6533
+G1 X-20.6923 Y-2.6682
+G1 X-20.4246 Y-2.6831
+G1 X-20.1570 Y-2.6980
+G1 X-19.8893 Y-2.7130
+G1 X-19.6216 Y-2.7279
+G1 X-19.3539 Y-2.7428
+G1 X-19.0862 Y-2.7577
+G1 X-18.8185 Y-2.7726
+G1 X-18.5508 Y-2.7875
+G1 X-18.2830 Y-2.8024
+G1 X-18.0153 Y-2.8173
+G1 X-17.7476 Y-2.8322
+G1 X-17.4798 Y-2.8471
+G1 X-17.2121 Y-2.8621
+G1 X-16.9444 Y-2.8770
+G1 X-16.6766 Y-2.8919
+G1 X-16.4088 Y-2.9068
+G1 X-16.1411 Y-2.9217
+G1 X-15.8733 Y-2.9366
+G1 X-15.6055 Y-2.9515
+G1 X-15.3377 Y-2.9664
+G1 X-15.0700 Y-2.9813
+G1 X-14.8022 Y-2.9963
+G1 X-14.5344 Y-3.0112
+G1 X-14.2666 Y-3.0261
+G1 X-13.9987 Y-3.0410
+G1 X-13.7309 Y-3.0559
+G1 X-13.4631 Y-3.0708
+G1 X-13.1953 Y-3.0857
+G1 X-12.9274 Y-3.1006
+G1 X-12.6596 Y-3.1155
+G1 X-12.3917 Y-3.1304
+G1 X-12.1239 Y-3.1454
+G1 X-11.8560 Y-3.1603
+G1 X-11.5881 Y-3.1752
+G1 X-11.3202 Y-3.1901
+G1 X-11.0523 Y-3.2050
+G1 X-10.7844 Y-3.2199
+G1 X-10.5165 Y-3.2348
+G1 X-10.2486 Y-3.2497
+G1 X-9.9807 Y-3.2646
+G1 X-9.7128 Y-3.2795
+G1 X-9.4449 Y-3.2945
+G1 X-9.1769 Y-3.3094
+G1 X-8.9090 Y-3.3243
+G1 X-8.6410 Y-3.3392
+G1 X-8.3731 Y-3.3541
+G1 X-8.1051 Y-3.3690
+G1 X-7.8371 Y-3.3839
+G1 X-7.5691 Y-3.3988
+G1 X-7.3011 Y-3.4137
+G1 X-7.0331 Y-3.4287
+G1 X-6.7651 Y-3.4436
+G1 X-6.4971 Y-3.4585
+G1 X-6.2291 Y-3.4734
+G1 X-5.9610 Y-3.4883
+G1 X-5.6930 Y-3.5032
+G1 X-5.4250 Y-3.5181
+G1 X-5.1569 Y-3.5330
+G1 X-4.8888 Y-3.5479
+G1 X-4.6208 Y-3.5628
+G1 X-4.3527 Y-3.5778
+G1 X-4.0846 Y-3.5927
+G1 X-3.8165 Y-3.6076
+G1 X-3.5484 Y-3.6225
+G1 X-3.2803 Y-3.6374
+G1 X-3.0121 Y-3.6523
+G1 X-2.7440 Y-3.6672
+G1 X-2.4759 Y-3.6821
+G1 X-2.2077 Y-3.6970
+G1 X-1.9396 Y-3.7119
+G1 X-1.6714 Y-3.7269
+G1 X-1.4032 Y-3.7418
+G1 X-1.1350 Y-3.7567
+G1 X-0.8668 Y-3.7716
+G1 X-0.5986 Y-3.7865
+G1 X-0.3304 Y-3.8014
+G1 X-0.0622 Y-3.8163
+G1 X0.2060 Y-3.8312
+G1 X0.4743 Y-3.8461
+G1 X0.7425 Y-3.8611
+G1 X1.0108 Y-3.8760
+G1 X1.2791 Y-3.8909
+G1 X1.5473 Y-3.9058
+G1 X1.8156 Y-3.9207
+G1 X2.0839 Y-3.9356
+G1 X2.3522 Y-3.9505
+G1 X2.6206 Y-3.9654
+G1 X2.8889 Y-3.9803
+G1 X3.1572 Y-3.9952
+G1 X3.4256 Y-4.0102
+G1 X3.6939 Y-4.0251
+G1 X3.9623 Y-4.0400
+G1 X4.2307 Y-4.0549
+G1 X4.4991 Y-4.0698
+G1 X4.7675 Y-4.0847
+G1 X5.0359 Y-4.0996
+G1 X5.3043 Y-4.1145
+G1 X5.5727 Y-4.1294
+G1 X5.8412 Y-4.1444
+G1 X6.1096 Y-4.1593
+G1 X6.3781 Y-4.1742
+G1 X6.6466 Y-4.1891
+G1 X6.9150 Y-4.2040
+G1 X7.1835 Y-4.2189
+G1 X7.4520 Y-4.2338
+G1 X7.7206 Y-4.2487
+G1 X7.9891 Y-4.2636
+G1 X8.2576 Y-4.2785
+G1 X8.5262 Y-4.2935
+G1 X8.7947 Y-4.3084
+G1 X9.0633 Y-4.3233
+G1 X9.3319 Y-4.3382
+G1 X9.6005 Y-4.3531
+G1 X9.8691 Y-4.3680
+G1 X10.1377 Y-4.3829
+G1 X10.4063 Y-4.3978
+G1 X10.6750 Y-4.4127
+G1 X10.9436 Y-4.4276
+G1 X11.2123 Y-4.4426
+G1 X11.4809 Y-4.4575
+G1 X11.7496 Y-4.4724
+G1 X12.0183 Y-4.4873
+G1 X12.2870 Y-4.5022
+G1 X12.5558 Y-4.5171
+G1 X12.8245 Y-4.5320
+G1 X13.0932 Y-4.5469
+G1 X13.3620 Y-4.5618
+G1 X13.6308 Y-4.5768
+G1 X13.8995 Y-4.5917
+G1 X14.1683 Y-4.6066
+G1 X14.4371 Y-4.6215
+G1 X14.7059 Y-4.6364
+G1 X14.9748 Y-4.6513
+G1 X15.2436 Y-4.6662
+G1 X15.5125 Y-4.6811
+G1 X15.7813 Y-4.6960
+G1 X16.0502 Y-4.7109
+G1 X16.3191 Y-4.7259
+G1 X16.5880 Y-4.7408
+G1 X16.8569 Y-4.7557
+G1 X17.1259 Y-4.7706
+G1 X17.3948 Y-4.7855
+G1 X17.6638 Y-4.8004
+G1 X17.9327 Y-4.8153
+G1 X18.2017 Y-4.8302
+G1 X18.4707 Y-4.8451
+G1 X18.7397 Y-4.8600
+G1 X19.0087 Y-4.8750
+G1 X19.2778 Y-4.8899
+G1 X19.5468 Y-4.9048
+G1 X19.8159 Y-4.9197
+G1 X20.0850 Y-4.9346
+G1 X20.3540 Y-4.9495
+G1 X20.6231 Y-4.9644
+G1 X20.8923 Y-4.9793
+G1 X21.1614 Y-4.9942
+G1 X21.4305 Y-5.0092
+G1 X21.6997 Y-5.0241
+G1 X21.9689 Y-5.0390
+G1 X22.2380 Y-5.0539
+G1 X22.5072 Y-5.0688
+G1 X22.7764 Y-5.0837
+G1 X23.0457 Y-5.0986
+G1 X23.3149 Y-5.1135
+G1 X23.5842 Y-5.1284
+G1 X23.8534 Y-5.1433
+G1 X24.1227 Y-5.1583
+G1 X24.3920 Y-5.1732
+G1 X24.6613 Y-5.1881
+G1 X24.9306 Y-5.2030
+G1 X25.2000 Y-5.2179
+G1 X25.4693 Y-5.2328
+G1 X25.7387 Y-5.2477
+G1 X26.0081 Y-5.2626
+G1 X26.2775 Y-5.2775
+G1 X26.5469 Y-5.2924
+G1 X26.8163 Y-5.3074
+G1 X27.0858 Y-5.3223
+G1 X27.3552 Y-5.3372
+G1 X27.6247 Y-5.3521
+G1 X27.8942 Y-5.3670
+G1 X28.1637 Y-5.3819
+G1 X28.4332 Y-5.3968
+G1 X28.7027 Y-5.4117
+G1 X28.9723 Y-5.4266
+G1 X29.2419 Y-5.4416
+G1 X29.5114 Y-5.4565
+G1 X29.7810 Y-5.4714
+G1 X30.0506 Y-5.4863
+G1 X30.3203 Y-5.5012
+(Safe converted infill-to-infill connector to fill-infill path 77)
+G1 X30.1857 Y-6.1642
+(fill-infill path 77, 230 points)
+G1 X29.9153 Y-6.1492
+G1 X29.6450 Y-6.1343
+G1 X29.3747 Y-6.1194
+G1 X29.1044 Y-6.1045
+G1 X28.8341 Y-6.0895
+G1 X28.5638 Y-6.0746
+G1 X28.2936 Y-6.0597
+G1 X28.0234 Y-6.0448
+G1 X27.7532 Y-6.0298
+G1 X27.4830 Y-6.0149
+G1 X27.2128 Y-6.0000
+G1 X26.9426 Y-5.9850
+G1 X26.6725 Y-5.9701
+G1 X26.4023 Y-5.9552
+G1 X26.1322 Y-5.9403
+G1 X25.8621 Y-5.9253
+G1 X25.5920 Y-5.9104
+G1 X25.3220 Y-5.8955
+G1 X25.0519 Y-5.8805
+G1 X24.7819 Y-5.8656
+G1 X24.5119 Y-5.8507
+G1 X24.2419 Y-5.8358
+G1 X23.9719 Y-5.8208
+G1 X23.7019 Y-5.8059
+G1 X23.4320 Y-5.7910
+G1 X23.1620 Y-5.7760
+G1 X22.8921 Y-5.7611
+G1 X22.6222 Y-5.7462
+G1 X22.3523 Y-5.7313
+G1 X22.0824 Y-5.7163
+G1 X21.8126 Y-5.7014
+G1 X21.5427 Y-5.6865
+G1 X21.2729 Y-5.6716
+G1 X21.0031 Y-5.6566
+G1 X20.7333 Y-5.6417
+G1 X20.4635 Y-5.6268
+G1 X20.1938 Y-5.6118
+G1 X19.9240 Y-5.5969
+G1 X19.6543 Y-5.5820
+G1 X19.3846 Y-5.5671
+G1 X19.1148 Y-5.5521
+G1 X18.8452 Y-5.5372
+G1 X18.5755 Y-5.5223
+G1 X18.3058 Y-5.5073
+G1 X18.0362 Y-5.4924
+G1 X17.7665 Y-5.4775
+G1 X17.4969 Y-5.4626
+G1 X17.2273 Y-5.4476
+G1 X16.9577 Y-5.4327
+G1 X16.6882 Y-5.4178
+G1 X16.4186 Y-5.4028
+G1 X16.1491 Y-5.3879
+G1 X15.8795 Y-5.3730
+G1 X15.6100 Y-5.3581
+G1 X15.3405 Y-5.3431
+G1 X15.0710 Y-5.3282
+G1 X14.8016 Y-5.3133
+G1 X14.5321 Y-5.2984
+G1 X14.2627 Y-5.2834
+G1 X13.9932 Y-5.2685
+G1 X13.7238 Y-5.2536
+G1 X13.4544 Y-5.2386
+G1 X13.1850 Y-5.2237
+G1 X12.9156 Y-5.2088
+G1 X12.6463 Y-5.1939
+G1 X12.3769 Y-5.1789
+G1 X12.1076 Y-5.1640
+G1 X11.8383 Y-5.1491
+G1 X11.5690 Y-5.1341
+G1 X11.2997 Y-5.1192
+G1 X11.0304 Y-5.1043
+G1 X10.7611 Y-5.0894
+G1 X10.4919 Y-5.0744
+G1 X10.2226 Y-5.0595
+G1 X9.9534 Y-5.0446
+G1 X9.6842 Y-5.0296
+G1 X9.4150 Y-5.0147
+G1 X9.1458 Y-4.9998
+G1 X8.8766 Y-4.9849
+G1 X8.6074 Y-4.9699
+G1 X8.3383 Y-4.9550
+G1 X8.0692 Y-4.9401
+G1 X7.8000 Y-4.9252
+G1 X7.5309 Y-4.9102
+G1 X7.2618 Y-4.8953
+G1 X6.9927 Y-4.8804
+G1 X6.7237 Y-4.8654
+G1 X6.4546 Y-4.8505
+G1 X6.1855 Y-4.8356
+G1 X5.9165 Y-4.8207
+G1 X5.6475 Y-4.8057
+G1 X5.3785 Y-4.7908
+G1 X5.1095 Y-4.7759
+G1 X4.8405 Y-4.7609
+G1 X4.5715 Y-4.7460
+G1 X4.3025 Y-4.7311
+G1 X4.0336 Y-4.7162
+G1 X3.7646 Y-4.7012
+G1 X3.4957 Y-4.6863
+G1 X3.2268 Y-4.6714
+G1 X2.9579 Y-4.6564
+G1 X2.6890 Y-4.6415
+G1 X2.4201 Y-4.6266
+G1 X2.1512 Y-4.6117
+G1 X1.8824 Y-4.5967
+G1 X1.6135 Y-4.5818
+G1 X1.3447 Y-4.5669
+G1 X1.0759 Y-4.5520
+G1 X0.8070 Y-4.5370
+G1 X0.5382 Y-4.5221
+G1 X0.2694 Y-4.5072
+G1 X0.0007 Y-4.4922
+G1 X-0.2681 Y-4.4773
+G1 X-0.5369 Y-4.4624
+G1 X-0.8056 Y-4.4475
+G1 X-1.0744 Y-4.4325
+G1 X-1.3431 Y-4.4176
+G1 X-1.6118 Y-4.4027
+G1 X-1.8805 Y-4.3877
+G1 X-2.1492 Y-4.3728
+G1 X-2.4179 Y-4.3579
+G1 X-2.6866 Y-4.3430
+G1 X-2.9552 Y-4.3280
+G1 X-3.2239 Y-4.3131
+G1 X-3.4925 Y-4.2982
+G1 X-3.7612 Y-4.2832
+G1 X-4.0298 Y-4.2683
+G1 X-4.2984 Y-4.2534
+G1 X-4.5670 Y-4.2385
+G1 X-4.8356 Y-4.2235
+G1 X-5.1042 Y-4.2086
+G1 X-5.3727 Y-4.1937
+G1 X-5.6413 Y-4.1788
+G1 X-5.9099 Y-4.1638
+G1 X-6.1784 Y-4.1489
+G1 X-6.4469 Y-4.1340
+G1 X-6.7155 Y-4.1190
+G1 X-6.9840 Y-4.1041
+G1 X-7.2525 Y-4.0892
+G1 X-7.5210 Y-4.0743
+G1 X-7.7895 Y-4.0593
+G1 X-8.0579 Y-4.0444
+G1 X-8.3264 Y-4.0295
+G1 X-8.5949 Y-4.0145
+G1 X-8.8633 Y-3.9996
+G1 X-9.1318 Y-3.9847
+G1 X-9.4002 Y-3.9698
+G1 X-9.6686 Y-3.9548
+G1 X-9.9370 Y-3.9399
+G1 X-10.2054 Y-3.9250
+G1 X-10.4738 Y-3.9100
+G1 X-10.7422 Y-3.8951
+G1 X-11.0106 Y-3.8802
+G1 X-11.2789 Y-3.8653
+G1 X-11.5473 Y-3.8503
+G1 X-11.8156 Y-3.8354
+G1 X-12.0840 Y-3.8205
+G1 X-12.3523 Y-3.8056
+G1 X-12.6206 Y-3.7906
+G1 X-12.8890 Y-3.7757
+G1 X-13.1573 Y-3.7608
+G1 X-13.4256 Y-3.7458
+G1 X-13.6939 Y-3.7309
+G1 X-13.9621 Y-3.7160
+G1 X-14.2304 Y-3.7011
+G1 X-14.4987 Y-3.6861
+G1 X-14.7669 Y-3.6712
+G1 X-15.0352 Y-3.6563
+G1 X-15.3034 Y-3.6413
+G1 X-15.5717 Y-3.6264
+G1 X-15.8399 Y-3.6115
+G1 X-16.1081 Y-3.5966
+G1 X-16.3763 Y-3.5816
+G1 X-16.6445 Y-3.5667
+G1 X-16.9127 Y-3.5518
+G1 X-17.1809 Y-3.5368
+G1 X-17.4491 Y-3.5219
+G1 X-17.7173 Y-3.5070
+G1 X-17.9855 Y-3.4921
+G1 X-18.2536 Y-3.4771
+G1 X-18.5218 Y-3.4622
+G1 X-18.7899 Y-3.4473
+G1 X-19.0580 Y-3.4324
+G1 X-19.3262 Y-3.4174
+G1 X-19.5943 Y-3.4025
+G1 X-19.8624 Y-3.3876
+G1 X-20.1305 Y-3.3726
+G1 X-20.3986 Y-3.3577
+G1 X-20.6667 Y-3.3428
+G1 X-20.9348 Y-3.3279
+G1 X-21.2029 Y-3.3129
+G1 X-21.4710 Y-3.2980
+G1 X-21.7391 Y-3.2831
+G1 X-22.0071 Y-3.2681
+G1 X-22.2752 Y-3.2532
+G1 X-22.5432 Y-3.2383
+G1 X-22.8113 Y-3.2234
+G1 X-23.0793 Y-3.2084
+G1 X-23.3473 Y-3.1935
+G1 X-23.6154 Y-3.1786
+G1 X-23.8834 Y-3.1636
+G1 X-24.1514 Y-3.1487
+G1 X-24.4194 Y-3.1338
+G1 X-24.6874 Y-3.1189
+G1 X-24.9554 Y-3.1039
+G1 X-25.2234 Y-3.0890
+G1 X-25.4914 Y-3.0741
+G1 X-25.7593 Y-3.0591
+G1 X-26.0273 Y-3.0442
+G1 X-26.2953 Y-3.0293
+G1 X-26.5632 Y-3.0144
+G1 X-26.8312 Y-2.9994
+G1 X-27.0991 Y-2.9845
+G1 X-27.3671 Y-2.9696
+G1 X-27.6350 Y-2.9547
+G1 X-27.9030 Y-2.9397
+G1 X-28.1709 Y-2.9248
+G1 X-28.4388 Y-2.9099
+G1 X-28.7067 Y-2.8949
+G1 X-28.9746 Y-2.8800
+G1 X-29.2426 Y-2.8651
+G1 X-29.5105 Y-2.8502
+G1 X-29.7784 Y-2.8352
+G1 X-30.0462 Y-2.8203
+G1 X-30.3141 Y-2.8054
+G1 X-30.5820 Y-2.7904
+G1 X-30.8499 Y-2.7755
+G1 X-31.1178 Y-2.7606
+G1 X-31.3856 Y-2.7457
+(Safe converted infill-to-infill connector to fill-infill path 78)
+G1 X-31.6987 Y-3.4017
+(fill-infill path 78, 233 points)
+G1 X-31.4310 Y-3.4167
+G1 X-31.1633 Y-3.4316
+G1 X-30.8956 Y-3.4465
+G1 X-30.6278 Y-3.4614
+G1 X-30.3601 Y-3.4763
+G1 X-30.0924 Y-3.4912
+G1 X-29.8246 Y-3.5062
+G1 X-29.5568 Y-3.5211
+G1 X-29.2891 Y-3.5360
+G1 X-29.0213 Y-3.5509
+G1 X-28.7535 Y-3.5658
+G1 X-28.4857 Y-3.5807
+G1 X-28.2180 Y-3.5956
+G1 X-27.9502 Y-3.6106
+G1 X-27.6824 Y-3.6255
+G1 X-27.4145 Y-3.6404
+G1 X-27.1467 Y-3.6553
+G1 X-26.8789 Y-3.6702
+G1 X-26.6111 Y-3.6851
+G1 X-26.3432 Y-3.7001
+G1 X-26.0754 Y-3.7150
+G1 X-25.8075 Y-3.7299
+G1 X-25.5397 Y-3.7448
+G1 X-25.2718 Y-3.7597
+G1 X-25.0039 Y-3.7746
+G1 X-24.7360 Y-3.7896
+G1 X-24.4681 Y-3.8045
+G1 X-24.2002 Y-3.8194
+G1 X-23.9323 Y-3.8343
+G1 X-23.6644 Y-3.8492
+G1 X-23.3965 Y-3.8641
+G1 X-23.1286 Y-3.8790
+G1 X-22.8606 Y-3.8940
+G1 X-22.5927 Y-3.9089
+G1 X-22.3247 Y-3.9238
+G1 X-22.0567 Y-3.9387
+G1 X-21.7888 Y-3.9536
+G1 X-21.5208 Y-3.9685
+G1 X-21.2528 Y-3.9835
+G1 X-20.9848 Y-3.9984
+G1 X-20.7168 Y-4.0133
+G1 X-20.4488 Y-4.0282
+G1 X-20.1808 Y-4.0431
+G1 X-19.9127 Y-4.0580
+G1 X-19.6447 Y-4.0729
+G1 X-19.3767 Y-4.0879
+G1 X-19.1086 Y-4.1028
+G1 X-18.8405 Y-4.1177
+G1 X-18.5725 Y-4.1326
+G1 X-18.3044 Y-4.1475
+G1 X-18.0363 Y-4.1624
+G1 X-17.7682 Y-4.1774
+G1 X-17.5001 Y-4.1923
+G1 X-17.2320 Y-4.2072
+G1 X-16.9638 Y-4.2221
+G1 X-16.6957 Y-4.2370
+G1 X-16.4276 Y-4.2519
+G1 X-16.1594 Y-4.2669
+G1 X-15.8912 Y-4.2818
+G1 X-15.6231 Y-4.2967
+G1 X-15.3549 Y-4.3116
+G1 X-15.0867 Y-4.3265
+G1 X-14.8185 Y-4.3414
+G1 X-14.5503 Y-4.3563
+G1 X-14.2821 Y-4.3713
+G1 X-14.0138 Y-4.3862
+G1 X-13.7456 Y-4.4011
+G1 X-13.4773 Y-4.4160
+G1 X-13.2091 Y-4.4309
+G1 X-12.9408 Y-4.4458
+G1 X-12.6725 Y-4.4608
+G1 X-12.4042 Y-4.4757
+G1 X-12.1359 Y-4.4906
+G1 X-11.8676 Y-4.5055
+G1 X-11.5993 Y-4.5204
+G1 X-11.3310 Y-4.5353
+G1 X-11.0626 Y-4.5502
+G1 X-10.7943 Y-4.5652
+G1 X-10.5259 Y-4.5801
+G1 X-10.2576 Y-4.5950
+G1 X-9.9892 Y-4.6099
+G1 X-9.7208 Y-4.6248
+G1 X-9.4524 Y-4.6397
+G1 X-9.1840 Y-4.6547
+G1 X-8.9155 Y-4.6696
+G1 X-8.6471 Y-4.6845
+G1 X-8.3787 Y-4.6994
+G1 X-8.1102 Y-4.7143
+G1 X-7.8417 Y-4.7292
+G1 X-7.5732 Y-4.7442
+G1 X-7.3048 Y-4.7591
+G1 X-7.0363 Y-4.7740
+G1 X-6.7677 Y-4.7889
+G1 X-6.4992 Y-4.8038
+G1 X-6.2307 Y-4.8187
+G1 X-5.9621 Y-4.8336
+G1 X-5.6936 Y-4.8486
+G1 X-5.4250 Y-4.8635
+G1 X-5.1564 Y-4.8784
+G1 X-4.8878 Y-4.8933
+G1 X-4.6192 Y-4.9082
+G1 X-4.3506 Y-4.9231
+G1 X-4.0820 Y-4.9381
+G1 X-3.8133 Y-4.9530
+G1 X-3.5447 Y-4.9679
+G1 X-3.2760 Y-4.9828
+G1 X-3.0074 Y-4.9977
+G1 X-2.7387 Y-5.0126
+G1 X-2.4700 Y-5.0275
+G1 X-2.2012 Y-5.0425
+G1 X-1.9325 Y-5.0574
+G1 X-1.6638 Y-5.0723
+G1 X-1.3950 Y-5.0872
+G1 X-1.1263 Y-5.1021
+G1 X-0.8575 Y-5.1170
+G1 X-0.5887 Y-5.1320
+G1 X-0.3199 Y-5.1469
+G1 X-0.0511 Y-5.1618
+G1 X0.2177 Y-5.1767
+G1 X0.4866 Y-5.1916
+G1 X0.7554 Y-5.2065
+G1 X1.0243 Y-5.2215
+G1 X1.2931 Y-5.2364
+G1 X1.5620 Y-5.2513
+G1 X1.8309 Y-5.2662
+G1 X2.0998 Y-5.2811
+G1 X2.3688 Y-5.2960
+G1 X2.6377 Y-5.3109
+G1 X2.9067 Y-5.3259
+G1 X3.1756 Y-5.3408
+G1 X3.4446 Y-5.3557
+G1 X3.7136 Y-5.3706
+G1 X3.9826 Y-5.3855
+G1 X4.2516 Y-5.4004
+G1 X4.5207 Y-5.4154
+G1 X4.7897 Y-5.4303
+G1 X5.0588 Y-5.4452
+G1 X5.3278 Y-5.4601
+G1 X5.5969 Y-5.4750
+G1 X5.8660 Y-5.4899
+G1 X6.1352 Y-5.5048
+G1 X6.4043 Y-5.5198
+G1 X6.6734 Y-5.5347
+G1 X6.9426 Y-5.5496
+G1 X7.2118 Y-5.5645
+G1 X7.4809 Y-5.5794
+G1 X7.7501 Y-5.5943
+G1 X8.0194 Y-5.6093
+G1 X8.2886 Y-5.6242
+G1 X8.5578 Y-5.6391
+G1 X8.8271 Y-5.6540
+G1 X9.0964 Y-5.6689
+G1 X9.3656 Y-5.6838
+G1 X9.6349 Y-5.6988
+G1 X9.9043 Y-5.7137
+G1 X10.1736 Y-5.7286
+G1 X10.4429 Y-5.7435
+G1 X10.7123 Y-5.7584
+G1 X10.9817 Y-5.7733
+G1 X11.2511 Y-5.7882
+G1 X11.5205 Y-5.8032
+G1 X11.7899 Y-5.8181
+G1 X12.0593 Y-5.8330
+G1 X12.3288 Y-5.8479
+G1 X12.5982 Y-5.8628
+G1 X12.8677 Y-5.8777
+G1 X13.1372 Y-5.8927
+G1 X13.4067 Y-5.9076
+G1 X13.6763 Y-5.9225
+G1 X13.9458 Y-5.9374
+G1 X14.2154 Y-5.9523
+G1 X14.4849 Y-5.9672
+G1 X14.7545 Y-5.9822
+G1 X15.0241 Y-5.9971
+G1 X15.2937 Y-6.0120
+G1 X15.5634 Y-6.0269
+G1 X15.8330 Y-6.0418
+G1 X16.1027 Y-6.0567
+G1 X16.3724 Y-6.0716
+G1 X16.6421 Y-6.0866
+G1 X16.9118 Y-6.1015
+G1 X17.1815 Y-6.1164
+G1 X17.4513 Y-6.1313
+G1 X17.7211 Y-6.1462
+G1 X17.9908 Y-6.1611
+G1 X18.2606 Y-6.1761
+G1 X18.5304 Y-6.1910
+G1 X18.8003 Y-6.2059
+G1 X19.0701 Y-6.2208
+G1 X19.3400 Y-6.2357
+G1 X19.6099 Y-6.2506
+G1 X19.8798 Y-6.2655
+G1 X20.1497 Y-6.2805
+G1 X20.4196 Y-6.2954
+G1 X20.6896 Y-6.3103
+G1 X20.9595 Y-6.3252
+G1 X21.2295 Y-6.3401
+G1 X21.4995 Y-6.3550
+G1 X21.7695 Y-6.3700
+G1 X22.0396 Y-6.3849
+G1 X22.3096 Y-6.3998
+G1 X22.5797 Y-6.4147
+G1 X22.8498 Y-6.4296
+G1 X23.1199 Y-6.4445
+G1 X23.3900 Y-6.4595
+G1 X23.6601 Y-6.4744
+G1 X23.9303 Y-6.4893
+G1 X24.2004 Y-6.5042
+G1 X24.4706 Y-6.5191
+G1 X24.7408 Y-6.5340
+G1 X25.0111 Y-6.5489
+G1 X25.2813 Y-6.5639
+G1 X25.5516 Y-6.5788
+G1 X25.8218 Y-6.5937
+G1 X26.0921 Y-6.6086
+G1 X26.3625 Y-6.6235
+G1 X26.6328 Y-6.6384
+G1 X26.9031 Y-6.6534
+G1 X27.1735 Y-6.6683
+G1 X27.4439 Y-6.6832
+G1 X27.7143 Y-6.6981
+G1 X27.9847 Y-6.7130
+G1 X28.2552 Y-6.7279
+G1 X28.5256 Y-6.7428
+G1 X28.7961 Y-6.7578
+G1 X29.0666 Y-6.7727
+G1 X29.3371 Y-6.7876
+G1 X29.6077 Y-6.8025
+G1 X29.8782 Y-6.8174
+G1 X30.1488 Y-6.8323
+G1 X30.4194 Y-6.8473
+G1 X30.6900 Y-6.8622
+(Safe converted infill-to-infill connector to fill-infill path 79)
+G1 X30.6017 Y-7.5272
+(fill-infill path 79, 232 points)
+G1 X30.3313 Y-7.5124
+G1 X30.0609 Y-7.4975
+G1 X29.7906 Y-7.4826
+G1 X29.5202 Y-7.4677
+G1 X29.2499 Y-7.4528
+G1 X28.9796 Y-7.4380
+G1 X28.7093 Y-7.4231
+G1 X28.4391 Y-7.4082
+G1 X28.1688 Y-7.3933
+G1 X27.8986 Y-7.3785
+G1 X27.6284 Y-7.3636
+G1 X27.3582 Y-7.3487
+G1 X27.0880 Y-7.3338
+G1 X26.8179 Y-7.3189
+G1 X26.5478 Y-7.3041
+G1 X26.2777 Y-7.2892
+G1 X26.0076 Y-7.2743
+G1 X25.7375 Y-7.2594
+G1 X25.4675 Y-7.2446
+G1 X25.1974 Y-7.2297
+G1 X24.9274 Y-7.2148
+G1 X24.6574 Y-7.1999
+G1 X24.3875 Y-7.1850
+G1 X24.1175 Y-7.1702
+G1 X23.8476 Y-7.1553
+G1 X23.5777 Y-7.1404
+G1 X23.3078 Y-7.1255
+G1 X23.0379 Y-7.1107
+G1 X22.7681 Y-7.0958
+G1 X22.4982 Y-7.0809
+G1 X22.2284 Y-7.0660
+G1 X21.9586 Y-7.0512
+G1 X21.6889 Y-7.0363
+G1 X21.4191 Y-7.0214
+G1 X21.1494 Y-7.0065
+G1 X20.8796 Y-6.9916
+G1 X20.6099 Y-6.9768
+G1 X20.3403 Y-6.9619
+G1 X20.0706 Y-6.9470
+G1 X19.8009 Y-6.9321
+G1 X19.5313 Y-6.9173
+G1 X19.2617 Y-6.9024
+G1 X18.9921 Y-6.8875
+G1 X18.7225 Y-6.8726
+G1 X18.4530 Y-6.8577
+G1 X18.1834 Y-6.8429
+G1 X17.9139 Y-6.8280
+G1 X17.6444 Y-6.8131
+G1 X17.3749 Y-6.7982
+G1 X17.1055 Y-6.7834
+G1 X16.8360 Y-6.7685
+G1 X16.5666 Y-6.7536
+G1 X16.2972 Y-6.7387
+G1 X16.0278 Y-6.7238
+G1 X15.7584 Y-6.7090
+G1 X15.4890 Y-6.6941
+G1 X15.2197 Y-6.6792
+G1 X14.9504 Y-6.6643
+G1 X14.6811 Y-6.6495
+G1 X14.4118 Y-6.6346
+G1 X14.1425 Y-6.6197
+G1 X13.8733 Y-6.6048
+G1 X13.6040 Y-6.5899
+G1 X13.3348 Y-6.5751
+G1 X13.0656 Y-6.5602
+G1 X12.7964 Y-6.5453
+G1 X12.5272 Y-6.5304
+G1 X12.2581 Y-6.5156
+G1 X11.9889 Y-6.5007
+G1 X11.7198 Y-6.4858
+G1 X11.4507 Y-6.4709
+G1 X11.1816 Y-6.4560
+G1 X10.9126 Y-6.4412
+G1 X10.6435 Y-6.4263
+G1 X10.3745 Y-6.4114
+G1 X10.1054 Y-6.3965
+G1 X9.8364 Y-6.3817
+G1 X9.5674 Y-6.3668
+G1 X9.2985 Y-6.3519
+G1 X9.0295 Y-6.3370
+G1 X8.7606 Y-6.3221
+G1 X8.4917 Y-6.3073
+G1 X8.2227 Y-6.2924
+G1 X7.9539 Y-6.2775
+G1 X7.6850 Y-6.2626
+G1 X7.4161 Y-6.2478
+G1 X7.1473 Y-6.2329
+G1 X6.8784 Y-6.2180
+G1 X6.6096 Y-6.2031
+G1 X6.3408 Y-6.1883
+G1 X6.0721 Y-6.1734
+G1 X5.8033 Y-6.1585
+G1 X5.5345 Y-6.1436
+G1 X5.2658 Y-6.1287
+G1 X4.9971 Y-6.1139
+G1 X4.7284 Y-6.0990
+G1 X4.4597 Y-6.0841
+G1 X4.1910 Y-6.0692
+G1 X3.9223 Y-6.0544
+G1 X3.6537 Y-6.0395
+G1 X3.3851 Y-6.0246
+G1 X3.1165 Y-6.0097
+G1 X2.8479 Y-5.9948
+G1 X2.5793 Y-5.9800
+G1 X2.3107 Y-5.9651
+G1 X2.0422 Y-5.9502
+G1 X1.7736 Y-5.9353
+G1 X1.5051 Y-5.9205
+G1 X1.2366 Y-5.9056
+G1 X0.9681 Y-5.8907
+G1 X0.6996 Y-5.8758
+G1 X0.4311 Y-5.8609
+G1 X0.1627 Y-5.8461
+G1 X-0.1058 Y-5.8312
+G1 X-0.3742 Y-5.8163
+G1 X-0.6426 Y-5.8014
+G1 X-0.9110 Y-5.7866
+G1 X-1.1794 Y-5.7717
+G1 X-1.4478 Y-5.7568
+G1 X-1.7161 Y-5.7419
+G1 X-1.9844 Y-5.7270
+G1 X-2.2528 Y-5.7122
+G1 X-2.5211 Y-5.6973
+G1 X-2.7894 Y-5.6824
+G1 X-3.0577 Y-5.6675
+G1 X-3.3259 Y-5.6527
+G1 X-3.5942 Y-5.6378
+G1 X-3.8624 Y-5.6229
+G1 X-4.1307 Y-5.6080
+G1 X-4.3989 Y-5.5931
+G1 X-4.6671 Y-5.5783
+G1 X-4.9353 Y-5.5634
+G1 X-5.2035 Y-5.5485
+G1 X-5.4716 Y-5.5336
+G1 X-5.7398 Y-5.5188
+G1 X-6.0079 Y-5.5039
+G1 X-6.2761 Y-5.4890
+G1 X-6.5442 Y-5.4741
+G1 X-6.8123 Y-5.4592
+G1 X-7.0804 Y-5.4444
+G1 X-7.3484 Y-5.4295
+G1 X-7.6165 Y-5.4146
+G1 X-7.8845 Y-5.3997
+G1 X-8.1526 Y-5.3849
+G1 X-8.4206 Y-5.3700
+G1 X-8.6886 Y-5.3551
+G1 X-8.9566 Y-5.3402
+G1 X-9.2246 Y-5.3253
+G1 X-9.4926 Y-5.3105
+G1 X-9.7605 Y-5.2956
+G1 X-10.0285 Y-5.2807
+G1 X-10.2964 Y-5.2658
+G1 X-10.5643 Y-5.2510
+G1 X-10.8323 Y-5.2361
+G1 X-11.1002 Y-5.2212
+G1 X-11.3681 Y-5.2063
+G1 X-11.6359 Y-5.1915
+G1 X-11.9038 Y-5.1766
+G1 X-12.1717 Y-5.1617
+G1 X-12.4395 Y-5.1468
+G1 X-12.7073 Y-5.1319
+G1 X-12.9751 Y-5.1171
+G1 X-13.2429 Y-5.1022
+G1 X-13.5107 Y-5.0873
+G1 X-13.7785 Y-5.0724
+G1 X-14.0463 Y-5.0576
+G1 X-14.3141 Y-5.0427
+G1 X-14.5818 Y-5.0278
+G1 X-14.8496 Y-5.0129
+G1 X-15.1173 Y-4.9980
+G1 X-15.3850 Y-4.9832
+G1 X-15.6527 Y-4.9683
+G1 X-15.9204 Y-4.9534
+G1 X-16.1881 Y-4.9385
+G1 X-16.4558 Y-4.9237
+G1 X-16.7234 Y-4.9088
+G1 X-16.9911 Y-4.8939
+G1 X-17.2587 Y-4.8790
+G1 X-17.5263 Y-4.8641
+G1 X-17.7940 Y-4.8493
+G1 X-18.0616 Y-4.8344
+G1 X-18.3292 Y-4.8195
+G1 X-18.5967 Y-4.8046
+G1 X-18.8643 Y-4.7898
+G1 X-19.1319 Y-4.7749
+G1 X-19.3994 Y-4.7600
+G1 X-19.6670 Y-4.7451
+G1 X-19.9345 Y-4.7302
+G1 X-20.2020 Y-4.7154
+G1 X-20.4696 Y-4.7005
+G1 X-20.7371 Y-4.6856
+G1 X-21.0046 Y-4.6707
+G1 X-21.2721 Y-4.6559
+G1 X-21.5395 Y-4.6410
+G1 X-21.8070 Y-4.6261
+G1 X-22.0744 Y-4.6112
+G1 X-22.3419 Y-4.5963
+G1 X-22.6093 Y-4.5815
+G1 X-22.8768 Y-4.5666
+G1 X-23.1442 Y-4.5517
+G1 X-23.4116 Y-4.5368
+G1 X-23.6790 Y-4.5220
+G1 X-23.9464 Y-4.5071
+G1 X-24.2137 Y-4.4922
+G1 X-24.4811 Y-4.4773
+G1 X-24.7485 Y-4.4624
+G1 X-25.0158 Y-4.4476
+G1 X-25.2832 Y-4.4327
+G1 X-25.5505 Y-4.4178
+G1 X-25.8178 Y-4.4029
+G1 X-26.0851 Y-4.3881
+G1 X-26.3525 Y-4.3732
+G1 X-26.6198 Y-4.3583
+G1 X-26.8870 Y-4.3434
+G1 X-27.1543 Y-4.3286
+G1 X-27.4216 Y-4.3137
+G1 X-27.6889 Y-4.2988
+G1 X-27.9561 Y-4.2839
+G1 X-28.2234 Y-4.2690
+G1 X-28.4906 Y-4.2542
+G1 X-28.7578 Y-4.2393
+G1 X-29.0250 Y-4.2244
+G1 X-29.2923 Y-4.2095
+G1 X-29.5595 Y-4.1947
+G1 X-29.8267 Y-4.1798
+G1 X-30.0939 Y-4.1649
+G1 X-30.3610 Y-4.1500
+G1 X-30.6282 Y-4.1351
+G1 X-30.8954 Y-4.1203
+G1 X-31.1625 Y-4.1054
+G1 X-31.4297 Y-4.0905
+(Safe converted infill-to-infill connector to fill-infill path 80)
+G1 X-31.7518 Y-4.7466
+(fill-infill path 80, 42 points)
+G1 X-31.4873 Y-4.7613
+G1 X-31.2228 Y-4.7760
+G1 X-30.9583 Y-4.7908
+G1 X-30.6938 Y-4.8055
+G1 X-30.4292 Y-4.8202
+G1 X-30.1647 Y-4.8349
+G1 X-29.9001 Y-4.8496
+G1 X-29.6356 Y-4.8644
+G1 X-29.3710 Y-4.8791
+G1 X-29.1064 Y-4.8938
+G1 X-28.8418 Y-4.9085
+G1 X-28.5773 Y-4.9233
+G1 X-28.3126 Y-4.9380
+G1 X-28.0480 Y-4.9527
+G1 X-27.7834 Y-4.9674
+G1 X-27.5188 Y-4.9821
+G1 X-27.2541 Y-4.9969
+G1 X-26.9895 Y-5.0116
+G1 X-26.7248 Y-5.0263
+G1 X-26.4601 Y-5.0410
+G1 X-26.1954 Y-5.0558
+G1 X-25.9307 Y-5.0705
+G1 X-25.6660 Y-5.0852
+G1 X-25.4013 Y-5.0999
+G1 X-25.1366 Y-5.1146
+G1 X-24.8718 Y-5.1294
+G1 X-24.6071 Y-5.1441
+G1 X-24.3423 Y-5.1588
+G1 X-24.0776 Y-5.1735
+G1 X-23.8128 Y-5.1883
+G1 X-23.5480 Y-5.2030
+G1 X-23.2832 Y-5.2177
+G1 X-23.0184 Y-5.2324
+G1 X-22.7535 Y-5.2471
+G1 X-22.4887 Y-5.2619
+G1 X-22.2239 Y-5.2766
+G1 X-21.9590 Y-5.2913
+G1 X-21.6941 Y-5.3060
+G1 X-21.4293 Y-5.3208
+G1 X-21.1644 Y-5.3355
+G1 X-20.8995 Y-5.3502
+(Safe converted infill-to-infill connector to fill-infill path 81)
+G1 X-21.2602 Y-6.0040
+(fill-infill path 81, 40 points)
+G1 X-21.5228 Y-5.9894
+G1 X-21.7853 Y-5.9748
+G1 X-22.0478 Y-5.9602
+G1 X-22.3104 Y-5.9456
+G1 X-22.5729 Y-5.9311
+G1 X-22.8354 Y-5.9165
+G1 X-23.0979 Y-5.9019
+G1 X-23.3603 Y-5.8873
+G1 X-23.6228 Y-5.8727
+G1 X-23.8852 Y-5.8582
+G1 X-24.1477 Y-5.8436
+G1 X-24.4101 Y-5.8290
+G1 X-24.6725 Y-5.8144
+G1 X-24.9349 Y-5.7998
+G1 X-25.1973 Y-5.7853
+G1 X-25.4597 Y-5.7707
+G1 X-25.7221 Y-5.7561
+G1 X-25.9844 Y-5.7415
+G1 X-26.2467 Y-5.7269
+G1 X-26.5091 Y-5.7124
+G1 X-26.7714 Y-5.6978
+G1 X-27.0337 Y-5.6832
+G1 X-27.2960 Y-5.6686
+G1 X-27.5583 Y-5.6540
+G1 X-27.8206 Y-5.6395
+G1 X-28.0828 Y-5.6249
+G1 X-28.3451 Y-5.6103
+G1 X-28.6073 Y-5.5957
+G1 X-28.8695 Y-5.5811
+G1 X-29.1318 Y-5.5666
+G1 X-29.3940 Y-5.5520
+G1 X-29.6561 Y-5.5374
+G1 X-29.9183 Y-5.5228
+G1 X-30.1805 Y-5.5083
+G1 X-30.4427 Y-5.4937
+G1 X-30.7048 Y-5.4791
+G1 X-30.9670 Y-5.4645
+G1 X-31.2291 Y-5.4499
+G1 X-31.4912 Y-5.4354
+(Safe converted infill-to-infill connector to fill-infill path 82)
+G1 X-31.8226 Y-6.0914
+(fill-infill path 82, 42 points)
+G1 X-31.5577 Y-6.1062
+G1 X-31.2928 Y-6.1209
+G1 X-31.0279 Y-6.1356
+G1 X-30.7629 Y-6.1503
+G1 X-30.4980 Y-6.1651
+G1 X-30.2330 Y-6.1798
+G1 X-29.9681 Y-6.1945
+G1 X-29.7031 Y-6.2092
+G1 X-29.4381 Y-6.2239
+G1 X-29.1731 Y-6.2387
+G1 X-28.9081 Y-6.2534
+G1 X-28.6430 Y-6.2681
+G1 X-28.3780 Y-6.2828
+G1 X-28.1129 Y-6.2976
+G1 X-27.8479 Y-6.3123
+G1 X-27.5828 Y-6.3270
+G1 X-27.3177 Y-6.3417
+G1 X-27.0526 Y-6.3564
+G1 X-26.7875 Y-6.3712
+G1 X-26.5223 Y-6.3859
+G1 X-26.2572 Y-6.4006
+G1 X-25.9920 Y-6.4153
+G1 X-25.7268 Y-6.4300
+G1 X-25.4617 Y-6.4448
+G1 X-25.1965 Y-6.4595
+G1 X-24.9312 Y-6.4742
+G1 X-24.6660 Y-6.4889
+G1 X-24.4008 Y-6.5037
+G1 X-24.1355 Y-6.5184
+G1 X-23.8702 Y-6.5331
+G1 X-23.6049 Y-6.5478
+G1 X-23.3396 Y-6.5625
+G1 X-23.0743 Y-6.5773
+G1 X-22.8090 Y-6.5920
+G1 X-22.5436 Y-6.6067
+G1 X-22.2783 Y-6.6214
+G1 X-22.0129 Y-6.6362
+G1 X-21.7475 Y-6.6509
+G1 X-21.4821 Y-6.6656
+G1 X-21.2167 Y-6.6803
+G1 X-20.9513 Y-6.6950
+(Safe converted infill-to-infill connector to fill-infill path 83)
+G1 X-21.3187 Y-7.3488
+(fill-infill path 83, 40 points)
+G1 X-21.5818 Y-7.3342
+G1 X-21.8450 Y-7.3196
+G1 X-22.1081 Y-7.3051
+G1 X-22.3712 Y-7.2905
+G1 X-22.6343 Y-7.2759
+G1 X-22.8974 Y-7.2613
+G1 X-23.1604 Y-7.2467
+G1 X-23.4235 Y-7.2322
+G1 X-23.6865 Y-7.2176
+G1 X-23.9495 Y-7.2030
+G1 X-24.2125 Y-7.1884
+G1 X-24.4755 Y-7.1738
+G1 X-24.7385 Y-7.1593
+G1 X-25.0014 Y-7.1447
+G1 X-25.2643 Y-7.1301
+G1 X-25.5273 Y-7.1155
+G1 X-25.7902 Y-7.1009
+G1 X-26.0531 Y-7.0864
+G1 X-26.3159 Y-7.0718
+G1 X-26.5788 Y-7.0572
+G1 X-26.8416 Y-7.0426
+G1 X-27.1045 Y-7.0281
+G1 X-27.3673 Y-7.0135
+G1 X-27.6301 Y-6.9989
+G1 X-27.8929 Y-6.9843
+G1 X-28.1557 Y-6.9697
+G1 X-28.4184 Y-6.9552
+G1 X-28.6812 Y-6.9406
+G1 X-28.9439 Y-6.9260
+G1 X-29.2066 Y-6.9114
+G1 X-29.4693 Y-6.8968
+G1 X-29.7320 Y-6.8823
+G1 X-29.9947 Y-6.8677
+G1 X-30.2573 Y-6.8531
+G1 X-30.5200 Y-6.8385
+G1 X-30.7826 Y-6.8239
+G1 X-31.0452 Y-6.8094
+G1 X-31.3078 Y-6.7948
+G1 X-31.5704 Y-6.7802
+(Safe converted infill-to-infill connector to fill-infill path 84)
+G1 X-31.9113 Y-7.4363
+(fill-infill path 84, 42 points)
+G1 X-31.6458 Y-7.4510
+G1 X-31.3804 Y-7.4657
+G1 X-31.1149 Y-7.4805
+G1 X-30.8494 Y-7.4952
+G1 X-30.5839 Y-7.5099
+G1 X-30.3184 Y-7.5246
+G1 X-30.0529 Y-7.5393
+G1 X-29.7874 Y-7.5541
+G1 X-29.5218 Y-7.5688
+G1 X-29.2562 Y-7.5835
+G1 X-28.9906 Y-7.5982
+G1 X-28.7250 Y-7.6130
+G1 X-28.4594 Y-7.6277
+G1 X-28.1937 Y-7.6424
+G1 X-27.9281 Y-7.6571
+G1 X-27.6624 Y-7.6718
+G1 X-27.3967 Y-7.6866
+G1 X-27.1310 Y-7.7013
+G1 X-26.8653 Y-7.7160
+G1 X-26.5995 Y-7.7307
+G1 X-26.3338 Y-7.7455
+G1 X-26.0680 Y-7.7602
+G1 X-25.8022 Y-7.7749
+G1 X-25.5364 Y-7.7896
+G1 X-25.2706 Y-7.8043
+G1 X-25.0047 Y-7.8191
+G1 X-24.7389 Y-7.8338
+G1 X-24.4730 Y-7.8485
+G1 X-24.2071 Y-7.8632
+G1 X-23.9412 Y-7.8780
+G1 X-23.6752 Y-7.8927
+G1 X-23.4093 Y-7.9074
+G1 X-23.1433 Y-7.9221
+G1 X-22.8773 Y-7.9368
+G1 X-22.6113 Y-7.9516
+G1 X-22.3453 Y-7.9663
+G1 X-22.0793 Y-7.9810
+G1 X-21.8132 Y-7.9957
+G1 X-21.5472 Y-8.0105
+G1 X-21.2811 Y-8.0252
+G1 X-21.0150 Y-8.0399
+(Safe converted infill-to-infill connector to fill-infill path 85)
+G1 X-21.3893 Y-8.6936
+(fill-infill path 85, 40 points)
+G1 X-21.6532 Y-8.6791
+G1 X-21.9171 Y-8.6645
+G1 X-22.1809 Y-8.6499
+G1 X-22.4448 Y-8.6353
+G1 X-22.7086 Y-8.6207
+G1 X-22.9724 Y-8.6062
+G1 X-23.2362 Y-8.5916
+G1 X-23.4999 Y-8.5770
+G1 X-23.7637 Y-8.5624
+G1 X-24.0274 Y-8.5479
+G1 X-24.2911 Y-8.5333
+G1 X-24.5548 Y-8.5187
+G1 X-24.8185 Y-8.5041
+G1 X-25.0821 Y-8.4895
+G1 X-25.3457 Y-8.4750
+G1 X-25.6094 Y-8.4604
+G1 X-25.8729 Y-8.4458
+G1 X-26.1365 Y-8.4312
+G1 X-26.4001 Y-8.4166
+G1 X-26.6636 Y-8.4021
+G1 X-26.9271 Y-8.3875
+G1 X-27.1906 Y-8.3729
+G1 X-27.4541 Y-8.3583
+G1 X-27.7176 Y-8.3437
+G1 X-27.9810 Y-8.3292
+G1 X-28.2445 Y-8.3146
+G1 X-28.5079 Y-8.3000
+G1 X-28.7713 Y-8.2854
+G1 X-29.0347 Y-8.2708
+G1 X-29.2980 Y-8.2563
+G1 X-29.5614 Y-8.2417
+G1 X-29.8247 Y-8.2271
+G1 X-30.0880 Y-8.2125
+G1 X-30.3513 Y-8.1979
+G1 X-30.6146 Y-8.1834
+G1 X-30.8778 Y-8.1688
+G1 X-31.1411 Y-8.1542
+G1 X-31.4043 Y-8.1396
+G1 X-31.6675 Y-8.1251
+(Safe converted infill-to-infill connector to fill-infill path 86)
+G1 X-32.0182 Y-8.7811
+(fill-infill path 86, 42 points)
+G1 X-31.7521 Y-8.7959
+G1 X-31.4859 Y-8.8106
+G1 X-31.2197 Y-8.8253
+G1 X-30.9536 Y-8.8400
+G1 X-30.6873 Y-8.8547
+G1 X-30.4211 Y-8.8695
+G1 X-30.1549 Y-8.8842
+G1 X-29.8886 Y-8.8989
+G1 X-29.6223 Y-8.9136
+G1 X-29.3560 Y-8.9284
+G1 X-29.0897 Y-8.9431
+G1 X-28.8234 Y-8.9578
+G1 X-28.5570 Y-8.9725
+G1 X-28.2906 Y-8.9872
+G1 X-28.0242 Y-9.0020
+G1 X-27.7578 Y-9.0167
+G1 X-27.4914 Y-9.0314
+G1 X-27.2249 Y-9.0461
+G1 X-26.9584 Y-9.0609
+G1 X-26.6919 Y-9.0756
+G1 X-26.4254 Y-9.0903
+G1 X-26.1589 Y-9.1050
+G1 X-25.8923 Y-9.1197
+G1 X-25.6257 Y-9.1345
+G1 X-25.3591 Y-9.1492
+G1 X-25.0925 Y-9.1639
+G1 X-24.8259 Y-9.1786
+G1 X-24.5592 Y-9.1934
+G1 X-24.2925 Y-9.2081
+G1 X-24.0258 Y-9.2228
+G1 X-23.7591 Y-9.2375
+G1 X-23.4923 Y-9.2522
+G1 X-23.2256 Y-9.2670
+G1 X-22.9588 Y-9.2817
+G1 X-22.6920 Y-9.2964
+G1 X-22.4251 Y-9.3111
+G1 X-22.1583 Y-9.3259
+G1 X-21.8914 Y-9.3406
+G1 X-21.6245 Y-9.3553
+G1 X-21.3576 Y-9.3700
+G1 X-21.0907 Y-9.3847
+(Safe converted infill-to-infill connector to fill-infill path 87)
+G1 X-21.4723 Y-10.0385
+(fill-infill path 87, 40 points)
+G1 X-21.7371 Y-10.0239
+G1 X-22.0018 Y-10.0093
+G1 X-22.2666 Y-9.9948
+G1 X-22.5313 Y-9.9802
+G1 X-22.7960 Y-9.9656
+G1 X-23.0607 Y-9.9510
+G1 X-23.3253 Y-9.9364
+G1 X-23.5899 Y-9.9219
+G1 X-23.8545 Y-9.9073
+G1 X-24.1191 Y-9.8927
+G1 X-24.3837 Y-9.8781
+G1 X-24.6482 Y-9.8635
+G1 X-24.9127 Y-9.8490
+G1 X-25.1772 Y-9.8344
+G1 X-25.4417 Y-9.8198
+G1 X-25.7062 Y-9.8052
+G1 X-25.9706 Y-9.7906
+G1 X-26.2350 Y-9.7761
+G1 X-26.4994 Y-9.7615
+G1 X-26.7638 Y-9.7469
+G1 X-27.0281 Y-9.7323
+G1 X-27.2924 Y-9.7177
+G1 X-27.5567 Y-9.7032
+G1 X-27.8210 Y-9.6886
+G1 X-28.0853 Y-9.6740
+G1 X-28.3495 Y-9.6594
+G1 X-28.6137 Y-9.6448
+G1 X-28.8779 Y-9.6303
+G1 X-29.1421 Y-9.6157
+G1 X-29.4063 Y-9.6011
+G1 X-29.6704 Y-9.5865
+G1 X-29.9345 Y-9.5720
+G1 X-30.1986 Y-9.5574
+G1 X-30.4627 Y-9.5428
+G1 X-30.7267 Y-9.5282
+G1 X-30.9908 Y-9.5136
+G1 X-31.2548 Y-9.4991
+G1 X-31.5188 Y-9.4845
+G1 X-31.7827 Y-9.4699
+(Safe converted infill-to-infill connector to fill-infill path 88)
+G1 X-32.1436 Y-10.1260
+(fill-infill path 88, 42 points)
+G1 X-31.8766 Y-10.1407
+G1 X-31.6096 Y-10.1554
+G1 X-31.3426 Y-10.1701
+G1 X-31.0755 Y-10.1849
+G1 X-30.8085 Y-10.1996
+G1 X-30.5414 Y-10.2143
+G1 X-30.2743 Y-10.2290
+G1 X-30.0072 Y-10.2438
+G1 X-29.7400 Y-10.2585
+G1 X-29.4728 Y-10.2732
+G1 X-29.2056 Y-10.2879
+G1 X-28.9384 Y-10.3026
+G1 X-28.6712 Y-10.3174
+G1 X-28.4039 Y-10.3321
+G1 X-28.1366 Y-10.3468
+G1 X-27.8693 Y-10.3615
+G1 X-27.6019 Y-10.3763
+G1 X-27.3346 Y-10.3910
+G1 X-27.0672 Y-10.4057
+G1 X-26.7998 Y-10.4204
+G1 X-26.5323 Y-10.4351
+G1 X-26.2649 Y-10.4499
+G1 X-25.9974 Y-10.4646
+G1 X-25.7299 Y-10.4793
+G1 X-25.4624 Y-10.4940
+G1 X-25.1948 Y-10.5088
+G1 X-24.9273 Y-10.5235
+G1 X-24.6597 Y-10.5382
+G1 X-24.3920 Y-10.5529
+G1 X-24.1244 Y-10.5676
+G1 X-23.8567 Y-10.5824
+G1 X-23.5890 Y-10.5971
+G1 X-23.3213 Y-10.6118
+G1 X-23.0536 Y-10.6265
+G1 X-22.7858 Y-10.6413
+G1 X-22.5180 Y-10.6560
+G1 X-22.2502 Y-10.6707
+G1 X-21.9823 Y-10.6854
+G1 X-21.7145 Y-10.7001
+G1 X-21.4466 Y-10.7149
+G1 X-21.1787 Y-10.7296
+(Safe converted infill-to-infill connector to fill-infill path 89)
+G1 X-21.5678 Y-11.3833
+(fill-infill path 89, 40 points)
+G1 X-21.8337 Y-11.3688
+G1 X-22.0995 Y-11.3542
+G1 X-22.3652 Y-11.3396
+G1 X-22.6310 Y-11.3250
+G1 X-22.8967 Y-11.3104
+G1 X-23.1624 Y-11.2959
+G1 X-23.4281 Y-11.2813
+G1 X-23.6937 Y-11.2667
+G1 X-23.9594 Y-11.2521
+G1 X-24.2250 Y-11.2375
+G1 X-24.4905 Y-11.2230
+G1 X-24.7561 Y-11.2084
+G1 X-25.0216 Y-11.1938
+G1 X-25.2871 Y-11.1792
+G1 X-25.5526 Y-11.1646
+G1 X-25.8180 Y-11.1501
+G1 X-26.0834 Y-11.1355
+G1 X-26.3488 Y-11.1209
+G1 X-26.6142 Y-11.1063
+G1 X-26.8795 Y-11.0918
+G1 X-27.1449 Y-11.0772
+G1 X-27.4102 Y-11.0626
+G1 X-27.6754 Y-11.0480
+G1 X-27.9407 Y-11.0334
+G1 X-28.2059 Y-11.0189
+G1 X-28.4711 Y-11.0043
+G1 X-28.7363 Y-10.9897
+G1 X-29.0014 Y-10.9751
+G1 X-29.2665 Y-10.9605
+G1 X-29.5317 Y-10.9460
+G1 X-29.7967 Y-10.9314
+G1 X-30.0618 Y-10.9168
+G1 X-30.3268 Y-10.9022
+G1 X-30.5918 Y-10.8876
+G1 X-30.8568 Y-10.8731
+G1 X-31.1218 Y-10.8585
+G1 X-31.3867 Y-10.8439
+G1 X-31.6516 Y-10.8293
+G1 X-31.9165 Y-10.8147
+(Safe converted infill-to-infill connector to fill-infill path 90)
+G1 X-32.2878 Y-11.4708
+(fill-infill path 90, 42 points)
+G1 X-32.0198 Y-11.4856
+G1 X-31.7518 Y-11.5003
+G1 X-31.4838 Y-11.5150
+G1 X-31.2158 Y-11.5297
+G1 X-30.9477 Y-11.5444
+G1 X-30.6796 Y-11.5592
+G1 X-30.4115 Y-11.5739
+G1 X-30.1433 Y-11.5886
+G1 X-29.8751 Y-11.6033
+G1 X-29.6069 Y-11.6181
+G1 X-29.3387 Y-11.6328
+G1 X-29.0704 Y-11.6475
+G1 X-28.8021 Y-11.6622
+G1 X-28.5338 Y-11.6769
+G1 X-28.2655 Y-11.6917
+G1 X-27.9971 Y-11.7064
+G1 X-27.7287 Y-11.7211
+G1 X-27.4603 Y-11.7358
+G1 X-27.1919 Y-11.7505
+G1 X-26.9234 Y-11.7653
+G1 X-26.6549 Y-11.7800
+G1 X-26.3864 Y-11.7947
+G1 X-26.1178 Y-11.8094
+G1 X-25.8492 Y-11.8242
+G1 X-25.5806 Y-11.8389
+G1 X-25.3120 Y-11.8536
+G1 X-25.0433 Y-11.8683
+G1 X-24.7747 Y-11.8830
+G1 X-24.5059 Y-11.8978
+G1 X-24.2372 Y-11.9125
+G1 X-23.9684 Y-11.9272
+G1 X-23.6996 Y-11.9419
+G1 X-23.4308 Y-11.9567
+G1 X-23.1619 Y-11.9714
+G1 X-22.8931 Y-11.9861
+G1 X-22.6241 Y-12.0008
+G1 X-22.3552 Y-12.0155
+G1 X-22.0862 Y-12.0303
+G1 X-21.8172 Y-12.0450
+G1 X-21.5482 Y-12.0597
+G1 X-21.2792 Y-12.0744
+(Safe converted infill-to-infill connector to fill-infill path 91)
+G1 X-21.6762 Y-12.7282
+(fill-infill path 91, 40 points)
+G1 X-21.9433 Y-12.7136
+G1 X-22.2103 Y-12.6990
+G1 X-22.4772 Y-12.6844
+G1 X-22.7442 Y-12.6699
+G1 X-23.0111 Y-12.6553
+G1 X-23.2780 Y-12.6407
+G1 X-23.5448 Y-12.6261
+G1 X-23.8116 Y-12.6116
+G1 X-24.0784 Y-12.5970
+G1 X-24.3452 Y-12.5824
+G1 X-24.6119 Y-12.5678
+G1 X-24.8786 Y-12.5532
+G1 X-25.1453 Y-12.5387
+G1 X-25.4120 Y-12.5241
+G1 X-25.6786 Y-12.5095
+G1 X-25.9452 Y-12.4949
+G1 X-26.2117 Y-12.4803
+G1 X-26.4783 Y-12.4658
+G1 X-26.7448 Y-12.4512
+G1 X-27.0113 Y-12.4366
+G1 X-27.2777 Y-12.4220
+G1 X-27.5441 Y-12.4074
+G1 X-27.8105 Y-12.3929
+G1 X-28.0769 Y-12.3783
+G1 X-28.3432 Y-12.3637
+G1 X-28.6096 Y-12.3491
+G1 X-28.8758 Y-12.3345
+G1 X-29.1421 Y-12.3200
+G1 X-29.4083 Y-12.3054
+G1 X-29.6745 Y-12.2908
+G1 X-29.9407 Y-12.2762
+G1 X-30.2068 Y-12.2616
+G1 X-30.4730 Y-12.2471
+G1 X-30.7390 Y-12.2325
+G1 X-31.0051 Y-12.2179
+G1 X-31.2711 Y-12.2033
+G1 X-31.5372 Y-12.1888
+G1 X-31.8031 Y-12.1742
+G1 X-32.0691 Y-12.1596
+(Safe converted infill-to-infill connector to fill-infill path 92)
+G1 X-32.4513 Y-12.8157
+(fill-infill path 92, 42 points)
+G1 X-32.1822 Y-12.8304
+G1 X-31.9130 Y-12.8451
+G1 X-31.6438 Y-12.8598
+G1 X-31.3746 Y-12.8746
+G1 X-31.1054 Y-12.8893
+G1 X-30.8361 Y-12.9040
+G1 X-30.5668 Y-12.9187
+G1 X-30.2975 Y-12.9335
+G1 X-30.0281 Y-12.9482
+G1 X-29.7587 Y-12.9629
+G1 X-29.4893 Y-12.9776
+G1 X-29.2198 Y-12.9923
+G1 X-28.9504 Y-13.0071
+G1 X-28.6809 Y-13.0218
+G1 X-28.4113 Y-13.0365
+G1 X-28.1417 Y-13.0512
+G1 X-27.8721 Y-13.0660
+G1 X-27.6025 Y-13.0807
+G1 X-27.3328 Y-13.0954
+G1 X-27.0632 Y-13.1101
+G1 X-26.7934 Y-13.1248
+G1 X-26.5237 Y-13.1396
+G1 X-26.2539 Y-13.1543
+G1 X-25.9841 Y-13.1690
+G1 X-25.7142 Y-13.1837
+G1 X-25.4444 Y-13.1985
+G1 X-25.1744 Y-13.2132
+G1 X-24.9045 Y-13.2279
+G1 X-24.6345 Y-13.2426
+G1 X-24.3645 Y-13.2573
+G1 X-24.0945 Y-13.2721
+G1 X-23.8244 Y-13.2868
+G1 X-23.5543 Y-13.3015
+G1 X-23.2842 Y-13.3162
+G1 X-23.0141 Y-13.3310
+G1 X-22.7439 Y-13.3457
+G1 X-22.4737 Y-13.3604
+G1 X-22.2034 Y-13.3751
+G1 X-21.9331 Y-13.3898
+G1 X-21.6628 Y-13.4046
+G1 X-21.3925 Y-13.4193
+(Safe converted infill-to-infill connector to fill-infill path 93)
+G1 X-21.7978 Y-14.0730
+(fill-infill path 93, 40 points)
+G1 X-22.0662 Y-14.0585
+G1 X-22.3345 Y-14.0439
+G1 X-22.6029 Y-14.0293
+G1 X-22.8711 Y-14.0147
+G1 X-23.1394 Y-14.0001
+G1 X-23.4076 Y-13.9856
+G1 X-23.6758 Y-13.9710
+G1 X-23.9440 Y-13.9564
+G1 X-24.2121 Y-13.9418
+G1 X-24.4802 Y-13.9272
+G1 X-24.7482 Y-13.9127
+G1 X-25.0163 Y-13.8981
+G1 X-25.2843 Y-13.8835
+G1 X-25.5522 Y-13.8689
+G1 X-25.8201 Y-13.8543
+G1 X-26.0880 Y-13.8398
+G1 X-26.3559 Y-13.8252
+G1 X-26.6237 Y-13.8106
+G1 X-26.8915 Y-13.7960
+G1 X-27.1593 Y-13.7814
+G1 X-27.4271 Y-13.7669
+G1 X-27.6948 Y-13.7523
+G1 X-27.9624 Y-13.7377
+G1 X-28.2301 Y-13.7231
+G1 X-28.4977 Y-13.7085
+G1 X-28.7653 Y-13.6940
+G1 X-29.0328 Y-13.6794
+G1 X-29.3004 Y-13.6648
+G1 X-29.5678 Y-13.6502
+G1 X-29.8353 Y-13.6357
+G1 X-30.1027 Y-13.6211
+G1 X-30.3701 Y-13.6065
+G1 X-30.6375 Y-13.5919
+G1 X-30.9048 Y-13.5773
+G1 X-31.1721 Y-13.5628
+G1 X-31.4394 Y-13.5482
+G1 X-31.7066 Y-13.5336
+G1 X-31.9738 Y-13.5190
+G1 X-32.2410 Y-13.5044
+(Safe converted infill-to-infill connector to fill-infill path 94)
+G1 X-32.6345 Y-14.1605
+(fill-infill path 94, 42 points)
+G1 X-32.3641 Y-14.1752
+G1 X-32.0936 Y-14.1900
+G1 X-31.8231 Y-14.2047
+G1 X-31.5526 Y-14.2194
+G1 X-31.2820 Y-14.2341
+G1 X-31.0114 Y-14.2489
+G1 X-30.7408 Y-14.2636
+G1 X-30.4701 Y-14.2783
+G1 X-30.1994 Y-14.2930
+G1 X-29.9286 Y-14.3077
+G1 X-29.6579 Y-14.3225
+G1 X-29.3871 Y-14.3372
+G1 X-29.1162 Y-14.3519
+G1 X-28.8454 Y-14.3666
+G1 X-28.5745 Y-14.3814
+G1 X-28.3035 Y-14.3961
+G1 X-28.0326 Y-14.4108
+G1 X-27.7615 Y-14.4255
+G1 X-27.4905 Y-14.4402
+G1 X-27.2194 Y-14.4550
+G1 X-26.9483 Y-14.4697
+G1 X-26.6772 Y-14.4844
+G1 X-26.4060 Y-14.4991
+G1 X-26.1348 Y-14.5139
+G1 X-25.8635 Y-14.5286
+G1 X-25.5923 Y-14.5433
+G1 X-25.3209 Y-14.5580
+G1 X-25.0496 Y-14.5727
+G1 X-24.7782 Y-14.5875
+G1 X-24.5068 Y-14.6022
+G1 X-24.2353 Y-14.6169
+G1 X-23.9639 Y-14.6316
+G1 X-23.6923 Y-14.6464
+G1 X-23.4208 Y-14.6611
+G1 X-23.1492 Y-14.6758
+G1 X-22.8776 Y-14.6905
+G1 X-22.6059 Y-14.7052
+G1 X-22.3342 Y-14.7200
+G1 X-22.0625 Y-14.7347
+G1 X-21.7907 Y-14.7494
+G1 X-21.5189 Y-14.7641
+(Safe converted infill-to-infill connector to fill-infill path 95)
+G1 X-21.9329 Y-15.4179
+(fill-infill path 95, 40 points)
+G1 X-22.2028 Y-15.4033
+G1 X-22.4727 Y-15.3887
+G1 X-22.7425 Y-15.3741
+G1 X-23.0123 Y-15.3596
+G1 X-23.2820 Y-15.3450
+G1 X-23.5518 Y-15.3304
+G1 X-23.8215 Y-15.3158
+G1 X-24.0911 Y-15.3012
+G1 X-24.3607 Y-15.2867
+G1 X-24.6303 Y-15.2721
+G1 X-24.8999 Y-15.2575
+G1 X-25.1694 Y-15.2429
+G1 X-25.4388 Y-15.2283
+G1 X-25.7083 Y-15.2138
+G1 X-25.9777 Y-15.1992
+G1 X-26.2470 Y-15.1846
+G1 X-26.5164 Y-15.1700
+G1 X-26.7857 Y-15.1555
+G1 X-27.0549 Y-15.1409
+G1 X-27.3241 Y-15.1263
+G1 X-27.5933 Y-15.1117
+G1 X-27.8625 Y-15.0971
+G1 X-28.1316 Y-15.0826
+G1 X-28.4007 Y-15.0680
+G1 X-28.6697 Y-15.0534
+G1 X-28.9387 Y-15.0388
+G1 X-29.2077 Y-15.0242
+G1 X-29.4767 Y-15.0097
+G1 X-29.7456 Y-14.9951
+G1 X-30.0145 Y-14.9805
+G1 X-30.2833 Y-14.9659
+G1 X-30.5521 Y-14.9513
+G1 X-30.8209 Y-14.9368
+G1 X-31.0896 Y-14.9222
+G1 X-31.3583 Y-14.9076
+G1 X-31.6270 Y-14.8930
+G1 X-31.8956 Y-14.8784
+G1 X-32.1642 Y-14.8639
+G1 X-32.4328 Y-14.8493
+(Safe converted infill-to-infill connector to fill-infill path 96)
+G1 X-32.8380 Y-15.5054
+(fill-infill path 96, 42 points)
+G1 X-32.5661 Y-15.5201
+G1 X-32.2942 Y-15.5348
+G1 X-32.0222 Y-15.5495
+G1 X-31.7501 Y-15.5643
+G1 X-31.4781 Y-15.5790
+G1 X-31.2060 Y-15.5937
+G1 X-30.9338 Y-15.6084
+G1 X-30.6617 Y-15.6231
+G1 X-30.3895 Y-15.6379
+G1 X-30.1172 Y-15.6526
+G1 X-29.8449 Y-15.6673
+G1 X-29.5726 Y-15.6820
+G1 X-29.3003 Y-15.6968
+G1 X-29.0279 Y-15.7115
+G1 X-28.7554 Y-15.7262
+G1 X-28.4830 Y-15.7409
+G1 X-28.2105 Y-15.7556
+G1 X-27.9379 Y-15.7704
+G1 X-27.6653 Y-15.7851
+G1 X-27.3927 Y-15.7998
+G1 X-27.1200 Y-15.8145
+G1 X-26.8473 Y-15.8293
+G1 X-26.5746 Y-15.8440
+G1 X-26.3018 Y-15.8587
+G1 X-26.0290 Y-15.8734
+G1 X-25.7562 Y-15.8881
+G1 X-25.4833 Y-15.9029
+G1 X-25.2104 Y-15.9176
+G1 X-24.9374 Y-15.9323
+G1 X-24.6644 Y-15.9470
+G1 X-24.3914 Y-15.9618
+G1 X-24.1183 Y-15.9765
+G1 X-23.8452 Y-15.9912
+G1 X-23.5720 Y-16.0059
+G1 X-23.2988 Y-16.0206
+G1 X-23.0256 Y-16.0354
+G1 X-22.7523 Y-16.0501
+G1 X-22.4790 Y-16.0648
+G1 X-22.2056 Y-16.0795
+G1 X-21.9323 Y-16.0943
+G1 X-21.6588 Y-16.1090
+(Safe converted infill-to-infill connector to fill-infill path 97)
+G1 X-22.0819 Y-16.7627
+(fill-infill path 97, 40 points)
+G1 X-22.3535 Y-16.7481
+G1 X-22.6250 Y-16.7336
+G1 X-22.8966 Y-16.7190
+G1 X-23.1680 Y-16.7044
+G1 X-23.4395 Y-16.6898
+G1 X-23.7109 Y-16.6753
+G1 X-23.9822 Y-16.6607
+G1 X-24.2535 Y-16.6461
+G1 X-24.5248 Y-16.6315
+G1 X-24.7960 Y-16.6169
+G1 X-25.0672 Y-16.6024
+G1 X-25.3384 Y-16.5878
+G1 X-25.6095 Y-16.5732
+G1 X-25.8806 Y-16.5586
+G1 X-26.1516 Y-16.5440
+G1 X-26.4226 Y-16.5295
+G1 X-26.6936 Y-16.5149
+G1 X-26.9645 Y-16.5003
+G1 X-27.2354 Y-16.4857
+G1 X-27.5062 Y-16.4711
+G1 X-27.7770 Y-16.4566
+G1 X-28.0478 Y-16.4420
+G1 X-28.3185 Y-16.4274
+G1 X-28.5892 Y-16.4128
+G1 X-28.8599 Y-16.3982
+G1 X-29.1305 Y-16.3837
+G1 X-29.4010 Y-16.3691
+G1 X-29.6716 Y-16.3545
+G1 X-29.9421 Y-16.3399
+G1 X-30.2125 Y-16.3253
+G1 X-30.4829 Y-16.3108
+G1 X-30.7533 Y-16.2962
+G1 X-31.0237 Y-16.2816
+G1 X-31.2940 Y-16.2670
+G1 X-31.5642 Y-16.2525
+G1 X-31.8344 Y-16.2379
+G1 X-32.1046 Y-16.2233
+G1 X-32.3748 Y-16.2087
+G1 X-32.6449 Y-16.1941
+(Safe converted infill-to-infill connector to fill-infill path 98)
+G1 X-33.0624 Y-16.8502
+(fill-infill path 98, 42 points)
+G1 X-32.7888 Y-16.8649
+G1 X-32.5152 Y-16.8797
+G1 X-32.2416 Y-16.8944
+G1 X-31.9679 Y-16.9091
+G1 X-31.6942 Y-16.9238
+G1 X-31.4204 Y-16.9386
+G1 X-31.1466 Y-16.9533
+G1 X-30.8728 Y-16.9680
+G1 X-30.5989 Y-16.9827
+G1 X-30.3250 Y-16.9974
+G1 X-30.0510 Y-17.0122
+G1 X-29.7770 Y-17.0269
+G1 X-29.5030 Y-17.0416
+G1 X-29.2289 Y-17.0563
+G1 X-28.9548 Y-17.0710
+G1 X-28.6806 Y-17.0858
+G1 X-28.4064 Y-17.1005
+G1 X-28.1321 Y-17.1152
+G1 X-27.8578 Y-17.1299
+G1 X-27.5835 Y-17.1447
+G1 X-27.3091 Y-17.1594
+G1 X-27.0347 Y-17.1741
+G1 X-26.7602 Y-17.1888
+G1 X-26.4857 Y-17.2035
+G1 X-26.2112 Y-17.2183
+G1 X-25.9366 Y-17.2330
+G1 X-25.6620 Y-17.2477
+G1 X-25.3873 Y-17.2624
+G1 X-25.1126 Y-17.2772
+G1 X-24.8378 Y-17.2919
+G1 X-24.5630 Y-17.3066
+G1 X-24.2882 Y-17.3213
+G1 X-24.0133 Y-17.3360
+G1 X-23.7384 Y-17.3508
+G1 X-23.4634 Y-17.3655
+G1 X-23.1884 Y-17.3802
+G1 X-22.9133 Y-17.3949
+G1 X-22.6382 Y-17.4097
+G1 X-22.3631 Y-17.4244
+G1 X-22.0879 Y-17.4391
+G1 X-21.8127 Y-17.4538
+(Safe converted infill-to-infill connector to fill-infill path 99)
+G1 X-22.2453 Y-18.1076
+(fill-infill path 99, 40 points)
+G1 X-22.5187 Y-18.0930
+G1 X-22.7921 Y-18.0784
+G1 X-23.0655 Y-18.0638
+G1 X-23.3388 Y-18.0493
+G1 X-23.6121 Y-18.0347
+G1 X-23.8854 Y-18.0201
+G1 X-24.1586 Y-18.0055
+G1 X-24.4317 Y-17.9909
+G1 X-24.7048 Y-17.9764
+G1 X-24.9779 Y-17.9618
+G1 X-25.2509 Y-17.9472
+G1 X-25.5239 Y-17.9326
+G1 X-25.7968 Y-17.9180
+G1 X-26.0697 Y-17.9035
+G1 X-26.3425 Y-17.8889
+G1 X-26.6153 Y-17.8743
+G1 X-26.8881 Y-17.8597
+G1 X-27.1608 Y-17.8451
+G1 X-27.4335 Y-17.8306
+G1 X-27.7061 Y-17.8160
+G1 X-27.9787 Y-17.8014
+G1 X-28.2513 Y-17.7868
+G1 X-28.5238 Y-17.7722
+G1 X-28.7962 Y-17.7577
+G1 X-29.0686 Y-17.7431
+G1 X-29.3410 Y-17.7285
+G1 X-29.6133 Y-17.7139
+G1 X-29.8856 Y-17.6994
+G1 X-30.1579 Y-17.6848
+G1 X-30.4301 Y-17.6702
+G1 X-30.7022 Y-17.6556
+G1 X-30.9744 Y-17.6410
+G1 X-31.2464 Y-17.6265
+G1 X-31.5185 Y-17.6119
+G1 X-31.7905 Y-17.5973
+G1 X-32.0624 Y-17.5827
+G1 X-32.3343 Y-17.5681
+G1 X-32.6062 Y-17.5536
+G1 X-32.8780 Y-17.5390
+(Safe converted infill-to-infill connector to fill-infill path 100)
+G1 X-33.3083 Y-18.1951
+(fill-infill path 100, 42 points)
+G1 X-33.0330 Y-18.2098
+G1 X-32.7576 Y-18.2245
+G1 X-32.4821 Y-18.2392
+G1 X-32.2066 Y-18.2540
+G1 X-31.9310 Y-18.2687
+G1 X-31.6554 Y-18.2834
+G1 X-31.3798 Y-18.2981
+G1 X-31.1041 Y-18.3128
+G1 X-30.8284 Y-18.3276
+G1 X-30.5526 Y-18.3423
+G1 X-30.2768 Y-18.3570
+G1 X-30.0009 Y-18.3717
+G1 X-29.7250 Y-18.3865
+G1 X-29.4491 Y-18.4012
+G1 X-29.1731 Y-18.4159
+G1 X-28.8970 Y-18.4306
+G1 X-28.6209 Y-18.4453
+G1 X-28.3448 Y-18.4601
+G1 X-28.0686 Y-18.4748
+G1 X-27.7924 Y-18.4895
+G1 X-27.5161 Y-18.5042
+G1 X-27.2398 Y-18.5190
+G1 X-26.9634 Y-18.5337
+G1 X-26.6870 Y-18.5484
+G1 X-26.4105 Y-18.5631
+G1 X-26.1340 Y-18.5778
+G1 X-25.8575 Y-18.5926
+G1 X-25.5809 Y-18.6073
+G1 X-25.3043 Y-18.6220
+G1 X-25.0276 Y-18.6367
+G1 X-24.7508 Y-18.6515
+G1 X-24.4741 Y-18.6662
+G1 X-24.1972 Y-18.6809
+G1 X-23.9204 Y-18.6956
+G1 X-23.6434 Y-18.7103
+G1 X-23.3665 Y-18.7251
+G1 X-23.0895 Y-18.7398
+G1 X-22.8124 Y-18.7545
+G1 X-22.5353 Y-18.7692
+G1 X-22.2581 Y-18.7840
+G1 X-21.9809 Y-18.7987
+(Safe converted infill-to-infill connector to fill-infill path 101)
+G1 X-22.4235 Y-19.4524
+(fill-infill path 101, 40 points)
+G1 X-22.6990 Y-19.4378
+G1 X-22.9745 Y-19.4233
+G1 X-23.2499 Y-19.4087
+G1 X-23.5252 Y-19.3941
+G1 X-23.8006 Y-19.3795
+G1 X-24.0758 Y-19.3649
+G1 X-24.3510 Y-19.3504
+G1 X-24.6262 Y-19.3358
+G1 X-24.9013 Y-19.3212
+G1 X-25.1764 Y-19.3066
+G1 X-25.4514 Y-19.2920
+G1 X-25.7264 Y-19.2775
+G1 X-26.0013 Y-19.2629
+G1 X-26.2762 Y-19.2483
+G1 X-26.5510 Y-19.2337
+G1 X-26.8258 Y-19.2192
+G1 X-27.1005 Y-19.2046
+G1 X-27.3752 Y-19.1900
+G1 X-27.6498 Y-19.1754
+G1 X-27.9244 Y-19.1608
+G1 X-28.1990 Y-19.1463
+G1 X-28.4735 Y-19.1317
+G1 X-28.7479 Y-19.1171
+G1 X-29.0223 Y-19.1025
+G1 X-29.2967 Y-19.0879
+G1 X-29.5710 Y-19.0734
+G1 X-29.8453 Y-19.0588
+G1 X-30.1195 Y-19.0442
+G1 X-30.3937 Y-19.0296
+G1 X-30.6678 Y-19.0150
+G1 X-30.9419 Y-19.0005
+G1 X-31.2160 Y-18.9859
+G1 X-31.4899 Y-18.9713
+G1 X-31.7639 Y-18.9567
+G1 X-32.0378 Y-18.9421
+G1 X-32.3116 Y-18.9276
+G1 X-32.5855 Y-18.9130
+G1 X-32.8592 Y-18.8984
+G1 X-33.1329 Y-18.8838
+(Safe converted infill-to-infill connector to fill-infill path 102)
+G1 X-33.5766 Y-19.5399
+(fill-infill path 102, 42 points)
+G1 X-33.2992 Y-19.5546
+G1 X-33.0218 Y-19.5694
+G1 X-32.7444 Y-19.5841
+G1 X-32.4669 Y-19.5988
+G1 X-32.1893 Y-19.6135
+G1 X-31.9117 Y-19.6282
+G1 X-31.6340 Y-19.6430
+G1 X-31.3563 Y-19.6577
+G1 X-31.0786 Y-19.6724
+G1 X-30.8008 Y-19.6871
+G1 X-30.5229 Y-19.7019
+G1 X-30.2450 Y-19.7166
+G1 X-29.9670 Y-19.7313
+G1 X-29.6890 Y-19.7460
+G1 X-29.4110 Y-19.7607
+G1 X-29.1329 Y-19.7755
+G1 X-28.8547 Y-19.7902
+G1 X-28.5765 Y-19.8049
+G1 X-28.2983 Y-19.8196
+G1 X-28.0200 Y-19.8344
+G1 X-27.7416 Y-19.8491
+G1 X-27.4632 Y-19.8638
+G1 X-27.1848 Y-19.8785
+G1 X-26.9063 Y-19.8932
+G1 X-26.6278 Y-19.9080
+G1 X-26.3492 Y-19.9227
+G1 X-26.0705 Y-19.9374
+G1 X-25.7918 Y-19.9521
+G1 X-25.5131 Y-19.9669
+G1 X-25.2343 Y-19.9816
+G1 X-24.9554 Y-19.9963
+G1 X-24.6765 Y-20.0110
+G1 X-24.3976 Y-20.0257
+G1 X-24.1186 Y-20.0405
+G1 X-23.8395 Y-20.0552
+G1 X-23.5604 Y-20.0699
+G1 X-23.2812 Y-20.0846
+G1 X-23.0020 Y-20.0994
+G1 X-22.7228 Y-20.1141
+G1 X-22.4435 Y-20.1288
+G1 X-22.1641 Y-20.1435
+(Safe converted infill-to-infill connector to fill-infill path 103)
+G1 X-22.6173 Y-20.7973
+(fill-infill path 103, 40 points)
+G1 X-22.8950 Y-20.7827
+G1 X-23.1726 Y-20.7681
+G1 X-23.4503 Y-20.7535
+G1 X-23.7278 Y-20.7390
+G1 X-24.0053 Y-20.7244
+G1 X-24.2828 Y-20.7098
+G1 X-24.5602 Y-20.6952
+G1 X-24.8376 Y-20.6806
+G1 X-25.1149 Y-20.6661
+G1 X-25.3921 Y-20.6515
+G1 X-25.6693 Y-20.6369
+G1 X-25.9465 Y-20.6223
+G1 X-26.2236 Y-20.6077
+G1 X-26.5006 Y-20.5932
+G1 X-26.7776 Y-20.5786
+G1 X-27.0546 Y-20.5640
+G1 X-27.3315 Y-20.5494
+G1 X-27.6083 Y-20.5348
+G1 X-27.8851 Y-20.5203
+G1 X-28.1619 Y-20.5057
+G1 X-28.4385 Y-20.4911
+G1 X-28.7152 Y-20.4765
+G1 X-28.9918 Y-20.4619
+G1 X-29.2683 Y-20.4474
+G1 X-29.5448 Y-20.4328
+G1 X-29.8212 Y-20.4182
+G1 X-30.0976 Y-20.4036
+G1 X-30.3740 Y-20.3890
+G1 X-30.6503 Y-20.3745
+G1 X-30.9265 Y-20.3599
+G1 X-31.2027 Y-20.3453
+G1 X-31.4788 Y-20.3307
+G1 X-31.7549 Y-20.3162
+G1 X-32.0309 Y-20.3016
+G1 X-32.3069 Y-20.2870
+G1 X-32.5829 Y-20.2724
+G1 X-32.8587 Y-20.2578
+G1 X-33.1346 Y-20.2433
+G1 X-33.4104 Y-20.2287
+(Safe converted infill-to-infill connector to fill-infill path 104)
+G1 X-33.8680 Y-20.8848
+(fill-infill path 104, 42 points)
+G1 X-33.5885 Y-20.8995
+G1 X-33.3089 Y-20.9142
+G1 X-33.0293 Y-20.9289
+G1 X-32.7496 Y-20.9436
+G1 X-32.4698 Y-20.9584
+G1 X-32.1900 Y-20.9731
+G1 X-31.9101 Y-20.9878
+G1 X-31.6302 Y-21.0025
+G1 X-31.3502 Y-21.0173
+G1 X-31.0702 Y-21.0320
+G1 X-30.7902 Y-21.0467
+G1 X-30.5100 Y-21.0614
+G1 X-30.2298 Y-21.0761
+G1 X-29.9496 Y-21.0909
+G1 X-29.6693 Y-21.1056
+G1 X-29.3890 Y-21.1203
+G1 X-29.1086 Y-21.1350
+G1 X-28.8281 Y-21.1498
+G1 X-28.5476 Y-21.1645
+G1 X-28.2671 Y-21.1792
+G1 X-27.9865 Y-21.1939
+G1 X-27.7058 Y-21.2086
+G1 X-27.4251 Y-21.2234
+G1 X-27.1443 Y-21.2381
+G1 X-26.8635 Y-21.2528
+G1 X-26.5826 Y-21.2675
+G1 X-26.3017 Y-21.2823
+G1 X-26.0207 Y-21.2970
+G1 X-25.7396 Y-21.3117
+G1 X-25.4585 Y-21.3264
+G1 X-25.1774 Y-21.3411
+G1 X-24.8962 Y-21.3559
+G1 X-24.6149 Y-21.3706
+G1 X-24.3336 Y-21.3853
+G1 X-24.0522 Y-21.4000
+G1 X-23.7708 Y-21.4148
+G1 X-23.4893 Y-21.4295
+G1 X-23.2078 Y-21.4442
+G1 X-22.9262 Y-21.4589
+G1 X-22.6445 Y-21.4736
+G1 X-22.3628 Y-21.4884
+(Safe converted infill-to-infill connector to fill-infill path 105)
+G1 X-22.8270 Y-22.1421
+(fill-infill path 105, 40 points)
+G1 X-23.1072 Y-22.1275
+G1 X-23.3872 Y-22.1130
+G1 X-23.6673 Y-22.0984
+G1 X-23.9472 Y-22.0838
+G1 X-24.2272 Y-22.0692
+G1 X-24.5070 Y-22.0546
+G1 X-24.7868 Y-22.0401
+G1 X-25.0666 Y-22.0255
+G1 X-25.3462 Y-22.0109
+G1 X-25.6259 Y-21.9963
+G1 X-25.9054 Y-21.9817
+G1 X-26.1850 Y-21.9672
+G1 X-26.4644 Y-21.9526
+G1 X-26.7438 Y-21.9380
+G1 X-27.0232 Y-21.9234
+G1 X-27.3025 Y-21.9088
+G1 X-27.5817 Y-21.8943
+G1 X-27.8609 Y-21.8797
+G1 X-28.1401 Y-21.8651
+G1 X-28.4191 Y-21.8505
+G1 X-28.6982 Y-21.8360
+G1 X-28.9771 Y-21.8214
+G1 X-29.2560 Y-21.8068
+G1 X-29.5349 Y-21.7922
+G1 X-29.8137 Y-21.7776
+G1 X-30.0924 Y-21.7631
+G1 X-30.3711 Y-21.7485
+G1 X-30.6498 Y-21.7339
+G1 X-30.9284 Y-21.7193
+G1 X-31.2069 Y-21.7047
+G1 X-31.4854 Y-21.6902
+G1 X-31.7638 Y-21.6756
+G1 X-32.0421 Y-21.6610
+G1 X-32.3205 Y-21.6464
+G1 X-32.5987 Y-21.6318
+G1 X-32.8769 Y-21.6173
+G1 X-33.1551 Y-21.6027
+G1 X-33.4332 Y-21.5881
+G1 X-33.7112 Y-21.5735
+(Safe converted infill-to-infill connector to fill-infill path 106)
+G1 X-34.1836 Y-22.2296
+(fill-infill path 106, 42 points)
+G1 X-33.9017 Y-22.2443
+G1 X-33.6197 Y-22.2590
+G1 X-33.3377 Y-22.2738
+G1 X-33.0556 Y-22.2885
+G1 X-32.7735 Y-22.3032
+G1 X-32.4913 Y-22.3179
+G1 X-32.2090 Y-22.3327
+G1 X-31.9267 Y-22.3474
+G1 X-31.6443 Y-22.3621
+G1 X-31.3619 Y-22.3768
+G1 X-31.0794 Y-22.3915
+G1 X-30.7969 Y-22.4063
+G1 X-30.5143 Y-22.4210
+G1 X-30.2316 Y-22.4357
+G1 X-29.9489 Y-22.4504
+G1 X-29.6661 Y-22.4652
+G1 X-29.3833 Y-22.4799
+G1 X-29.1004 Y-22.4946
+G1 X-28.8174 Y-22.5093
+G1 X-28.5344 Y-22.5240
+G1 X-28.2514 Y-22.5388
+G1 X-27.9682 Y-22.5535
+G1 X-27.6850 Y-22.5682
+G1 X-27.4018 Y-22.5829
+G1 X-27.1185 Y-22.5977
+G1 X-26.8351 Y-22.6124
+G1 X-26.5517 Y-22.6271
+G1 X-26.2682 Y-22.6418
+G1 X-25.9847 Y-22.6565
+G1 X-25.7011 Y-22.6713
+G1 X-25.4175 Y-22.6860
+G1 X-25.1337 Y-22.7007
+G1 X-24.8500 Y-22.7154
+G1 X-24.5661 Y-22.7302
+G1 X-24.2822 Y-22.7449
+G1 X-23.9983 Y-22.7596
+G1 X-23.7143 Y-22.7743
+G1 X-23.4302 Y-22.7890
+G1 X-23.1461 Y-22.8038
+G1 X-22.8619 Y-22.8185
+G1 X-22.5776 Y-22.8332
+(Safe converted infill-to-infill connector to fill-infill path 107)
+G1 X-23.0535 Y-23.4870
+(fill-infill path 107, 40 points)
+G1 X-23.3363 Y-23.4724
+G1 X-23.6190 Y-23.4578
+G1 X-23.9016 Y-23.4432
+G1 X-24.1842 Y-23.4286
+G1 X-24.4667 Y-23.4141
+G1 X-24.7492 Y-23.3995
+G1 X-25.0315 Y-23.3849
+G1 X-25.3139 Y-23.3703
+G1 X-25.5961 Y-23.3558
+G1 X-25.8783 Y-23.3412
+G1 X-26.1605 Y-23.3266
+G1 X-26.4426 Y-23.3120
+G1 X-26.7246 Y-23.2974
+G1 X-27.0066 Y-23.2829
+G1 X-27.2885 Y-23.2683
+G1 X-27.5703 Y-23.2537
+G1 X-27.8521 Y-23.2391
+G1 X-28.1338 Y-23.2245
+G1 X-28.4155 Y-23.2100
+G1 X-28.6971 Y-23.1954
+G1 X-28.9787 Y-23.1808
+G1 X-29.2602 Y-23.1662
+G1 X-29.5416 Y-23.1516
+G1 X-29.8230 Y-23.1371
+G1 X-30.1043 Y-23.1225
+G1 X-30.3855 Y-23.1079
+G1 X-30.6667 Y-23.0933
+G1 X-30.9478 Y-23.0787
+G1 X-31.2289 Y-23.0642
+G1 X-31.5099 Y-23.0496
+G1 X-31.7909 Y-23.0350
+G1 X-32.0718 Y-23.0204
+G1 X-32.3526 Y-23.0058
+G1 X-32.6334 Y-22.9913
+G1 X-32.9141 Y-22.9767
+G1 X-33.1948 Y-22.9621
+G1 X-33.4754 Y-22.9475
+G1 X-33.7559 Y-22.9329
+G1 X-34.0364 Y-22.9184
+(Safe converted infill-to-infill connector to fill-infill path 108)
+G1 X-34.5243 Y-23.5745
+(fill-infill path 108, 42 points)
+G1 X-34.2398 Y-23.5892
+G1 X-33.9552 Y-23.6039
+G1 X-33.6706 Y-23.6186
+G1 X-33.3860 Y-23.6333
+G1 X-33.1012 Y-23.6481
+G1 X-32.8165 Y-23.6628
+G1 X-32.5316 Y-23.6775
+G1 X-32.2467 Y-23.6922
+G1 X-31.9617 Y-23.7070
+G1 X-31.6767 Y-23.7217
+G1 X-31.3916 Y-23.7364
+G1 X-31.1064 Y-23.7511
+G1 X-30.8212 Y-23.7658
+G1 X-30.5359 Y-23.7806
+G1 X-30.2506 Y-23.7953
+G1 X-29.9652 Y-23.8100
+G1 X-29.6797 Y-23.8247
+G1 X-29.3942 Y-23.8395
+G1 X-29.1086 Y-23.8542
+G1 X-28.8229 Y-23.8689
+G1 X-28.5372 Y-23.8836
+G1 X-28.2514 Y-23.8983
+G1 X-27.9655 Y-23.9131
+G1 X-27.6796 Y-23.9278
+G1 X-27.3936 Y-23.9425
+G1 X-27.1076 Y-23.9572
+G1 X-26.8215 Y-23.9720
+G1 X-26.5353 Y-23.9867
+G1 X-26.2491 Y-24.0014
+G1 X-25.9628 Y-24.0161
+G1 X-25.6764 Y-24.0308
+G1 X-25.3900 Y-24.0456
+G1 X-25.1035 Y-24.0603
+G1 X-24.8170 Y-24.0750
+G1 X-24.5304 Y-24.0897
+G1 X-24.2437 Y-24.1045
+G1 X-23.9569 Y-24.1192
+G1 X-23.6701 Y-24.1339
+G1 X-23.3832 Y-24.1486
+G1 X-23.0963 Y-24.1633
+G1 X-22.8093 Y-24.1781
+(Safe converted infill-to-infill connector to fill-infill path 109)
+G1 X-23.2976 Y-24.8318
+(fill-infill path 109, 40 points)
+G1 X-23.5831 Y-24.8172
+G1 X-23.8687 Y-24.8027
+G1 X-24.1541 Y-24.7881
+G1 X-24.4395 Y-24.7735
+G1 X-24.7248 Y-24.7589
+G1 X-25.0100 Y-24.7443
+G1 X-25.2952 Y-24.7298
+G1 X-25.5803 Y-24.7152
+G1 X-25.8654 Y-24.7006
+G1 X-26.1504 Y-24.6860
+G1 X-26.4353 Y-24.6714
+G1 X-26.7202 Y-24.6569
+G1 X-27.0050 Y-24.6423
+G1 X-27.2897 Y-24.6277
+G1 X-27.5744 Y-24.6131
+G1 X-27.8590 Y-24.5985
+G1 X-28.1435 Y-24.5840
+G1 X-28.4280 Y-24.5694
+G1 X-28.7124 Y-24.5548
+G1 X-28.9967 Y-24.5402
+G1 X-29.2810 Y-24.5256
+G1 X-29.5652 Y-24.5111
+G1 X-29.8494 Y-24.4965
+G1 X-30.1335 Y-24.4819
+G1 X-30.4175 Y-24.4673
+G1 X-30.7014 Y-24.4527
+G1 X-30.9853 Y-24.4382
+G1 X-31.2692 Y-24.4236
+G1 X-31.5529 Y-24.4090
+G1 X-31.8366 Y-24.3944
+G1 X-32.1203 Y-24.3799
+G1 X-32.4039 Y-24.3653
+G1 X-32.6874 Y-24.3507
+G1 X-32.9708 Y-24.3361
+G1 X-33.2542 Y-24.3215
+G1 X-33.5375 Y-24.3070
+G1 X-33.8208 Y-24.2924
+G1 X-34.1040 Y-24.2778
+G1 X-34.3871 Y-24.2632
+(Safe converted infill-to-infill connector to fill-infill path 110)
+G1 X-34.8912 Y-24.9193
+(fill-infill path 110, 42 points)
+G1 X-34.6039 Y-24.9340
+G1 X-34.3166 Y-24.9487
+G1 X-34.0292 Y-24.9635
+G1 X-33.7418 Y-24.9782
+G1 X-33.4543 Y-24.9929
+G1 X-33.1667 Y-25.0076
+G1 X-32.8790 Y-25.0224
+G1 X-32.5913 Y-25.0371
+G1 X-32.3035 Y-25.0518
+G1 X-32.0157 Y-25.0665
+G1 X-31.7278 Y-25.0812
+G1 X-31.4398 Y-25.0960
+G1 X-31.1517 Y-25.1107
+G1 X-30.8636 Y-25.1254
+G1 X-30.5754 Y-25.1401
+G1 X-30.2872 Y-25.1549
+G1 X-29.9988 Y-25.1696
+G1 X-29.7105 Y-25.1843
+G1 X-29.4220 Y-25.1990
+G1 X-29.1335 Y-25.2137
+G1 X-28.8449 Y-25.2285
+G1 X-28.5562 Y-25.2432
+G1 X-28.2675 Y-25.2579
+G1 X-27.9787 Y-25.2726
+G1 X-27.6898 Y-25.2874
+G1 X-27.4009 Y-25.3021
+G1 X-27.1119 Y-25.3168
+G1 X-26.8228 Y-25.3315
+G1 X-26.5337 Y-25.3462
+G1 X-26.2445 Y-25.3610
+G1 X-25.9552 Y-25.3757
+G1 X-25.6658 Y-25.3904
+G1 X-25.3764 Y-25.4051
+G1 X-25.0869 Y-25.4199
+G1 X-24.7974 Y-25.4346
+G1 X-24.5078 Y-25.4493
+G1 X-24.2181 Y-25.4640
+G1 X-23.9283 Y-25.4787
+G1 X-23.6385 Y-25.4935
+G1 X-23.3486 Y-25.5082
+G1 X-23.0586 Y-25.5229
+(Safe converted infill-to-infill connector to fill-infill path 111)
+G1 X-23.5599 Y-26.1767
+(fill-infill path 111, 40 points)
+G1 X-23.8485 Y-26.1621
+G1 X-24.1371 Y-26.1475
+G1 X-24.4256 Y-26.1329
+G1 X-24.7140 Y-26.1183
+G1 X-25.0023 Y-26.1038
+G1 X-25.2906 Y-26.0892
+G1 X-25.5788 Y-26.0746
+G1 X-25.8669 Y-26.0600
+G1 X-26.1550 Y-26.0454
+G1 X-26.4429 Y-26.0309
+G1 X-26.7309 Y-26.0163
+G1 X-27.0187 Y-26.0017
+G1 X-27.3065 Y-25.9871
+G1 X-27.5942 Y-25.9725
+G1 X-27.8818 Y-25.9580
+G1 X-28.1694 Y-25.9434
+G1 X-28.4569 Y-25.9288
+G1 X-28.7443 Y-25.9142
+G1 X-29.0317 Y-25.8997
+G1 X-29.3190 Y-25.8851
+G1 X-29.6062 Y-25.8705
+G1 X-29.8933 Y-25.8559
+G1 X-30.1804 Y-25.8413
+G1 X-30.4674 Y-25.8268
+G1 X-30.7544 Y-25.8122
+G1 X-31.0413 Y-25.7976
+G1 X-31.3281 Y-25.7830
+G1 X-31.6148 Y-25.7684
+G1 X-31.9015 Y-25.7539
+G1 X-32.1881 Y-25.7393
+G1 X-32.4746 Y-25.7247
+G1 X-32.7611 Y-25.7101
+G1 X-33.0475 Y-25.6955
+G1 X-33.3338 Y-25.6810
+G1 X-33.6201 Y-25.6664
+G1 X-33.9063 Y-25.6518
+G1 X-34.1924 Y-25.6372
+G1 X-34.4785 Y-25.6226
+G1 X-34.7645 Y-25.6081
+(Safe converted infill-to-infill connector to fill-infill path 112)
+G1 X-35.2857 Y-26.2641
+(fill-infill path 112, 42 points)
+G1 X-34.9954 Y-26.2789
+G1 X-34.7051 Y-26.2936
+G1 X-34.4147 Y-26.3083
+G1 X-34.1243 Y-26.3230
+G1 X-33.8338 Y-26.3378
+G1 X-33.5432 Y-26.3525
+G1 X-33.2525 Y-26.3672
+G1 X-32.9618 Y-26.3819
+G1 X-32.6709 Y-26.3966
+G1 X-32.3801 Y-26.4114
+G1 X-32.0891 Y-26.4261
+G1 X-31.7981 Y-26.4408
+G1 X-31.5070 Y-26.4555
+G1 X-31.2158 Y-26.4703
+G1 X-30.9246 Y-26.4850
+G1 X-30.6332 Y-26.4997
+G1 X-30.3418 Y-26.5144
+G1 X-30.0504 Y-26.5291
+G1 X-29.7588 Y-26.5439
+G1 X-29.4672 Y-26.5586
+G1 X-29.1756 Y-26.5733
+G1 X-28.8838 Y-26.5880
+G1 X-28.5920 Y-26.6028
+G1 X-28.3001 Y-26.6175
+G1 X-28.0081 Y-26.6322
+G1 X-27.7160 Y-26.6469
+G1 X-27.4239 Y-26.6616
+G1 X-27.1317 Y-26.6764
+G1 X-26.8395 Y-26.6911
+G1 X-26.5471 Y-26.7058
+G1 X-26.2547 Y-26.7205
+G1 X-25.9622 Y-26.7353
+G1 X-25.6696 Y-26.7500
+G1 X-25.3770 Y-26.7647
+G1 X-25.0843 Y-26.7794
+G1 X-24.7915 Y-26.7941
+G1 X-24.4986 Y-26.8089
+G1 X-24.2057 Y-26.8236
+G1 X-23.9127 Y-26.8383
+G1 X-23.6196 Y-26.8530
+G1 X-23.3264 Y-26.8678
+(Safe converted infill-to-infill connector to fill-infill path 113)
+G1 X-23.8415 Y-27.5215
+(fill-infill path 113, 40 points)
+G1 X-24.1334 Y-27.5069
+G1 X-24.4252 Y-27.4923
+G1 X-24.7170 Y-27.4778
+G1 X-25.0086 Y-27.4632
+G1 X-25.3002 Y-27.4486
+G1 X-25.5917 Y-27.4340
+G1 X-25.8832 Y-27.4195
+G1 X-26.1745 Y-27.4049
+G1 X-26.4658 Y-27.3903
+G1 X-26.7570 Y-27.3757
+G1 X-27.0482 Y-27.3611
+G1 X-27.3392 Y-27.3466
+G1 X-27.6302 Y-27.3320
+G1 X-27.9211 Y-27.3174
+G1 X-28.2119 Y-27.3028
+G1 X-28.5027 Y-27.2882
+G1 X-28.7934 Y-27.2737
+G1 X-29.0840 Y-27.2591
+G1 X-29.3745 Y-27.2445
+G1 X-29.6650 Y-27.2299
+G1 X-29.9554 Y-27.2153
+G1 X-30.2457 Y-27.2008
+G1 X-30.5359 Y-27.1862
+G1 X-30.8261 Y-27.1716
+G1 X-31.1162 Y-27.1570
+G1 X-31.4062 Y-27.1424
+G1 X-31.6962 Y-27.1279
+G1 X-31.9860 Y-27.1133
+G1 X-32.2758 Y-27.0987
+G1 X-32.5656 Y-27.0841
+G1 X-32.8552 Y-27.0695
+G1 X-33.1448 Y-27.0550
+G1 X-33.4343 Y-27.0404
+G1 X-33.7237 Y-27.0258
+G1 X-34.0131 Y-27.0112
+G1 X-34.3024 Y-26.9966
+G1 X-34.5916 Y-26.9821
+G1 X-34.8807 Y-26.9675
+G1 X-35.1698 Y-26.9529
+(Safe converted infill-to-infill connector to fill-infill path 114)
+G1 X-35.7091 Y-27.6090
+(fill-infill path 114, 42 points)
+G1 X-35.4156 Y-27.6237
+G1 X-35.1221 Y-27.6384
+G1 X-34.8285 Y-27.6532
+G1 X-34.5348 Y-27.6679
+G1 X-34.2410 Y-27.6826
+G1 X-33.9472 Y-27.6973
+G1 X-33.6533 Y-27.7120
+G1 X-33.3593 Y-27.7268
+G1 X-33.0652 Y-27.7415
+G1 X-32.7711 Y-27.7562
+G1 X-32.4769 Y-27.7709
+G1 X-32.1826 Y-27.7857
+G1 X-31.8882 Y-27.8004
+G1 X-31.5937 Y-27.8151
+G1 X-31.2992 Y-27.8298
+G1 X-31.0046 Y-27.8445
+G1 X-30.7099 Y-27.8593
+G1 X-30.4151 Y-27.8740
+G1 X-30.1203 Y-27.8887
+G1 X-29.8253 Y-27.9034
+G1 X-29.5303 Y-27.9182
+G1 X-29.2353 Y-27.9329
+G1 X-28.9401 Y-27.9476
+G1 X-28.6449 Y-27.9623
+G1 X-28.3496 Y-27.9770
+G1 X-28.0542 Y-27.9918
+G1 X-27.7587 Y-28.0065
+G1 X-27.4631 Y-28.0212
+G1 X-27.1675 Y-28.0359
+G1 X-26.8718 Y-28.0507
+G1 X-26.5760 Y-28.0654
+G1 X-26.2801 Y-28.0801
+G1 X-25.9842 Y-28.0948
+G1 X-25.6882 Y-28.1095
+G1 X-25.3920 Y-28.1243
+G1 X-25.0959 Y-28.1390
+G1 X-24.7996 Y-28.1537
+G1 X-24.5032 Y-28.1684
+G1 X-24.2068 Y-28.1832
+G1 X-23.9103 Y-28.1979
+G1 X-23.6137 Y-28.2126
+(Safe converted infill-to-infill connector to fill-infill path 115)
+G1 X-24.1434 Y-28.8664
+(fill-infill path 115, 40 points)
+G1 X-24.4388 Y-28.8518
+G1 X-24.7342 Y-28.8372
+G1 X-25.0294 Y-28.8226
+G1 X-25.3245 Y-28.8080
+G1 X-25.6196 Y-28.7935
+G1 X-25.9146 Y-28.7789
+G1 X-26.2095 Y-28.7643
+G1 X-26.5043 Y-28.7497
+G1 X-26.7991 Y-28.7351
+G1 X-27.0938 Y-28.7206
+G1 X-27.3883 Y-28.7060
+G1 X-27.6828 Y-28.6914
+G1 X-27.9773 Y-28.6768
+G1 X-28.2716 Y-28.6622
+G1 X-28.5659 Y-28.6477
+G1 X-28.8601 Y-28.6331
+G1 X-29.1542 Y-28.6185
+G1 X-29.4482 Y-28.6039
+G1 X-29.7422 Y-28.5893
+G1 X-30.0360 Y-28.5748
+G1 X-30.3298 Y-28.5602
+G1 X-30.6235 Y-28.5456
+G1 X-30.9172 Y-28.5310
+G1 X-31.2107 Y-28.5164
+G1 X-31.5042 Y-28.5019
+G1 X-31.7976 Y-28.4873
+G1 X-32.0909 Y-28.4727
+G1 X-32.3841 Y-28.4581
+G1 X-32.6773 Y-28.4436
+G1 X-32.9703 Y-28.4290
+G1 X-33.2633 Y-28.4144
+G1 X-33.5563 Y-28.3998
+G1 X-33.8491 Y-28.3852
+G1 X-34.1419 Y-28.3707
+G1 X-34.4346 Y-28.3561
+G1 X-34.7272 Y-28.3415
+G1 X-35.0197 Y-28.3269
+G1 X-35.3121 Y-28.3123
+G1 X-35.6045 Y-28.2978
+(Safe converted infill-to-infill connector to fill-infill path 116)
+G1 X-36.1629 Y-28.9538
+(fill-infill path 116, 42 points)
+G1 X-35.8660 Y-28.9686
+G1 X-35.5690 Y-28.9833
+G1 X-35.2719 Y-28.9980
+G1 X-34.9748 Y-29.0127
+G1 X-34.6776 Y-29.0275
+G1 X-34.3802 Y-29.0422
+G1 X-34.0829 Y-29.0569
+G1 X-33.7854 Y-29.0716
+G1 X-33.4878 Y-29.0863
+G1 X-33.1902 Y-29.1011
+G1 X-32.8924 Y-29.1158
+G1 X-32.5946 Y-29.1305
+G1 X-32.2967 Y-29.1452
+G1 X-31.9987 Y-29.1600
+G1 X-31.7007 Y-29.1747
+G1 X-31.4025 Y-29.1894
+G1 X-31.1043 Y-29.2041
+G1 X-30.8060 Y-29.2188
+G1 X-30.5076 Y-29.2336
+G1 X-30.2091 Y-29.2483
+G1 X-29.9106 Y-29.2630
+G1 X-29.6119 Y-29.2777
+G1 X-29.3132 Y-29.2925
+G1 X-29.0144 Y-29.3072
+G1 X-28.7155 Y-29.3219
+G1 X-28.4165 Y-29.3366
+G1 X-28.1174 Y-29.3513
+G1 X-27.8183 Y-29.3661
+G1 X-27.5190 Y-29.3808
+G1 X-27.2197 Y-29.3955
+G1 X-26.9203 Y-29.4102
+G1 X-26.6208 Y-29.4250
+G1 X-26.3212 Y-29.4397
+G1 X-26.0216 Y-29.4544
+G1 X-25.7218 Y-29.4691
+G1 X-25.4220 Y-29.4838
+G1 X-25.1220 Y-29.4986
+G1 X-24.8220 Y-29.5133
+G1 X-24.5220 Y-29.5280
+G1 X-24.2218 Y-29.5427
+G1 X-23.9215 Y-29.5574
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_071)
+(Travel to fill-infill path 117)
+G1 X-14.6714 Y-29.3317 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_117 kind=fill-infill space=machine_deg source=component_002 points=20 max_surface_segment_mm=0.0980)
+(fill-infill path 117, 20 points)
+G1 X-14.3720 Y-29.3464 F1200.000
+G1 X-14.0725 Y-29.3610
+G1 X-13.7730 Y-29.3756
+G1 X-13.4733 Y-29.3903
+G1 X-13.1736 Y-29.4049
+G1 X-12.8738 Y-29.4196
+G1 X-12.5739 Y-29.4342
+G1 X-12.2739 Y-29.4488
+G1 X-11.9738 Y-29.4635
+G1 X-11.6737 Y-29.4781
+G1 X-11.3734 Y-29.4928
+G1 X-11.0731 Y-29.5074
+G1 X-10.7727 Y-29.5221
+G1 X-10.4722 Y-29.5367
+G1 X-10.1716 Y-29.5513
+G1 X-9.8709 Y-29.5660
+G1 X-9.5702 Y-29.5806
+G1 X-9.2693 Y-29.5953
+G1 X-8.9684 Y-29.6099
+(Safe converted infill-to-infill connector to fill-infill path 118)
+G1 X-13.7917 Y-28.0212
+(fill-infill path 118, 40 points)
+G1 X-13.4924 Y-28.0360
+G1 X-13.1931 Y-28.0508
+G1 X-12.8936 Y-28.0656
+G1 X-12.5941 Y-28.0804
+G1 X-12.2945 Y-28.0952
+G1 X-11.9949 Y-28.1100
+G1 X-11.6951 Y-28.1248
+G1 X-11.3953 Y-28.1396
+G1 X-11.0953 Y-28.1545
+G1 X-10.7953 Y-28.1693
+G1 X-10.4952 Y-28.1841
+G1 X-10.1951 Y-28.1989
+G1 X-9.8948 Y-28.2137
+G1 X-9.5945 Y-28.2285
+G1 X-9.2941 Y-28.2433
+G1 X-8.9936 Y-28.2581
+G1 X-8.6930 Y-28.2729
+G1 X-8.3923 Y-28.2877
+G1 X-8.0916 Y-28.3025
+G1 X-7.7907 Y-28.3174
+G1 X-7.4898 Y-28.3322
+G1 X-7.1888 Y-28.3470
+G1 X-6.8877 Y-28.3618
+G1 X-6.5866 Y-28.3766
+G1 X-6.2853 Y-28.3914
+G1 X-5.9840 Y-28.4062
+G1 X-5.6826 Y-28.4210
+G1 X-5.3811 Y-28.4358
+G1 X-5.0795 Y-28.4506
+G1 X-4.7778 Y-28.4655
+G1 X-4.4760 Y-28.4803
+G1 X-4.1742 Y-28.4951
+G1 X-3.8723 Y-28.5099
+G1 X-3.5703 Y-28.5247
+G1 X-3.2682 Y-28.5395
+G1 X-2.9660 Y-28.5543
+G1 X-2.6637 Y-28.5691
+G1 X-2.3614 Y-28.5839
+G1 X-2.0590 Y-28.5987
+(Safe converted infill-to-infill connector to fill-infill path 119)
+G1 X-1.8730 Y-29.2809
+(fill-infill path 119, 43 points)
+G1 X-2.1741 Y-29.2662
+G1 X-2.4751 Y-29.2516
+G1 X-2.7760 Y-29.2369
+G1 X-3.0769 Y-29.2223
+G1 X-3.3776 Y-29.2076
+G1 X-3.6783 Y-29.1930
+G1 X-3.9789 Y-29.1783
+G1 X-4.2793 Y-29.1637
+G1 X-4.5797 Y-29.1490
+G1 X-4.8801 Y-29.1344
+G1 X-5.1803 Y-29.1198
+G1 X-5.4804 Y-29.1051
+G1 X-5.7805 Y-29.0905
+G1 X-6.0805 Y-29.0758
+G1 X-6.3804 Y-29.0612
+G1 X-6.6802 Y-29.0465
+G1 X-6.9799 Y-29.0319
+G1 X-7.2795 Y-29.0172
+G1 X-7.5791 Y-29.0026
+G1 X-7.8786 Y-28.9879
+G1 X-8.1779 Y-28.9733
+G1 X-8.4772 Y-28.9586
+G1 X-8.7765 Y-28.9440
+G1 X-9.0756 Y-28.9294
+G1 X-9.3746 Y-28.9147
+G1 X-9.6736 Y-28.9001
+G1 X-9.9725 Y-28.8854
+G1 X-10.2713 Y-28.8708
+G1 X-10.5700 Y-28.8561
+G1 X-10.8686 Y-28.8415
+G1 X-11.1672 Y-28.8268
+G1 X-11.4656 Y-28.8122
+G1 X-11.7640 Y-28.7975
+G1 X-12.0623 Y-28.7829
+G1 X-12.3605 Y-28.7682
+G1 X-12.6587 Y-28.7536
+G1 X-12.9567 Y-28.7390
+G1 X-13.2547 Y-28.7243
+G1 X-13.5526 Y-28.7097
+G1 X-13.8504 Y-28.6950
+G1 X-14.1481 Y-28.6804
+G1 X-14.4457 Y-28.6657
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_117)
+(Travel to fill-infill path 120)
+G1 X-13.9017 Y-27.3390 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_120 kind=fill-infill space=machine_deg source=component_002 points=43 max_surface_segment_mm=0.0976)
+(fill-infill path 120, 43 points)
+G1 X-13.6088 Y-27.3536 F1200.000
+G1 X-13.3158 Y-27.3682
+G1 X-13.0227 Y-27.3828
+G1 X-12.7296 Y-27.3974
+G1 X-12.4363 Y-27.4120
+G1 X-12.1430 Y-27.4266
+G1 X-11.8496 Y-27.4411
+G1 X-11.5562 Y-27.4557
+G1 X-11.2626 Y-27.4703
+G1 X-10.9690 Y-27.4849
+G1 X-10.6753 Y-27.4995
+G1 X-10.3816 Y-27.5141
+G1 X-10.0877 Y-27.5287
+G1 X-9.7938 Y-27.5432
+G1 X-9.4998 Y-27.5578
+G1 X-9.2057 Y-27.5724
+G1 X-8.9115 Y-27.5870
+G1 X-8.6173 Y-27.6016
+G1 X-8.3230 Y-27.6162
+G1 X-8.0286 Y-27.6308
+G1 X-7.7341 Y-27.6453
+G1 X-7.4396 Y-27.6599
+G1 X-7.1449 Y-27.6745
+G1 X-6.8502 Y-27.6891
+G1 X-6.5555 Y-27.7037
+G1 X-6.2606 Y-27.7183
+G1 X-5.9657 Y-27.7328
+G1 X-5.6706 Y-27.7474
+G1 X-5.3755 Y-27.7620
+G1 X-5.0804 Y-27.7766
+G1 X-4.7851 Y-27.7912
+G1 X-4.4898 Y-27.8058
+G1 X-4.1944 Y-27.8204
+G1 X-3.8989 Y-27.8349
+G1 X-3.6033 Y-27.8495
+G1 X-3.3077 Y-27.8641
+G1 X-3.0119 Y-27.8787
+G1 X-2.7161 Y-27.8933
+G1 X-2.4202 Y-27.9079
+G1 X-2.1243 Y-27.9225
+G1 X-1.8282 Y-27.9370
+G1 X-1.5321 Y-27.9516
+(Safe converted infill-to-infill connector to fill-infill path 121)
+G1 X-1.6713 Y-27.2718
+(fill-infill path 121, 40 points)
+G1 X-1.9701 Y-27.2570
+G1 X-2.2688 Y-27.2422
+G1 X-2.5675 Y-27.2274
+G1 X-2.8660 Y-27.2126
+G1 X-3.1645 Y-27.1978
+G1 X-3.4629 Y-27.1830
+G1 X-3.7613 Y-27.1682
+G1 X-4.0595 Y-27.1534
+G1 X-4.3577 Y-27.1386
+G1 X-4.6558 Y-27.1237
+G1 X-4.9538 Y-27.1089
+G1 X-5.2517 Y-27.0941
+G1 X-5.5496 Y-27.0793
+G1 X-5.8474 Y-27.0645
+G1 X-6.1451 Y-27.0497
+G1 X-6.4427 Y-27.0349
+G1 X-6.7402 Y-27.0201
+G1 X-7.0377 Y-27.0053
+G1 X-7.3351 Y-26.9905
+G1 X-7.6324 Y-26.9757
+G1 X-7.9296 Y-26.9608
+G1 X-8.2268 Y-26.9460
+G1 X-8.5239 Y-26.9312
+G1 X-8.8209 Y-26.9164
+G1 X-9.1178 Y-26.9016
+G1 X-9.4147 Y-26.8868
+G1 X-9.7114 Y-26.8720
+G1 X-10.0081 Y-26.8572
+G1 X-10.3047 Y-26.8424
+G1 X-10.6013 Y-26.8276
+G1 X-10.8977 Y-26.8127
+G1 X-11.1941 Y-26.7979
+G1 X-11.4904 Y-26.7831
+G1 X-11.7867 Y-26.7683
+G1 X-12.0828 Y-26.7535
+G1 X-12.3789 Y-26.7387
+G1 X-12.6749 Y-26.7239
+G1 X-12.9708 Y-26.7091
+G1 X-13.2667 Y-26.6943
+(Safe converted infill-to-infill connector to fill-infill path 122)
+G1 X-13.3823 Y-26.0122
+(fill-infill path 122, 43 points)
+G1 X-13.0927 Y-26.0267
+G1 X-12.8029 Y-26.0413
+G1 X-12.5131 Y-26.0559
+G1 X-12.2232 Y-26.0705
+G1 X-11.9332 Y-26.0851
+G1 X-11.6432 Y-26.0997
+G1 X-11.3531 Y-26.1142
+G1 X-11.0629 Y-26.1288
+G1 X-10.7726 Y-26.1434
+G1 X-10.4823 Y-26.1580
+G1 X-10.1919 Y-26.1726
+G1 X-9.9014 Y-26.1872
+G1 X-9.6109 Y-26.2018
+G1 X-9.3203 Y-26.2163
+G1 X-9.0296 Y-26.2309
+G1 X-8.7388 Y-26.2455
+G1 X-8.4480 Y-26.2601
+G1 X-8.1571 Y-26.2747
+G1 X-7.8661 Y-26.2893
+G1 X-7.5751 Y-26.3039
+G1 X-7.2839 Y-26.3184
+G1 X-6.9927 Y-26.3330
+G1 X-6.7015 Y-26.3476
+G1 X-6.4101 Y-26.3622
+G1 X-6.1187 Y-26.3768
+G1 X-5.8272 Y-26.3914
+G1 X-5.5357 Y-26.4060
+G1 X-5.2440 Y-26.4205
+G1 X-4.9523 Y-26.4351
+G1 X-4.6605 Y-26.4497
+G1 X-4.3687 Y-26.4643
+G1 X-4.0768 Y-26.4789
+G1 X-3.7848 Y-26.4935
+G1 X-3.4927 Y-26.5081
+G1 X-3.2005 Y-26.5226
+G1 X-2.9083 Y-26.5372
+G1 X-2.6160 Y-26.5518
+G1 X-2.3236 Y-26.5664
+G1 X-2.0312 Y-26.5810
+G1 X-1.7387 Y-26.5956
+G1 X-1.4461 Y-26.6102
+G1 X-1.1534 Y-26.6247
+(Safe converted infill-to-infill connector to fill-infill path 123)
+G1 X-1.2879 Y-25.9452
+(fill-infill path 123, 40 points)
+G1 X-1.5832 Y-25.9304
+G1 X-1.8784 Y-25.9156
+G1 X-2.1736 Y-25.9008
+G1 X-2.4687 Y-25.8860
+G1 X-2.7637 Y-25.8712
+G1 X-3.0586 Y-25.8564
+G1 X-3.3535 Y-25.8416
+G1 X-3.6482 Y-25.8268
+G1 X-3.9429 Y-25.8120
+G1 X-4.2376 Y-25.7972
+G1 X-4.5321 Y-25.7824
+G1 X-4.8266 Y-25.7676
+G1 X-5.1210 Y-25.7528
+G1 X-5.4154 Y-25.7380
+G1 X-5.7097 Y-25.7232
+G1 X-6.0039 Y-25.7084
+G1 X-6.2980 Y-25.6936
+G1 X-6.5920 Y-25.6788
+G1 X-6.8860 Y-25.6640
+G1 X-7.1799 Y-25.6492
+G1 X-7.4738 Y-25.6344
+G1 X-7.7675 Y-25.6196
+G1 X-8.0612 Y-25.6048
+G1 X-8.3548 Y-25.5900
+G1 X-8.6484 Y-25.5751
+G1 X-8.9419 Y-25.5603
+G1 X-9.2353 Y-25.5455
+G1 X-9.5286 Y-25.5307
+G1 X-9.8218 Y-25.5159
+G1 X-10.1150 Y-25.5011
+G1 X-10.4081 Y-25.4863
+G1 X-10.7012 Y-25.4715
+G1 X-10.9942 Y-25.4567
+G1 X-11.2871 Y-25.4419
+G1 X-11.5799 Y-25.4271
+G1 X-11.8726 Y-25.4123
+G1 X-12.1653 Y-25.3975
+G1 X-12.4580 Y-25.3827
+G1 X-12.7505 Y-25.3679
+(Safe converted infill-to-infill connector to fill-infill path 124)
+G1 X-12.8059 Y-24.6891
+(fill-infill path 124, 42 points)
+G1 X-12.5138 Y-24.7040
+G1 X-12.2217 Y-24.7188
+G1 X-11.9295 Y-24.7337
+G1 X-11.6372 Y-24.7486
+G1 X-11.3449 Y-24.7634
+G1 X-11.0525 Y-24.7783
+G1 X-10.7600 Y-24.7931
+G1 X-10.4674 Y-24.8080
+G1 X-10.1748 Y-24.8228
+G1 X-9.8821 Y-24.8377
+G1 X-9.5894 Y-24.8526
+G1 X-9.2965 Y-24.8674
+G1 X-9.0036 Y-24.8823
+G1 X-8.7107 Y-24.8971
+G1 X-8.4176 Y-24.9120
+G1 X-8.1245 Y-24.9269
+G1 X-7.8314 Y-24.9417
+G1 X-7.5381 Y-24.9566
+G1 X-7.2448 Y-24.9714
+G1 X-6.9514 Y-24.9863
+G1 X-6.6580 Y-25.0012
+G1 X-6.3644 Y-25.0160
+G1 X-6.0708 Y-25.0309
+G1 X-5.7772 Y-25.0457
+G1 X-5.4834 Y-25.0606
+G1 X-5.1896 Y-25.0755
+G1 X-4.8957 Y-25.0903
+G1 X-4.6018 Y-25.1052
+G1 X-4.3078 Y-25.1200
+G1 X-4.0137 Y-25.1349
+G1 X-3.7195 Y-25.1498
+G1 X-3.4253 Y-25.1646
+G1 X-3.1309 Y-25.1795
+G1 X-2.8366 Y-25.1943
+G1 X-2.5421 Y-25.2092
+G1 X-2.2476 Y-25.2241
+G1 X-1.9530 Y-25.2389
+G1 X-1.6583 Y-25.2538
+G1 X-1.3636 Y-25.2686
+G1 X-1.0688 Y-25.2835
+G1 X-0.7739 Y-25.2984
+(Safe converted infill-to-infill connector to fill-infill path 125)
+G1 X-0.9296 Y-24.6178
+(fill-infill path 125, 40 points)
+G1 X-1.2213 Y-24.6030
+G1 X-1.5129 Y-24.5883
+G1 X-1.8044 Y-24.5735
+G1 X-2.0959 Y-24.5587
+G1 X-2.3873 Y-24.5439
+G1 X-2.6786 Y-24.5291
+G1 X-2.9699 Y-24.5144
+G1 X-3.2611 Y-24.4996
+G1 X-3.5522 Y-24.4848
+G1 X-3.8433 Y-24.4700
+G1 X-4.1343 Y-24.4552
+G1 X-4.4252 Y-24.4405
+G1 X-4.7160 Y-24.4257
+G1 X-5.0068 Y-24.4109
+G1 X-5.2975 Y-24.3961
+G1 X-5.5882 Y-24.3813
+G1 X-5.8788 Y-24.3666
+G1 X-6.1693 Y-24.3518
+G1 X-6.4597 Y-24.3370
+G1 X-6.7501 Y-24.3222
+G1 X-7.0404 Y-24.3074
+G1 X-7.3307 Y-24.2927
+G1 X-7.6209 Y-24.2779
+G1 X-7.9110 Y-24.2631
+G1 X-8.2010 Y-24.2483
+G1 X-8.4910 Y-24.2335
+G1 X-8.7809 Y-24.2188
+G1 X-9.0708 Y-24.2040
+G1 X-9.3605 Y-24.1892
+G1 X-9.6502 Y-24.1744
+G1 X-9.9399 Y-24.1596
+G1 X-10.2295 Y-24.1449
+G1 X-10.5190 Y-24.1301
+G1 X-10.8084 Y-24.1153
+G1 X-11.0978 Y-24.1005
+G1 X-11.3871 Y-24.0857
+G1 X-11.6764 Y-24.0710
+G1 X-11.9656 Y-24.0562
+G1 X-12.2547 Y-24.0414
+(Safe converted infill-to-infill connector to fill-infill path 126)
+G1 X-12.3781 Y-23.3594
+(fill-infill path 126, 42 points)
+G1 X-12.0878 Y-23.3743
+G1 X-11.7975 Y-23.3892
+G1 X-11.5070 Y-23.4042
+G1 X-11.2166 Y-23.4191
+G1 X-10.9260 Y-23.4340
+G1 X-10.6354 Y-23.4489
+G1 X-10.3447 Y-23.4638
+G1 X-10.0540 Y-23.4787
+G1 X-9.7632 Y-23.4937
+G1 X-9.4723 Y-23.5086
+G1 X-9.1814 Y-23.5235
+G1 X-8.8904 Y-23.5384
+G1 X-8.5993 Y-23.5533
+G1 X-8.3082 Y-23.5682
+G1 X-8.0170 Y-23.5831
+G1 X-7.7258 Y-23.5981
+G1 X-7.4344 Y-23.6130
+G1 X-7.1430 Y-23.6279
+G1 X-6.8516 Y-23.6428
+G1 X-6.5601 Y-23.6577
+G1 X-6.2685 Y-23.6726
+G1 X-5.9768 Y-23.6876
+G1 X-5.6851 Y-23.7025
+G1 X-5.3933 Y-23.7174
+G1 X-5.1015 Y-23.7323
+G1 X-4.8095 Y-23.7472
+G1 X-4.5176 Y-23.7621
+G1 X-4.2255 Y-23.7771
+G1 X-3.9334 Y-23.7920
+G1 X-3.6412 Y-23.8069
+G1 X-3.3489 Y-23.8218
+G1 X-3.0566 Y-23.8367
+G1 X-2.7642 Y-23.8516
+G1 X-2.4718 Y-23.8666
+G1 X-2.1792 Y-23.8815
+G1 X-1.8867 Y-23.8964
+G1 X-1.5940 Y-23.9113
+G1 X-1.3013 Y-23.9262
+G1 X-1.0085 Y-23.9411
+G1 X-0.7156 Y-23.9561
+G1 X-0.4227 Y-23.9710
+(Safe converted infill-to-infill connector to fill-infill path 127)
+G1 X-0.5647 Y-23.2912
+(fill-infill path 127, 40 points)
+G1 X-0.8518 Y-23.2765
+G1 X-1.1388 Y-23.2618
+G1 X-1.4257 Y-23.2471
+G1 X-1.7126 Y-23.2324
+G1 X-1.9994 Y-23.2177
+G1 X-2.2862 Y-23.2030
+G1 X-2.5729 Y-23.1883
+G1 X-2.8595 Y-23.1736
+G1 X-3.1461 Y-23.1589
+G1 X-3.4326 Y-23.1442
+G1 X-3.7190 Y-23.1295
+G1 X-4.0054 Y-23.1148
+G1 X-4.2917 Y-23.1001
+G1 X-4.5779 Y-23.0854
+G1 X-4.8641 Y-23.0707
+G1 X-5.1502 Y-23.0561
+G1 X-5.4363 Y-23.0414
+G1 X-5.7223 Y-23.0267
+G1 X-6.0083 Y-23.0120
+G1 X-6.2941 Y-22.9973
+G1 X-6.5799 Y-22.9826
+G1 X-6.8657 Y-22.9679
+G1 X-7.1514 Y-22.9532
+G1 X-7.4370 Y-22.9385
+G1 X-7.7226 Y-22.9238
+G1 X-8.0081 Y-22.9091
+G1 X-8.2935 Y-22.8944
+G1 X-8.5789 Y-22.8797
+G1 X-8.8643 Y-22.8650
+G1 X-9.1495 Y-22.8503
+G1 X-9.4347 Y-22.8356
+G1 X-9.7199 Y-22.8209
+G1 X-10.0049 Y-22.8062
+G1 X-10.2900 Y-22.7916
+G1 X-10.5749 Y-22.7769
+G1 X-10.8598 Y-22.7622
+G1 X-11.1447 Y-22.7475
+G1 X-11.4294 Y-22.7328
+G1 X-11.7142 Y-22.7181
+(Safe converted infill-to-infill connector to fill-infill path 128)
+G1 X-11.8446 Y-22.0360
+(fill-infill path 128, 42 points)
+G1 X-11.5586 Y-22.0508
+G1 X-11.2726 Y-22.0656
+G1 X-10.9865 Y-22.0805
+G1 X-10.7003 Y-22.0953
+G1 X-10.4141 Y-22.1101
+G1 X-10.1278 Y-22.1249
+G1 X-9.8415 Y-22.1398
+G1 X-9.5550 Y-22.1546
+G1 X-9.2686 Y-22.1694
+G1 X-8.9821 Y-22.1843
+G1 X-8.6955 Y-22.1991
+G1 X-8.4088 Y-22.2139
+G1 X-8.1221 Y-22.2288
+G1 X-7.8354 Y-22.2436
+G1 X-7.5485 Y-22.2584
+G1 X-7.2616 Y-22.2733
+G1 X-6.9747 Y-22.2881
+G1 X-6.6877 Y-22.3029
+G1 X-6.4006 Y-22.3178
+G1 X-6.1135 Y-22.3326
+G1 X-5.8263 Y-22.3474
+G1 X-5.5391 Y-22.3623
+G1 X-5.2517 Y-22.3771
+G1 X-4.9644 Y-22.3919
+G1 X-4.6769 Y-22.4068
+G1 X-4.3894 Y-22.4216
+G1 X-4.1019 Y-22.4364
+G1 X-3.8143 Y-22.4512
+G1 X-3.5266 Y-22.4661
+G1 X-3.2389 Y-22.4809
+G1 X-2.9511 Y-22.4957
+G1 X-2.6632 Y-22.5106
+G1 X-2.3753 Y-22.5254
+G1 X-2.0873 Y-22.5402
+G1 X-1.7992 Y-22.5551
+G1 X-1.5111 Y-22.5699
+G1 X-1.2230 Y-22.5847
+G1 X-0.9347 Y-22.5996
+G1 X-0.6464 Y-22.6144
+G1 X-0.3581 Y-22.6292
+G1 X-0.0697 Y-22.6441
+(Safe converted infill-to-infill connector to fill-infill path 129)
+G1 X-0.2118 Y-21.9643
+(fill-infill path 129, 40 points)
+G1 X-0.4965 Y-21.9496
+G1 X-0.7812 Y-21.9348
+G1 X-1.0657 Y-21.9201
+G1 X-1.3503 Y-21.9054
+G1 X-1.6347 Y-21.8907
+G1 X-1.9191 Y-21.8760
+G1 X-2.2035 Y-21.8613
+G1 X-2.4878 Y-21.8466
+G1 X-2.7720 Y-21.8319
+G1 X-3.0562 Y-21.8171
+G1 X-3.3403 Y-21.8024
+G1 X-3.6244 Y-21.7877
+G1 X-3.9084 Y-21.7730
+G1 X-4.1923 Y-21.7583
+G1 X-4.4762 Y-21.7436
+G1 X-4.7600 Y-21.7289
+G1 X-5.0438 Y-21.7142
+G1 X-5.3275 Y-21.6994
+G1 X-5.6112 Y-21.6847
+G1 X-5.8947 Y-21.6700
+G1 X-6.1783 Y-21.6553
+G1 X-6.4618 Y-21.6406
+G1 X-6.7452 Y-21.6259
+G1 X-7.0286 Y-21.6112
+G1 X-7.3119 Y-21.5965
+G1 X-7.5951 Y-21.5817
+G1 X-7.8783 Y-21.5670
+G1 X-8.1614 Y-21.5523
+G1 X-8.4445 Y-21.5376
+G1 X-8.7276 Y-21.5229
+G1 X-9.0105 Y-21.5082
+G1 X-9.2934 Y-21.4935
+G1 X-9.5763 Y-21.4788
+G1 X-9.8591 Y-21.4640
+G1 X-10.1418 Y-21.4493
+G1 X-10.4245 Y-21.4346
+G1 X-10.7071 Y-21.4199
+G1 X-10.9897 Y-21.4052
+G1 X-11.2722 Y-21.3905
+(Safe converted infill-to-infill connector to fill-infill path 130)
+G1 X-11.3462 Y-20.7115
+(fill-infill path 130, 42 points)
+G1 X-11.0627 Y-20.7264
+G1 X-10.7792 Y-20.7412
+G1 X-10.4956 Y-20.7560
+G1 X-10.2120 Y-20.7708
+G1 X-9.9283 Y-20.7857
+G1 X-9.6445 Y-20.8005
+G1 X-9.3607 Y-20.8153
+G1 X-9.0769 Y-20.8302
+G1 X-8.7930 Y-20.8450
+G1 X-8.5090 Y-20.8598
+G1 X-8.2250 Y-20.8746
+G1 X-7.9409 Y-20.8895
+G1 X-7.6568 Y-20.9043
+G1 X-7.3726 Y-20.9191
+G1 X-7.0883 Y-20.9340
+G1 X-6.8040 Y-20.9488
+G1 X-6.5197 Y-20.9636
+G1 X-6.2352 Y-20.9784
+G1 X-5.9508 Y-20.9933
+G1 X-5.6663 Y-21.0081
+G1 X-5.3817 Y-21.0229
+G1 X-5.0970 Y-21.0378
+G1 X-4.8123 Y-21.0526
+G1 X-4.5276 Y-21.0674
+G1 X-4.2428 Y-21.0822
+G1 X-3.9579 Y-21.0971
+G1 X-3.6730 Y-21.1119
+G1 X-3.3880 Y-21.1267
+G1 X-3.1030 Y-21.1416
+G1 X-2.8179 Y-21.1564
+G1 X-2.5327 Y-21.1712
+G1 X-2.2475 Y-21.1860
+G1 X-1.9623 Y-21.2009
+G1 X-1.6770 Y-21.2157
+G1 X-1.3916 Y-21.2305
+G1 X-1.1061 Y-21.2454
+G1 X-0.8207 Y-21.2602
+G1 X-0.5351 Y-21.2750
+G1 X-0.2495 Y-21.2898
+G1 X0.0362 Y-21.3047
+G1 X0.3219 Y-21.3195
+(Safe converted infill-to-infill connector to fill-infill path 131)
+G1 X0.1344 Y-20.6374
+(fill-infill path 131, 40 points)
+G1 X-0.1472 Y-20.6227
+G1 X-0.4288 Y-20.6080
+G1 X-0.7103 Y-20.5933
+G1 X-0.9917 Y-20.5786
+G1 X-1.2731 Y-20.5640
+G1 X-1.5545 Y-20.5493
+G1 X-1.8358 Y-20.5346
+G1 X-2.1171 Y-20.5199
+G1 X-2.3983 Y-20.5052
+G1 X-2.6794 Y-20.4905
+G1 X-2.9605 Y-20.4759
+G1 X-3.2415 Y-20.4612
+G1 X-3.5225 Y-20.4465
+G1 X-3.8034 Y-20.4318
+G1 X-4.0843 Y-20.4171
+G1 X-4.3651 Y-20.4024
+G1 X-4.6459 Y-20.3878
+G1 X-4.9266 Y-20.3731
+G1 X-5.2073 Y-20.3584
+G1 X-5.4879 Y-20.3437
+G1 X-5.7684 Y-20.3290
+G1 X-6.0489 Y-20.3143
+G1 X-6.3294 Y-20.2996
+G1 X-6.6098 Y-20.2850
+G1 X-6.8901 Y-20.2703
+G1 X-7.1704 Y-20.2556
+G1 X-7.4507 Y-20.2409
+G1 X-7.7308 Y-20.2262
+G1 X-8.0110 Y-20.2115
+G1 X-8.2911 Y-20.1969
+G1 X-8.5711 Y-20.1822
+G1 X-8.8511 Y-20.1675
+G1 X-9.1310 Y-20.1528
+G1 X-9.4109 Y-20.1381
+G1 X-9.6907 Y-20.1234
+G1 X-9.9705 Y-20.1088
+G1 X-10.2502 Y-20.0941
+G1 X-10.5298 Y-20.0794
+G1 X-10.8094 Y-20.0647
+(Safe converted infill-to-infill connector to fill-infill path 132)
+G1 X-10.9432 Y-19.3828
+(fill-infill path 132, 42 points)
+G1 X-10.6622 Y-19.3977
+G1 X-10.3813 Y-19.4125
+G1 X-10.1002 Y-19.4273
+G1 X-9.8191 Y-19.4421
+G1 X-9.5380 Y-19.4569
+G1 X-9.2568 Y-19.4717
+G1 X-8.9755 Y-19.4865
+G1 X-8.6943 Y-19.5014
+G1 X-8.4129 Y-19.5162
+G1 X-8.1315 Y-19.5310
+G1 X-7.8501 Y-19.5458
+G1 X-7.5686 Y-19.5606
+G1 X-7.2870 Y-19.5754
+G1 X-7.0054 Y-19.5903
+G1 X-6.7238 Y-19.6051
+G1 X-6.4421 Y-19.6199
+G1 X-6.1603 Y-19.6347
+G1 X-5.8785 Y-19.6495
+G1 X-5.5966 Y-19.6643
+G1 X-5.3147 Y-19.6791
+G1 X-5.0328 Y-19.6940
+G1 X-4.7508 Y-19.7088
+G1 X-4.4687 Y-19.7236
+G1 X-4.1866 Y-19.7384
+G1 X-3.9044 Y-19.7532
+G1 X-3.6222 Y-19.7680
+G1 X-3.3399 Y-19.7829
+G1 X-3.0576 Y-19.7977
+G1 X-2.7752 Y-19.8125
+G1 X-2.4928 Y-19.8273
+G1 X-2.2103 Y-19.8421
+G1 X-1.9278 Y-19.8569
+G1 X-1.6452 Y-19.8717
+G1 X-1.3625 Y-19.8866
+G1 X-1.0798 Y-19.9014
+G1 X-0.7971 Y-19.9162
+G1 X-0.5143 Y-19.9310
+G1 X-0.2314 Y-19.9458
+G1 X0.0515 Y-19.9606
+G1 X0.3344 Y-19.9755
+G1 X0.6174 Y-19.9903
+(Safe converted infill-to-infill connector to fill-infill path 133)
+G1 X0.4748 Y-19.3105
+(fill-infill path 133, 40 points)
+G1 X0.1957 Y-19.2958
+G1 X-0.0833 Y-19.2811
+G1 X-0.3622 Y-19.2665
+G1 X-0.6411 Y-19.2518
+G1 X-0.9200 Y-19.2371
+G1 X-1.1988 Y-19.2225
+G1 X-1.4775 Y-19.2078
+G1 X-1.7563 Y-19.1931
+G1 X-2.0349 Y-19.1784
+G1 X-2.3135 Y-19.1638
+G1 X-2.5921 Y-19.1491
+G1 X-2.8706 Y-19.1344
+G1 X-3.1490 Y-19.1198
+G1 X-3.4275 Y-19.1051
+G1 X-3.7058 Y-19.0904
+G1 X-3.9841 Y-19.0757
+G1 X-4.2624 Y-19.0611
+G1 X-4.5406 Y-19.0464
+G1 X-4.8188 Y-19.0317
+G1 X-5.0969 Y-19.0171
+G1 X-5.3750 Y-19.0024
+G1 X-5.6530 Y-18.9877
+G1 X-5.9309 Y-18.9730
+G1 X-6.2089 Y-18.9584
+G1 X-6.4867 Y-18.9437
+G1 X-6.7646 Y-18.9290
+G1 X-7.0423 Y-18.9144
+G1 X-7.3201 Y-18.8997
+G1 X-7.5978 Y-18.8850
+G1 X-7.8754 Y-18.8704
+G1 X-8.1530 Y-18.8557
+G1 X-8.4305 Y-18.8410
+G1 X-8.7080 Y-18.8263
+G1 X-8.9854 Y-18.8117
+G1 X-9.2628 Y-18.7970
+G1 X-9.5402 Y-18.7823
+G1 X-9.8175 Y-18.7677
+G1 X-10.0947 Y-18.7530
+G1 X-10.3719 Y-18.7383
+(Safe converted infill-to-infill connector to fill-infill path 134)
+G1 X-10.4650 Y-18.0588
+(fill-infill path 134, 42 points)
+G1 X-10.1875 Y-18.0735
+G1 X-9.9099 Y-18.0883
+G1 X-9.6322 Y-18.1030
+G1 X-9.3546 Y-18.1178
+G1 X-9.0768 Y-18.1325
+G1 X-8.7991 Y-18.1473
+G1 X-8.5212 Y-18.1620
+G1 X-8.2434 Y-18.1768
+G1 X-7.9655 Y-18.1915
+G1 X-7.6875 Y-18.2063
+G1 X-7.4095 Y-18.2210
+G1 X-7.1315 Y-18.2357
+G1 X-6.8534 Y-18.2505
+G1 X-6.5752 Y-18.2652
+G1 X-6.2970 Y-18.2800
+G1 X-6.0188 Y-18.2947
+G1 X-5.7405 Y-18.3095
+G1 X-5.4622 Y-18.3242
+G1 X-5.1838 Y-18.3390
+G1 X-4.9054 Y-18.3537
+G1 X-4.6269 Y-18.3685
+G1 X-4.3484 Y-18.3832
+G1 X-4.0698 Y-18.3980
+G1 X-3.7912 Y-18.4127
+G1 X-3.5125 Y-18.4274
+G1 X-3.2338 Y-18.4422
+G1 X-2.9551 Y-18.4569
+G1 X-2.6763 Y-18.4717
+G1 X-2.3974 Y-18.4864
+G1 X-2.1185 Y-18.5012
+G1 X-1.8396 Y-18.5159
+G1 X-1.5606 Y-18.5307
+G1 X-1.2815 Y-18.5454
+G1 X-1.0024 Y-18.5602
+G1 X-0.7233 Y-18.5749
+G1 X-0.4441 Y-18.5896
+G1 X-0.1649 Y-18.6044
+G1 X0.1144 Y-18.6191
+G1 X0.3938 Y-18.6339
+G1 X0.6732 Y-18.6486
+G1 X0.9526 Y-18.6634
+(Safe converted infill-to-infill connector to fill-infill path 135)
+G1 X0.8099 Y-17.9836
+(fill-infill path 135, 40 points)
+G1 X0.5333 Y-17.9689
+G1 X0.2566 Y-17.9543
+G1 X-0.0199 Y-17.9396
+G1 X-0.2964 Y-17.9250
+G1 X-0.5729 Y-17.9103
+G1 X-0.8494 Y-17.8956
+G1 X-1.1257 Y-17.8810
+G1 X-1.4021 Y-17.8663
+G1 X-1.6784 Y-17.8517
+G1 X-1.9546 Y-17.8370
+G1 X-2.2308 Y-17.8224
+G1 X-2.5070 Y-17.8077
+G1 X-2.7831 Y-17.7930
+G1 X-3.0592 Y-17.7784
+G1 X-3.3352 Y-17.7637
+G1 X-3.6112 Y-17.7491
+G1 X-3.8871 Y-17.7344
+G1 X-4.1630 Y-17.7198
+G1 X-4.4388 Y-17.7051
+G1 X-4.7146 Y-17.6904
+G1 X-4.9904 Y-17.6758
+G1 X-5.2661 Y-17.6611
+G1 X-5.5417 Y-17.6465
+G1 X-5.8174 Y-17.6318
+G1 X-6.0929 Y-17.6171
+G1 X-6.3685 Y-17.6025
+G1 X-6.6440 Y-17.5878
+G1 X-6.9194 Y-17.5732
+G1 X-7.1948 Y-17.5585
+G1 X-7.4701 Y-17.5439
+G1 X-7.7455 Y-17.5292
+G1 X-8.0207 Y-17.5145
+G1 X-8.2959 Y-17.4999
+G1 X-8.5711 Y-17.4852
+G1 X-8.8463 Y-17.4706
+G1 X-9.1213 Y-17.4559
+G1 X-9.3964 Y-17.4413
+G1 X-9.6714 Y-17.4266
+G1 X-9.9464 Y-17.4119
+(Safe converted infill-to-infill connector to fill-infill path 136)
+G1 X-10.0871 Y-16.7301
+(fill-infill path 136, 42 points)
+G1 X-9.8103 Y-16.7449
+G1 X-9.5334 Y-16.7597
+G1 X-9.2564 Y-16.7745
+G1 X-8.9794 Y-16.7893
+G1 X-8.7024 Y-16.8041
+G1 X-8.4253 Y-16.8189
+G1 X-8.1482 Y-16.8338
+G1 X-7.8711 Y-16.8486
+G1 X-7.5939 Y-16.8634
+G1 X-7.3166 Y-16.8782
+G1 X-7.0394 Y-16.8930
+G1 X-6.7620 Y-16.9078
+G1 X-6.4847 Y-16.9226
+G1 X-6.2072 Y-16.9374
+G1 X-5.9298 Y-16.9522
+G1 X-5.6523 Y-16.9671
+G1 X-5.3747 Y-16.9819
+G1 X-5.0972 Y-16.9967
+G1 X-4.8195 Y-17.0115
+G1 X-4.5418 Y-17.0263
+G1 X-4.2641 Y-17.0411
+G1 X-3.9864 Y-17.0559
+G1 X-3.7086 Y-17.0707
+G1 X-3.4307 Y-17.0856
+G1 X-3.1528 Y-17.1004
+G1 X-2.8749 Y-17.1152
+G1 X-2.5969 Y-17.1300
+G1 X-2.3189 Y-17.1448
+G1 X-2.0408 Y-17.1596
+G1 X-1.7627 Y-17.1744
+G1 X-1.4845 Y-17.1892
+G1 X-1.2063 Y-17.2041
+G1 X-0.9281 Y-17.2189
+G1 X-0.6498 Y-17.2337
+G1 X-0.3714 Y-17.2485
+G1 X-0.0931 Y-17.2633
+G1 X0.1854 Y-17.2781
+G1 X0.4638 Y-17.2929
+G1 X0.7424 Y-17.3077
+G1 X1.0209 Y-17.3225
+G1 X1.2995 Y-17.3374
+(Safe converted infill-to-infill connector to fill-infill path 137)
+G1 X1.1346 Y-16.6564
+(fill-infill path 137, 40 points)
+G1 X0.8615 Y-16.6418
+G1 X0.5885 Y-16.6272
+G1 X0.3155 Y-16.6127
+G1 X0.0425 Y-16.5981
+G1 X-0.2304 Y-16.5835
+G1 X-0.5032 Y-16.5690
+G1 X-0.7760 Y-16.5544
+G1 X-1.0488 Y-16.5398
+G1 X-1.3216 Y-16.5252
+G1 X-1.5943 Y-16.5107
+G1 X-1.8669 Y-16.4961
+G1 X-2.1395 Y-16.4815
+G1 X-2.4121 Y-16.4670
+G1 X-2.6846 Y-16.4524
+G1 X-2.9571 Y-16.4378
+G1 X-3.2296 Y-16.4232
+G1 X-3.5020 Y-16.4087
+G1 X-3.7744 Y-16.3941
+G1 X-4.0467 Y-16.3795
+G1 X-4.3190 Y-16.3650
+G1 X-4.5912 Y-16.3504
+G1 X-4.8635 Y-16.3358
+G1 X-5.1356 Y-16.3212
+G1 X-5.4077 Y-16.3067
+G1 X-5.6798 Y-16.2921
+G1 X-5.9519 Y-16.2775
+G1 X-6.2239 Y-16.2630
+G1 X-6.4959 Y-16.2484
+G1 X-6.7678 Y-16.2338
+G1 X-7.0397 Y-16.2192
+G1 X-7.3115 Y-16.2047
+G1 X-7.5833 Y-16.1901
+G1 X-7.8551 Y-16.1755
+G1 X-8.1268 Y-16.1610
+G1 X-8.3985 Y-16.1464
+G1 X-8.6702 Y-16.1318
+G1 X-8.9418 Y-16.1172
+G1 X-9.2134 Y-16.1027
+G1 X-9.4849 Y-16.0881
+(Safe converted infill-to-infill connector to fill-infill path 138)
+G1 X-9.6183 Y-15.4068
+(fill-infill path 138, 42 points)
+G1 X-9.3442 Y-15.4216
+G1 X-9.0701 Y-15.4363
+G1 X-8.7959 Y-15.4511
+G1 X-8.5217 Y-15.4658
+G1 X-8.2475 Y-15.4806
+G1 X-7.9732 Y-15.4954
+G1 X-7.6988 Y-15.5101
+G1 X-7.4245 Y-15.5249
+G1 X-7.1501 Y-15.5396
+G1 X-6.8756 Y-15.5544
+G1 X-6.6011 Y-15.5691
+G1 X-6.3266 Y-15.5839
+G1 X-6.0520 Y-15.5987
+G1 X-5.7774 Y-15.6134
+G1 X-5.5028 Y-15.6282
+G1 X-5.2281 Y-15.6429
+G1 X-4.9534 Y-15.6577
+G1 X-4.6786 Y-15.6724
+G1 X-4.4038 Y-15.6872
+G1 X-4.1290 Y-15.7020
+G1 X-3.8541 Y-15.7167
+G1 X-3.5792 Y-15.7315
+G1 X-3.3043 Y-15.7462
+G1 X-3.0293 Y-15.7610
+G1 X-2.7542 Y-15.7757
+G1 X-2.4791 Y-15.7905
+G1 X-2.2040 Y-15.8053
+G1 X-1.9289 Y-15.8200
+G1 X-1.6537 Y-15.8348
+G1 X-1.3784 Y-15.8495
+G1 X-1.1032 Y-15.8643
+G1 X-0.8278 Y-15.8790
+G1 X-0.5525 Y-15.8938
+G1 X-0.2771 Y-15.9086
+G1 X-0.0017 Y-15.9233
+G1 X0.2738 Y-15.9381
+G1 X0.5493 Y-15.9528
+G1 X0.8249 Y-15.9676
+G1 X1.1005 Y-15.9823
+G1 X1.3761 Y-15.9971
+G1 X1.6518 Y-16.0119
+(Safe converted infill-to-infill connector to fill-infill path 139)
+G1 X1.4705 Y-15.3300
+(fill-infill path 139, 40 points)
+G1 X1.1990 Y-15.3154
+G1 X0.9275 Y-15.3008
+G1 X0.6560 Y-15.2862
+G1 X0.3846 Y-15.2717
+G1 X0.1133 Y-15.2571
+G1 X-0.1581 Y-15.2425
+G1 X-0.4293 Y-15.2279
+G1 X-0.7006 Y-15.2133
+G1 X-0.9718 Y-15.1987
+G1 X-1.2430 Y-15.1841
+G1 X-1.5141 Y-15.1696
+G1 X-1.7853 Y-15.1550
+G1 X-2.0563 Y-15.1404
+G1 X-2.3274 Y-15.1258
+G1 X-2.5983 Y-15.1112
+G1 X-2.8693 Y-15.0966
+G1 X-3.1402 Y-15.0821
+G1 X-3.4111 Y-15.0675
+G1 X-3.6820 Y-15.0529
+G1 X-3.9528 Y-15.0383
+G1 X-4.2235 Y-15.0237
+G1 X-4.4943 Y-15.0091
+G1 X-4.7650 Y-14.9946
+G1 X-5.0356 Y-14.9800
+G1 X-5.3063 Y-14.9654
+G1 X-5.5768 Y-14.9508
+G1 X-5.8474 Y-14.9362
+G1 X-6.1179 Y-14.9216
+G1 X-6.3884 Y-14.9070
+G1 X-6.6588 Y-14.8925
+G1 X-6.9293 Y-14.8779
+G1 X-7.1996 Y-14.8633
+G1 X-7.4700 Y-14.8487
+G1 X-7.7403 Y-14.8341
+G1 X-8.0105 Y-14.8195
+G1 X-8.2808 Y-14.8050
+G1 X-8.5509 Y-14.7904
+G1 X-8.8211 Y-14.7758
+G1 X-9.0912 Y-14.7612
+(Safe converted infill-to-infill connector to fill-infill path 140)
+G1 X-9.2429 Y-14.0791
+(fill-infill path 140, 42 points)
+G1 X-8.9710 Y-14.0938
+G1 X-8.6991 Y-14.1085
+G1 X-8.4272 Y-14.1233
+G1 X-8.1552 Y-14.1380
+G1 X-7.8832 Y-14.1527
+G1 X-7.6112 Y-14.1674
+G1 X-7.3391 Y-14.1821
+G1 X-7.0670 Y-14.1969
+G1 X-6.7949 Y-14.2116
+G1 X-6.5227 Y-14.2263
+G1 X-6.2505 Y-14.2410
+G1 X-5.9782 Y-14.2558
+G1 X-5.7060 Y-14.2705
+G1 X-5.4336 Y-14.2852
+G1 X-5.1613 Y-14.2999
+G1 X-4.8889 Y-14.3146
+G1 X-4.6165 Y-14.3294
+G1 X-4.3440 Y-14.3441
+G1 X-4.0715 Y-14.3588
+G1 X-3.7990 Y-14.3735
+G1 X-3.5264 Y-14.3883
+G1 X-3.2539 Y-14.4030
+G1 X-2.9812 Y-14.4177
+G1 X-2.7085 Y-14.4324
+G1 X-2.4358 Y-14.4471
+G1 X-2.1631 Y-14.4619
+G1 X-1.8903 Y-14.4766
+G1 X-1.6175 Y-14.4913
+G1 X-1.3447 Y-14.5060
+G1 X-1.0718 Y-14.5208
+G1 X-0.7988 Y-14.5355
+G1 X-0.5259 Y-14.5502
+G1 X-0.2529 Y-14.5649
+G1 X0.0201 Y-14.5796
+G1 X0.2932 Y-14.5944
+G1 X0.5663 Y-14.6091
+G1 X0.8395 Y-14.6238
+G1 X1.1126 Y-14.6385
+G1 X1.3858 Y-14.6533
+G1 X1.6591 Y-14.6680
+G1 X1.9324 Y-14.6827
+(Safe converted infill-to-infill connector to fill-infill path 141)
+G1 X1.7903 Y-14.0029
+(fill-infill path 141, 39 points)
+G1 X1.5140 Y-13.9880
+G1 X1.2377 Y-13.9730
+G1 X0.9614 Y-13.9581
+G1 X0.6852 Y-13.9432
+G1 X0.4090 Y-13.9282
+G1 X0.1328 Y-13.9133
+G1 X-0.1434 Y-13.8984
+G1 X-0.4195 Y-13.8834
+G1 X-0.6955 Y-13.8685
+G1 X-0.9715 Y-13.8536
+G1 X-1.2475 Y-13.8386
+G1 X-1.5235 Y-13.8237
+G1 X-1.7994 Y-13.8088
+G1 X-2.0753 Y-13.7938
+G1 X-2.3512 Y-13.7789
+G1 X-2.6270 Y-13.7640
+G1 X-2.9027 Y-13.7490
+G1 X-3.1785 Y-13.7341
+G1 X-3.4542 Y-13.7192
+G1 X-3.7299 Y-13.7043
+G1 X-4.0055 Y-13.6893
+G1 X-4.2811 Y-13.6744
+G1 X-4.5567 Y-13.6595
+G1 X-4.8322 Y-13.6445
+G1 X-5.1077 Y-13.6296
+G1 X-5.3832 Y-13.6147
+G1 X-5.6587 Y-13.5997
+G1 X-5.9341 Y-13.5848
+G1 X-6.2094 Y-13.5699
+G1 X-6.4847 Y-13.5549
+G1 X-6.7600 Y-13.5400
+G1 X-7.0353 Y-13.5251
+G1 X-7.3105 Y-13.5101
+G1 X-7.5857 Y-13.4952
+G1 X-7.8609 Y-13.4803
+G1 X-8.1360 Y-13.4653
+G1 X-8.4111 Y-13.4504
+G1 X-8.6862 Y-13.4355
+(Safe converted infill-to-infill connector to fill-infill path 142)
+G1 X-8.7939 Y-12.7559
+(fill-infill path 142, 42 points)
+G1 X-8.5240 Y-12.7706
+G1 X-8.2542 Y-12.7853
+G1 X-7.9843 Y-12.7999
+G1 X-7.7143 Y-12.8146
+G1 X-7.4444 Y-12.8293
+G1 X-7.1744 Y-12.8440
+G1 X-6.9043 Y-12.8587
+G1 X-6.6343 Y-12.8734
+G1 X-6.3642 Y-12.8881
+G1 X-6.0941 Y-12.9028
+G1 X-5.8239 Y-12.9175
+G1 X-5.5537 Y-12.9321
+G1 X-5.2835 Y-12.9468
+G1 X-5.0133 Y-12.9615
+G1 X-4.7430 Y-12.9762
+G1 X-4.4727 Y-12.9909
+G1 X-4.2023 Y-13.0056
+G1 X-3.9320 Y-13.0203
+G1 X-3.6616 Y-13.0350
+G1 X-3.3911 Y-13.0497
+G1 X-3.1206 Y-13.0644
+G1 X-2.8501 Y-13.0790
+G1 X-2.5796 Y-13.0937
+G1 X-2.3090 Y-13.1084
+G1 X-2.0384 Y-13.1231
+G1 X-1.7678 Y-13.1378
+G1 X-1.4972 Y-13.1525
+G1 X-1.2265 Y-13.1672
+G1 X-0.9557 Y-13.1819
+G1 X-0.6850 Y-13.1966
+G1 X-0.4142 Y-13.2112
+G1 X-0.1434 Y-13.2259
+G1 X0.1275 Y-13.2406
+G1 X0.3984 Y-13.2553
+G1 X0.6693 Y-13.2700
+G1 X0.9403 Y-13.2847
+G1 X1.2113 Y-13.2994
+G1 X1.4823 Y-13.3141
+G1 X1.7533 Y-13.3288
+G1 X2.0244 Y-13.3434
+G1 X2.2955 Y-13.3581
+(Safe converted infill-to-infill connector to fill-infill path 143)
+G1 X2.1109 Y-12.6760
+(fill-infill path 143, 39 points)
+G1 X1.8362 Y-12.6611
+G1 X1.5617 Y-12.6462
+G1 X1.2871 Y-12.6313
+G1 X1.0126 Y-12.6163
+G1 X0.7381 Y-12.6014
+G1 X0.4637 Y-12.5865
+G1 X0.1892 Y-12.5716
+G1 X-0.0851 Y-12.5567
+G1 X-0.3595 Y-12.5417
+G1 X-0.6338 Y-12.5268
+G1 X-0.9081 Y-12.5119
+G1 X-1.1824 Y-12.4970
+G1 X-1.4566 Y-12.4821
+G1 X-1.7308 Y-12.4671
+G1 X-2.0050 Y-12.4522
+G1 X-2.2791 Y-12.4373
+G1 X-2.5532 Y-12.4224
+G1 X-2.8273 Y-12.4075
+G1 X-3.1013 Y-12.3925
+G1 X-3.3753 Y-12.3776
+G1 X-3.6493 Y-12.3627
+G1 X-3.9233 Y-12.3478
+G1 X-4.1972 Y-12.3329
+G1 X-4.4711 Y-12.3179
+G1 X-4.7449 Y-12.3030
+G1 X-5.0187 Y-12.2881
+G1 X-5.2925 Y-12.2732
+G1 X-5.5663 Y-12.2582
+G1 X-5.8400 Y-12.2433
+G1 X-6.1137 Y-12.2284
+G1 X-6.3874 Y-12.2135
+G1 X-6.6610 Y-12.1986
+G1 X-6.9346 Y-12.1836
+G1 X-7.2082 Y-12.1687
+G1 X-7.4818 Y-12.1538
+G1 X-7.7553 Y-12.1389
+G1 X-8.0288 Y-12.1240
+G1 X-8.3022 Y-12.1090
+(Safe converted infill-to-infill connector to fill-infill path 144)
+G1 X-8.4249 Y-11.4288
+(fill-infill path 144, 42 points)
+G1 X-8.1573 Y-11.4434
+G1 X-7.8896 Y-11.4581
+G1 X-7.6219 Y-11.4727
+G1 X-7.3542 Y-11.4874
+G1 X-7.0865 Y-11.5020
+G1 X-6.8188 Y-11.5166
+G1 X-6.5510 Y-11.5313
+G1 X-6.2832 Y-11.5459
+G1 X-6.0153 Y-11.5605
+G1 X-5.7475 Y-11.5752
+G1 X-5.4796 Y-11.5898
+G1 X-5.2117 Y-11.6044
+G1 X-4.9437 Y-11.6191
+G1 X-4.6758 Y-11.6337
+G1 X-4.4078 Y-11.6484
+G1 X-4.1397 Y-11.6630
+G1 X-3.8717 Y-11.6776
+G1 X-3.6036 Y-11.6923
+G1 X-3.3355 Y-11.7069
+G1 X-3.0673 Y-11.7215
+G1 X-2.7992 Y-11.7362
+G1 X-2.5310 Y-11.7508
+G1 X-2.2627 Y-11.7654
+G1 X-1.9945 Y-11.7801
+G1 X-1.7262 Y-11.7947
+G1 X-1.4579 Y-11.8094
+G1 X-1.1895 Y-11.8240
+G1 X-0.9212 Y-11.8386
+G1 X-0.6528 Y-11.8533
+G1 X-0.3844 Y-11.8679
+G1 X-0.1159 Y-11.8825
+G1 X0.1526 Y-11.8972
+G1 X0.4211 Y-11.9118
+G1 X0.6896 Y-11.9265
+G1 X0.9582 Y-11.9411
+G1 X1.2268 Y-11.9557
+G1 X1.4954 Y-11.9704
+G1 X1.7641 Y-11.9850
+G1 X2.0328 Y-11.9996
+G1 X2.3015 Y-12.0143
+G1 X2.5702 Y-12.0289
+(Safe converted infill-to-infill connector to fill-infill path 145)
+G1 X2.4292 Y-11.3491
+(fill-infill path 145, 39 points)
+G1 X2.1573 Y-11.3343
+G1 X1.8854 Y-11.3194
+G1 X1.6136 Y-11.3046
+G1 X1.3418 Y-11.2897
+G1 X1.0700 Y-11.2749
+G1 X0.7983 Y-11.2601
+G1 X0.5266 Y-11.2452
+G1 X0.2549 Y-11.2304
+G1 X-0.0168 Y-11.2155
+G1 X-0.2884 Y-11.2007
+G1 X-0.5600 Y-11.1858
+G1 X-0.8316 Y-11.1710
+G1 X-1.1032 Y-11.1561
+G1 X-1.3747 Y-11.1413
+G1 X-1.6462 Y-11.1265
+G1 X-1.9176 Y-11.1116
+G1 X-2.1891 Y-11.0968
+G1 X-2.4605 Y-11.0819
+G1 X-2.7319 Y-11.0671
+G1 X-3.0032 Y-11.0522
+G1 X-3.2746 Y-11.0374
+G1 X-3.5459 Y-11.0225
+G1 X-3.8171 Y-11.0077
+G1 X-4.0884 Y-10.9928
+G1 X-4.3596 Y-10.9780
+G1 X-4.6308 Y-10.9632
+G1 X-4.9020 Y-10.9483
+G1 X-5.1731 Y-10.9335
+G1 X-5.4442 Y-10.9186
+G1 X-5.7153 Y-10.9038
+G1 X-5.9864 Y-10.8889
+G1 X-6.2574 Y-10.8741
+G1 X-6.5284 Y-10.8592
+G1 X-6.7994 Y-10.8444
+G1 X-7.0704 Y-10.8296
+G1 X-7.3413 Y-10.8147
+G1 X-7.6122 Y-10.7999
+G1 X-7.8831 Y-10.7850
+(Safe converted infill-to-infill connector to fill-infill path 146)
+G1 X-8.0426 Y-10.1029
+(fill-infill path 146, 42 points)
+G1 X-7.7765 Y-10.1175
+G1 X-7.5104 Y-10.1321
+G1 X-7.2443 Y-10.1467
+G1 X-6.9781 Y-10.1613
+G1 X-6.7120 Y-10.1760
+G1 X-6.4458 Y-10.1906
+G1 X-6.1796 Y-10.2052
+G1 X-5.9134 Y-10.2198
+G1 X-5.6471 Y-10.2344
+G1 X-5.3808 Y-10.2490
+G1 X-5.1145 Y-10.2636
+G1 X-4.8482 Y-10.2782
+G1 X-4.5818 Y-10.2929
+G1 X-4.3154 Y-10.3075
+G1 X-4.0490 Y-10.3221
+G1 X-3.7826 Y-10.3367
+G1 X-3.5161 Y-10.3513
+G1 X-3.2497 Y-10.3659
+G1 X-2.9832 Y-10.3805
+G1 X-2.7166 Y-10.3952
+G1 X-2.4501 Y-10.4098
+G1 X-2.1835 Y-10.4244
+G1 X-1.9169 Y-10.4390
+G1 X-1.6503 Y-10.4536
+G1 X-1.3836 Y-10.4682
+G1 X-1.1169 Y-10.4828
+G1 X-0.8502 Y-10.4974
+G1 X-0.5835 Y-10.5121
+G1 X-0.3168 Y-10.5267
+G1 X-0.0500 Y-10.5413
+G1 X0.2168 Y-10.5559
+G1 X0.4837 Y-10.5705
+G1 X0.7505 Y-10.5851
+G1 X1.0174 Y-10.5997
+G1 X1.2843 Y-10.6143
+G1 X1.5512 Y-10.6290
+G1 X1.8182 Y-10.6436
+G1 X2.0852 Y-10.6582
+G1 X2.3522 Y-10.6728
+G1 X2.6192 Y-10.6874
+G1 X2.8863 Y-10.7020
+(Safe converted infill-to-infill connector to fill-infill path 147)
+G1 X2.7458 Y-10.0222
+(fill-infill path 147, 39 points)
+G1 X2.4751 Y-10.0074
+G1 X2.2044 Y-9.9925
+G1 X1.9338 Y-9.9777
+G1 X1.6632 Y-9.9629
+G1 X1.3926 Y-9.9480
+G1 X1.1220 Y-9.9332
+G1 X0.8514 Y-9.9183
+G1 X0.5809 Y-9.9035
+G1 X0.3104 Y-9.8886
+G1 X0.0399 Y-9.8738
+G1 X-0.2305 Y-9.8589
+G1 X-0.5010 Y-9.8441
+G1 X-0.7714 Y-9.8292
+G1 X-1.0418 Y-9.8144
+G1 X-1.3121 Y-9.7996
+G1 X-1.5825 Y-9.7847
+G1 X-1.8528 Y-9.7699
+G1 X-2.1231 Y-9.7550
+G1 X-2.3933 Y-9.7402
+G1 X-2.6636 Y-9.7253
+G1 X-2.9338 Y-9.7105
+G1 X-3.2040 Y-9.6956
+G1 X-3.4741 Y-9.6808
+G1 X-3.7443 Y-9.6660
+G1 X-4.0144 Y-9.6511
+G1 X-4.2845 Y-9.6363
+G1 X-4.5546 Y-9.6214
+G1 X-4.8246 Y-9.6066
+G1 X-5.0946 Y-9.5917
+G1 X-5.3646 Y-9.5769
+G1 X-5.6346 Y-9.5620
+G1 X-5.9046 Y-9.5472
+G1 X-6.1745 Y-9.5323
+G1 X-6.4444 Y-9.5175
+G1 X-6.7143 Y-9.5027
+G1 X-6.9842 Y-9.4878
+G1 X-7.2540 Y-9.4730
+G1 X-7.5238 Y-9.4581
+(Safe converted infill-to-infill connector to fill-infill path 148)
+G1 X-7.6856 Y-8.7760
+(fill-infill path 148, 42 points)
+G1 X-7.4191 Y-8.7907
+G1 X-7.1525 Y-8.8054
+G1 X-6.8859 Y-8.8201
+G1 X-6.6194 Y-8.8348
+G1 X-6.3528 Y-8.8495
+G1 X-6.0861 Y-8.8641
+G1 X-5.8195 Y-8.8788
+G1 X-5.5528 Y-8.8935
+G1 X-5.2861 Y-8.9082
+G1 X-5.0194 Y-8.9229
+G1 X-4.7527 Y-8.9376
+G1 X-4.4859 Y-8.9523
+G1 X-4.2192 Y-8.9670
+G1 X-3.9524 Y-8.9817
+G1 X-3.6855 Y-8.9964
+G1 X-3.4187 Y-9.0111
+G1 X-3.1518 Y-9.0257
+G1 X-2.8850 Y-9.0404
+G1 X-2.6181 Y-9.0551
+G1 X-2.3511 Y-9.0698
+G1 X-2.0842 Y-9.0845
+G1 X-1.8172 Y-9.0992
+G1 X-1.5502 Y-9.1139
+G1 X-1.2832 Y-9.1286
+G1 X-1.0162 Y-9.1433
+G1 X-0.7491 Y-9.1580
+G1 X-0.4821 Y-9.1727
+G1 X-0.2150 Y-9.1873
+G1 X0.0522 Y-9.2020
+G1 X0.3193 Y-9.2167
+G1 X0.5865 Y-9.2314
+G1 X0.8537 Y-9.2461
+G1 X1.1209 Y-9.2608
+G1 X1.3881 Y-9.2755
+G1 X1.6554 Y-9.2902
+G1 X1.9226 Y-9.3049
+G1 X2.1899 Y-9.3196
+G1 X2.4573 Y-9.3343
+G1 X2.7246 Y-9.3489
+G1 X2.9920 Y-9.3636
+G1 X3.2594 Y-9.3783
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_120)
+(Travel to fill-infill path 149)
+G1 X4.8734 Y-9.4670 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_149 kind=fill-infill space=machine_deg source=component_002 points=2 max_surface_segment_mm=0.0964)
+(fill-infill path 149, 2 points)
+G1 X5.1358 Y-9.4814 F1200.000
+(Safe converted infill-to-infill connector to fill-infill path 150)
+G1 X5.1399 Y-9.4816
+(fill-infill path 150, 100 points)
+G1 X5.4110 Y-9.4965
+G1 X5.6821 Y-9.5114
+G1 X5.9532 Y-9.5263
+G1 X6.2244 Y-9.5411
+G1 X6.4956 Y-9.5560
+G1 X6.7668 Y-9.5709
+G1 X7.0380 Y-9.5858
+G1 X7.3093 Y-9.6007
+G1 X7.5805 Y-9.6156
+G1 X7.8518 Y-9.6304
+G1 X8.1232 Y-9.6453
+G1 X8.3945 Y-9.6602
+G1 X8.6659 Y-9.6751
+G1 X8.9373 Y-9.6900
+G1 X9.2087 Y-9.7049
+G1 X9.4802 Y-9.7197
+G1 X9.7516 Y-9.7346
+G1 X10.0231 Y-9.7495
+G1 X10.2947 Y-9.7644
+G1 X10.5662 Y-9.7793
+G1 X10.8378 Y-9.7942
+G1 X11.1094 Y-9.8090
+G1 X11.3810 Y-9.8239
+G1 X11.6527 Y-9.8388
+G1 X11.9243 Y-9.8537
+G1 X12.1960 Y-9.8686
+G1 X12.4678 Y-9.8835
+G1 X12.7395 Y-9.8983
+G1 X13.0113 Y-9.9132
+G1 X13.2831 Y-9.9281
+G1 X13.5549 Y-9.9430
+G1 X13.8268 Y-9.9579
+G1 X14.0987 Y-9.9728
+G1 X14.3706 Y-9.9876
+G1 X14.6425 Y-10.0025
+G1 X14.9145 Y-10.0174
+G1 X15.1864 Y-10.0323
+G1 X15.4585 Y-10.0472
+G1 X15.7305 Y-10.0621
+G1 X16.0025 Y-10.0769
+G1 X16.2746 Y-10.0918
+G1 X16.5467 Y-10.1067
+G1 X16.8189 Y-10.1216
+G1 X17.0911 Y-10.1365
+G1 X17.3632 Y-10.1514
+G1 X17.6355 Y-10.1662
+G1 X17.9077 Y-10.1811
+G1 X18.1800 Y-10.1960
+G1 X18.4523 Y-10.2109
+G1 X18.7246 Y-10.2258
+G1 X18.9970 Y-10.2407
+G1 X19.2693 Y-10.2555
+G1 X19.5417 Y-10.2704
+G1 X19.8142 Y-10.2853
+G1 X20.0866 Y-10.3002
+G1 X20.3591 Y-10.3151
+G1 X20.6316 Y-10.3300
+G1 X20.9042 Y-10.3448
+G1 X21.1768 Y-10.3597
+G1 X21.4494 Y-10.3746
+G1 X21.7220 Y-10.3895
+G1 X21.9946 Y-10.4044
+G1 X22.2673 Y-10.4193
+G1 X22.5400 Y-10.4341
+G1 X22.8127 Y-10.4490
+G1 X23.0855 Y-10.4639
+G1 X23.3583 Y-10.4788
+G1 X23.6311 Y-10.4937
+G1 X23.9040 Y-10.5086
+G1 X24.1768 Y-10.5234
+G1 X24.4497 Y-10.5383
+G1 X24.7227 Y-10.5532
+G1 X24.9956 Y-10.5681
+G1 X25.2686 Y-10.5830
+G1 X25.5416 Y-10.5979
+G1 X25.8147 Y-10.6127
+G1 X26.0877 Y-10.6276
+G1 X26.3608 Y-10.6425
+G1 X26.6340 Y-10.6574
+G1 X26.9071 Y-10.6723
+G1 X27.1803 Y-10.6872
+G1 X27.4535 Y-10.7020
+G1 X27.7267 Y-10.7169
+G1 X28.0000 Y-10.7318
+G1 X28.2733 Y-10.7467
+G1 X28.5466 Y-10.7616
+G1 X28.8200 Y-10.7765
+G1 X29.0934 Y-10.7913
+G1 X29.3668 Y-10.8062
+G1 X29.6402 Y-10.8211
+G1 X29.9137 Y-10.8360
+G1 X30.1872 Y-10.8509
+G1 X30.4607 Y-10.8658
+G1 X30.7343 Y-10.8806
+G1 X31.0079 Y-10.8955
+G1 X31.2815 Y-10.9104
+G1 X31.5552 Y-10.9253
+G1 X31.8288 Y-10.9402
+G1 X32.1026 Y-10.9551
+(Safe converted infill-to-infill connector to fill-infill path 151)
+G1 X32.3434 Y-11.6365
+(fill-infill path 151, 79 points)
+G1 X32.0683 Y-11.6215
+G1 X31.7932 Y-11.6066
+G1 X31.5182 Y-11.5917
+G1 X31.2432 Y-11.5768
+G1 X30.9682 Y-11.5619
+G1 X30.6932 Y-11.5470
+G1 X30.4183 Y-11.5320
+G1 X30.1434 Y-11.5171
+G1 X29.8686 Y-11.5022
+G1 X29.5937 Y-11.4873
+G1 X29.3189 Y-11.4724
+G1 X29.0442 Y-11.4574
+G1 X28.7694 Y-11.4425
+G1 X28.4947 Y-11.4276
+G1 X28.2201 Y-11.4127
+G1 X27.9454 Y-11.3978
+G1 X27.6708 Y-11.3829
+G1 X27.3962 Y-11.3679
+G1 X27.1217 Y-11.3530
+G1 X26.8471 Y-11.3381
+G1 X26.5727 Y-11.3232
+G1 X26.2982 Y-11.3083
+G1 X26.0238 Y-11.2933
+G1 X25.7494 Y-11.2784
+G1 X25.4750 Y-11.2635
+G1 X25.2007 Y-11.2486
+G1 X24.9264 Y-11.2337
+G1 X24.6521 Y-11.2188
+G1 X24.3778 Y-11.2038
+G1 X24.1036 Y-11.1889
+G1 X23.8294 Y-11.1740
+G1 X23.5553 Y-11.1591
+G1 X23.2811 Y-11.1442
+G1 X23.0070 Y-11.1292
+G1 X22.7330 Y-11.1143
+G1 X22.4589 Y-11.0994
+G1 X22.1849 Y-11.0845
+G1 X21.9109 Y-11.0696
+G1 X21.6370 Y-11.0547
+G1 X21.3631 Y-11.0397
+G1 X21.0892 Y-11.0248
+G1 X20.8153 Y-11.0099
+G1 X20.5415 Y-10.9950
+G1 X20.2677 Y-10.9801
+G1 X19.9939 Y-10.9652
+G1 X19.7202 Y-10.9502
+G1 X19.4464 Y-10.9353
+G1 X19.1727 Y-10.9204
+G1 X18.8991 Y-10.9055
+G1 X18.6255 Y-10.8906
+G1 X18.3519 Y-10.8756
+G1 X18.0783 Y-10.8607
+G1 X17.8047 Y-10.8458
+G1 X17.5312 Y-10.8309
+G1 X17.2577 Y-10.8160
+G1 X16.9843 Y-10.8011
+G1 X16.7108 Y-10.7861
+G1 X16.4374 Y-10.7712
+G1 X16.1641 Y-10.7563
+G1 X15.8907 Y-10.7414
+G1 X15.6174 Y-10.7265
+G1 X15.3441 Y-10.7115
+G1 X15.0708 Y-10.6966
+G1 X14.7976 Y-10.6817
+G1 X14.5244 Y-10.6668
+G1 X14.2512 Y-10.6519
+G1 X13.9781 Y-10.6370
+G1 X13.7049 Y-10.6220
+G1 X13.4318 Y-10.6071
+G1 X13.1588 Y-10.5922
+G1 X12.8857 Y-10.5773
+G1 X12.6127 Y-10.5624
+G1 X12.3397 Y-10.5474
+G1 X12.0668 Y-10.5325
+G1 X11.7938 Y-10.5176
+G1 X11.5209 Y-10.5027
+G1 X11.2480 Y-10.4878
+G1 X10.9752 Y-10.4729
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_149)
+(Travel to fill-infill path 152)
+G1 X16.8938 Y-11.4664 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_152 kind=fill-infill space=machine_deg source=component_002 points=58 max_surface_segment_mm=0.1000)
+(fill-infill path 152, 58 points)
+G1 X17.1683 Y-11.4814 F1200.000
+G1 X17.4429 Y-11.4963
+G1 X17.7174 Y-11.5112
+G1 X17.9920 Y-11.5262
+G1 X18.2666 Y-11.5411
+G1 X18.5413 Y-11.5560
+G1 X18.8159 Y-11.5710
+G1 X19.0906 Y-11.5859
+G1 X19.3654 Y-11.6009
+G1 X19.6402 Y-11.6158
+G1 X19.9150 Y-11.6307
+G1 X20.1898 Y-11.6457
+G1 X20.4646 Y-11.6606
+G1 X20.7395 Y-11.6755
+G1 X21.0145 Y-11.6905
+G1 X21.2894 Y-11.7054
+G1 X21.5644 Y-11.7204
+G1 X21.8394 Y-11.7353
+G1 X22.1145 Y-11.7502
+G1 X22.3895 Y-11.7652
+G1 X22.6647 Y-11.7801
+G1 X22.9398 Y-11.7950
+G1 X23.2150 Y-11.8100
+G1 X23.4902 Y-11.8249
+G1 X23.7654 Y-11.8399
+G1 X24.0407 Y-11.8548
+G1 X24.3160 Y-11.8697
+G1 X24.5913 Y-11.8847
+G1 X24.8667 Y-11.8996
+G1 X25.1421 Y-11.9145
+G1 X25.4175 Y-11.9295
+G1 X25.6930 Y-11.9444
+G1 X25.9684 Y-11.9594
+G1 X26.2440 Y-11.9743
+G1 X26.5195 Y-11.9892
+G1 X26.7951 Y-12.0042
+G1 X27.0707 Y-12.0191
+G1 X27.3464 Y-12.0340
+G1 X27.6221 Y-12.0490
+G1 X27.8978 Y-12.0639
+G1 X28.1735 Y-12.0789
+G1 X28.4493 Y-12.0938
+G1 X28.7251 Y-12.1087
+G1 X29.0010 Y-12.1237
+G1 X29.2769 Y-12.1386
+G1 X29.5528 Y-12.1536
+G1 X29.8287 Y-12.1685
+G1 X30.1047 Y-12.1834
+G1 X30.3807 Y-12.1984
+G1 X30.6568 Y-12.2133
+G1 X30.9329 Y-12.2282
+G1 X31.2090 Y-12.2432
+G1 X31.4851 Y-12.2581
+G1 X31.7613 Y-12.2731
+G1 X32.0375 Y-12.2880
+G1 X32.3138 Y-12.3029
+G1 X32.5900 Y-12.3179
+(Safe converted infill-to-infill connector to fill-infill path 153)
+G1 X32.5803 Y-12.9851
+(fill-infill path 153, 41 points)
+G1 X32.3092 Y-12.9705
+G1 X32.0382 Y-12.9559
+G1 X31.7671 Y-12.9413
+G1 X31.4961 Y-12.9267
+G1 X31.2251 Y-12.9121
+G1 X30.9542 Y-12.8974
+G1 X30.6833 Y-12.8828
+G1 X30.4124 Y-12.8682
+G1 X30.1416 Y-12.8536
+G1 X29.8708 Y-12.8390
+G1 X29.6000 Y-12.8244
+G1 X29.3293 Y-12.8098
+G1 X29.0586 Y-12.7951
+G1 X28.7879 Y-12.7805
+G1 X28.5173 Y-12.7659
+G1 X28.2467 Y-12.7513
+G1 X27.9761 Y-12.7367
+G1 X27.7056 Y-12.7221
+G1 X27.4351 Y-12.7075
+G1 X27.1646 Y-12.6928
+G1 X26.8942 Y-12.6782
+G1 X26.6237 Y-12.6636
+G1 X26.3534 Y-12.6490
+G1 X26.0830 Y-12.6344
+G1 X25.8127 Y-12.6198
+G1 X25.5424 Y-12.6052
+G1 X25.2722 Y-12.5905
+G1 X25.0020 Y-12.5759
+G1 X24.7318 Y-12.5613
+G1 X24.4617 Y-12.5467
+G1 X24.1916 Y-12.5321
+G1 X23.9215 Y-12.5175
+G1 X23.6514 Y-12.5029
+G1 X23.3814 Y-12.4882
+G1 X23.1114 Y-12.4736
+G1 X22.8415 Y-12.4590
+G1 X22.5716 Y-12.4444
+G1 X22.3017 Y-12.4298
+G1 X22.0318 Y-12.4152
+G1 X21.7620 Y-12.4006
+(Safe converted infill-to-infill connector to fill-infill path 154)
+G1 X21.6801 Y-13.0654
+(fill-infill path 154, 43 points)
+G1 X21.9527 Y-13.0802
+G1 X22.2253 Y-13.0949
+G1 X22.4980 Y-13.1096
+G1 X22.7707 Y-13.1243
+G1 X23.0434 Y-13.1390
+G1 X23.3162 Y-13.1538
+G1 X23.5890 Y-13.1685
+G1 X23.8618 Y-13.1832
+G1 X24.1347 Y-13.1979
+G1 X24.4076 Y-13.2127
+G1 X24.6805 Y-13.2274
+G1 X24.9535 Y-13.2421
+G1 X25.2265 Y-13.2568
+G1 X25.4996 Y-13.2715
+G1 X25.7726 Y-13.2863
+G1 X26.0457 Y-13.3010
+G1 X26.3189 Y-13.3157
+G1 X26.5921 Y-13.3304
+G1 X26.8653 Y-13.3452
+G1 X27.1385 Y-13.3599
+G1 X27.4118 Y-13.3746
+G1 X27.6851 Y-13.3893
+G1 X27.9585 Y-13.4040
+G1 X28.2319 Y-13.4188
+G1 X28.5053 Y-13.4335
+G1 X28.7788 Y-13.4482
+G1 X29.0523 Y-13.4629
+G1 X29.3258 Y-13.4777
+G1 X29.5994 Y-13.4924
+G1 X29.8730 Y-13.5071
+G1 X30.1466 Y-13.5218
+G1 X30.4203 Y-13.5366
+G1 X30.6940 Y-13.5513
+G1 X30.9678 Y-13.5660
+G1 X31.2415 Y-13.5807
+G1 X31.5154 Y-13.5954
+G1 X31.7892 Y-13.6102
+G1 X32.0631 Y-13.6249
+G1 X32.3370 Y-13.6396
+G1 X32.6110 Y-13.6543
+G1 X32.8850 Y-13.6691
+G1 X33.1590 Y-13.6838
+(Safe converted infill-to-infill connector to fill-infill path 155)
+G1 X33.1085 Y-14.3483
+(fill-infill path 155, 41 points)
+G1 X32.8357 Y-14.3337
+G1 X32.5629 Y-14.3191
+G1 X32.2902 Y-14.3045
+G1 X32.0175 Y-14.2898
+G1 X31.7448 Y-14.2752
+G1 X31.4722 Y-14.2606
+G1 X31.1996 Y-14.2460
+G1 X30.9270 Y-14.2314
+G1 X30.6545 Y-14.2168
+G1 X30.3820 Y-14.2022
+G1 X30.1096 Y-14.1876
+G1 X29.8372 Y-14.1730
+G1 X29.5648 Y-14.1584
+G1 X29.2925 Y-14.1438
+G1 X29.0202 Y-14.1291
+G1 X28.7479 Y-14.1145
+G1 X28.4757 Y-14.0999
+G1 X28.2035 Y-14.0853
+G1 X27.9314 Y-14.0707
+G1 X27.6593 Y-14.0561
+G1 X27.3872 Y-14.0415
+G1 X27.1151 Y-14.0269
+G1 X26.8431 Y-14.0123
+G1 X26.5712 Y-13.9977
+G1 X26.2992 Y-13.9830
+G1 X26.0274 Y-13.9684
+G1 X25.7555 Y-13.9538
+G1 X25.4837 Y-13.9392
+G1 X25.2119 Y-13.9246
+G1 X24.9401 Y-13.9100
+G1 X24.6684 Y-13.8954
+G1 X24.3967 Y-13.8808
+G1 X24.1251 Y-13.8662
+G1 X23.8535 Y-13.8516
+G1 X23.5819 Y-13.8369
+G1 X23.3104 Y-13.8223
+G1 X23.0389 Y-13.8077
+G1 X22.7674 Y-13.7931
+G1 X22.4960 Y-13.7785
+G1 X22.2246 Y-13.7639
+(Safe converted infill-to-infill connector to fill-infill path 156)
+G1 X22.1381 Y-14.4282
+(fill-infill path 156, 43 points)
+G1 X22.4141 Y-14.4430
+G1 X22.6902 Y-14.4578
+G1 X22.9663 Y-14.4726
+G1 X23.2424 Y-14.4874
+G1 X23.5186 Y-14.5022
+G1 X23.7948 Y-14.5170
+G1 X24.0711 Y-14.5318
+G1 X24.3474 Y-14.5467
+G1 X24.6237 Y-14.5615
+G1 X24.9001 Y-14.5763
+G1 X25.1765 Y-14.5911
+G1 X25.4530 Y-14.6059
+G1 X25.7295 Y-14.6207
+G1 X26.0060 Y-14.6355
+G1 X26.2826 Y-14.6504
+G1 X26.5592 Y-14.6652
+G1 X26.8358 Y-14.6800
+G1 X27.1125 Y-14.6948
+G1 X27.3892 Y-14.7096
+G1 X27.6660 Y-14.7244
+G1 X27.9428 Y-14.7392
+G1 X28.2197 Y-14.7540
+G1 X28.4965 Y-14.7689
+G1 X28.7735 Y-14.7837
+G1 X29.0504 Y-14.7985
+G1 X29.3274 Y-14.8133
+G1 X29.6045 Y-14.8281
+G1 X29.8816 Y-14.8429
+G1 X30.1587 Y-14.8577
+G1 X30.4359 Y-14.8725
+G1 X30.7131 Y-14.8874
+G1 X30.9903 Y-14.9022
+G1 X31.2676 Y-14.9170
+G1 X31.5449 Y-14.9318
+G1 X31.8223 Y-14.9466
+G1 X32.0997 Y-14.9614
+G1 X32.3771 Y-14.9762
+G1 X32.6546 Y-14.9910
+G1 X32.9322 Y-15.0059
+G1 X33.2097 Y-15.0207
+G1 X33.4873 Y-15.0355
+G1 X33.7650 Y-15.0503
+(Safe converted infill-to-infill connector to fill-infill path 157)
+G1 X33.6918 Y-15.7130
+(fill-infill path 157, 41 points)
+G1 X33.4161 Y-15.6984
+G1 X33.1405 Y-15.6837
+G1 X32.8649 Y-15.6691
+G1 X32.5894 Y-15.6544
+G1 X32.3139 Y-15.6397
+G1 X32.0384 Y-15.6251
+G1 X31.7630 Y-15.6104
+G1 X31.4876 Y-15.5958
+G1 X31.2123 Y-15.5811
+G1 X30.9370 Y-15.5665
+G1 X30.6617 Y-15.5518
+G1 X30.3865 Y-15.5372
+G1 X30.1113 Y-15.5225
+G1 X29.8362 Y-15.5078
+G1 X29.5611 Y-15.4932
+G1 X29.2860 Y-15.4785
+G1 X29.0110 Y-15.4639
+G1 X28.7361 Y-15.4492
+G1 X28.4611 Y-15.4346
+G1 X28.1862 Y-15.4199
+G1 X27.9114 Y-15.4053
+G1 X27.6366 Y-15.3906
+G1 X27.3618 Y-15.3759
+G1 X27.0871 Y-15.3613
+G1 X26.8124 Y-15.3466
+G1 X26.5378 Y-15.3320
+G1 X26.2632 Y-15.3173
+G1 X25.9886 Y-15.3027
+G1 X25.7141 Y-15.2880
+G1 X25.4396 Y-15.2734
+G1 X25.1652 Y-15.2587
+G1 X24.8907 Y-15.2440
+G1 X24.6164 Y-15.2294
+G1 X24.3421 Y-15.2147
+G1 X24.0678 Y-15.2001
+G1 X23.7935 Y-15.1854
+G1 X23.5193 Y-15.1708
+G1 X23.2452 Y-15.1561
+G1 X22.9710 Y-15.1415
+G1 X22.6969 Y-15.1268
+(Safe converted infill-to-infill connector to fill-infill path 158)
+G1 X22.6447 Y-15.7925
+(fill-infill path 158, 43 points)
+G1 X22.9210 Y-15.8072
+G1 X23.1972 Y-15.8220
+G1 X23.4736 Y-15.8367
+G1 X23.7500 Y-15.8514
+G1 X24.0264 Y-15.8661
+G1 X24.3028 Y-15.8808
+G1 X24.5793 Y-15.8956
+G1 X24.8559 Y-15.9103
+G1 X25.1325 Y-15.9250
+G1 X25.4091 Y-15.9397
+G1 X25.6858 Y-15.9544
+G1 X25.9625 Y-15.9692
+G1 X26.2392 Y-15.9839
+G1 X26.5160 Y-15.9986
+G1 X26.7929 Y-16.0133
+G1 X27.0697 Y-16.0280
+G1 X27.3467 Y-16.0428
+G1 X27.6236 Y-16.0575
+G1 X27.9006 Y-16.0722
+G1 X28.1777 Y-16.0869
+G1 X28.4548 Y-16.1016
+G1 X28.7319 Y-16.1164
+G1 X29.0091 Y-16.1311
+G1 X29.2863 Y-16.1458
+G1 X29.5636 Y-16.1605
+G1 X29.8409 Y-16.1752
+G1 X30.1183 Y-16.1900
+G1 X30.3957 Y-16.2047
+G1 X30.6731 Y-16.2194
+G1 X30.9506 Y-16.2341
+G1 X31.2281 Y-16.2488
+G1 X31.5057 Y-16.2636
+G1 X31.7833 Y-16.2783
+G1 X32.0610 Y-16.2930
+G1 X32.3387 Y-16.3077
+G1 X32.6164 Y-16.3224
+G1 X32.8942 Y-16.3372
+G1 X33.1721 Y-16.3519
+G1 X33.4499 Y-16.3666
+G1 X33.7279 Y-16.3813
+G1 X34.0058 Y-16.3960
+G1 X34.2838 Y-16.4108
+(Safe converted infill-to-infill connector to fill-infill path 159)
+G1 X34.2655 Y-17.0758
+(fill-infill path 159, 41 points)
+G1 X33.9876 Y-17.0612
+G1 X33.7098 Y-17.0465
+G1 X33.4320 Y-17.0318
+G1 X33.1543 Y-17.0172
+G1 X32.8765 Y-17.0025
+G1 X32.5989 Y-16.9879
+G1 X32.3213 Y-16.9732
+G1 X32.0437 Y-16.9586
+G1 X31.7662 Y-16.9439
+G1 X31.4887 Y-16.9292
+G1 X31.2113 Y-16.9146
+G1 X30.9339 Y-16.8999
+G1 X30.6565 Y-16.8853
+G1 X30.3792 Y-16.8706
+G1 X30.1020 Y-16.8560
+G1 X29.8248 Y-16.8413
+G1 X29.5476 Y-16.8266
+G1 X29.2705 Y-16.8120
+G1 X28.9934 Y-16.7973
+G1 X28.7164 Y-16.7827
+G1 X28.4394 Y-16.7680
+G1 X28.1624 Y-16.7534
+G1 X27.8856 Y-16.7387
+G1 X27.6087 Y-16.7240
+G1 X27.3319 Y-16.7094
+G1 X27.0551 Y-16.6947
+G1 X26.7784 Y-16.6801
+G1 X26.5017 Y-16.6654
+G1 X26.2251 Y-16.6508
+G1 X25.9485 Y-16.6361
+G1 X25.6720 Y-16.6214
+G1 X25.3955 Y-16.6068
+G1 X25.1190 Y-16.5921
+G1 X24.8426 Y-16.5775
+G1 X24.5662 Y-16.5628
+G1 X24.2899 Y-16.5482
+G1 X24.0136 Y-16.5335
+G1 X23.7374 Y-16.5188
+G1 X23.4612 Y-16.5042
+G1 X23.1851 Y-16.4895
+(Safe converted infill-to-infill connector to fill-infill path 160)
+G1 X23.1013 Y-17.1532
+(fill-infill path 160, 43 points)
+G1 X23.3832 Y-17.1681
+G1 X23.6652 Y-17.1830
+G1 X23.9472 Y-17.1979
+G1 X24.2293 Y-17.2128
+G1 X24.5115 Y-17.2277
+G1 X24.7937 Y-17.2426
+G1 X25.0759 Y-17.2575
+G1 X25.3582 Y-17.2724
+G1 X25.6405 Y-17.2874
+G1 X25.9229 Y-17.3023
+G1 X26.2053 Y-17.3172
+G1 X26.4878 Y-17.3321
+G1 X26.7703 Y-17.3470
+G1 X27.0529 Y-17.3619
+G1 X27.3355 Y-17.3768
+G1 X27.6182 Y-17.3917
+G1 X27.9009 Y-17.4066
+G1 X28.1836 Y-17.4215
+G1 X28.4664 Y-17.4364
+G1 X28.7493 Y-17.4514
+G1 X29.0322 Y-17.4663
+G1 X29.3151 Y-17.4812
+G1 X29.5981 Y-17.4961
+G1 X29.8812 Y-17.5110
+G1 X30.1643 Y-17.5259
+G1 X30.4474 Y-17.5408
+G1 X30.7306 Y-17.5557
+G1 X31.0139 Y-17.5706
+G1 X31.2972 Y-17.5855
+G1 X31.5805 Y-17.6004
+G1 X31.8639 Y-17.6154
+G1 X32.1473 Y-17.6303
+G1 X32.4308 Y-17.6452
+G1 X32.7144 Y-17.6601
+G1 X32.9979 Y-17.6750
+G1 X33.2816 Y-17.6899
+G1 X33.5653 Y-17.7048
+G1 X33.8490 Y-17.7197
+G1 X34.1328 Y-17.7346
+G1 X34.4166 Y-17.7495
+G1 X34.7005 Y-17.7644
+G1 X34.9844 Y-17.7794
+(Safe converted infill-to-infill connector to fill-infill path 161)
+G1 X34.9509 Y-18.4430
+(fill-infill path 161, 41 points)
+G1 X34.6692 Y-18.4283
+G1 X34.3876 Y-18.4135
+G1 X34.1060 Y-18.3988
+G1 X33.8245 Y-18.3841
+G1 X33.5430 Y-18.3693
+G1 X33.2615 Y-18.3546
+G1 X32.9802 Y-18.3399
+G1 X32.6988 Y-18.3252
+G1 X32.4176 Y-18.3104
+G1 X32.1363 Y-18.2957
+G1 X31.8552 Y-18.2810
+G1 X31.5740 Y-18.2662
+G1 X31.2930 Y-18.2515
+G1 X31.0119 Y-18.2368
+G1 X30.7310 Y-18.2220
+G1 X30.4500 Y-18.2073
+G1 X30.1692 Y-18.1926
+G1 X29.8883 Y-18.1779
+G1 X29.6075 Y-18.1631
+G1 X29.3268 Y-18.1484
+G1 X29.0461 Y-18.1337
+G1 X28.7655 Y-18.1189
+G1 X28.4849 Y-18.1042
+G1 X28.2044 Y-18.0895
+G1 X27.9239 Y-18.0747
+G1 X27.6435 Y-18.0600
+G1 X27.3631 Y-18.0453
+G1 X27.0827 Y-18.0306
+G1 X26.8025 Y-18.0158
+G1 X26.5222 Y-18.0011
+G1 X26.2420 Y-17.9864
+G1 X25.9619 Y-17.9716
+G1 X25.6818 Y-17.9569
+G1 X25.4017 Y-17.9422
+G1 X25.1217 Y-17.9274
+G1 X24.8418 Y-17.9127
+G1 X24.5619 Y-17.8980
+G1 X24.2820 Y-17.8833
+G1 X24.0022 Y-17.8685
+G1 X23.7225 Y-17.8538
+(Safe converted infill-to-infill connector to fill-infill path 162)
+G1 X23.6172 Y-18.5159
+(fill-infill path 162, 43 points)
+G1 X23.8996 Y-18.5307
+G1 X24.1820 Y-18.5455
+G1 X24.4645 Y-18.5603
+G1 X24.7470 Y-18.5751
+G1 X25.0296 Y-18.5899
+G1 X25.3122 Y-18.6047
+G1 X25.5949 Y-18.6196
+G1 X25.8776 Y-18.6344
+G1 X26.1603 Y-18.6492
+G1 X26.4432 Y-18.6640
+G1 X26.7260 Y-18.6788
+G1 X27.0090 Y-18.6936
+G1 X27.2920 Y-18.7084
+G1 X27.5750 Y-18.7232
+G1 X27.8581 Y-18.7380
+G1 X28.1412 Y-18.7528
+G1 X28.4244 Y-18.7676
+G1 X28.7076 Y-18.7824
+G1 X28.9909 Y-18.7972
+G1 X29.2742 Y-18.8120
+G1 X29.5576 Y-18.8269
+G1 X29.8411 Y-18.8417
+G1 X30.1246 Y-18.8565
+G1 X30.4081 Y-18.8713
+G1 X30.6917 Y-18.8861
+G1 X30.9754 Y-18.9009
+G1 X31.2591 Y-18.9157
+G1 X31.5428 Y-18.9305
+G1 X31.8266 Y-18.9453
+G1 X32.1105 Y-18.9601
+G1 X32.3944 Y-18.9749
+G1 X32.6784 Y-18.9897
+G1 X32.9624 Y-19.0045
+G1 X33.2465 Y-19.0194
+G1 X33.5306 Y-19.0342
+G1 X33.8148 Y-19.0490
+G1 X34.0990 Y-19.0638
+G1 X34.3833 Y-19.0786
+G1 X34.6676 Y-19.0934
+G1 X34.9520 Y-19.1082
+G1 X35.2364 Y-19.1230
+G1 X35.5209 Y-19.1378
+(Safe converted infill-to-infill connector to fill-infill path 163)
+G1 X35.5851 Y-19.8059
+(fill-infill path 163, 41 points)
+G1 X35.3009 Y-19.7912
+G1 X35.0168 Y-19.7765
+G1 X34.7327 Y-19.7617
+G1 X34.4486 Y-19.7470
+G1 X34.1646 Y-19.7323
+G1 X33.8807 Y-19.7176
+G1 X33.5968 Y-19.7028
+G1 X33.3130 Y-19.6881
+G1 X33.0292 Y-19.6734
+G1 X32.7455 Y-19.6587
+G1 X32.4618 Y-19.6439
+G1 X32.1782 Y-19.6292
+G1 X31.8947 Y-19.6145
+G1 X31.6112 Y-19.5997
+G1 X31.3277 Y-19.5850
+G1 X31.0443 Y-19.5703
+G1 X30.7610 Y-19.5556
+G1 X30.4777 Y-19.5408
+G1 X30.1945 Y-19.5261
+G1 X29.9113 Y-19.5114
+G1 X29.6282 Y-19.4967
+G1 X29.3451 Y-19.4819
+G1 X29.0621 Y-19.4672
+G1 X28.7792 Y-19.4525
+G1 X28.4962 Y-19.4378
+G1 X28.2134 Y-19.4230
+G1 X27.9306 Y-19.4083
+G1 X27.6478 Y-19.3936
+G1 X27.3651 Y-19.3789
+G1 X27.0825 Y-19.3641
+G1 X26.7999 Y-19.3494
+G1 X26.5174 Y-19.3347
+G1 X26.2349 Y-19.3200
+G1 X25.9524 Y-19.3052
+G1 X25.6701 Y-19.2905
+G1 X25.3877 Y-19.2758
+G1 X25.1055 Y-19.2611
+G1 X24.8232 Y-19.2463
+G1 X24.5411 Y-19.2316
+G1 X24.2590 Y-19.2169
+(Safe converted infill-to-infill connector to fill-infill path 164)
+G1 X24.2215 Y-19.8821
+(fill-infill path 164, 43 points)
+G1 X24.5073 Y-19.8969
+G1 X24.7932 Y-19.9118
+G1 X25.0791 Y-19.9266
+G1 X25.3651 Y-19.9415
+G1 X25.6512 Y-19.9564
+G1 X25.9373 Y-19.9712
+G1 X26.2235 Y-19.9861
+G1 X26.5097 Y-20.0009
+G1 X26.7960 Y-20.0158
+G1 X27.0823 Y-20.0306
+G1 X27.3687 Y-20.0455
+G1 X27.6551 Y-20.0603
+G1 X27.9416 Y-20.0752
+G1 X28.2282 Y-20.0901
+G1 X28.5148 Y-20.1049
+G1 X28.8015 Y-20.1198
+G1 X29.0882 Y-20.1346
+G1 X29.3750 Y-20.1495
+G1 X29.6618 Y-20.1643
+G1 X29.9487 Y-20.1792
+G1 X30.2357 Y-20.1940
+G1 X30.5227 Y-20.2089
+G1 X30.8098 Y-20.2237
+G1 X31.0969 Y-20.2386
+G1 X31.3841 Y-20.2535
+G1 X31.6713 Y-20.2683
+G1 X31.9586 Y-20.2832
+G1 X32.2460 Y-20.2980
+G1 X32.5334 Y-20.3129
+G1 X32.8208 Y-20.3277
+G1 X33.1084 Y-20.3426
+G1 X33.3959 Y-20.3574
+G1 X33.6836 Y-20.3723
+G1 X33.9713 Y-20.3871
+G1 X34.2590 Y-20.4020
+G1 X34.5468 Y-20.4169
+G1 X34.8347 Y-20.4317
+G1 X35.1226 Y-20.4466
+G1 X35.4106 Y-20.4614
+G1 X35.6987 Y-20.4763
+G1 X35.9868 Y-20.4911
+G1 X36.2749 Y-20.5060
+(Safe converted infill-to-infill connector to fill-infill path 165)
+G1 X36.2686 Y-21.1697
+(fill-infill path 165, 41 points)
+G1 X35.9811 Y-21.1550
+G1 X35.6936 Y-21.1402
+G1 X35.4062 Y-21.1255
+G1 X35.1189 Y-21.1107
+G1 X34.8316 Y-21.0960
+G1 X34.5444 Y-21.0812
+G1 X34.2572 Y-21.0665
+G1 X33.9701 Y-21.0517
+G1 X33.6830 Y-21.0370
+G1 X33.3960 Y-21.0222
+G1 X33.1091 Y-21.0075
+G1 X32.8222 Y-20.9927
+G1 X32.5354 Y-20.9780
+G1 X32.2487 Y-20.9632
+G1 X31.9620 Y-20.9485
+G1 X31.6753 Y-20.9337
+G1 X31.3887 Y-20.9190
+G1 X31.1022 Y-20.9042
+G1 X30.8157 Y-20.8895
+G1 X30.5293 Y-20.8747
+G1 X30.2430 Y-20.8600
+G1 X29.9567 Y-20.8452
+G1 X29.6705 Y-20.8305
+G1 X29.3843 Y-20.8157
+G1 X29.0982 Y-20.8010
+G1 X28.8121 Y-20.7862
+G1 X28.5261 Y-20.7715
+G1 X28.2402 Y-20.7567
+G1 X27.9543 Y-20.7420
+G1 X27.6685 Y-20.7272
+G1 X27.3827 Y-20.7125
+G1 X27.0970 Y-20.6977
+G1 X26.8113 Y-20.6830
+G1 X26.5257 Y-20.6682
+G1 X26.2402 Y-20.6535
+G1 X25.9547 Y-20.6387
+G1 X25.6693 Y-20.6240
+G1 X25.3839 Y-20.6092
+G1 X25.0986 Y-20.5944
+G1 X24.8133 Y-20.5797
+(Safe converted infill-to-infill connector to fill-infill path 166)
+G1 X24.7788 Y-21.2446
+(fill-infill path 166, 43 points)
+G1 X25.0664 Y-21.2594
+G1 X25.3541 Y-21.2742
+G1 X25.6419 Y-21.2890
+G1 X25.9298 Y-21.3038
+G1 X26.2177 Y-21.3186
+G1 X26.5056 Y-21.3334
+G1 X26.7936 Y-21.3482
+G1 X27.0817 Y-21.3630
+G1 X27.3698 Y-21.3779
+G1 X27.6580 Y-21.3927
+G1 X27.9463 Y-21.4075
+G1 X28.2346 Y-21.4223
+G1 X28.5230 Y-21.4371
+G1 X28.8114 Y-21.4519
+G1 X29.0999 Y-21.4667
+G1 X29.3885 Y-21.4815
+G1 X29.6771 Y-21.4963
+G1 X29.9658 Y-21.5111
+G1 X30.2545 Y-21.5259
+G1 X30.5433 Y-21.5407
+G1 X30.8322 Y-21.5555
+G1 X31.1211 Y-21.5703
+G1 X31.4101 Y-21.5851
+G1 X31.6991 Y-21.5999
+G1 X31.9882 Y-21.6147
+G1 X32.2774 Y-21.6296
+G1 X32.5666 Y-21.6444
+G1 X32.8559 Y-21.6592
+G1 X33.1452 Y-21.6740
+G1 X33.4347 Y-21.6888
+G1 X33.7241 Y-21.7036
+G1 X34.0137 Y-21.7184
+G1 X34.3033 Y-21.7332
+G1 X34.5929 Y-21.7480
+G1 X34.8827 Y-21.7628
+G1 X35.1724 Y-21.7776
+G1 X35.4623 Y-21.7924
+G1 X35.7522 Y-21.8072
+G1 X36.0422 Y-21.8220
+G1 X36.3322 Y-21.8368
+G1 X36.6223 Y-21.8516
+G1 X36.9125 Y-21.8664
+(Safe converted infill-to-infill connector to fill-infill path 167)
+G1 X37.0331 Y-22.5360
+(fill-infill path 167, 41 points)
+G1 X36.7420 Y-22.5212
+G1 X36.4510 Y-22.5064
+G1 X36.1600 Y-22.4917
+G1 X35.8692 Y-22.4769
+G1 X35.5783 Y-22.4621
+G1 X35.2876 Y-22.4473
+G1 X34.9969 Y-22.4326
+G1 X34.7063 Y-22.4178
+G1 X34.4157 Y-22.4030
+G1 X34.1252 Y-22.3882
+G1 X33.8348 Y-22.3735
+G1 X33.5444 Y-22.3587
+G1 X33.2541 Y-22.3439
+G1 X32.9638 Y-22.3291
+G1 X32.6736 Y-22.3144
+G1 X32.3835 Y-22.2996
+G1 X32.0935 Y-22.2848
+G1 X31.8035 Y-22.2700
+G1 X31.5136 Y-22.2553
+G1 X31.2237 Y-22.2405
+G1 X30.9339 Y-22.2257
+G1 X30.6442 Y-22.2109
+G1 X30.3545 Y-22.1962
+G1 X30.0649 Y-22.1814
+G1 X29.7753 Y-22.1666
+G1 X29.4858 Y-22.1518
+G1 X29.1964 Y-22.1370
+G1 X28.9070 Y-22.1223
+G1 X28.6177 Y-22.1075
+G1 X28.3285 Y-22.0927
+G1 X28.0393 Y-22.0779
+G1 X27.7502 Y-22.0632
+G1 X27.4612 Y-22.0484
+G1 X27.1722 Y-22.0336
+G1 X26.8833 Y-22.0188
+G1 X26.5944 Y-22.0041
+G1 X26.3056 Y-21.9893
+G1 X26.0169 Y-21.9745
+G1 X25.7282 Y-21.9597
+G1 X25.4396 Y-21.9450
+(Safe converted infill-to-infill connector to fill-infill path 168)
+G1 X25.3584 Y-22.6070
+(fill-infill path 168, 43 points)
+G1 X25.6513 Y-22.6219
+G1 X25.9443 Y-22.6368
+G1 X26.2373 Y-22.6518
+G1 X26.5305 Y-22.6667
+G1 X26.8236 Y-22.6816
+G1 X27.1169 Y-22.6965
+G1 X27.4102 Y-22.7115
+G1 X27.7036 Y-22.7264
+G1 X27.9971 Y-22.7413
+G1 X28.2906 Y-22.7562
+G1 X28.5842 Y-22.7711
+G1 X28.8778 Y-22.7861
+G1 X29.1715 Y-22.8010
+G1 X29.4653 Y-22.8159
+G1 X29.7591 Y-22.8308
+G1 X30.0531 Y-22.8458
+G1 X30.3470 Y-22.8607
+G1 X30.6411 Y-22.8756
+G1 X30.9352 Y-22.8905
+G1 X31.2294 Y-22.9054
+G1 X31.5236 Y-22.9204
+G1 X31.8180 Y-22.9353
+G1 X32.1123 Y-22.9502
+G1 X32.4068 Y-22.9651
+G1 X32.7013 Y-22.9801
+G1 X32.9959 Y-22.9950
+G1 X33.2905 Y-23.0099
+G1 X33.5853 Y-23.0248
+G1 X33.8800 Y-23.0397
+G1 X34.1749 Y-23.0547
+G1 X34.4698 Y-23.0696
+G1 X34.7648 Y-23.0845
+G1 X35.0599 Y-23.0994
+G1 X35.3550 Y-23.1144
+G1 X35.6502 Y-23.1293
+G1 X35.9454 Y-23.1442
+G1 X36.2408 Y-23.1591
+G1 X36.5362 Y-23.1740
+G1 X36.8316 Y-23.1890
+G1 X37.1272 Y-23.2039
+G1 X37.4228 Y-23.2188
+G1 X37.7184 Y-23.2337
+(Safe converted infill-to-infill connector to fill-infill path 169)
+G1 X37.7654 Y-23.8988
+(fill-infill path 169, 41 points)
+G1 X37.4710 Y-23.8840
+G1 X37.1767 Y-23.8692
+G1 X36.8825 Y-23.8545
+G1 X36.5883 Y-23.8397
+G1 X36.2942 Y-23.8249
+G1 X36.0002 Y-23.8101
+G1 X35.7062 Y-23.7954
+G1 X35.4123 Y-23.7806
+G1 X35.1185 Y-23.7658
+G1 X34.8247 Y-23.7510
+G1 X34.5311 Y-23.7363
+G1 X34.2375 Y-23.7215
+G1 X33.9439 Y-23.7067
+G1 X33.6504 Y-23.6919
+G1 X33.3570 Y-23.6772
+G1 X33.0637 Y-23.6624
+G1 X32.7704 Y-23.6476
+G1 X32.4772 Y-23.6328
+G1 X32.1841 Y-23.6181
+G1 X31.8910 Y-23.6033
+G1 X31.5980 Y-23.5885
+G1 X31.3051 Y-23.5737
+G1 X31.0122 Y-23.5590
+G1 X30.7195 Y-23.5442
+G1 X30.4267 Y-23.5294
+G1 X30.1341 Y-23.5146
+G1 X29.8415 Y-23.4998
+G1 X29.5490 Y-23.4851
+G1 X29.2565 Y-23.4703
+G1 X28.9641 Y-23.4555
+G1 X28.6718 Y-23.4407
+G1 X28.3796 Y-23.4260
+G1 X28.0874 Y-23.4112
+G1 X27.7952 Y-23.3964
+G1 X27.5032 Y-23.3816
+G1 X27.2112 Y-23.3669
+G1 X26.9193 Y-23.3521
+G1 X26.6274 Y-23.3373
+G1 X26.3357 Y-23.3225
+G1 X26.0439 Y-23.3078
+(Safe converted infill-to-infill connector to fill-infill path 170)
+G1 X25.9755 Y-23.9700
+(fill-infill path 170, 44 points)
+G1 X26.2658 Y-23.9846
+G1 X26.5561 Y-23.9992
+G1 X26.8465 Y-24.0139
+G1 X27.1370 Y-24.0285
+G1 X27.4276 Y-24.0431
+G1 X27.7182 Y-24.0577
+G1 X28.0089 Y-24.0724
+G1 X28.2996 Y-24.0870
+G1 X28.5905 Y-24.1016
+G1 X28.8813 Y-24.1162
+G1 X29.1723 Y-24.1309
+G1 X29.4633 Y-24.1455
+G1 X29.7544 Y-24.1601
+G1 X30.0456 Y-24.1747
+G1 X30.3368 Y-24.1894
+G1 X30.6281 Y-24.2040
+G1 X30.9195 Y-24.2186
+G1 X31.2110 Y-24.2332
+G1 X31.5025 Y-24.2479
+G1 X31.7940 Y-24.2625
+G1 X32.0857 Y-24.2771
+G1 X32.3774 Y-24.2917
+G1 X32.6692 Y-24.3064
+G1 X32.9611 Y-24.3210
+G1 X33.2530 Y-24.3356
+G1 X33.5450 Y-24.3502
+G1 X33.8370 Y-24.3649
+G1 X34.1292 Y-24.3795
+G1 X34.4214 Y-24.3941
+G1 X34.7137 Y-24.4087
+G1 X35.0060 Y-24.4234
+G1 X35.2984 Y-24.4380
+G1 X35.5909 Y-24.4526
+G1 X35.8835 Y-24.4672
+G1 X36.1761 Y-24.4819
+G1 X36.4688 Y-24.4965
+G1 X36.7616 Y-24.5111
+G1 X37.0544 Y-24.5257
+G1 X37.3473 Y-24.5404
+G1 X37.6403 Y-24.5550
+G1 X37.9333 Y-24.5696
+G1 X38.2264 Y-24.5842
+G1 X38.5196 Y-24.5989
+(Safe converted infill-to-infill connector to fill-infill path 171)
+G1 X38.5375 Y-25.2617
+(fill-infill path 171, 41 points)
+G1 X38.2395 Y-25.2470
+G1 X37.9416 Y-25.2322
+G1 X37.6438 Y-25.2174
+G1 X37.3460 Y-25.2026
+G1 X37.0483 Y-25.1878
+G1 X36.7507 Y-25.1731
+G1 X36.4532 Y-25.1583
+G1 X36.1557 Y-25.1435
+G1 X35.8583 Y-25.1287
+G1 X35.5610 Y-25.1139
+G1 X35.2638 Y-25.0992
+G1 X34.9666 Y-25.0844
+G1 X34.6695 Y-25.0696
+G1 X34.3725 Y-25.0548
+G1 X34.0756 Y-25.0400
+G1 X33.7787 Y-25.0253
+G1 X33.4819 Y-25.0105
+G1 X33.1852 Y-24.9957
+G1 X32.8885 Y-24.9809
+G1 X32.5919 Y-24.9661
+G1 X32.2954 Y-24.9514
+G1 X31.9990 Y-24.9366
+G1 X31.7027 Y-24.9218
+G1 X31.4064 Y-24.9070
+G1 X31.1102 Y-24.8923
+G1 X30.8140 Y-24.8775
+G1 X30.5180 Y-24.8627
+G1 X30.2220 Y-24.8479
+G1 X29.9261 Y-24.8331
+G1 X29.6302 Y-24.8184
+G1 X29.3344 Y-24.8036
+G1 X29.0387 Y-24.7888
+G1 X28.7431 Y-24.7740
+G1 X28.4475 Y-24.7592
+G1 X28.1521 Y-24.7445
+G1 X27.8567 Y-24.7297
+G1 X27.5613 Y-24.7149
+G1 X27.2660 Y-24.7001
+G1 X26.9709 Y-24.6853
+G1 X26.6757 Y-24.6706
+(Safe converted infill-to-infill connector to fill-infill path 172)
+G1 X26.6739 Y-25.3356
+(fill-infill path 172, 43 points)
+G1 X26.9732 Y-25.3505
+G1 X27.2727 Y-25.3654
+G1 X27.5722 Y-25.3803
+G1 X27.8717 Y-25.3952
+G1 X28.1714 Y-25.4101
+G1 X28.4711 Y-25.4250
+G1 X28.7709 Y-25.4399
+G1 X29.0708 Y-25.4548
+G1 X29.3707 Y-25.4698
+G1 X29.6708 Y-25.4847
+G1 X29.9709 Y-25.4996
+G1 X30.2711 Y-25.5145
+G1 X30.5713 Y-25.5294
+G1 X30.8717 Y-25.5443
+G1 X31.1721 Y-25.5592
+G1 X31.4726 Y-25.5741
+G1 X31.7731 Y-25.5890
+G1 X32.0738 Y-25.6039
+G1 X32.3745 Y-25.6188
+G1 X32.6753 Y-25.6337
+G1 X32.9762 Y-25.6486
+G1 X33.2771 Y-25.6635
+G1 X33.5782 Y-25.6784
+G1 X33.8793 Y-25.6933
+G1 X34.1805 Y-25.7082
+G1 X34.4817 Y-25.7232
+G1 X34.7831 Y-25.7381
+G1 X35.0845 Y-25.7530
+G1 X35.3860 Y-25.7679
+G1 X35.6876 Y-25.7828
+G1 X35.9892 Y-25.7977
+G1 X36.2910 Y-25.8126
+G1 X36.5928 Y-25.8275
+G1 X36.8947 Y-25.8424
+G1 X37.1966 Y-25.8573
+G1 X37.4987 Y-25.8722
+G1 X37.8008 Y-25.8871
+G1 X38.1030 Y-25.9020
+G1 X38.4053 Y-25.9169
+G1 X38.7077 Y-25.9318
+G1 X39.0101 Y-25.9467
+G1 X39.3126 Y-25.9616
+(Safe converted infill-to-infill connector to fill-infill path 173)
+G1 X39.3993 Y-26.6271
+(fill-infill path 173, 41 points)
+G1 X39.0963 Y-26.6123
+G1 X38.7933 Y-26.5974
+G1 X38.4905 Y-26.5826
+G1 X38.1877 Y-26.5678
+G1 X37.8850 Y-26.5529
+G1 X37.5824 Y-26.5381
+G1 X37.2799 Y-26.5232
+G1 X36.9775 Y-26.5084
+G1 X36.6751 Y-26.4936
+G1 X36.3728 Y-26.4787
+G1 X36.0706 Y-26.4639
+G1 X35.7685 Y-26.4491
+G1 X35.4665 Y-26.4342
+G1 X35.1645 Y-26.4194
+G1 X34.8627 Y-26.4045
+G1 X34.5609 Y-26.3897
+G1 X34.2591 Y-26.3749
+G1 X33.9575 Y-26.3600
+G1 X33.6559 Y-26.3452
+G1 X33.3545 Y-26.3304
+G1 X33.0531 Y-26.3155
+G1 X32.7517 Y-26.3007
+G1 X32.4505 Y-26.2858
+G1 X32.1493 Y-26.2710
+G1 X31.8483 Y-26.2562
+G1 X31.5473 Y-26.2413
+G1 X31.2463 Y-26.2265
+G1 X30.9455 Y-26.2117
+G1 X30.6447 Y-26.1968
+G1 X30.3440 Y-26.1820
+G1 X30.0434 Y-26.1671
+G1 X29.7429 Y-26.1523
+G1 X29.4424 Y-26.1375
+G1 X29.1421 Y-26.1226
+G1 X28.8418 Y-26.1078
+G1 X28.5416 Y-26.0929
+G1 X28.2414 Y-26.0781
+G1 X27.9414 Y-26.0633
+G1 X27.6414 Y-26.0484
+G1 X27.3415 Y-26.0336
+(Safe converted infill-to-infill connector to fill-infill path 174)
+G1 X27.2994 Y-26.6961
+(fill-infill path 174, 44 points)
+G1 X27.5975 Y-26.7108
+G1 X27.8958 Y-26.7254
+G1 X28.1941 Y-26.7401
+G1 X28.4925 Y-26.7548
+G1 X28.7910 Y-26.7694
+G1 X29.0895 Y-26.7841
+G1 X29.3881 Y-26.7987
+G1 X29.6868 Y-26.8134
+G1 X29.9856 Y-26.8281
+G1 X30.2845 Y-26.8427
+G1 X30.5835 Y-26.8574
+G1 X30.8825 Y-26.8721
+G1 X31.1816 Y-26.8867
+G1 X31.4808 Y-26.9014
+G1 X31.7800 Y-26.9161
+G1 X32.0794 Y-26.9307
+G1 X32.3788 Y-26.9454
+G1 X32.6783 Y-26.9600
+G1 X32.9779 Y-26.9747
+G1 X33.2776 Y-26.9894
+G1 X33.5773 Y-27.0040
+G1 X33.8771 Y-27.0187
+G1 X34.1771 Y-27.0334
+G1 X34.4770 Y-27.0480
+G1 X34.7771 Y-27.0627
+G1 X35.0773 Y-27.0774
+G1 X35.3775 Y-27.0920
+G1 X35.6778 Y-27.1067
+G1 X35.9782 Y-27.1213
+G1 X36.2787 Y-27.1360
+G1 X36.5792 Y-27.1507
+G1 X36.8799 Y-27.1653
+G1 X37.1806 Y-27.1800
+G1 X37.4814 Y-27.1947
+G1 X37.7823 Y-27.2093
+G1 X38.0832 Y-27.2240
+G1 X38.3843 Y-27.2386
+G1 X38.6854 Y-27.2533
+G1 X38.9866 Y-27.2680
+G1 X39.2879 Y-27.2826
+G1 X39.5893 Y-27.2973
+G1 X39.8907 Y-27.3120
+G1 X40.1923 Y-27.3266
+(Safe converted infill-to-infill connector to fill-infill path 175)
+G1 X40.2879 Y-27.9917
+(fill-infill path 175, 41 points)
+G1 X39.9801 Y-27.9768
+G1 X39.6724 Y-27.9620
+G1 X39.3648 Y-27.9471
+G1 X39.0572 Y-27.9322
+G1 X38.7498 Y-27.9173
+G1 X38.4425 Y-27.9025
+G1 X38.1352 Y-27.8876
+G1 X37.8280 Y-27.8727
+G1 X37.5209 Y-27.8579
+G1 X37.2139 Y-27.8430
+G1 X36.9070 Y-27.8281
+G1 X36.6002 Y-27.8133
+G1 X36.2935 Y-27.7984
+G1 X35.9868 Y-27.7835
+G1 X35.6802 Y-27.7686
+G1 X35.3738 Y-27.7538
+G1 X35.0674 Y-27.7389
+G1 X34.7610 Y-27.7240
+G1 X34.4548 Y-27.7092
+G1 X34.1487 Y-27.6943
+G1 X33.8426 Y-27.6794
+G1 X33.5367 Y-27.6646
+G1 X33.2308 Y-27.6497
+G1 X32.9250 Y-27.6348
+G1 X32.6193 Y-27.6199
+G1 X32.3136 Y-27.6051
+G1 X32.0081 Y-27.5902
+G1 X31.7027 Y-27.5753
+G1 X31.3973 Y-27.5605
+G1 X31.0920 Y-27.5456
+G1 X30.7868 Y-27.5307
+G1 X30.4817 Y-27.5159
+G1 X30.1766 Y-27.5010
+G1 X29.8717 Y-27.4861
+G1 X29.5668 Y-27.4712
+G1 X29.2621 Y-27.4564
+G1 X28.9574 Y-27.4415
+G1 X28.6528 Y-27.4266
+G1 X28.3482 Y-27.4118
+G1 X28.0438 Y-27.3969
+(Safe converted infill-to-infill connector to fill-infill path 176)
+G1 X28.0709 Y-28.0622
+(fill-infill path 176, 44 points)
+G1 X28.3726 Y-28.0768
+G1 X28.6744 Y-28.0915
+G1 X28.9762 Y-28.1061
+G1 X29.2781 Y-28.1208
+G1 X29.5802 Y-28.1354
+G1 X29.8823 Y-28.1501
+G1 X30.1844 Y-28.1647
+G1 X30.4867 Y-28.1793
+G1 X30.7890 Y-28.1940
+G1 X31.0915 Y-28.2086
+G1 X31.3940 Y-28.2233
+G1 X31.6966 Y-28.2379
+G1 X31.9993 Y-28.2525
+G1 X32.3021 Y-28.2672
+G1 X32.6049 Y-28.2818
+G1 X32.9079 Y-28.2965
+G1 X33.2109 Y-28.3111
+G1 X33.5140 Y-28.3257
+G1 X33.8172 Y-28.3404
+G1 X34.1205 Y-28.3550
+G1 X34.4239 Y-28.3697
+G1 X34.7273 Y-28.3843
+G1 X35.0309 Y-28.3989
+G1 X35.3345 Y-28.4136
+G1 X35.6382 Y-28.4282
+G1 X35.9420 Y-28.4429
+G1 X36.2459 Y-28.4575
+G1 X36.5499 Y-28.4722
+G1 X36.8540 Y-28.4868
+G1 X37.1581 Y-28.5014
+G1 X37.4624 Y-28.5161
+G1 X37.7667 Y-28.5307
+G1 X38.0711 Y-28.5454
+G1 X38.3756 Y-28.5600
+G1 X38.6802 Y-28.5746
+G1 X38.9849 Y-28.5893
+G1 X39.2896 Y-28.6039
+G1 X39.5945 Y-28.6186
+G1 X39.8994 Y-28.6332
+G1 X40.2044 Y-28.6478
+G1 X40.5095 Y-28.6625
+G1 X40.8147 Y-28.6771
+G1 X41.1200 Y-28.6918
+(Safe converted infill-to-infill connector to fill-infill path 177)
+G1 X41.2366 Y-29.3569
+(fill-infill path 177, 41 points)
+G1 X40.9231 Y-29.3420
+G1 X40.6098 Y-29.3271
+G1 X40.2966 Y-29.3122
+G1 X39.9834 Y-29.2972
+G1 X39.6704 Y-29.2823
+G1 X39.3574 Y-29.2674
+G1 X39.0445 Y-29.2524
+G1 X38.7318 Y-29.2375
+G1 X38.4191 Y-29.2226
+G1 X38.1065 Y-29.2077
+G1 X37.7940 Y-29.1927
+G1 X37.4816 Y-29.1778
+G1 X37.1693 Y-29.1629
+G1 X36.8571 Y-29.1479
+G1 X36.5450 Y-29.1330
+G1 X36.2330 Y-29.1181
+G1 X35.9210 Y-29.1032
+G1 X35.6092 Y-29.0882
+G1 X35.2975 Y-29.0733
+G1 X34.9858 Y-29.0584
+G1 X34.6742 Y-29.0435
+G1 X34.3628 Y-29.0285
+G1 X34.0514 Y-29.0136
+G1 X33.7401 Y-28.9987
+G1 X33.4289 Y-28.9837
+G1 X33.1178 Y-28.9688
+G1 X32.8068 Y-28.9539
+G1 X32.4959 Y-28.9390
+G1 X32.1851 Y-28.9240
+G1 X31.8744 Y-28.9091
+G1 X31.5637 Y-28.8942
+G1 X31.2532 Y-28.8792
+G1 X30.9427 Y-28.8643
+G1 X30.6324 Y-28.8494
+G1 X30.3221 Y-28.8345
+G1 X30.0119 Y-28.8195
+G1 X29.7018 Y-28.8046
+G1 X29.3918 Y-28.7897
+G1 X29.0819 Y-28.7747
+G1 X28.7721 Y-28.7598
+(Safe converted infill-to-infill connector to fill-infill path 178)
+G1 X28.7700 Y-29.4231
+(fill-infill path 178, 14 points)
+G1 X29.0633 Y-29.4372
+G1 X29.3565 Y-29.4512
+G1 X29.6499 Y-29.4652
+G1 X29.9434 Y-29.4793
+G1 X30.2369 Y-29.4933
+G1 X30.5305 Y-29.5073
+G1 X30.8243 Y-29.5214
+G1 X31.1180 Y-29.5354
+G1 X31.4119 Y-29.5494
+G1 X31.7059 Y-29.5635
+G1 X31.9999 Y-29.5775
+G1 X32.2940 Y-29.5915
+G1 X32.5883 Y-29.6056
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_152)
+(Travel to fill-infill path 179)
+G1 X31.5645 Y-10.2572 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_179 kind=fill-infill space=machine_deg source=component_002 points=144 max_surface_segment_mm=0.0995)
+(fill-infill path 179, 144 points)
+G1 X31.2918 Y-10.2423 F1200.000
+G1 X31.0192 Y-10.2274
+G1 X30.7466 Y-10.2126
+G1 X30.4740 Y-10.1977
+G1 X30.2015 Y-10.1828
+G1 X29.9290 Y-10.1680
+G1 X29.6565 Y-10.1531
+G1 X29.3840 Y-10.1382
+G1 X29.1116 Y-10.1234
+G1 X28.8392 Y-10.1085
+G1 X28.5668 Y-10.0936
+G1 X28.2945 Y-10.0788
+G1 X28.0222 Y-10.0639
+G1 X27.7499 Y-10.0490
+G1 X27.4776 Y-10.0342
+G1 X27.2053 Y-10.0193
+G1 X26.9331 Y-10.0044
+G1 X26.6609 Y-9.9896
+G1 X26.3888 Y-9.9747
+G1 X26.1166 Y-9.9598
+G1 X25.8445 Y-9.9450
+G1 X25.5725 Y-9.9301
+G1 X25.3004 Y-9.9152
+G1 X25.0284 Y-9.9004
+G1 X24.7564 Y-9.8855
+G1 X24.4844 Y-9.8706
+G1 X24.2124 Y-9.8558
+G1 X23.9405 Y-9.8409
+G1 X23.6686 Y-9.8260
+G1 X23.3968 Y-9.8112
+G1 X23.1249 Y-9.7963
+G1 X22.8531 Y-9.7814
+G1 X22.5813 Y-9.7666
+G1 X22.3095 Y-9.7517
+G1 X22.0378 Y-9.7368
+G1 X21.7661 Y-9.7220
+G1 X21.4944 Y-9.7071
+G1 X21.2227 Y-9.6922
+G1 X20.9511 Y-9.6774
+G1 X20.6795 Y-9.6625
+G1 X20.4079 Y-9.6476
+G1 X20.1363 Y-9.6328
+G1 X19.8648 Y-9.6179
+G1 X19.5932 Y-9.6030
+G1 X19.3218 Y-9.5882
+G1 X19.0503 Y-9.5733
+G1 X18.7789 Y-9.5584
+G1 X18.5074 Y-9.5436
+G1 X18.2361 Y-9.5287
+G1 X17.9647 Y-9.5138
+G1 X17.6934 Y-9.4990
+G1 X17.4220 Y-9.4841
+G1 X17.1507 Y-9.4692
+G1 X16.8795 Y-9.4544
+G1 X16.6082 Y-9.4395
+G1 X16.3370 Y-9.4246
+G1 X16.0658 Y-9.4098
+G1 X15.7947 Y-9.3949
+G1 X15.5235 Y-9.3800
+G1 X15.2524 Y-9.3652
+G1 X14.9813 Y-9.3503
+G1 X14.7102 Y-9.3354
+G1 X14.4392 Y-9.3206
+G1 X14.1682 Y-9.3057
+G1 X13.8972 Y-9.2908
+G1 X13.6262 Y-9.2760
+G1 X13.3553 Y-9.2611
+G1 X13.0843 Y-9.2462
+G1 X12.8134 Y-9.2314
+G1 X12.5426 Y-9.2165
+G1 X12.2717 Y-9.2016
+G1 X12.0009 Y-9.1868
+G1 X11.7301 Y-9.1719
+G1 X11.4593 Y-9.1570
+G1 X11.1885 Y-9.1422
+G1 X10.9178 Y-9.1273
+G1 X10.6471 Y-9.1124
+G1 X10.3764 Y-9.0976
+G1 X10.1057 Y-9.0827
+G1 X9.8351 Y-9.0678
+G1 X9.5644 Y-9.0530
+G1 X9.2938 Y-9.0381
+G1 X9.0233 Y-9.0232
+G1 X8.7527 Y-9.0084
+G1 X8.4822 Y-8.9935
+G1 X8.2117 Y-8.9786
+G1 X7.9412 Y-8.9638
+G1 X7.6707 Y-8.9489
+G1 X7.4003 Y-8.9340
+G1 X7.1299 Y-8.9192
+G1 X6.8595 Y-8.9043
+G1 X6.5891 Y-8.8894
+G1 X6.3188 Y-8.8746
+G1 X6.0484 Y-8.8597
+G1 X5.7781 Y-8.8448
+G1 X5.5079 Y-8.8300
+G1 X5.2376 Y-8.8151
+G1 X4.9674 Y-8.8002
+G1 X4.6971 Y-8.7854
+G1 X4.4269 Y-8.7705
+G1 X4.1568 Y-8.7556
+G1 X3.8866 Y-8.7408
+G1 X3.6165 Y-8.7259
+G1 X3.3464 Y-8.7110
+G1 X3.0763 Y-8.6962
+G1 X2.8062 Y-8.6813
+G1 X2.5362 Y-8.6664
+G1 X2.2662 Y-8.6516
+G1 X1.9962 Y-8.6367
+G1 X1.7262 Y-8.6218
+G1 X1.4563 Y-8.6070
+G1 X1.1863 Y-8.5921
+G1 X0.9164 Y-8.5772
+G1 X0.6465 Y-8.5624
+G1 X0.3766 Y-8.5475
+G1 X0.1068 Y-8.5326
+G1 X-0.1630 Y-8.5178
+G1 X-0.4328 Y-8.5029
+G1 X-0.7026 Y-8.4880
+G1 X-0.9724 Y-8.4732
+G1 X-1.2421 Y-8.4583
+G1 X-1.5119 Y-8.4434
+G1 X-1.7816 Y-8.4286
+G1 X-2.0513 Y-8.4137
+G1 X-2.3209 Y-8.3988
+G1 X-2.5906 Y-8.3840
+G1 X-2.8602 Y-8.3691
+G1 X-3.1298 Y-8.3542
+G1 X-3.3994 Y-8.3394
+G1 X-3.6689 Y-8.3245
+G1 X-3.9385 Y-8.3096
+G1 X-4.2080 Y-8.2948
+G1 X-4.4775 Y-8.2799
+G1 X-4.7470 Y-8.2650
+G1 X-5.0164 Y-8.2502
+G1 X-5.2859 Y-8.2353
+G1 X-5.5553 Y-8.2204
+G1 X-5.8247 Y-8.2056
+G1 X-6.0941 Y-8.1907
+G1 X-6.3634 Y-8.1758
+G1 X-6.6328 Y-8.1610
+G1 X-6.9021 Y-8.1461
+G1 X-7.1714 Y-8.1312
+(Safe converted infill-to-infill connector to fill-infill path 180)
+G1 X-7.3502 Y-7.4483
+(fill-infill path 180, 145 points)
+G1 X-7.0813 Y-7.4632
+G1 X-6.8124 Y-7.4780
+G1 X-6.5435 Y-7.4929
+G1 X-6.2746 Y-7.5078
+G1 X-6.0056 Y-7.5226
+G1 X-5.7366 Y-7.5375
+G1 X-5.4677 Y-7.5524
+G1 X-5.1986 Y-7.5672
+G1 X-4.9296 Y-7.5821
+G1 X-4.6606 Y-7.5970
+G1 X-4.3915 Y-7.6118
+G1 X-4.1224 Y-7.6267
+G1 X-3.8533 Y-7.6416
+G1 X-3.5842 Y-7.6564
+G1 X-3.3151 Y-7.6713
+G1 X-3.0459 Y-7.6862
+G1 X-2.7768 Y-7.7010
+G1 X-2.5076 Y-7.7159
+G1 X-2.2383 Y-7.7308
+G1 X-1.9691 Y-7.7456
+G1 X-1.6999 Y-7.7605
+G1 X-1.4306 Y-7.7754
+G1 X-1.1613 Y-7.7902
+G1 X-0.8920 Y-7.8051
+G1 X-0.6227 Y-7.8200
+G1 X-0.3533 Y-7.8348
+G1 X-0.0840 Y-7.8497
+G1 X0.1854 Y-7.8646
+G1 X0.4548 Y-7.8794
+G1 X0.7242 Y-7.8943
+G1 X0.9937 Y-7.9092
+G1 X1.2631 Y-7.9240
+G1 X1.5326 Y-7.9389
+G1 X1.8021 Y-7.9538
+G1 X2.0716 Y-7.9686
+G1 X2.3412 Y-7.9835
+G1 X2.6107 Y-7.9984
+G1 X2.8803 Y-8.0132
+G1 X3.1499 Y-8.0281
+G1 X3.4195 Y-8.0430
+G1 X3.6892 Y-8.0578
+G1 X3.9588 Y-8.0727
+G1 X4.2285 Y-8.0876
+G1 X4.4982 Y-8.1024
+G1 X4.7679 Y-8.1173
+G1 X5.0376 Y-8.1322
+G1 X5.3074 Y-8.1470
+G1 X5.5772 Y-8.1619
+G1 X5.8470 Y-8.1768
+G1 X6.1168 Y-8.1916
+G1 X6.3866 Y-8.2065
+G1 X6.6565 Y-8.2214
+G1 X6.9264 Y-8.2362
+G1 X7.1963 Y-8.2511
+G1 X7.4662 Y-8.2660
+G1 X7.7362 Y-8.2808
+G1 X8.0061 Y-8.2957
+G1 X8.2761 Y-8.3106
+G1 X8.5461 Y-8.3254
+G1 X8.8162 Y-8.3403
+G1 X9.0862 Y-8.3552
+G1 X9.3563 Y-8.3700
+G1 X9.6264 Y-8.3849
+G1 X9.8965 Y-8.3998
+G1 X10.1666 Y-8.4146
+G1 X10.4368 Y-8.4295
+G1 X10.7069 Y-8.4444
+G1 X10.9771 Y-8.4592
+G1 X11.2474 Y-8.4741
+G1 X11.5176 Y-8.4890
+G1 X11.7879 Y-8.5038
+G1 X12.0582 Y-8.5187
+G1 X12.3285 Y-8.5336
+G1 X12.5988 Y-8.5484
+G1 X12.8691 Y-8.5633
+G1 X13.1395 Y-8.5782
+G1 X13.4099 Y-8.5930
+G1 X13.6803 Y-8.6079
+G1 X13.9508 Y-8.6228
+G1 X14.2212 Y-8.6376
+G1 X14.4917 Y-8.6525
+G1 X14.7622 Y-8.6674
+G1 X15.0328 Y-8.6822
+G1 X15.3033 Y-8.6971
+G1 X15.5739 Y-8.7120
+G1 X15.8445 Y-8.7268
+G1 X16.1151 Y-8.7417
+G1 X16.3857 Y-8.7566
+G1 X16.6564 Y-8.7714
+G1 X16.9271 Y-8.7863
+G1 X17.1978 Y-8.8012
+G1 X17.4685 Y-8.8160
+G1 X17.7393 Y-8.8309
+G1 X18.0101 Y-8.8458
+G1 X18.2809 Y-8.8606
+G1 X18.5517 Y-8.8755
+G1 X18.8226 Y-8.8904
+G1 X19.0934 Y-8.9052
+G1 X19.3643 Y-8.9201
+G1 X19.6352 Y-8.9350
+G1 X19.9062 Y-8.9498
+G1 X20.1771 Y-8.9647
+G1 X20.4481 Y-8.9796
+G1 X20.7192 Y-8.9944
+G1 X20.9902 Y-9.0093
+G1 X21.2612 Y-9.0242
+G1 X21.5323 Y-9.0390
+G1 X21.8034 Y-9.0539
+G1 X22.0746 Y-9.0688
+G1 X22.3457 Y-9.0836
+G1 X22.6169 Y-9.0985
+G1 X22.8881 Y-9.1134
+G1 X23.1593 Y-9.1282
+G1 X23.4306 Y-9.1431
+G1 X23.7019 Y-9.1580
+G1 X23.9732 Y-9.1728
+G1 X24.2445 Y-9.1877
+G1 X24.5158 Y-9.2026
+G1 X24.7872 Y-9.2174
+G1 X25.0586 Y-9.2323
+G1 X25.3300 Y-9.2472
+G1 X25.6015 Y-9.2620
+G1 X25.8730 Y-9.2769
+G1 X26.1445 Y-9.2918
+G1 X26.4160 Y-9.3066
+G1 X26.6875 Y-9.3215
+G1 X26.9591 Y-9.3364
+G1 X27.2307 Y-9.3512
+G1 X27.5023 Y-9.3661
+G1 X27.7740 Y-9.3810
+G1 X28.0456 Y-9.3958
+G1 X28.3173 Y-9.4107
+G1 X28.5890 Y-9.4256
+G1 X28.8608 Y-9.4404
+G1 X29.1326 Y-9.4553
+G1 X29.4044 Y-9.4702
+G1 X29.6762 Y-9.4850
+G1 X29.9480 Y-9.4999
+G1 X30.2199 Y-9.5148
+G1 X30.4918 Y-9.5296
+G1 X30.7637 Y-9.5445
+G1 X31.0357 Y-9.5594
+G1 X31.3077 Y-9.5742
+G1 X31.5797 Y-9.5891
+(Safe converted infill-to-infill connector to fill-infill path 181)
+G1 X31.4076 Y-8.9106
+(fill-infill path 181, 162 points)
+G1 X31.1357 Y-8.8957
+G1 X30.8638 Y-8.8808
+G1 X30.5919 Y-8.8659
+G1 X30.3201 Y-8.8510
+G1 X30.0483 Y-8.8361
+G1 X29.7765 Y-8.8212
+G1 X29.5047 Y-8.8063
+G1 X29.2329 Y-8.7914
+G1 X28.9612 Y-8.7765
+G1 X28.6895 Y-8.7616
+G1 X28.4178 Y-8.7467
+G1 X28.1462 Y-8.7318
+G1 X27.8745 Y-8.7169
+G1 X27.6029 Y-8.7020
+G1 X27.3313 Y-8.6871
+G1 X27.0598 Y-8.6722
+G1 X26.7882 Y-8.6573
+G1 X26.5167 Y-8.6424
+G1 X26.2452 Y-8.6275
+G1 X25.9737 Y-8.6126
+G1 X25.7023 Y-8.5977
+G1 X25.4309 Y-8.5828
+G1 X25.1595 Y-8.5679
+G1 X24.8881 Y-8.5530
+G1 X24.6167 Y-8.5381
+G1 X24.3454 Y-8.5232
+G1 X24.0741 Y-8.5083
+G1 X23.8028 Y-8.4934
+G1 X23.5315 Y-8.4786
+G1 X23.2603 Y-8.4637
+G1 X22.9891 Y-8.4488
+G1 X22.7179 Y-8.4339
+G1 X22.4467 Y-8.4190
+G1 X22.1755 Y-8.4041
+G1 X21.9044 Y-8.3892
+G1 X21.6333 Y-8.3743
+G1 X21.3622 Y-8.3594
+G1 X21.0912 Y-8.3445
+G1 X20.8201 Y-8.3296
+G1 X20.5491 Y-8.3147
+G1 X20.2781 Y-8.2998
+G1 X20.0071 Y-8.2849
+G1 X19.7362 Y-8.2700
+G1 X19.4652 Y-8.2551
+G1 X19.1943 Y-8.2402
+G1 X18.9234 Y-8.2253
+G1 X18.6526 Y-8.2104
+G1 X18.3817 Y-8.1955
+G1 X18.1109 Y-8.1806
+G1 X17.8401 Y-8.1657
+G1 X17.5693 Y-8.1508
+G1 X17.2986 Y-8.1359
+G1 X17.0278 Y-8.1210
+G1 X16.7571 Y-8.1061
+G1 X16.4864 Y-8.0912
+G1 X16.2157 Y-8.0763
+G1 X15.9451 Y-8.0614
+G1 X15.6745 Y-8.0466
+G1 X15.4038 Y-8.0317
+G1 X15.1333 Y-8.0168
+G1 X14.8627 Y-8.0019
+G1 X14.5921 Y-7.9870
+G1 X14.3216 Y-7.9721
+G1 X14.0511 Y-7.9572
+G1 X13.7806 Y-7.9423
+G1 X13.5102 Y-7.9274
+G1 X13.2397 Y-7.9125
+G1 X12.9693 Y-7.8976
+G1 X12.6989 Y-7.8827
+G1 X12.4285 Y-7.8678
+G1 X12.1581 Y-7.8529
+G1 X11.8878 Y-7.8380
+G1 X11.6175 Y-7.8231
+G1 X11.3472 Y-7.8082
+G1 X11.0769 Y-7.7933
+G1 X10.8066 Y-7.7784
+G1 X10.5364 Y-7.7635
+G1 X10.2661 Y-7.7486
+G1 X9.9959 Y-7.7337
+G1 X9.7258 Y-7.7188
+G1 X9.4556 Y-7.7039
+G1 X9.1854 Y-7.6890
+G1 X8.9153 Y-7.6741
+G1 X8.6452 Y-7.6592
+G1 X8.3751 Y-7.6443
+G1 X8.1051 Y-7.6294
+G1 X7.8350 Y-7.6145
+G1 X7.5650 Y-7.5997
+G1 X7.2950 Y-7.5848
+G1 X7.0250 Y-7.5699
+G1 X6.7550 Y-7.5550
+G1 X6.4851 Y-7.5401
+G1 X6.2151 Y-7.5252
+G1 X5.9452 Y-7.5103
+G1 X5.6753 Y-7.4954
+G1 X5.4054 Y-7.4805
+G1 X5.1356 Y-7.4656
+G1 X4.8657 Y-7.4507
+G1 X4.5959 Y-7.4358
+G1 X4.3261 Y-7.4209
+G1 X4.0563 Y-7.4060
+G1 X3.7866 Y-7.3911
+G1 X3.5168 Y-7.3762
+G1 X3.2471 Y-7.3613
+G1 X2.9774 Y-7.3464
+G1 X2.7077 Y-7.3315
+G1 X2.4380 Y-7.3166
+G1 X2.1684 Y-7.3017
+G1 X1.8987 Y-7.2868
+G1 X1.6291 Y-7.2719
+G1 X1.3595 Y-7.2570
+G1 X1.0899 Y-7.2421
+G1 X0.8204 Y-7.2272
+G1 X0.5508 Y-7.2123
+G1 X0.2813 Y-7.1974
+G1 X0.0118 Y-7.1825
+G1 X-0.2577 Y-7.1677
+G1 X-0.5272 Y-7.1528
+G1 X-0.7966 Y-7.1379
+G1 X-1.0661 Y-7.1230
+G1 X-1.3355 Y-7.1081
+G1 X-1.6049 Y-7.0932
+G1 X-1.8743 Y-7.0783
+G1 X-2.1437 Y-7.0634
+G1 X-2.4130 Y-7.0485
+G1 X-2.6824 Y-7.0336
+G1 X-2.9517 Y-7.0187
+G1 X-3.2210 Y-7.0038
+G1 X-3.4903 Y-6.9889
+G1 X-3.7595 Y-6.9740
+G1 X-4.0288 Y-6.9591
+G1 X-4.2980 Y-6.9442
+G1 X-4.5672 Y-6.9293
+G1 X-4.8364 Y-6.9144
+G1 X-5.1056 Y-6.8995
+G1 X-5.3748 Y-6.8846
+G1 X-5.6439 Y-6.8697
+G1 X-5.9131 Y-6.8548
+G1 X-6.1822 Y-6.8399
+G1 X-6.4513 Y-6.8250
+G1 X-6.7204 Y-6.8101
+G1 X-6.9895 Y-6.7952
+G1 X-7.2585 Y-6.7803
+G1 X-7.5275 Y-6.7654
+G1 X-7.7966 Y-6.7505
+G1 X-8.0656 Y-6.7357
+G1 X-8.3346 Y-6.7208
+G1 X-8.6035 Y-6.7059
+G1 X-8.8725 Y-6.6910
+G1 X-9.1414 Y-6.6761
+G1 X-9.4104 Y-6.6612
+G1 X-9.6793 Y-6.6463
+G1 X-9.9482 Y-6.6314
+G1 X-10.2170 Y-6.6165
+G1 X-10.4859 Y-6.6016
+G1 X-10.7548 Y-6.5867
+G1 X-11.0236 Y-6.5718
+G1 X-11.2924 Y-6.5569
+G1 X-11.5612 Y-6.5420
+G1 X-11.8300 Y-6.5271
+G1 X-12.0988 Y-6.5122
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_179)
+(Travel to fill-infill path 182)
+G1 X-17.5482 Y-5.5364 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_182 kind=fill-infill space=machine_deg source=component_002 points=182 max_surface_segment_mm=0.0996)
+(fill-infill path 182, 182 points)
+G1 X-17.2805 Y-5.5513 F1200.000
+G1 X-17.0127 Y-5.5661
+G1 X-16.7449 Y-5.5810
+G1 X-16.4771 Y-5.5959
+G1 X-16.2093 Y-5.6108
+G1 X-15.9415 Y-5.6256
+G1 X-15.6736 Y-5.6405
+G1 X-15.4058 Y-5.6554
+G1 X-15.1379 Y-5.6702
+G1 X-14.8700 Y-5.6851
+G1 X-14.6021 Y-5.7000
+G1 X-14.3342 Y-5.7149
+G1 X-14.0663 Y-5.7297
+G1 X-13.7984 Y-5.7446
+G1 X-13.5304 Y-5.7595
+G1 X-13.2625 Y-5.7743
+G1 X-12.9945 Y-5.7892
+G1 X-12.7265 Y-5.8041
+G1 X-12.4586 Y-5.8190
+G1 X-12.1905 Y-5.8338
+G1 X-11.9225 Y-5.8487
+G1 X-11.6545 Y-5.8636
+G1 X-11.3864 Y-5.8785
+G1 X-11.1184 Y-5.8933
+G1 X-10.8503 Y-5.9082
+G1 X-10.5822 Y-5.9231
+G1 X-10.3141 Y-5.9379
+G1 X-10.0460 Y-5.9528
+G1 X-9.7779 Y-5.9677
+G1 X-9.5097 Y-5.9826
+G1 X-9.2416 Y-5.9974
+G1 X-8.9734 Y-6.0123
+G1 X-8.7052 Y-6.0272
+G1 X-8.4370 Y-6.0420
+G1 X-8.1688 Y-6.0569
+G1 X-7.9006 Y-6.0718
+G1 X-7.6323 Y-6.0867
+G1 X-7.3641 Y-6.1015
+G1 X-7.0958 Y-6.1164
+G1 X-6.8275 Y-6.1313
+G1 X-6.5592 Y-6.1461
+G1 X-6.2909 Y-6.1610
+G1 X-6.0226 Y-6.1759
+G1 X-5.7542 Y-6.1908
+G1 X-5.4859 Y-6.2056
+G1 X-5.2175 Y-6.2205
+G1 X-4.9491 Y-6.2354
+G1 X-4.6807 Y-6.2503
+G1 X-4.4123 Y-6.2651
+G1 X-4.1438 Y-6.2800
+G1 X-3.8754 Y-6.2949
+G1 X-3.6069 Y-6.3097
+G1 X-3.3384 Y-6.3246
+G1 X-3.0700 Y-6.3395
+G1 X-2.8014 Y-6.3544
+G1 X-2.5329 Y-6.3692
+G1 X-2.2644 Y-6.3841
+G1 X-1.9958 Y-6.3990
+G1 X-1.7273 Y-6.4138
+G1 X-1.4587 Y-6.4287
+G1 X-1.1901 Y-6.4436
+G1 X-0.9214 Y-6.4585
+G1 X-0.6528 Y-6.4733
+G1 X-0.3842 Y-6.4882
+G1 X-0.1155 Y-6.5031
+G1 X0.1532 Y-6.5180
+G1 X0.4219 Y-6.5328
+G1 X0.6906 Y-6.5477
+G1 X0.9593 Y-6.5626
+G1 X1.2281 Y-6.5774
+G1 X1.4968 Y-6.5923
+G1 X1.7656 Y-6.6072
+G1 X2.0344 Y-6.6221
+G1 X2.3032 Y-6.6369
+G1 X2.5720 Y-6.6518
+G1 X2.8409 Y-6.6667
+G1 X3.1097 Y-6.6815
+G1 X3.3786 Y-6.6964
+G1 X3.6475 Y-6.7113
+G1 X3.9164 Y-6.7262
+G1 X4.1853 Y-6.7410
+G1 X4.4543 Y-6.7559
+G1 X4.7233 Y-6.7708
+G1 X4.9922 Y-6.7857
+G1 X5.2612 Y-6.8005
+G1 X5.5302 Y-6.8154
+G1 X5.7993 Y-6.8303
+G1 X6.0683 Y-6.8451
+G1 X6.3374 Y-6.8600
+G1 X6.6064 Y-6.8749
+G1 X6.8755 Y-6.8898
+G1 X7.1447 Y-6.9046
+G1 X7.4138 Y-6.9195
+G1 X7.6829 Y-6.9344
+G1 X7.9521 Y-6.9492
+G1 X8.2213 Y-6.9641
+G1 X8.4905 Y-6.9790
+G1 X8.7597 Y-6.9939
+G1 X9.0289 Y-7.0087
+G1 X9.2982 Y-7.0236
+G1 X9.5675 Y-7.0385
+G1 X9.8368 Y-7.0533
+G1 X10.1061 Y-7.0682
+G1 X10.3754 Y-7.0831
+G1 X10.6447 Y-7.0980
+G1 X10.9141 Y-7.1128
+G1 X11.1835 Y-7.1277
+G1 X11.4529 Y-7.1426
+G1 X11.7223 Y-7.1575
+G1 X11.9917 Y-7.1723
+G1 X12.2612 Y-7.1872
+G1 X12.5307 Y-7.2021
+G1 X12.8002 Y-7.2169
+G1 X13.0697 Y-7.2318
+G1 X13.3392 Y-7.2467
+G1 X13.6087 Y-7.2616
+G1 X13.8783 Y-7.2764
+G1 X14.1479 Y-7.2913
+G1 X14.4175 Y-7.3062
+G1 X14.6871 Y-7.3210
+G1 X14.9568 Y-7.3359
+G1 X15.2264 Y-7.3508
+G1 X15.4961 Y-7.3657
+G1 X15.7658 Y-7.3805
+G1 X16.0355 Y-7.3954
+G1 X16.3052 Y-7.4103
+G1 X16.5750 Y-7.4252
+G1 X16.8448 Y-7.4400
+G1 X17.1146 Y-7.4549
+G1 X17.3844 Y-7.4698
+G1 X17.6542 Y-7.4846
+G1 X17.9241 Y-7.4995
+G1 X18.1940 Y-7.5144
+G1 X18.4638 Y-7.5293
+G1 X18.7338 Y-7.5441
+G1 X19.0037 Y-7.5590
+G1 X19.2736 Y-7.5739
+G1 X19.5436 Y-7.5887
+G1 X19.8136 Y-7.6036
+G1 X20.0836 Y-7.6185
+G1 X20.3537 Y-7.6334
+G1 X20.6237 Y-7.6482
+G1 X20.8938 Y-7.6631
+G1 X21.1639 Y-7.6780
+G1 X21.4340 Y-7.6929
+G1 X21.7041 Y-7.7077
+G1 X21.9743 Y-7.7226
+G1 X22.2444 Y-7.7375
+G1 X22.5146 Y-7.7523
+G1 X22.7849 Y-7.7672
+G1 X23.0551 Y-7.7821
+G1 X23.3254 Y-7.7970
+G1 X23.5956 Y-7.8118
+G1 X23.8659 Y-7.8267
+G1 X24.1363 Y-7.8416
+G1 X24.4066 Y-7.8564
+G1 X24.6770 Y-7.8713
+G1 X24.9473 Y-7.8862
+G1 X25.2177 Y-7.9011
+G1 X25.4882 Y-7.9159
+G1 X25.7586 Y-7.9308
+G1 X26.0291 Y-7.9457
+G1 X26.2996 Y-7.9605
+G1 X26.5701 Y-7.9754
+G1 X26.8406 Y-7.9903
+G1 X27.1112 Y-8.0052
+G1 X27.3817 Y-8.0200
+G1 X27.6523 Y-8.0349
+G1 X27.9230 Y-8.0498
+G1 X28.1936 Y-8.0647
+G1 X28.4643 Y-8.0795
+G1 X28.7349 Y-8.0944
+G1 X29.0056 Y-8.1093
+G1 X29.2764 Y-8.1241
+G1 X29.5471 Y-8.1390
+G1 X29.8179 Y-8.1539
+G1 X30.0887 Y-8.1688
+G1 X30.3595 Y-8.1836
+G1 X30.6303 Y-8.1985
+G1 X30.9012 Y-8.2134
+G1 X31.1721 Y-8.2282
+(Safe converted infill-to-infill connector to fill-infill path 183)
+G1 X11.1174 Y-0.4046
+(fill-infill path 183, 3 points)
+G1 X10.9252 Y-0.3939
+G1 X10.7330 Y-0.3832
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_182)
+(Travel to fill-infill path 184)
+G1 X10.3929 Y-0.3642 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_184 kind=fill-infill space=machine_deg source=component_002 points=158 max_surface_segment_mm=0.0999)
+(fill-infill path 184, 158 points)
+G1 X10.1251 Y-0.3493 F1200.000
+G1 X9.8573 Y-0.3344
+G1 X9.5896 Y-0.3195
+G1 X9.3218 Y-0.3046
+G1 X9.0541 Y-0.2896
+G1 X8.7863 Y-0.2747
+G1 X8.5185 Y-0.2598
+G1 X8.2508 Y-0.2449
+G1 X7.9830 Y-0.2300
+G1 X7.7153 Y-0.2151
+G1 X7.4475 Y-0.2002
+G1 X7.1798 Y-0.1852
+G1 X6.9120 Y-0.1703
+G1 X6.6443 Y-0.1554
+G1 X6.3765 Y-0.1405
+G1 X6.1088 Y-0.1256
+G1 X5.8410 Y-0.1107
+G1 X5.5733 Y-0.0957
+G1 X5.3056 Y-0.0808
+G1 X5.0378 Y-0.0659
+G1 X4.7701 Y-0.0510
+G1 X4.5023 Y-0.0361
+G1 X4.2346 Y-0.0212
+G1 X3.9668 Y-0.0062
+G1 X3.6991 Y0.0087
+G1 X3.4314 Y0.0236
+G1 X3.1636 Y0.0385
+G1 X2.8959 Y0.0534
+G1 X2.6281 Y0.0683
+G1 X2.3604 Y0.0833
+G1 X2.0926 Y0.0982
+G1 X1.8249 Y0.1131
+G1 X1.5572 Y0.1280
+G1 X1.2894 Y0.1429
+G1 X1.0217 Y0.1578
+G1 X0.7539 Y0.1728
+G1 X0.4862 Y0.1877
+G1 X0.2184 Y0.2026
+G1 X-0.0493 Y0.2175
+G1 X-0.3170 Y0.2324
+G1 X-0.5848 Y0.2473
+G1 X-0.8525 Y0.2623
+G1 X-1.1203 Y0.2772
+G1 X-1.3880 Y0.2921
+G1 X-1.6558 Y0.3070
+G1 X-1.9235 Y0.3219
+G1 X-2.1913 Y0.3368
+G1 X-2.4590 Y0.3518
+G1 X-2.7268 Y0.3667
+G1 X-2.9945 Y0.3816
+G1 X-3.2623 Y0.3965
+G1 X-3.5300 Y0.4114
+G1 X-3.7978 Y0.4263
+G1 X-4.0655 Y0.4413
+G1 X-4.3333 Y0.4562
+G1 X-4.6011 Y0.4711
+G1 X-4.8688 Y0.4860
+G1 X-5.1366 Y0.5009
+G1 X-5.4044 Y0.5158
+G1 X-5.6721 Y0.5308
+G1 X-5.9399 Y0.5457
+G1 X-6.2077 Y0.5606
+G1 X-6.4754 Y0.5755
+G1 X-6.7432 Y0.5904
+G1 X-7.0110 Y0.6053
+G1 X-7.2788 Y0.6203
+G1 X-7.5465 Y0.6352
+G1 X-7.8143 Y0.6501
+G1 X-8.0821 Y0.6650
+G1 X-8.3499 Y0.6799
+G1 X-8.6177 Y0.6948
+G1 X-8.8855 Y0.7097
+G1 X-9.1533 Y0.7247
+G1 X-9.4211 Y0.7396
+G1 X-9.6889 Y0.7545
+G1 X-9.9567 Y0.7694
+G1 X-10.2245 Y0.7843
+G1 X-10.4923 Y0.7992
+G1 X-10.7601 Y0.8142
+G1 X-11.0279 Y0.8291
+G1 X-11.2957 Y0.8440
+G1 X-11.5635 Y0.8589
+G1 X-11.8313 Y0.8738
+G1 X-12.0992 Y0.8887
+G1 X-12.3670 Y0.9037
+G1 X-12.6348 Y0.9186
+G1 X-12.9026 Y0.9335
+G1 X-13.1705 Y0.9484
+G1 X-13.4383 Y0.9633
+G1 X-13.7061 Y0.9782
+G1 X-13.9740 Y0.9932
+G1 X-14.2418 Y1.0081
+G1 X-14.5097 Y1.0230
+G1 X-14.7775 Y1.0379
+G1 X-15.0454 Y1.0528
+G1 X-15.3133 Y1.0677
+G1 X-15.5811 Y1.0827
+G1 X-15.8490 Y1.0976
+G1 X-16.1169 Y1.1125
+G1 X-16.3847 Y1.1274
+G1 X-16.6526 Y1.1423
+G1 X-16.9205 Y1.1572
+G1 X-17.1884 Y1.1722
+G1 X-17.4563 Y1.1871
+G1 X-17.7242 Y1.2020
+G1 X-17.9921 Y1.2169
+G1 X-18.2600 Y1.2318
+G1 X-18.5279 Y1.2467
+G1 X-18.7958 Y1.2617
+G1 X-19.0637 Y1.2766
+G1 X-19.3316 Y1.2915
+G1 X-19.5996 Y1.3064
+G1 X-19.8675 Y1.3213
+G1 X-20.1354 Y1.3362
+G1 X-20.4034 Y1.3512
+G1 X-20.6713 Y1.3661
+G1 X-20.9393 Y1.3810
+G1 X-21.2072 Y1.3959
+G1 X-21.4752 Y1.4108
+G1 X-21.7431 Y1.4257
+G1 X-22.0111 Y1.4407
+G1 X-22.2791 Y1.4556
+G1 X-22.5471 Y1.4705
+G1 X-22.8151 Y1.4854
+G1 X-23.0830 Y1.5003
+G1 X-23.3510 Y1.5152
+G1 X-23.6190 Y1.5302
+G1 X-23.8870 Y1.5451
+G1 X-24.1550 Y1.5600
+G1 X-24.4231 Y1.5749
+G1 X-24.6911 Y1.5898
+G1 X-24.9591 Y1.6047
+G1 X-25.2271 Y1.6196
+G1 X-25.4952 Y1.6346
+G1 X-25.7632 Y1.6495
+G1 X-26.0313 Y1.6644
+G1 X-26.2993 Y1.6793
+G1 X-26.5674 Y1.6942
+G1 X-26.8355 Y1.7091
+G1 X-27.1035 Y1.7241
+G1 X-27.3716 Y1.7390
+G1 X-27.6397 Y1.7539
+G1 X-27.9078 Y1.7688
+G1 X-28.1759 Y1.7837
+G1 X-28.4440 Y1.7986
+G1 X-28.7121 Y1.8136
+G1 X-28.9802 Y1.8285
+G1 X-29.2483 Y1.8434
+G1 X-29.5165 Y1.8583
+G1 X-29.7846 Y1.8732
+G1 X-30.0527 Y1.8881
+G1 X-30.3209 Y1.9031
+G1 X-30.5890 Y1.9180
+G1 X-30.8572 Y1.9329
+G1 X-31.1254 Y1.9478
+G1 X-31.3936 Y1.9627
+G1 X-31.6617 Y1.9776
+(Safe converted infill-to-infill connector to fill-infill path 185)
+G1 X-31.3828 Y2.6337
+(fill-infill path 185, 138 points)
+G1 X-31.1140 Y2.6188
+G1 X-30.8453 Y2.6039
+G1 X-30.5766 Y2.5889
+G1 X-30.3079 Y2.5740
+G1 X-30.0392 Y2.5591
+G1 X-29.7705 Y2.5441
+G1 X-29.5018 Y2.5292
+G1 X-29.2331 Y2.5142
+G1 X-28.9644 Y2.4993
+G1 X-28.6958 Y2.4844
+G1 X-28.4271 Y2.4694
+G1 X-28.1585 Y2.4545
+G1 X-27.8898 Y2.4396
+G1 X-27.6212 Y2.4246
+G1 X-27.3526 Y2.4097
+G1 X-27.0840 Y2.3948
+G1 X-26.8154 Y2.3798
+G1 X-26.5468 Y2.3649
+G1 X-26.2782 Y2.3500
+G1 X-26.0096 Y2.3350
+G1 X-25.7410 Y2.3201
+G1 X-25.4725 Y2.3052
+G1 X-25.2039 Y2.2902
+G1 X-24.9354 Y2.2753
+G1 X-24.6668 Y2.2603
+G1 X-24.3983 Y2.2454
+G1 X-24.1297 Y2.2305
+G1 X-23.8612 Y2.2155
+G1 X-23.5927 Y2.2006
+G1 X-23.3242 Y2.1857
+G1 X-23.0557 Y2.1707
+G1 X-22.7872 Y2.1558
+G1 X-22.5187 Y2.1409
+G1 X-22.2502 Y2.1259
+G1 X-21.9817 Y2.1110
+G1 X-21.7133 Y2.0961
+G1 X-21.4448 Y2.0811
+G1 X-21.1764 Y2.0662
+G1 X-20.9079 Y2.0513
+G1 X-20.6395 Y2.0363
+G1 X-20.3710 Y2.0214
+G1 X-20.1026 Y2.0064
+G1 X-19.8342 Y1.9915
+G1 X-19.5657 Y1.9766
+G1 X-19.2973 Y1.9616
+G1 X-19.0289 Y1.9467
+G1 X-18.7605 Y1.9318
+G1 X-18.4921 Y1.9168
+G1 X-18.2237 Y1.9019
+G1 X-17.9554 Y1.8870
+G1 X-17.6870 Y1.8720
+G1 X-17.4186 Y1.8571
+G1 X-17.1503 Y1.8422
+G1 X-16.8819 Y1.8272
+G1 X-16.6135 Y1.8123
+G1 X-16.3452 Y1.7974
+G1 X-16.0769 Y1.7824
+G1 X-15.8085 Y1.7675
+G1 X-15.5402 Y1.7526
+G1 X-15.2719 Y1.7376
+G1 X-15.0035 Y1.7227
+G1 X-14.7352 Y1.7077
+G1 X-14.4669 Y1.6928
+G1 X-14.1986 Y1.6779
+G1 X-13.9303 Y1.6629
+G1 X-13.6620 Y1.6480
+G1 X-13.3937 Y1.6331
+G1 X-13.1254 Y1.6181
+G1 X-12.8572 Y1.6032
+G1 X-12.5889 Y1.5883
+G1 X-12.3206 Y1.5733
+G1 X-12.0523 Y1.5584
+G1 X-11.7841 Y1.5435
+G1 X-11.5158 Y1.5285
+G1 X-11.2476 Y1.5136
+G1 X-10.9793 Y1.4987
+G1 X-10.7111 Y1.4837
+G1 X-10.4428 Y1.4688
+G1 X-10.1746 Y1.4538
+G1 X-9.9064 Y1.4389
+G1 X-9.6381 Y1.4240
+G1 X-9.3699 Y1.4090
+G1 X-9.1017 Y1.3941
+G1 X-8.8335 Y1.3792
+G1 X-8.5653 Y1.3642
+G1 X-8.2971 Y1.3493
+G1 X-8.0289 Y1.3344
+G1 X-7.7607 Y1.3194
+G1 X-7.4925 Y1.3045
+G1 X-7.2243 Y1.2896
+G1 X-6.9561 Y1.2746
+G1 X-6.6879 Y1.2597
+G1 X-6.4197 Y1.2448
+G1 X-6.1516 Y1.2298
+G1 X-5.8834 Y1.2149
+G1 X-5.6152 Y1.2000
+G1 X-5.3470 Y1.1850
+G1 X-5.0789 Y1.1701
+G1 X-4.8107 Y1.1551
+G1 X-4.5426 Y1.1402
+G1 X-4.2744 Y1.1253
+G1 X-4.0063 Y1.1103
+G1 X-3.7381 Y1.0954
+G1 X-3.4700 Y1.0805
+G1 X-3.2018 Y1.0655
+G1 X-2.9337 Y1.0506
+G1 X-2.6655 Y1.0357
+G1 X-2.3974 Y1.0207
+G1 X-2.1293 Y1.0058
+G1 X-1.8611 Y0.9909
+G1 X-1.5930 Y0.9759
+G1 X-1.3249 Y0.9610
+G1 X-1.0568 Y0.9461
+G1 X-0.7887 Y0.9311
+G1 X-0.5205 Y0.9162
+G1 X-0.2524 Y0.9012
+G1 X0.0157 Y0.8863
+G1 X0.2838 Y0.8714
+G1 X0.5519 Y0.8564
+G1 X0.8200 Y0.8415
+G1 X1.0881 Y0.8266
+G1 X1.3562 Y0.8116
+G1 X1.6243 Y0.7967
+G1 X1.8924 Y0.7818
+G1 X2.1605 Y0.7668
+G1 X2.4286 Y0.7519
+G1 X2.6967 Y0.7370
+G1 X2.9648 Y0.7220
+G1 X3.2329 Y0.7071
+G1 X3.5010 Y0.6922
+G1 X3.7691 Y0.6772
+G1 X4.0372 Y0.6623
+G1 X4.3052 Y0.6473
+G1 X4.5733 Y0.6324
+G1 X4.8414 Y0.6175
+G1 X5.1095 Y0.6025
+G1 X5.3776 Y0.5876
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_184)
+(Travel to fill-infill path 186)
+G1 X-11.1434 Y3.5241 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_186 kind=fill-infill space=machine_deg source=component_002 points=2 max_surface_segment_mm=0.0589)
+(fill-infill path 186, 2 points)
+G1 X-11.3018 Y3.5329 F1200.000
+(Safe converted infill-to-infill connector to fill-infill path 187)
+G1 X-11.4033 Y3.5385
+(fill-infill path 187, 77 points)
+G1 X-11.6706 Y3.5534
+G1 X-11.9379 Y3.5682
+G1 X-12.2052 Y3.5831
+G1 X-12.4726 Y3.5980
+G1 X-12.7399 Y3.6128
+G1 X-13.0072 Y3.6277
+G1 X-13.2746 Y3.6425
+G1 X-13.5419 Y3.6574
+G1 X-13.8093 Y3.6722
+G1 X-14.0767 Y3.6871
+G1 X-14.3441 Y3.7019
+G1 X-14.6115 Y3.7168
+G1 X-14.8789 Y3.7316
+G1 X-15.1463 Y3.7465
+G1 X-15.4137 Y3.7613
+G1 X-15.6812 Y3.7762
+G1 X-15.9486 Y3.7910
+G1 X-16.2161 Y3.8059
+G1 X-16.4835 Y3.8207
+G1 X-16.7510 Y3.8356
+G1 X-17.0185 Y3.8504
+G1 X-17.2860 Y3.8653
+G1 X-17.5535 Y3.8802
+G1 X-17.8211 Y3.8950
+G1 X-18.0886 Y3.9099
+G1 X-18.3561 Y3.9247
+G1 X-18.6237 Y3.9396
+G1 X-18.8912 Y3.9544
+G1 X-19.1588 Y3.9693
+G1 X-19.4264 Y3.9841
+G1 X-19.6940 Y3.9990
+G1 X-19.9616 Y4.0138
+G1 X-20.2292 Y4.0287
+G1 X-20.4969 Y4.0435
+G1 X-20.7645 Y4.0584
+G1 X-21.0322 Y4.0732
+G1 X-21.2998 Y4.0881
+G1 X-21.5675 Y4.1029
+G1 X-21.8352 Y4.1178
+G1 X-22.1029 Y4.1326
+G1 X-22.3706 Y4.1475
+G1 X-22.6383 Y4.1624
+G1 X-22.9061 Y4.1772
+G1 X-23.1738 Y4.1921
+G1 X-23.4416 Y4.2069
+G1 X-23.7093 Y4.2218
+G1 X-23.9771 Y4.2366
+G1 X-24.2449 Y4.2515
+G1 X-24.5127 Y4.2663
+G1 X-24.7805 Y4.2812
+G1 X-25.0484 Y4.2960
+G1 X-25.3162 Y4.3109
+G1 X-25.5840 Y4.3257
+G1 X-25.8519 Y4.3406
+G1 X-26.1198 Y4.3554
+G1 X-26.3877 Y4.3703
+G1 X-26.6556 Y4.3851
+G1 X-26.9235 Y4.4000
+G1 X-27.1914 Y4.4148
+G1 X-27.4594 Y4.4297
+G1 X-27.7273 Y4.4445
+G1 X-27.9953 Y4.4594
+G1 X-28.2633 Y4.4743
+G1 X-28.5313 Y4.4891
+G1 X-28.7993 Y4.5040
+G1 X-29.0673 Y4.5188
+G1 X-29.3353 Y4.5337
+G1 X-29.6033 Y4.5485
+G1 X-29.8714 Y4.5634
+G1 X-30.1395 Y4.5782
+G1 X-30.4075 Y4.5931
+G1 X-30.6756 Y4.6079
+G1 X-30.9438 Y4.6228
+G1 X-31.2119 Y4.6376
+G1 X-31.4800 Y4.6525
+G1 X-31.7482 Y4.6673
+(Safe converted infill-to-infill connector to fill-infill path 188)
+G1 X-31.7808 Y5.3398
+(fill-infill path 188, 55 points)
+G1 X-31.5123 Y5.3249
+G1 X-31.2438 Y5.3101
+G1 X-30.9754 Y5.2952
+G1 X-30.7069 Y5.2804
+G1 X-30.4385 Y5.2655
+G1 X-30.1701 Y5.2507
+G1 X-29.9017 Y5.2358
+G1 X-29.6333 Y5.2210
+G1 X-29.3650 Y5.2061
+G1 X-29.0966 Y5.1913
+G1 X-28.8283 Y5.1764
+G1 X-28.5599 Y5.1616
+G1 X-28.2916 Y5.1467
+G1 X-28.0233 Y5.1319
+G1 X-27.7551 Y5.1170
+G1 X-27.4868 Y5.1022
+G1 X-27.2185 Y5.0873
+G1 X-26.9503 Y5.0724
+G1 X-26.6821 Y5.0576
+G1 X-26.4139 Y5.0427
+G1 X-26.1457 Y5.0279
+G1 X-25.8775 Y5.0130
+G1 X-25.6093 Y4.9982
+G1 X-25.3412 Y4.9833
+G1 X-25.0730 Y4.9685
+G1 X-24.8049 Y4.9536
+G1 X-24.5368 Y4.9388
+G1 X-24.2687 Y4.9239
+G1 X-24.0006 Y4.9091
+G1 X-23.7326 Y4.8942
+G1 X-23.4645 Y4.8794
+G1 X-23.1965 Y4.8645
+G1 X-22.9284 Y4.8497
+G1 X-22.6604 Y4.8348
+G1 X-22.3924 Y4.8200
+G1 X-22.1244 Y4.8051
+G1 X-21.8564 Y4.7903
+G1 X-21.5885 Y4.7754
+G1 X-21.3205 Y4.7606
+G1 X-21.0526 Y4.7457
+G1 X-20.7847 Y4.7309
+G1 X-20.5168 Y4.7160
+G1 X-20.2489 Y4.7012
+G1 X-19.9810 Y4.6863
+G1 X-19.7131 Y4.6715
+G1 X-19.4452 Y4.6566
+G1 X-19.1774 Y4.6418
+G1 X-18.9095 Y4.6269
+G1 X-18.6417 Y4.6121
+G1 X-18.3739 Y4.5972
+G1 X-18.1061 Y4.5824
+G1 X-17.8383 Y4.5675
+G1 X-17.5706 Y4.5527
+G1 X-17.3028 Y4.5378
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_186)
+(Travel to fill-infill path 189)
+G1 X-17.1071 Y4.5270 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_189 kind=fill-infill space=machine_deg source=component_002 points=2 max_surface_segment_mm=0.0000)
+(fill-infill path 189, 2 points)
+G1 X-17.1071 Y4.5270 F1200.000
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_189)
+(Travel to fill-infill path 190)
+G1 X-20.9015 Y5.4086 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_190 kind=fill-infill space=machine_deg source=component_002 points=42 max_surface_segment_mm=0.0986)
+(fill-infill path 190, 42 points)
+G1 X-21.1674 Y5.4233 F1200.000
+G1 X-21.4334 Y5.4380
+G1 X-21.6994 Y5.4527
+G1 X-21.9654 Y5.4675
+G1 X-22.2314 Y5.4822
+G1 X-22.4974 Y5.4969
+G1 X-22.7634 Y5.5116
+G1 X-23.0295 Y5.5264
+G1 X-23.2956 Y5.5411
+G1 X-23.5616 Y5.5558
+G1 X-23.8277 Y5.5705
+G1 X-24.0939 Y5.5852
+G1 X-24.3600 Y5.6000
+G1 X-24.6261 Y5.6147
+G1 X-24.8923 Y5.6294
+G1 X-25.1585 Y5.6441
+G1 X-25.4246 Y5.6589
+G1 X-25.6909 Y5.6736
+G1 X-25.9571 Y5.6883
+G1 X-26.2233 Y5.7030
+G1 X-26.4896 Y5.7177
+G1 X-26.7558 Y5.7325
+G1 X-27.0221 Y5.7472
+G1 X-27.2884 Y5.7619
+G1 X-27.5547 Y5.7766
+G1 X-27.8210 Y5.7914
+G1 X-28.0874 Y5.8061
+G1 X-28.3537 Y5.8208
+G1 X-28.6201 Y5.8355
+G1 X-28.8865 Y5.8502
+G1 X-29.1529 Y5.8650
+G1 X-29.4193 Y5.8797
+G1 X-29.6858 Y5.8944
+G1 X-29.9522 Y5.9091
+G1 X-30.2187 Y5.9239
+G1 X-30.4852 Y5.9386
+G1 X-30.7517 Y5.9533
+G1 X-31.0182 Y5.9680
+G1 X-31.2848 Y5.9827
+G1 X-31.5513 Y5.9975
+G1 X-31.8179 Y6.0122
+(Safe converted infill-to-infill connector to fill-infill path 191)
+G1 X-31.5631 Y6.6683
+(fill-infill path 191, 40 points)
+G1 X-31.2987 Y6.6537
+G1 X-31.0343 Y6.6391
+G1 X-30.7700 Y6.6245
+G1 X-30.5056 Y6.6100
+G1 X-30.2413 Y6.5954
+G1 X-29.9770 Y6.5808
+G1 X-29.7127 Y6.5662
+G1 X-29.4484 Y6.5516
+G1 X-29.1841 Y6.5371
+G1 X-28.9199 Y6.5225
+G1 X-28.6556 Y6.5079
+G1 X-28.3914 Y6.4933
+G1 X-28.1272 Y6.4787
+G1 X-27.8630 Y6.4642
+G1 X-27.5989 Y6.4496
+G1 X-27.3347 Y6.4350
+G1 X-27.0706 Y6.4204
+G1 X-26.8065 Y6.4058
+G1 X-26.5424 Y6.3913
+G1 X-26.2783 Y6.3767
+G1 X-26.0143 Y6.3621
+G1 X-25.7502 Y6.3475
+G1 X-25.4862 Y6.3329
+G1 X-25.2222 Y6.3184
+G1 X-24.9582 Y6.3038
+G1 X-24.6942 Y6.2892
+G1 X-24.4302 Y6.2746
+G1 X-24.1663 Y6.2600
+G1 X-23.9024 Y6.2455
+G1 X-23.6385 Y6.2309
+G1 X-23.3746 Y6.2163
+G1 X-23.1107 Y6.2017
+G1 X-22.8468 Y6.1871
+G1 X-22.5830 Y6.1726
+G1 X-22.3191 Y6.1580
+G1 X-22.0553 Y6.1434
+G1 X-21.7915 Y6.1288
+G1 X-21.5277 Y6.1143
+G1 X-21.2640 Y6.0997
+(Safe converted infill-to-infill connector to fill-infill path 192)
+G1 X-20.9538 Y6.7534
+(fill-infill path 192, 42 points)
+G1 X-21.2205 Y6.7681
+G1 X-21.4873 Y6.7829
+G1 X-21.7541 Y6.7976
+G1 X-22.0209 Y6.8123
+G1 X-22.2877 Y6.8270
+G1 X-22.5545 Y6.8418
+G1 X-22.8214 Y6.8565
+G1 X-23.0883 Y6.8712
+G1 X-23.3552 Y6.8859
+G1 X-23.6221 Y6.9006
+G1 X-23.8890 Y6.9154
+G1 X-24.1559 Y6.9301
+G1 X-24.4229 Y6.9448
+G1 X-24.6899 Y6.9595
+G1 X-24.9569 Y6.9743
+G1 X-25.2239 Y6.9890
+G1 X-25.4910 Y7.0037
+G1 X-25.7580 Y7.0184
+G1 X-26.0251 Y7.0331
+G1 X-26.2922 Y7.0479
+G1 X-26.5593 Y7.0626
+G1 X-26.8264 Y7.0773
+G1 X-27.0936 Y7.0920
+G1 X-27.3607 Y7.1068
+G1 X-27.6279 Y7.1215
+G1 X-27.8951 Y7.1362
+G1 X-28.1624 Y7.1509
+G1 X-28.4296 Y7.1656
+G1 X-28.6969 Y7.1804
+G1 X-28.9641 Y7.1951
+G1 X-29.2314 Y7.2098
+G1 X-29.4988 Y7.2245
+G1 X-29.7661 Y7.2393
+G1 X-30.0335 Y7.2540
+G1 X-30.3008 Y7.2687
+G1 X-30.5682 Y7.2834
+G1 X-30.8357 Y7.2981
+G1 X-31.1031 Y7.3129
+G1 X-31.3706 Y7.3276
+G1 X-31.6380 Y7.3423
+G1 X-31.9055 Y7.3570
+(Safe converted infill-to-infill connector to fill-infill path 193)
+G1 X-31.6587 Y8.0131
+(fill-infill path 193, 40 points)
+G1 X-31.3933 Y7.9985
+G1 X-31.1279 Y7.9840
+G1 X-30.8626 Y7.9694
+G1 X-30.5972 Y7.9548
+G1 X-30.3319 Y7.9402
+G1 X-30.0666 Y7.9256
+G1 X-29.8014 Y7.9111
+G1 X-29.5361 Y7.8965
+G1 X-29.2709 Y7.8819
+G1 X-29.0057 Y7.8673
+G1 X-28.7405 Y7.8527
+G1 X-28.4753 Y7.8382
+G1 X-28.2102 Y7.8236
+G1 X-27.9450 Y7.8090
+G1 X-27.6799 Y7.7944
+G1 X-27.4149 Y7.7798
+G1 X-27.1498 Y7.7653
+G1 X-26.8847 Y7.7507
+G1 X-26.6197 Y7.7361
+G1 X-26.3547 Y7.7215
+G1 X-26.0897 Y7.7069
+G1 X-25.8248 Y7.6924
+G1 X-25.5598 Y7.6778
+G1 X-25.2949 Y7.6632
+G1 X-25.0300 Y7.6486
+G1 X-24.7651 Y7.6341
+G1 X-24.5002 Y7.6195
+G1 X-24.2354 Y7.6049
+G1 X-23.9705 Y7.5903
+G1 X-23.7057 Y7.5757
+G1 X-23.4409 Y7.5612
+G1 X-23.1762 Y7.5466
+G1 X-22.9114 Y7.5320
+G1 X-22.6467 Y7.5174
+G1 X-22.3820 Y7.5028
+G1 X-22.1173 Y7.4883
+G1 X-21.8526 Y7.4737
+G1 X-21.5880 Y7.4591
+G1 X-21.3233 Y7.4445
+(Safe converted infill-to-infill connector to fill-infill path 194)
+G1 X-21.0180 Y8.0983
+(fill-infill path 194, 42 points)
+G1 X-21.2857 Y8.1130
+G1 X-21.5534 Y8.1277
+G1 X-21.8211 Y8.1424
+G1 X-22.0889 Y8.1572
+G1 X-22.3567 Y8.1719
+G1 X-22.6245 Y8.1866
+G1 X-22.8923 Y8.2013
+G1 X-23.1602 Y8.2160
+G1 X-23.4280 Y8.2308
+G1 X-23.6959 Y8.2455
+G1 X-23.9638 Y8.2602
+G1 X-24.2317 Y8.2749
+G1 X-24.4997 Y8.2897
+G1 X-24.7677 Y8.3044
+G1 X-25.0357 Y8.3191
+G1 X-25.3037 Y8.3338
+G1 X-25.5717 Y8.3485
+G1 X-25.8398 Y8.3633
+G1 X-26.1079 Y8.3780
+G1 X-26.3760 Y8.3927
+G1 X-26.6441 Y8.4074
+G1 X-26.9122 Y8.4222
+G1 X-27.1804 Y8.4369
+G1 X-27.4486 Y8.4516
+G1 X-27.7168 Y8.4663
+G1 X-27.9851 Y8.4810
+G1 X-28.2533 Y8.4958
+G1 X-28.5216 Y8.5105
+G1 X-28.7899 Y8.5252
+G1 X-29.0582 Y8.5399
+G1 X-29.3266 Y8.5547
+G1 X-29.5950 Y8.5694
+G1 X-29.8634 Y8.5841
+G1 X-30.1318 Y8.5988
+G1 X-30.4002 Y8.6135
+G1 X-30.6687 Y8.6283
+G1 X-30.9372 Y8.6430
+G1 X-31.2057 Y8.6577
+G1 X-31.4742 Y8.6724
+G1 X-31.7428 Y8.6872
+G1 X-32.0114 Y8.7019
+(Safe converted infill-to-infill connector to fill-infill path 195)
+G1 X-31.7724 Y9.3580
+(fill-infill path 195, 40 points)
+G1 X-31.5059 Y9.3434
+G1 X-31.2394 Y9.3288
+G1 X-30.9729 Y9.3142
+G1 X-30.7064 Y9.2996
+G1 X-30.4400 Y9.2851
+G1 X-30.1735 Y9.2705
+G1 X-29.9071 Y9.2559
+G1 X-29.6408 Y9.2413
+G1 X-29.3744 Y9.2267
+G1 X-29.1081 Y9.2122
+G1 X-28.8418 Y9.1976
+G1 X-28.5755 Y9.1830
+G1 X-28.3093 Y9.1684
+G1 X-28.0430 Y9.1539
+G1 X-27.7768 Y9.1393
+G1 X-27.5106 Y9.1247
+G1 X-27.2445 Y9.1101
+G1 X-26.9783 Y9.0955
+G1 X-26.7122 Y9.0810
+G1 X-26.4461 Y9.0664
+G1 X-26.1801 Y9.0518
+G1 X-25.9140 Y9.0372
+G1 X-25.6480 Y9.0226
+G1 X-25.3820 Y9.0081
+G1 X-25.1160 Y8.9935
+G1 X-24.8501 Y8.9789
+G1 X-24.5842 Y8.9643
+G1 X-24.3183 Y8.9497
+G1 X-24.0524 Y8.9352
+G1 X-23.7865 Y8.9206
+G1 X-23.5207 Y8.9060
+G1 X-23.2549 Y8.8914
+G1 X-22.9891 Y8.8768
+G1 X-22.7233 Y8.8623
+G1 X-22.4576 Y8.8477
+G1 X-22.1919 Y8.8331
+G1 X-21.9262 Y8.8185
+G1 X-21.6605 Y8.8039
+G1 X-21.3948 Y8.7894
+(Safe converted infill-to-infill connector to fill-infill path 196)
+G1 X-21.0943 Y9.4431
+(fill-infill path 196, 42 points)
+G1 X-21.3631 Y9.4578
+G1 X-21.6319 Y9.4726
+G1 X-21.9007 Y9.4873
+G1 X-22.1696 Y9.5020
+G1 X-22.4385 Y9.5167
+G1 X-22.7074 Y9.5315
+G1 X-22.9764 Y9.5462
+G1 X-23.2453 Y9.5609
+G1 X-23.5143 Y9.5756
+G1 X-23.7833 Y9.5903
+G1 X-24.0524 Y9.6051
+G1 X-24.3215 Y9.6198
+G1 X-24.5906 Y9.6345
+G1 X-24.8597 Y9.6492
+G1 X-25.1288 Y9.6639
+G1 X-25.3980 Y9.6787
+G1 X-25.6672 Y9.6934
+G1 X-25.9364 Y9.7081
+G1 X-26.2057 Y9.7228
+G1 X-26.4749 Y9.7376
+G1 X-26.7442 Y9.7523
+G1 X-27.0136 Y9.7670
+G1 X-27.2829 Y9.7817
+G1 X-27.5523 Y9.7964
+G1 X-27.8217 Y9.8112
+G1 X-28.0911 Y9.8259
+G1 X-28.3606 Y9.8406
+G1 X-28.6300 Y9.8553
+G1 X-28.8995 Y9.8701
+G1 X-29.1691 Y9.8848
+G1 X-29.4386 Y9.8995
+G1 X-29.7082 Y9.9142
+G1 X-29.9778 Y9.9289
+G1 X-30.2475 Y9.9437
+G1 X-30.5171 Y9.9584
+G1 X-30.7868 Y9.9731
+G1 X-31.0565 Y9.9878
+G1 X-31.3263 Y10.0026
+G1 X-31.5960 Y10.0173
+G1 X-31.8658 Y10.0320
+G1 X-32.1356 Y10.0467
+(Safe converted infill-to-infill connector to fill-infill path 197)
+G1 X-31.9046 Y10.7028
+(fill-infill path 197, 40 points)
+G1 X-31.6368 Y10.6882
+G1 X-31.3690 Y10.6737
+G1 X-31.1012 Y10.6591
+G1 X-30.8334 Y10.6445
+G1 X-30.5657 Y10.6299
+G1 X-30.2980 Y10.6153
+G1 X-30.0303 Y10.6008
+G1 X-29.7626 Y10.5862
+G1 X-29.4950 Y10.5716
+G1 X-29.2274 Y10.5570
+G1 X-28.9598 Y10.5424
+G1 X-28.6923 Y10.5279
+G1 X-28.4248 Y10.5133
+G1 X-28.1573 Y10.4987
+G1 X-27.8898 Y10.4841
+G1 X-27.6224 Y10.4695
+G1 X-27.3550 Y10.4550
+G1 X-27.0876 Y10.4404
+G1 X-26.8202 Y10.4258
+G1 X-26.5529 Y10.4112
+G1 X-26.2856 Y10.3966
+G1 X-26.0183 Y10.3821
+G1 X-25.7511 Y10.3675
+G1 X-25.4839 Y10.3529
+G1 X-25.2167 Y10.3383
+G1 X-24.9495 Y10.3237
+G1 X-24.6824 Y10.3092
+G1 X-24.4152 Y10.2946
+G1 X-24.1481 Y10.2800
+G1 X-23.8811 Y10.2654
+G1 X-23.6140 Y10.2508
+G1 X-23.3470 Y10.2363
+G1 X-23.0800 Y10.2217
+G1 X-22.8131 Y10.2071
+G1 X-22.5462 Y10.1925
+G1 X-22.2792 Y10.1780
+G1 X-22.0124 Y10.1634
+G1 X-21.7455 Y10.1488
+G1 X-21.4787 Y10.1342
+(Safe converted infill-to-infill connector to fill-infill path 198)
+G1 X-21.1828 Y10.7880
+(fill-infill path 198, 42 points)
+G1 X-21.4528 Y10.8027
+G1 X-21.7229 Y10.8174
+G1 X-21.9930 Y10.8321
+G1 X-22.2632 Y10.8469
+G1 X-22.5334 Y10.8616
+G1 X-22.8036 Y10.8763
+G1 X-23.0738 Y10.8910
+G1 X-23.3440 Y10.9057
+G1 X-23.6143 Y10.9205
+G1 X-23.8846 Y10.9352
+G1 X-24.1550 Y10.9499
+G1 X-24.4254 Y10.9646
+G1 X-24.6958 Y10.9794
+G1 X-24.9662 Y10.9941
+G1 X-25.2366 Y11.0088
+G1 X-25.5071 Y11.0235
+G1 X-25.7776 Y11.0382
+G1 X-26.0482 Y11.0530
+G1 X-26.3188 Y11.0677
+G1 X-26.5894 Y11.0824
+G1 X-26.8600 Y11.0971
+G1 X-27.1306 Y11.1119
+G1 X-27.4013 Y11.1266
+G1 X-27.6720 Y11.1413
+G1 X-27.9428 Y11.1560
+G1 X-28.2136 Y11.1707
+G1 X-28.4844 Y11.1855
+G1 X-28.7552 Y11.2002
+G1 X-29.0261 Y11.2149
+G1 X-29.2970 Y11.2296
+G1 X-29.5679 Y11.2444
+G1 X-29.8388 Y11.2591
+G1 X-30.1098 Y11.2738
+G1 X-30.3808 Y11.2885
+G1 X-30.6519 Y11.3032
+G1 X-30.9229 Y11.3180
+G1 X-31.1940 Y11.3327
+G1 X-31.4652 Y11.3474
+G1 X-31.7363 Y11.3621
+G1 X-32.0075 Y11.3768
+G1 X-32.2788 Y11.3916
+(Safe converted infill-to-infill connector to fill-infill path 199)
+G1 X-32.0556 Y12.0477
+(fill-infill path 199, 40 points)
+G1 X-31.7863 Y12.0331
+G1 X-31.5170 Y12.0185
+G1 X-31.2478 Y12.0039
+G1 X-30.9786 Y11.9893
+G1 X-30.7094 Y11.9748
+G1 X-30.4402 Y11.9602
+G1 X-30.1711 Y11.9456
+G1 X-29.9020 Y11.9310
+G1 X-29.6330 Y11.9164
+G1 X-29.3639 Y11.9019
+G1 X-29.0949 Y11.8873
+G1 X-28.8260 Y11.8727
+G1 X-28.5570 Y11.8581
+G1 X-28.2881 Y11.8435
+G1 X-28.0192 Y11.8290
+G1 X-27.7504 Y11.8144
+G1 X-27.4816 Y11.7998
+G1 X-27.2128 Y11.7852
+G1 X-26.9440 Y11.7706
+G1 X-26.6753 Y11.7561
+G1 X-26.4066 Y11.7415
+G1 X-26.1379 Y11.7269
+G1 X-25.8693 Y11.7123
+G1 X-25.6007 Y11.6978
+G1 X-25.3321 Y11.6832
+G1 X-25.0635 Y11.6686
+G1 X-24.7950 Y11.6540
+G1 X-24.5265 Y11.6394
+G1 X-24.2581 Y11.6249
+G1 X-23.9897 Y11.6103
+G1 X-23.7213 Y11.5957
+G1 X-23.4529 Y11.5811
+G1 X-23.1846 Y11.5665
+G1 X-22.9162 Y11.5520
+G1 X-22.6480 Y11.5374
+G1 X-22.3797 Y11.5228
+G1 X-22.1115 Y11.5082
+G1 X-21.8433 Y11.4936
+G1 X-21.5751 Y11.4791
+(Safe converted infill-to-infill connector to fill-infill path 200)
+G1 X-21.2838 Y12.1328
+(fill-infill path 200, 42 points)
+G1 X-21.5553 Y12.1475
+G1 X-21.8268 Y12.1623
+G1 X-22.0984 Y12.1770
+G1 X-22.3699 Y12.1917
+G1 X-22.6416 Y12.2064
+G1 X-22.9132 Y12.2211
+G1 X-23.1849 Y12.2359
+G1 X-23.4566 Y12.2506
+G1 X-23.7283 Y12.2653
+G1 X-24.0001 Y12.2800
+G1 X-24.2719 Y12.2948
+G1 X-24.5437 Y12.3095
+G1 X-24.8156 Y12.3242
+G1 X-25.0875 Y12.3389
+G1 X-25.3594 Y12.3536
+G1 X-25.6314 Y12.3684
+G1 X-25.9034 Y12.3831
+G1 X-26.1754 Y12.3978
+G1 X-26.4475 Y12.4125
+G1 X-26.7195 Y12.4273
+G1 X-26.9917 Y12.4420
+G1 X-27.2638 Y12.4567
+G1 X-27.5360 Y12.4714
+G1 X-27.8082 Y12.4861
+G1 X-28.0805 Y12.5009
+G1 X-28.3528 Y12.5156
+G1 X-28.6251 Y12.5303
+G1 X-28.8975 Y12.5450
+G1 X-29.1698 Y12.5598
+G1 X-29.4423 Y12.5745
+G1 X-29.7147 Y12.5892
+G1 X-29.9872 Y12.6039
+G1 X-30.2597 Y12.6186
+G1 X-30.5323 Y12.6334
+G1 X-30.8049 Y12.6481
+G1 X-31.0775 Y12.6628
+G1 X-31.3501 Y12.6775
+G1 X-31.6228 Y12.6923
+G1 X-31.8956 Y12.7070
+G1 X-32.1683 Y12.7217
+G1 X-32.4411 Y12.7364
+(Safe converted infill-to-infill connector to fill-infill path 201)
+G1 X-32.2259 Y13.3925
+(fill-infill path 201, 40 points)
+G1 X-31.9550 Y13.3779
+G1 X-31.6841 Y13.3633
+G1 X-31.4132 Y13.3488
+G1 X-31.1424 Y13.3342
+G1 X-30.8716 Y13.3196
+G1 X-30.6008 Y13.3050
+G1 X-30.3301 Y13.2904
+G1 X-30.0594 Y13.2759
+G1 X-29.7887 Y13.2613
+G1 X-29.5181 Y13.2467
+G1 X-29.2475 Y13.2321
+G1 X-28.9769 Y13.2176
+G1 X-28.7064 Y13.2030
+G1 X-28.4359 Y13.1884
+G1 X-28.1654 Y13.1738
+G1 X-27.8950 Y13.1592
+G1 X-27.6246 Y13.1447
+G1 X-27.3542 Y13.1301
+G1 X-27.0839 Y13.1155
+G1 X-26.8136 Y13.1009
+G1 X-26.5434 Y13.0863
+G1 X-26.2732 Y13.0718
+G1 X-26.0030 Y13.0572
+G1 X-25.7328 Y13.0426
+G1 X-25.4627 Y13.0280
+G1 X-25.1926 Y13.0134
+G1 X-24.9225 Y12.9989
+G1 X-24.6525 Y12.9843
+G1 X-24.3825 Y12.9697
+G1 X-24.1126 Y12.9551
+G1 X-23.8426 Y12.9405
+G1 X-23.5728 Y12.9260
+G1 X-23.3029 Y12.9114
+G1 X-23.0331 Y12.8968
+G1 X-22.7633 Y12.8822
+G1 X-22.4935 Y12.8676
+G1 X-22.2238 Y12.8531
+G1 X-21.9541 Y12.8385
+G1 X-21.6845 Y12.8239
+(Safe converted infill-to-infill connector to fill-infill path 202)
+G1 X-21.3977 Y13.4777
+(fill-infill path 202, 42 points)
+G1 X-21.6708 Y13.4924
+G1 X-21.9439 Y13.5071
+G1 X-22.2170 Y13.5218
+G1 X-22.4902 Y13.5365
+G1 X-22.7634 Y13.5513
+G1 X-23.0366 Y13.5660
+G1 X-23.3099 Y13.5807
+G1 X-23.5833 Y13.5954
+G1 X-23.8566 Y13.6102
+G1 X-24.1300 Y13.6249
+G1 X-24.4034 Y13.6396
+G1 X-24.6769 Y13.6543
+G1 X-24.9504 Y13.6690
+G1 X-25.2239 Y13.6838
+G1 X-25.4975 Y13.6985
+G1 X-25.7711 Y13.7132
+G1 X-26.0447 Y13.7279
+G1 X-26.3184 Y13.7427
+G1 X-26.5921 Y13.7574
+G1 X-26.8659 Y13.7721
+G1 X-27.1397 Y13.7868
+G1 X-27.4135 Y13.8015
+G1 X-27.6874 Y13.8163
+G1 X-27.9613 Y13.8310
+G1 X-28.2352 Y13.8457
+G1 X-28.5092 Y13.8604
+G1 X-28.7832 Y13.8752
+G1 X-29.0572 Y13.8899
+G1 X-29.3313 Y13.9046
+G1 X-29.6054 Y13.9193
+G1 X-29.8796 Y13.9340
+G1 X-30.1538 Y13.9488
+G1 X-30.4280 Y13.9635
+G1 X-30.7022 Y13.9782
+G1 X-30.9765 Y13.9929
+G1 X-31.2509 Y14.0077
+G1 X-31.5253 Y14.0224
+G1 X-31.7997 Y14.0371
+G1 X-32.0741 Y14.0518
+G1 X-32.3486 Y14.0665
+G1 X-32.6231 Y14.0813
+(Safe converted infill-to-infill connector to fill-infill path 203)
+G1 X-32.4160 Y14.7374
+(fill-infill path 203, 40 points)
+G1 X-32.1433 Y14.7228
+G1 X-31.8706 Y14.7082
+G1 X-31.5979 Y14.6936
+G1 X-31.3253 Y14.6790
+G1 X-31.0527 Y14.6645
+G1 X-30.7801 Y14.6499
+G1 X-30.5076 Y14.6353
+G1 X-30.2351 Y14.6207
+G1 X-29.9627 Y14.6061
+G1 X-29.6903 Y14.5916
+G1 X-29.4179 Y14.5770
+G1 X-29.1456 Y14.5624
+G1 X-28.8733 Y14.5478
+G1 X-28.6011 Y14.5332
+G1 X-28.3289 Y14.5187
+G1 X-28.0567 Y14.5041
+G1 X-27.7845 Y14.4895
+G1 X-27.5124 Y14.4749
+G1 X-27.2404 Y14.4603
+G1 X-26.9684 Y14.4458
+G1 X-26.6964 Y14.4312
+G1 X-26.4244 Y14.4166
+G1 X-26.1525 Y14.4020
+G1 X-25.8806 Y14.3874
+G1 X-25.6088 Y14.3729
+G1 X-25.3370 Y14.3583
+G1 X-25.0652 Y14.3437
+G1 X-24.7935 Y14.3291
+G1 X-24.5218 Y14.3145
+G1 X-24.2502 Y14.3000
+G1 X-23.9786 Y14.2854
+G1 X-23.7070 Y14.2708
+G1 X-23.4354 Y14.2562
+G1 X-23.1639 Y14.2417
+G1 X-22.8925 Y14.2271
+G1 X-22.6210 Y14.2125
+G1 X-22.3496 Y14.1979
+G1 X-22.0783 Y14.1833
+G1 X-21.8070 Y14.1688
+(Safe converted infill-to-infill connector to fill-infill path 204)
+G1 X-21.5247 Y14.8225
+(fill-infill path 204, 42 points)
+G1 X-21.7995 Y14.8372
+G1 X-22.0744 Y14.8520
+G1 X-22.3493 Y14.8667
+G1 X-22.6243 Y14.8814
+G1 X-22.8992 Y14.8961
+G1 X-23.1743 Y14.9108
+G1 X-23.4493 Y14.9256
+G1 X-23.7244 Y14.9403
+G1 X-23.9996 Y14.9550
+G1 X-24.2748 Y14.9697
+G1 X-24.5500 Y14.9844
+G1 X-24.8253 Y14.9992
+G1 X-25.1006 Y15.0139
+G1 X-25.3759 Y15.0286
+G1 X-25.6513 Y15.0433
+G1 X-25.9267 Y15.0581
+G1 X-26.2022 Y15.0728
+G1 X-26.4777 Y15.0875
+G1 X-26.7532 Y15.1022
+G1 X-27.0288 Y15.1169
+G1 X-27.3044 Y15.1317
+G1 X-27.5801 Y15.1464
+G1 X-27.8558 Y15.1611
+G1 X-28.1316 Y15.1758
+G1 X-28.4073 Y15.1906
+G1 X-28.6832 Y15.2053
+G1 X-28.9590 Y15.2200
+G1 X-29.2349 Y15.2347
+G1 X-29.5109 Y15.2494
+G1 X-29.7869 Y15.2642
+G1 X-30.0629 Y15.2789
+G1 X-30.3390 Y15.2936
+G1 X-30.6151 Y15.3083
+G1 X-30.8912 Y15.3231
+G1 X-31.1674 Y15.3378
+G1 X-31.4437 Y15.3525
+G1 X-31.7199 Y15.3672
+G1 X-31.9962 Y15.3819
+G1 X-32.2726 Y15.3967
+G1 X-32.5490 Y15.4114
+G1 X-32.8254 Y15.4261
+(Safe converted infill-to-infill connector to fill-infill path 205)
+G1 X-32.6264 Y16.0822
+(fill-infill path 205, 40 points)
+G1 X-32.3517 Y16.0676
+G1 X-32.0770 Y16.0530
+G1 X-31.8024 Y16.0385
+G1 X-31.5278 Y16.0239
+G1 X-31.2532 Y16.0093
+G1 X-30.9787 Y15.9947
+G1 X-30.7042 Y15.9801
+G1 X-30.4298 Y15.9656
+G1 X-30.1554 Y15.9510
+G1 X-29.8811 Y15.9364
+G1 X-29.6068 Y15.9218
+G1 X-29.3325 Y15.9072
+G1 X-29.0583 Y15.8927
+G1 X-28.7841 Y15.8781
+G1 X-28.5100 Y15.8635
+G1 X-28.2359 Y15.8489
+G1 X-27.9618 Y15.8343
+G1 X-27.6878 Y15.8198
+G1 X-27.4139 Y15.8052
+G1 X-27.1399 Y15.7906
+G1 X-26.8660 Y15.7760
+G1 X-26.5922 Y15.7615
+G1 X-26.3184 Y15.7469
+G1 X-26.0446 Y15.7323
+G1 X-25.7709 Y15.7177
+G1 X-25.4972 Y15.7031
+G1 X-25.2236 Y15.6886
+G1 X-24.9500 Y15.6740
+G1 X-24.6764 Y15.6594
+G1 X-24.4029 Y15.6448
+G1 X-24.1294 Y15.6302
+G1 X-23.8560 Y15.6157
+G1 X-23.5826 Y15.6011
+G1 X-23.3092 Y15.5865
+G1 X-23.0359 Y15.5719
+G1 X-22.7626 Y15.5573
+G1 X-22.4894 Y15.5428
+G1 X-22.2162 Y15.5282
+G1 X-21.9430 Y15.5136
+(Safe converted infill-to-infill connector to fill-infill path 206)
+G1 X-21.6652 Y16.1674
+(fill-infill path 206, 42 points)
+G1 X-21.9420 Y16.1821
+G1 X-22.2188 Y16.1968
+G1 X-22.4957 Y16.2115
+G1 X-22.7726 Y16.2262
+G1 X-23.0495 Y16.2410
+G1 X-23.3265 Y16.2557
+G1 X-23.6035 Y16.2704
+G1 X-23.8806 Y16.2851
+G1 X-24.1577 Y16.2999
+G1 X-24.4349 Y16.3146
+G1 X-24.7121 Y16.3293
+G1 X-24.9893 Y16.3440
+G1 X-25.2666 Y16.3587
+G1 X-25.5439 Y16.3735
+G1 X-25.8213 Y16.3882
+G1 X-26.0987 Y16.4029
+G1 X-26.3762 Y16.4176
+G1 X-26.6537 Y16.4324
+G1 X-26.9312 Y16.4471
+G1 X-27.2088 Y16.4618
+G1 X-27.4865 Y16.4765
+G1 X-27.7641 Y16.4912
+G1 X-28.0419 Y16.5060
+G1 X-28.3196 Y16.5207
+G1 X-28.5975 Y16.5354
+G1 X-28.8753 Y16.5501
+G1 X-29.1532 Y16.5649
+G1 X-29.4312 Y16.5796
+G1 X-29.7092 Y16.5943
+G1 X-29.9872 Y16.6090
+G1 X-30.2653 Y16.6237
+G1 X-30.5434 Y16.6385
+G1 X-30.8216 Y16.6532
+G1 X-31.0998 Y16.6679
+G1 X-31.3780 Y16.6826
+G1 X-31.6564 Y16.6973
+G1 X-31.9347 Y16.7121
+G1 X-32.2131 Y16.7268
+G1 X-32.4915 Y16.7415
+G1 X-32.7700 Y16.7562
+G1 X-33.0486 Y16.7710
+(Safe converted infill-to-infill connector to fill-infill path 207)
+G1 X-32.8578 Y17.4270
+(fill-infill path 207, 40 points)
+G1 X-32.5809 Y17.4125
+G1 X-32.3041 Y17.3979
+G1 X-32.0273 Y17.3833
+G1 X-31.7505 Y17.3687
+G1 X-31.4738 Y17.3541
+G1 X-31.1972 Y17.3396
+G1 X-30.9206 Y17.3250
+G1 X-30.6440 Y17.3104
+G1 X-30.3675 Y17.2958
+G1 X-30.0910 Y17.2813
+G1 X-29.8146 Y17.2667
+G1 X-29.5382 Y17.2521
+G1 X-29.2619 Y17.2375
+G1 X-28.9856 Y17.2229
+G1 X-28.7094 Y17.2084
+G1 X-28.4332 Y17.1938
+G1 X-28.1570 Y17.1792
+G1 X-27.8809 Y17.1646
+G1 X-27.6049 Y17.1500
+G1 X-27.3288 Y17.1355
+G1 X-27.0529 Y17.1209
+G1 X-26.7769 Y17.1063
+G1 X-26.5011 Y17.0917
+G1 X-26.2252 Y17.0771
+G1 X-25.9494 Y17.0626
+G1 X-25.6737 Y17.0480
+G1 X-25.3980 Y17.0334
+G1 X-25.1223 Y17.0188
+G1 X-24.8467 Y17.0042
+G1 X-24.5712 Y16.9897
+G1 X-24.2956 Y16.9751
+G1 X-24.0202 Y16.9605
+G1 X-23.7447 Y16.9459
+G1 X-23.4693 Y16.9313
+G1 X-23.1940 Y16.9168
+G1 X-22.9187 Y16.9022
+G1 X-22.6434 Y16.8876
+G1 X-22.3682 Y16.8730
+G1 X-22.0930 Y16.8584
+(Safe converted infill-to-infill connector to fill-infill path 208)
+G1 X-21.8197 Y17.5122
+(fill-infill path 208, 42 points)
+G1 X-22.0986 Y17.5269
+G1 X-22.3775 Y17.5416
+G1 X-22.6565 Y17.5564
+G1 X-22.9355 Y17.5711
+G1 X-23.2146 Y17.5858
+G1 X-23.4937 Y17.6005
+G1 X-23.7729 Y17.6153
+G1 X-24.0521 Y17.6300
+G1 X-24.3314 Y17.6447
+G1 X-24.6107 Y17.6594
+G1 X-24.8901 Y17.6741
+G1 X-25.1695 Y17.6889
+G1 X-25.4489 Y17.7036
+G1 X-25.7284 Y17.7183
+G1 X-26.0080 Y17.7330
+G1 X-26.2876 Y17.7478
+G1 X-26.5672 Y17.7625
+G1 X-26.8469 Y17.7772
+G1 X-27.1267 Y17.7919
+G1 X-27.4064 Y17.8066
+G1 X-27.6863 Y17.8214
+G1 X-27.9662 Y17.8361
+G1 X-28.2461 Y17.8508
+G1 X-28.5261 Y17.8655
+G1 X-28.8061 Y17.8803
+G1 X-29.0862 Y17.8950
+G1 X-29.3663 Y17.9097
+G1 X-29.6465 Y17.9244
+G1 X-29.9267 Y17.9391
+G1 X-30.2070 Y17.9539
+G1 X-30.4873 Y17.9686
+G1 X-30.7677 Y17.9833
+G1 X-31.0481 Y17.9980
+G1 X-31.3286 Y18.0128
+G1 X-31.6091 Y18.0275
+G1 X-31.8896 Y18.0422
+G1 X-32.1703 Y18.0569
+G1 X-32.4509 Y18.0716
+G1 X-32.7316 Y18.0864
+G1 X-33.0124 Y18.1011
+G1 X-33.2932 Y18.1158
+(Safe converted infill-to-infill connector to fill-infill path 209)
+G1 X-33.1108 Y18.7719
+(fill-infill path 209, 40 points)
+G1 X-32.8316 Y18.7573
+G1 X-32.5524 Y18.7427
+G1 X-32.2733 Y18.7282
+G1 X-31.9942 Y18.7136
+G1 X-31.7152 Y18.6990
+G1 X-31.4362 Y18.6844
+G1 X-31.1573 Y18.6698
+G1 X-30.8784 Y18.6553
+G1 X-30.5996 Y18.6407
+G1 X-30.3208 Y18.6261
+G1 X-30.0420 Y18.6115
+G1 X-29.7634 Y18.5969
+G1 X-29.4847 Y18.5824
+G1 X-29.2061 Y18.5678
+G1 X-28.9276 Y18.5532
+G1 X-28.6491 Y18.5386
+G1 X-28.3707 Y18.5240
+G1 X-28.0923 Y18.5095
+G1 X-27.8140 Y18.4949
+G1 X-27.5357 Y18.4803
+G1 X-27.2574 Y18.4657
+G1 X-26.9792 Y18.4511
+G1 X-26.7011 Y18.4366
+G1 X-26.4230 Y18.4220
+G1 X-26.1450 Y18.4074
+G1 X-25.8670 Y18.3928
+G1 X-25.5890 Y18.3782
+G1 X-25.3111 Y18.3637
+G1 X-25.0333 Y18.3491
+G1 X-24.7555 Y18.3345
+G1 X-24.4777 Y18.3199
+G1 X-24.2000 Y18.3054
+G1 X-23.9224 Y18.2908
+G1 X-23.6448 Y18.2762
+G1 X-23.3672 Y18.2616
+G1 X-23.0897 Y18.2470
+G1 X-22.8123 Y18.2325
+G1 X-22.5348 Y18.2179
+G1 X-22.2575 Y18.2033
+(Safe converted infill-to-infill connector to fill-infill path 210)
+G1 X-21.9886 Y18.8570
+(fill-infill path 210, 42 points)
+G1 X-22.2698 Y18.8718
+G1 X-22.5510 Y18.8865
+G1 X-22.8323 Y18.9012
+G1 X-23.1137 Y18.9159
+G1 X-23.3951 Y18.9307
+G1 X-23.6765 Y18.9454
+G1 X-23.9580 Y18.9601
+G1 X-24.2396 Y18.9748
+G1 X-24.5212 Y18.9895
+G1 X-24.8029 Y19.0043
+G1 X-25.0846 Y19.0190
+G1 X-25.3663 Y19.0337
+G1 X-25.6481 Y19.0484
+G1 X-25.9300 Y19.0632
+G1 X-26.2119 Y19.0779
+G1 X-26.4939 Y19.0926
+G1 X-26.7759 Y19.1073
+G1 X-27.0580 Y19.1220
+G1 X-27.3401 Y19.1368
+G1 X-27.6223 Y19.1515
+G1 X-27.9045 Y19.1662
+G1 X-28.1868 Y19.1809
+G1 X-28.4691 Y19.1957
+G1 X-28.7515 Y19.2104
+G1 X-29.0339 Y19.2251
+G1 X-29.3164 Y19.2398
+G1 X-29.5990 Y19.2545
+G1 X-29.8816 Y19.2693
+G1 X-30.1642 Y19.2840
+G1 X-30.4469 Y19.2987
+G1 X-30.7297 Y19.3134
+G1 X-31.0125 Y19.3282
+G1 X-31.2953 Y19.3429
+G1 X-31.5783 Y19.3576
+G1 X-31.8612 Y19.3723
+G1 X-32.1442 Y19.3870
+G1 X-32.4273 Y19.4018
+G1 X-32.7104 Y19.4165
+G1 X-32.9936 Y19.4312
+G1 X-33.2769 Y19.4459
+G1 X-33.5601 Y19.4607
+(Safe converted infill-to-infill connector to fill-infill path 211)
+G1 X-33.3864 Y20.1167
+(fill-infill path 211, 40 points)
+G1 X-33.1046 Y20.1022
+G1 X-32.8229 Y20.0876
+G1 X-32.5412 Y20.0730
+G1 X-32.2596 Y20.0584
+G1 X-31.9780 Y20.0438
+G1 X-31.6965 Y20.0293
+G1 X-31.4151 Y20.0147
+G1 X-31.1337 Y20.0001
+G1 X-30.8523 Y19.9855
+G1 X-30.5710 Y19.9709
+G1 X-30.2898 Y19.9564
+G1 X-30.0086 Y19.9418
+G1 X-29.7275 Y19.9272
+G1 X-29.4464 Y19.9126
+G1 X-29.1654 Y19.8980
+G1 X-28.8844 Y19.8835
+G1 X-28.6035 Y19.8689
+G1 X-28.3226 Y19.8543
+G1 X-28.0418 Y19.8397
+G1 X-27.7611 Y19.8252
+G1 X-27.4804 Y19.8106
+G1 X-27.1997 Y19.7960
+G1 X-26.9191 Y19.7814
+G1 X-26.6386 Y19.7668
+G1 X-26.3581 Y19.7523
+G1 X-26.0777 Y19.7377
+G1 X-25.7973 Y19.7231
+G1 X-25.5170 Y19.7085
+G1 X-25.2367 Y19.6939
+G1 X-24.9565 Y19.6794
+G1 X-24.6763 Y19.6648
+G1 X-24.3962 Y19.6502
+G1 X-24.1161 Y19.6356
+G1 X-23.8361 Y19.6210
+G1 X-23.5561 Y19.6065
+G1 X-23.2762 Y19.5919
+G1 X-22.9964 Y19.5773
+G1 X-22.7166 Y19.5627
+G1 X-22.4368 Y19.5481
+(Safe converted infill-to-infill connector to fill-infill path 212)
+G1 X-22.1724 Y20.2019
+(fill-infill path 212, 42 points)
+G1 X-22.4561 Y20.2166
+G1 X-22.7399 Y20.2313
+G1 X-23.0237 Y20.2461
+G1 X-23.3076 Y20.2608
+G1 X-23.5915 Y20.2755
+G1 X-23.8755 Y20.2902
+G1 X-24.1595 Y20.3049
+G1 X-24.4436 Y20.3197
+G1 X-24.7277 Y20.3344
+G1 X-25.0119 Y20.3491
+G1 X-25.2962 Y20.3638
+G1 X-25.5805 Y20.3786
+G1 X-25.8649 Y20.3933
+G1 X-26.1493 Y20.4080
+G1 X-26.4338 Y20.4227
+G1 X-26.7183 Y20.4374
+G1 X-27.0029 Y20.4522
+G1 X-27.2875 Y20.4669
+G1 X-27.5722 Y20.4816
+G1 X-27.8570 Y20.4963
+G1 X-28.1418 Y20.5111
+G1 X-28.4267 Y20.5258
+G1 X-28.7116 Y20.5405
+G1 X-28.9966 Y20.5552
+G1 X-29.2817 Y20.5699
+G1 X-29.5668 Y20.5847
+G1 X-29.8519 Y20.5994
+G1 X-30.1371 Y20.6141
+G1 X-30.4224 Y20.6288
+G1 X-30.7077 Y20.6436
+G1 X-30.9931 Y20.6583
+G1 X-31.2786 Y20.6730
+G1 X-31.5641 Y20.6877
+G1 X-31.8496 Y20.7024
+G1 X-32.1353 Y20.7172
+G1 X-32.4209 Y20.7319
+G1 X-32.7067 Y20.7466
+G1 X-32.9925 Y20.7613
+G1 X-33.2783 Y20.7761
+G1 X-33.5642 Y20.7908
+G1 X-33.8502 Y20.8055
+(Safe converted infill-to-infill connector to fill-infill path 213)
+G1 X-33.6852 Y21.4616
+(fill-infill path 213, 40 points)
+G1 X-33.4007 Y21.4470
+G1 X-33.1162 Y21.4324
+G1 X-32.8318 Y21.4178
+G1 X-32.5475 Y21.4033
+G1 X-32.2632 Y21.3887
+G1 X-31.9789 Y21.3741
+G1 X-31.6947 Y21.3595
+G1 X-31.4106 Y21.3450
+G1 X-31.1266 Y21.3304
+G1 X-30.8426 Y21.3158
+G1 X-30.5586 Y21.3012
+G1 X-30.2747 Y21.2866
+G1 X-29.9909 Y21.2721
+G1 X-29.7071 Y21.2575
+G1 X-29.4234 Y21.2429
+G1 X-29.1398 Y21.2283
+G1 X-28.8562 Y21.2137
+G1 X-28.5727 Y21.1992
+G1 X-28.2892 Y21.1846
+G1 X-28.0058 Y21.1700
+G1 X-27.7224 Y21.1554
+G1 X-27.4391 Y21.1408
+G1 X-27.1558 Y21.1263
+G1 X-26.8727 Y21.1117
+G1 X-26.5895 Y21.0971
+G1 X-26.3064 Y21.0825
+G1 X-26.0234 Y21.0679
+G1 X-25.7405 Y21.0534
+G1 X-25.4576 Y21.0388
+G1 X-25.1747 Y21.0242
+G1 X-24.8919 Y21.0096
+G1 X-24.6092 Y20.9950
+G1 X-24.3265 Y20.9805
+G1 X-24.0439 Y20.9659
+G1 X-23.7613 Y20.9513
+G1 X-23.4788 Y20.9367
+G1 X-23.1964 Y20.9222
+G1 X-22.9140 Y20.9076
+G1 X-22.6316 Y20.8930
+(Safe converted infill-to-infill connector to fill-infill path 214)
+G1 X-22.3718 Y21.5467
+(fill-infill path 214, 42 points)
+G1 X-22.6582 Y21.5615
+G1 X-22.9447 Y21.5762
+G1 X-23.2312 Y21.5909
+G1 X-23.5178 Y21.6056
+G1 X-23.8044 Y21.6204
+G1 X-24.0911 Y21.6351
+G1 X-24.3779 Y21.6498
+G1 X-24.6647 Y21.6645
+G1 X-24.9516 Y21.6792
+G1 X-25.2386 Y21.6940
+G1 X-25.5256 Y21.7087
+G1 X-25.8126 Y21.7234
+G1 X-26.0998 Y21.7381
+G1 X-26.3870 Y21.7529
+G1 X-26.6742 Y21.7676
+G1 X-26.9615 Y21.7823
+G1 X-27.2489 Y21.7970
+G1 X-27.5363 Y21.8117
+G1 X-27.8238 Y21.8265
+G1 X-28.1114 Y21.8412
+G1 X-28.3990 Y21.8559
+G1 X-28.6867 Y21.8706
+G1 X-28.9744 Y21.8854
+G1 X-29.2622 Y21.9001
+G1 X-29.5501 Y21.9148
+G1 X-29.8380 Y21.9295
+G1 X-30.1260 Y21.9442
+G1 X-30.4140 Y21.9590
+G1 X-30.7021 Y21.9737
+G1 X-30.9903 Y21.9884
+G1 X-31.2785 Y22.0031
+G1 X-31.5668 Y22.0178
+G1 X-31.8552 Y22.0326
+G1 X-32.1436 Y22.0473
+G1 X-32.4321 Y22.0620
+G1 X-32.7206 Y22.0767
+G1 X-33.0092 Y22.0915
+G1 X-33.2979 Y22.1062
+G1 X-33.5866 Y22.1209
+G1 X-33.8754 Y22.1356
+G1 X-34.1643 Y22.1503
+(Safe converted infill-to-infill connector to fill-infill path 215)
+G1 X-34.0084 Y22.8064
+(fill-infill path 215, 40 points)
+G1 X-33.7209 Y22.7919
+G1 X-33.4334 Y22.7773
+G1 X-33.1461 Y22.7627
+G1 X-32.8588 Y22.7481
+G1 X-32.5715 Y22.7335
+G1 X-32.2844 Y22.7190
+G1 X-31.9972 Y22.7044
+G1 X-31.7102 Y22.6898
+G1 X-31.4232 Y22.6752
+G1 X-31.1363 Y22.6606
+G1 X-30.8494 Y22.6461
+G1 X-30.5626 Y22.6315
+G1 X-30.2759 Y22.6169
+G1 X-29.9892 Y22.6023
+G1 X-29.7026 Y22.5877
+G1 X-29.4161 Y22.5732
+G1 X-29.1296 Y22.5586
+G1 X-28.8432 Y22.5440
+G1 X-28.5568 Y22.5294
+G1 X-28.2705 Y22.5148
+G1 X-27.9843 Y22.5003
+G1 X-27.6981 Y22.4857
+G1 X-27.4120 Y22.4711
+G1 X-27.1259 Y22.4565
+G1 X-26.8399 Y22.4419
+G1 X-26.5540 Y22.4274
+G1 X-26.2682 Y22.4128
+G1 X-25.9824 Y22.3982
+G1 X-25.6966 Y22.3836
+G1 X-25.4109 Y22.3691
+G1 X-25.1253 Y22.3545
+G1 X-24.8398 Y22.3399
+G1 X-24.5543 Y22.3253
+G1 X-24.2688 Y22.3107
+G1 X-23.9835 Y22.2962
+G1 X-23.6982 Y22.2816
+G1 X-23.4129 Y22.2670
+G1 X-23.1277 Y22.2524
+G1 X-22.8426 Y22.2378
+(Safe converted infill-to-infill connector to fill-infill path 216)
+G1 X-22.5873 Y22.8916
+(fill-infill path 216, 42 points)
+G1 X-22.8767 Y22.9063
+G1 X-23.1660 Y22.9210
+G1 X-23.4555 Y22.9358
+G1 X-23.7450 Y22.9505
+G1 X-24.0346 Y22.9652
+G1 X-24.3243 Y22.9799
+G1 X-24.6140 Y22.9946
+G1 X-24.9038 Y23.0094
+G1 X-25.1936 Y23.0241
+G1 X-25.4835 Y23.0388
+G1 X-25.7735 Y23.0535
+G1 X-26.0635 Y23.0683
+G1 X-26.3536 Y23.0830
+G1 X-26.6438 Y23.0977
+G1 X-26.9341 Y23.1124
+G1 X-27.2244 Y23.1271
+G1 X-27.5147 Y23.1419
+G1 X-27.8052 Y23.1566
+G1 X-28.0957 Y23.1713
+G1 X-28.3862 Y23.1860
+G1 X-28.6769 Y23.2008
+G1 X-28.9675 Y23.2155
+G1 X-29.2583 Y23.2302
+G1 X-29.5491 Y23.2449
+G1 X-29.8400 Y23.2596
+G1 X-30.1310 Y23.2744
+G1 X-30.4220 Y23.2891
+G1 X-30.7131 Y23.3038
+G1 X-31.0043 Y23.3185
+G1 X-31.2955 Y23.3333
+G1 X-31.5868 Y23.3480
+G1 X-31.8782 Y23.3627
+G1 X-32.1696 Y23.3774
+G1 X-32.4611 Y23.3921
+G1 X-32.7526 Y23.4069
+G1 X-33.0443 Y23.4216
+G1 X-33.3360 Y23.4363
+G1 X-33.6277 Y23.4510
+G1 X-33.9196 Y23.4658
+G1 X-34.2115 Y23.4805
+G1 X-34.5034 Y23.4952
+(Safe converted infill-to-infill connector to fill-infill path 217)
+G1 X-34.3569 Y24.1513
+(fill-infill path 217, 40 points)
+G1 X-34.0662 Y24.1367
+G1 X-33.7756 Y24.1221
+G1 X-33.4851 Y24.1075
+G1 X-33.1946 Y24.0930
+G1 X-32.9042 Y24.0784
+G1 X-32.6138 Y24.0638
+G1 X-32.3236 Y24.0492
+G1 X-32.0334 Y24.0346
+G1 X-31.7432 Y24.0201
+G1 X-31.4532 Y24.0055
+G1 X-31.1632 Y23.9909
+G1 X-30.8732 Y23.9763
+G1 X-30.5834 Y23.9617
+G1 X-30.2936 Y23.9472
+G1 X-30.0038 Y23.9326
+G1 X-29.7142 Y23.9180
+G1 X-29.4246 Y23.9034
+G1 X-29.1350 Y23.8889
+G1 X-28.8456 Y23.8743
+G1 X-28.5562 Y23.8597
+G1 X-28.2669 Y23.8451
+G1 X-27.9776 Y23.8305
+G1 X-27.6884 Y23.8160
+G1 X-27.3993 Y23.8014
+G1 X-27.1102 Y23.7868
+G1 X-26.8212 Y23.7722
+G1 X-26.5323 Y23.7576
+G1 X-26.2434 Y23.7431
+G1 X-25.9546 Y23.7285
+G1 X-25.6659 Y23.7139
+G1 X-25.3772 Y23.6993
+G1 X-25.0887 Y23.6847
+G1 X-24.8001 Y23.6702
+G1 X-24.5117 Y23.6556
+G1 X-24.2233 Y23.6410
+G1 X-23.9349 Y23.6264
+G1 X-23.6467 Y23.6118
+G1 X-23.3585 Y23.5973
+G1 X-23.0703 Y23.5827
+(Safe converted infill-to-infill connector to fill-infill path 218)
+G1 X-22.8198 Y24.2364
+(fill-infill path 218, 42 points)
+G1 X-23.1122 Y24.2512
+G1 X-23.4048 Y24.2659
+G1 X-23.6974 Y24.2806
+G1 X-23.9901 Y24.2953
+G1 X-24.2828 Y24.3100
+G1 X-24.5756 Y24.3248
+G1 X-24.8685 Y24.3395
+G1 X-25.1615 Y24.3542
+G1 X-25.4545 Y24.3689
+G1 X-25.7476 Y24.3837
+G1 X-26.0408 Y24.3984
+G1 X-26.3340 Y24.4131
+G1 X-26.6273 Y24.4278
+G1 X-26.9207 Y24.4425
+G1 X-27.2141 Y24.4573
+G1 X-27.5077 Y24.4720
+G1 X-27.8013 Y24.4867
+G1 X-28.0949 Y24.5014
+G1 X-28.3886 Y24.5162
+G1 X-28.6824 Y24.5309
+G1 X-28.9763 Y24.5456
+G1 X-29.2703 Y24.5603
+G1 X-29.5643 Y24.5750
+G1 X-29.8584 Y24.5898
+G1 X-30.1525 Y24.6045
+G1 X-30.4468 Y24.6192
+G1 X-30.7410 Y24.6339
+G1 X-31.0354 Y24.6487
+G1 X-31.3299 Y24.6634
+G1 X-31.6244 Y24.6781
+G1 X-31.9190 Y24.6928
+G1 X-32.2136 Y24.7075
+G1 X-32.5083 Y24.7223
+G1 X-32.8031 Y24.7370
+G1 X-33.0980 Y24.7517
+G1 X-33.3930 Y24.7664
+G1 X-33.6880 Y24.7812
+G1 X-33.9831 Y24.7959
+G1 X-34.2782 Y24.8106
+G1 X-34.5735 Y24.8253
+G1 X-34.8688 Y24.8400
+(Safe converted infill-to-infill connector to fill-infill path 219)
+G1 X-34.7320 Y25.4961
+(fill-infill path 219, 40 points)
+G1 X-34.4379 Y25.4815
+G1 X-34.1438 Y25.4670
+G1 X-33.8499 Y25.4524
+G1 X-33.5560 Y25.4378
+G1 X-33.2622 Y25.4232
+G1 X-32.9684 Y25.4087
+G1 X-32.6748 Y25.3941
+G1 X-32.3812 Y25.3795
+G1 X-32.0877 Y25.3649
+G1 X-31.7942 Y25.3503
+G1 X-31.5009 Y25.3358
+G1 X-31.2076 Y25.3212
+G1 X-30.9143 Y25.3066
+G1 X-30.6212 Y25.2920
+G1 X-30.3281 Y25.2774
+G1 X-30.0351 Y25.2629
+G1 X-29.7421 Y25.2483
+G1 X-29.4493 Y25.2337
+G1 X-29.1565 Y25.2191
+G1 X-28.8638 Y25.2045
+G1 X-28.5711 Y25.1900
+G1 X-28.2785 Y25.1754
+G1 X-27.9860 Y25.1608
+G1 X-27.6936 Y25.1462
+G1 X-27.4012 Y25.1316
+G1 X-27.1089 Y25.1171
+G1 X-26.8167 Y25.1025
+G1 X-26.5246 Y25.0879
+G1 X-26.2325 Y25.0733
+G1 X-25.9405 Y25.0587
+G1 X-25.6485 Y25.0442
+G1 X-25.3567 Y25.0296
+G1 X-25.0649 Y25.0150
+G1 X-24.7732 Y25.0004
+G1 X-24.4815 Y24.9859
+G1 X-24.1899 Y24.9713
+G1 X-23.8984 Y24.9567
+G1 X-23.6070 Y24.9421
+G1 X-23.3156 Y24.9275
+(Safe converted infill-to-infill connector to fill-infill path 220)
+G1 X-23.0699 Y25.5813
+(fill-infill path 220, 42 points)
+G1 X-23.3657 Y25.5960
+G1 X-23.6616 Y25.6107
+G1 X-23.9576 Y25.6254
+G1 X-24.2537 Y25.6402
+G1 X-24.5498 Y25.6549
+G1 X-24.8461 Y25.6696
+G1 X-25.1424 Y25.6843
+G1 X-25.4387 Y25.6991
+G1 X-25.7352 Y25.7138
+G1 X-26.0317 Y25.7285
+G1 X-26.3283 Y25.7432
+G1 X-26.6250 Y25.7579
+G1 X-26.9217 Y25.7727
+G1 X-27.2185 Y25.7874
+G1 X-27.5154 Y25.8021
+G1 X-27.8124 Y25.8168
+G1 X-28.1095 Y25.8316
+G1 X-28.4066 Y25.8463
+G1 X-28.7038 Y25.8610
+G1 X-29.0011 Y25.8757
+G1 X-29.2984 Y25.8904
+G1 X-29.5959 Y25.9052
+G1 X-29.8934 Y25.9199
+G1 X-30.1909 Y25.9346
+G1 X-30.4886 Y25.9493
+G1 X-30.7863 Y25.9641
+G1 X-31.0841 Y25.9788
+G1 X-31.3820 Y25.9935
+G1 X-31.6800 Y26.0082
+G1 X-31.9780 Y26.0229
+G1 X-32.2762 Y26.0377
+G1 X-32.5744 Y26.0524
+G1 X-32.8726 Y26.0671
+G1 X-33.1710 Y26.0818
+G1 X-33.4694 Y26.0966
+G1 X-33.7679 Y26.1113
+G1 X-34.0665 Y26.1260
+G1 X-34.3651 Y26.1407
+G1 X-34.6639 Y26.1554
+G1 X-34.9627 Y26.1702
+G1 X-35.2616 Y26.1849
+(Safe converted infill-to-infill connector to fill-infill path 221)
+G1 X-35.1349 Y26.8410
+(fill-infill path 221, 40 points)
+G1 X-34.8371 Y26.8264
+G1 X-34.5394 Y26.8118
+G1 X-34.2418 Y26.7972
+G1 X-33.9443 Y26.7827
+G1 X-33.6468 Y26.7681
+G1 X-33.3494 Y26.7535
+G1 X-33.0521 Y26.7389
+G1 X-32.7549 Y26.7243
+G1 X-32.4578 Y26.7098
+G1 X-32.1607 Y26.6952
+G1 X-31.8637 Y26.6806
+G1 X-31.5668 Y26.6660
+G1 X-31.2700 Y26.6514
+G1 X-30.9732 Y26.6369
+G1 X-30.6765 Y26.6223
+G1 X-30.3799 Y26.6077
+G1 X-30.0834 Y26.5931
+G1 X-29.7869 Y26.5785
+G1 X-29.4906 Y26.5640
+G1 X-29.1943 Y26.5494
+G1 X-28.8981 Y26.5348
+G1 X-28.6019 Y26.5202
+G1 X-28.3059 Y26.5056
+G1 X-28.0099 Y26.4911
+G1 X-27.7140 Y26.4765
+G1 X-27.4182 Y26.4619
+G1 X-27.1224 Y26.4473
+G1 X-26.8267 Y26.4328
+G1 X-26.5311 Y26.4182
+G1 X-26.2356 Y26.4036
+G1 X-25.9402 Y26.3890
+G1 X-25.6448 Y26.3744
+G1 X-25.3495 Y26.3599
+G1 X-25.0543 Y26.3453
+G1 X-24.7591 Y26.3307
+G1 X-24.4641 Y26.3161
+G1 X-24.1691 Y26.3015
+G1 X-23.8742 Y26.2870
+G1 X-23.5793 Y26.2724
+(Safe converted infill-to-infill connector to fill-infill path 222)
+G1 X-23.3385 Y26.9261
+(fill-infill path 222, 42 points)
+G1 X-23.6380 Y26.9409
+G1 X-23.9375 Y26.9556
+G1 X-24.2372 Y26.9703
+G1 X-24.5369 Y26.9850
+G1 X-24.8367 Y26.9997
+G1 X-25.1365 Y27.0145
+G1 X-25.4365 Y27.0292
+G1 X-25.7365 Y27.0439
+G1 X-26.0366 Y27.0586
+G1 X-26.3368 Y27.0734
+G1 X-26.6371 Y27.0881
+G1 X-26.9374 Y27.1028
+G1 X-27.2379 Y27.1175
+G1 X-27.5384 Y27.1322
+G1 X-27.8390 Y27.1470
+G1 X-28.1397 Y27.1617
+G1 X-28.4404 Y27.1764
+G1 X-28.7413 Y27.1911
+G1 X-29.0422 Y27.2059
+G1 X-29.3432 Y27.2206
+G1 X-29.6443 Y27.2353
+G1 X-29.9454 Y27.2500
+G1 X-30.2467 Y27.2647
+G1 X-30.5480 Y27.2795
+G1 X-30.8494 Y27.2942
+G1 X-31.1509 Y27.3089
+G1 X-31.4525 Y27.3236
+G1 X-31.7542 Y27.3383
+G1 X-32.0559 Y27.3531
+G1 X-32.3577 Y27.3678
+G1 X-32.6596 Y27.3825
+G1 X-32.9616 Y27.3972
+G1 X-33.2637 Y27.4120
+G1 X-33.5658 Y27.4267
+G1 X-33.8681 Y27.4414
+G1 X-34.1704 Y27.4561
+G1 X-34.4728 Y27.4708
+G1 X-34.7753 Y27.4856
+G1 X-35.0778 Y27.5003
+G1 X-35.3805 Y27.5150
+G1 X-35.6832 Y27.5297
+(Safe converted infill-to-infill connector to fill-infill path 223)
+G1 X-35.5671 Y28.1858
+(fill-infill path 223, 40 points)
+G1 X-35.2654 Y28.1712
+G1 X-34.9638 Y28.1567
+G1 X-34.6623 Y28.1421
+G1 X-34.3608 Y28.1275
+G1 X-34.0594 Y28.1129
+G1 X-33.7581 Y28.0983
+G1 X-33.4569 Y28.0838
+G1 X-33.1558 Y28.0692
+G1 X-32.8548 Y28.0546
+G1 X-32.5538 Y28.0400
+G1 X-32.2530 Y28.0254
+G1 X-31.9522 Y28.0109
+G1 X-31.6515 Y27.9963
+G1 X-31.3509 Y27.9817
+G1 X-31.0504 Y27.9671
+G1 X-30.7499 Y27.9526
+G1 X-30.4495 Y27.9380
+G1 X-30.1493 Y27.9234
+G1 X-29.8491 Y27.9088
+G1 X-29.5489 Y27.8942
+G1 X-29.2489 Y27.8797
+G1 X-28.9490 Y27.8651
+G1 X-28.6491 Y27.8505
+G1 X-28.3493 Y27.8359
+G1 X-28.0496 Y27.8213
+G1 X-27.7500 Y27.8068
+G1 X-27.4504 Y27.7922
+G1 X-27.1510 Y27.7776
+G1 X-26.8516 Y27.7630
+G1 X-26.5523 Y27.7484
+G1 X-26.2531 Y27.7339
+G1 X-25.9540 Y27.7193
+G1 X-25.6549 Y27.7047
+G1 X-25.3560 Y27.6901
+G1 X-25.0571 Y27.6755
+G1 X-24.7583 Y27.6610
+G1 X-24.4596 Y27.6464
+G1 X-24.1609 Y27.6318
+G1 X-23.8624 Y27.6172
+(Safe converted infill-to-infill connector to fill-infill path 224)
+G1 X-23.6267 Y28.2710
+(fill-infill path 224, 42 points)
+G1 X-23.9300 Y28.2857
+G1 X-24.2334 Y28.3004
+G1 X-24.5370 Y28.3151
+G1 X-24.8406 Y28.3299
+G1 X-25.1443 Y28.3446
+G1 X-25.4481 Y28.3593
+G1 X-25.7519 Y28.3740
+G1 X-26.0559 Y28.3888
+G1 X-26.3599 Y28.4035
+G1 X-26.6640 Y28.4182
+G1 X-26.9682 Y28.4329
+G1 X-27.2725 Y28.4476
+G1 X-27.5769 Y28.4624
+G1 X-27.8814 Y28.4771
+G1 X-28.1860 Y28.4918
+G1 X-28.4906 Y28.5065
+G1 X-28.7953 Y28.5213
+G1 X-29.1002 Y28.5360
+G1 X-29.4051 Y28.5507
+G1 X-29.7101 Y28.5654
+G1 X-30.0151 Y28.5801
+G1 X-30.3203 Y28.5949
+G1 X-30.6256 Y28.6096
+G1 X-30.9309 Y28.6243
+G1 X-31.2363 Y28.6390
+G1 X-31.5419 Y28.6538
+G1 X-31.8475 Y28.6685
+G1 X-32.1532 Y28.6832
+G1 X-32.4589 Y28.6979
+G1 X-32.7648 Y28.7126
+G1 X-33.0708 Y28.7274
+G1 X-33.3768 Y28.7421
+G1 X-33.6829 Y28.7568
+G1 X-33.9892 Y28.7715
+G1 X-34.2955 Y28.7863
+G1 X-34.6019 Y28.8010
+G1 X-34.9084 Y28.8157
+G1 X-35.2150 Y28.8304
+G1 X-35.5216 Y28.8451
+G1 X-35.8284 Y28.8599
+G1 X-36.1352 Y28.8746
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_190)
+(Travel to fill-infill path 225)
+G1 X-36.4221 Y29.5493 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_225 kind=fill-infill space=machine_deg source=component_002 points=42 max_surface_segment_mm=0.0989)
+(fill-infill path 225, 42 points)
+G1 X-36.1119 Y29.5346 F1200.000
+G1 X-35.8018 Y29.5198
+G1 X-35.4918 Y29.5050
+G1 X-35.1818 Y29.4902
+G1 X-34.8720 Y29.4754
+G1 X-34.5622 Y29.4607
+G1 X-34.2525 Y29.4459
+G1 X-33.9430 Y29.4311
+G1 X-33.6335 Y29.4163
+G1 X-33.3241 Y29.4016
+G1 X-33.0148 Y29.3868
+G1 X-32.7056 Y29.3720
+G1 X-32.3965 Y29.3572
+G1 X-32.0875 Y29.3424
+G1 X-31.7786 Y29.3277
+G1 X-31.4697 Y29.3129
+G1 X-31.1610 Y29.2981
+G1 X-30.8523 Y29.2833
+G1 X-30.5438 Y29.2685
+G1 X-30.2353 Y29.2538
+G1 X-29.9269 Y29.2390
+G1 X-29.6186 Y29.2242
+G1 X-29.3104 Y29.2094
+G1 X-29.0023 Y29.1946
+G1 X-28.6943 Y29.1799
+G1 X-28.3864 Y29.1651
+G1 X-28.0786 Y29.1503
+G1 X-27.7708 Y29.1355
+G1 X-27.4632 Y29.1207
+G1 X-27.1556 Y29.1060
+G1 X-26.8481 Y29.0912
+G1 X-26.5408 Y29.0764
+G1 X-26.2335 Y29.0616
+G1 X-25.9263 Y29.0469
+G1 X-25.6192 Y29.0321
+G1 X-25.3121 Y29.0173
+G1 X-25.0052 Y29.0025
+G1 X-24.6984 Y28.9877
+G1 X-24.3916 Y28.9730
+G1 X-24.0849 Y28.9582
+G1 X-23.7784 Y28.9434
+(Safe converted infill-to-infill connector to fill-infill path 226)
+G1 X-23.9354 Y29.6158
+(fill-infill path 226, 3 points)
+G1 X-24.1641 Y29.6268
+G1 X-24.3930 Y29.6377
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_225)
+G1 X-26.5521 Y29.6880 F3000.000
+G1 X-26.6576 Y29.5773
+(Travel to fill-infill path 228)
+G1 X0.9483 Y24.3739
+M3 S700
+G4 P0.060
+(PATH_START id=fill-infill_227 kind=fill-infill space=machine_deg source=component_002 points=83 max_surface_segment_mm=0.0999)
+(fill-infill path 228, 83 points)
+G1 X1.2424 Y24.3590 F1200.000
+G1 X1.5364 Y24.3440
+G1 X1.8304 Y24.3291
+G1 X2.1242 Y24.3142
+G1 X2.4180 Y24.2992
+G1 X2.7117 Y24.2843
+G1 X3.0054 Y24.2694
+G1 X3.2990 Y24.2544
+G1 X3.5925 Y24.2395
+G1 X3.8859 Y24.2246
+G1 X4.1793 Y24.2097
+G1 X4.4726 Y24.1947
+G1 X4.7659 Y24.1798
+G1 X5.0591 Y24.1649
+G1 X5.3522 Y24.1499
+G1 X5.6452 Y24.1350
+G1 X5.9382 Y24.1201
+G1 X6.2311 Y24.1051
+G1 X6.5239 Y24.0902
+G1 X6.8167 Y24.0753
+G1 X7.1094 Y24.0603
+G1 X7.4020 Y24.0454
+G1 X7.6946 Y24.0305
+G1 X7.9871 Y24.0156
+G1 X8.2795 Y24.0006
+G1 X8.5719 Y23.9857
+G1 X8.8642 Y23.9708
+G1 X9.1564 Y23.9558
+G1 X9.4486 Y23.9409
+G1 X9.7407 Y23.9260
+G1 X10.0327 Y23.9110
+G1 X10.3247 Y23.8961
+G1 X10.6165 Y23.8812
+G1 X10.9084 Y23.8663
+G1 X11.2001 Y23.8513
+G1 X11.4918 Y23.8364
+G1 X11.7835 Y23.8215
+G1 X12.0750 Y23.8065
+G1 X12.3665 Y23.7916
+G1 X12.6580 Y23.7767
+G1 X12.9493 Y23.7617
+G1 X13.2406 Y23.7468
+G1 X13.5318 Y23.7319
+G1 X13.8230 Y23.7169
+G1 X14.1141 Y23.7020
+G1 X14.4051 Y23.6871
+G1 X14.6961 Y23.6722
+G1 X14.9870 Y23.6572
+G1 X15.2779 Y23.6423
+G1 X15.5686 Y23.6274
+G1 X15.8593 Y23.6124
+G1 X16.1500 Y23.5975
+G1 X16.4406 Y23.5826
+G1 X16.7311 Y23.5676
+G1 X17.0215 Y23.5527
+G1 X17.3119 Y23.5378
+G1 X17.6022 Y23.5229
+G1 X17.8925 Y23.5079
+G1 X18.1827 Y23.4930
+G1 X18.4728 Y23.4781
+G1 X18.7629 Y23.4631
+G1 X19.0529 Y23.4482
+G1 X19.3428 Y23.4333
+G1 X19.6327 Y23.4183
+G1 X19.9225 Y23.4034
+G1 X20.2122 Y23.3885
+G1 X20.5019 Y23.3735
+G1 X20.7915 Y23.3586
+G1 X21.0810 Y23.3437
+G1 X21.3705 Y23.3288
+G1 X21.6599 Y23.3138
+G1 X21.9493 Y23.2989
+G1 X22.2386 Y23.2840
+G1 X22.5278 Y23.2690
+G1 X22.8170 Y23.2541
+G1 X23.1061 Y23.2392
+G1 X23.3951 Y23.2242
+G1 X23.6841 Y23.2093
+G1 X23.9730 Y23.1944
+G1 X24.2619 Y23.1795
+G1 X24.5507 Y23.1645
+G1 X24.8394 Y23.1496
+(Safe converted infill-to-infill connector to fill-infill path 229)
+G1 X24.5354 Y22.4866
+(fill-infill path 229, 82 points)
+G1 X24.2489 Y22.5015
+G1 X23.9624 Y22.5164
+G1 X23.6759 Y22.5312
+G1 X23.3893 Y22.5461
+G1 X23.1026 Y22.5610
+G1 X22.8159 Y22.5759
+G1 X22.5291 Y22.5908
+G1 X22.2422 Y22.6056
+G1 X21.9553 Y22.6205
+G1 X21.6683 Y22.6354
+G1 X21.3813 Y22.6503
+G1 X21.0942 Y22.6651
+G1 X20.8071 Y22.6800
+G1 X20.5198 Y22.6949
+G1 X20.2326 Y22.7098
+G1 X19.9452 Y22.7247
+G1 X19.6578 Y22.7395
+G1 X19.3704 Y22.7544
+G1 X19.0828 Y22.7693
+G1 X18.7953 Y22.7842
+G1 X18.5076 Y22.7991
+G1 X18.2199 Y22.8139
+G1 X17.9321 Y22.8288
+G1 X17.6443 Y22.8437
+G1 X17.3564 Y22.8586
+G1 X17.0685 Y22.8734
+G1 X16.7804 Y22.8883
+G1 X16.4924 Y22.9032
+G1 X16.2042 Y22.9181
+G1 X15.9160 Y22.9330
+G1 X15.6278 Y22.9478
+G1 X15.3394 Y22.9627
+G1 X15.0510 Y22.9776
+G1 X14.7626 Y22.9925
+G1 X14.4741 Y23.0074
+G1 X14.1855 Y23.0222
+G1 X13.8969 Y23.0371
+G1 X13.6082 Y23.0520
+G1 X13.3194 Y23.0669
+G1 X13.0306 Y23.0817
+G1 X12.7417 Y23.0966
+G1 X12.4527 Y23.1115
+G1 X12.1637 Y23.1264
+G1 X11.8746 Y23.1413
+G1 X11.5855 Y23.1561
+G1 X11.2963 Y23.1710
+G1 X11.0070 Y23.1859
+G1 X10.7177 Y23.2008
+G1 X10.4283 Y23.2157
+G1 X10.1388 Y23.2305
+G1 X9.8493 Y23.2454
+G1 X9.5597 Y23.2603
+G1 X9.2700 Y23.2752
+G1 X8.9803 Y23.2900
+G1 X8.6905 Y23.3049
+G1 X8.4007 Y23.3198
+G1 X8.1108 Y23.3347
+G1 X7.8208 Y23.3496
+G1 X7.5307 Y23.3644
+G1 X7.2406 Y23.3793
+G1 X6.9505 Y23.3942
+G1 X6.6602 Y23.4091
+G1 X6.3699 Y23.4240
+G1 X6.0796 Y23.4388
+G1 X5.7891 Y23.4537
+G1 X5.4987 Y23.4686
+G1 X5.2081 Y23.4835
+G1 X4.9175 Y23.4983
+G1 X4.6268 Y23.5132
+G1 X4.3360 Y23.5281
+G1 X4.0452 Y23.5430
+G1 X3.7543 Y23.5579
+G1 X3.4634 Y23.5727
+G1 X3.1724 Y23.5876
+G1 X2.8813 Y23.6025
+G1 X2.5901 Y23.6174
+G1 X2.2989 Y23.6323
+G1 X2.0076 Y23.6471
+G1 X1.7163 Y23.6620
+G1 X1.4249 Y23.6769
+G1 X1.1334 Y23.6918
+(Safe converted infill-to-infill connector to fill-infill path 230)
+G1 X1.5265 Y25.0174
+(fill-infill path 230, 80 points)
+G1 X1.8189 Y25.0026
+G1 X2.1112 Y24.9878
+G1 X2.4035 Y24.9731
+G1 X2.6957 Y24.9583
+G1 X2.9878 Y24.9435
+G1 X3.2798 Y24.9287
+G1 X3.5718 Y24.9140
+G1 X3.8637 Y24.8992
+G1 X4.1555 Y24.8844
+G1 X4.4473 Y24.8696
+G1 X4.7390 Y24.8549
+G1 X5.0306 Y24.8401
+G1 X5.3221 Y24.8253
+G1 X5.6136 Y24.8106
+G1 X5.9050 Y24.7958
+G1 X6.1964 Y24.7810
+G1 X6.4877 Y24.7662
+G1 X6.7789 Y24.7515
+G1 X7.0700 Y24.7367
+G1 X7.3611 Y24.7219
+G1 X7.6521 Y24.7072
+G1 X7.9430 Y24.6924
+G1 X8.2339 Y24.6776
+G1 X8.5247 Y24.6628
+G1 X8.8154 Y24.6481
+G1 X9.1060 Y24.6333
+G1 X9.3966 Y24.6185
+G1 X9.6872 Y24.6037
+G1 X9.9776 Y24.5890
+G1 X10.2680 Y24.5742
+G1 X10.5583 Y24.5594
+G1 X10.8486 Y24.5447
+G1 X11.1388 Y24.5299
+G1 X11.4289 Y24.5151
+G1 X11.7189 Y24.5003
+G1 X12.0089 Y24.4856
+G1 X12.2988 Y24.4708
+G1 X12.5887 Y24.4560
+G1 X12.8784 Y24.4413
+G1 X13.1682 Y24.4265
+G1 X13.4578 Y24.4117
+G1 X13.7474 Y24.3969
+G1 X14.0369 Y24.3822
+G1 X14.3263 Y24.3674
+G1 X14.6157 Y24.3526
+G1 X14.9050 Y24.3378
+G1 X15.1943 Y24.3231
+G1 X15.4835 Y24.3083
+G1 X15.7726 Y24.2935
+G1 X16.0616 Y24.2788
+G1 X16.3506 Y24.2640
+G1 X16.6395 Y24.2492
+G1 X16.9284 Y24.2344
+G1 X17.2171 Y24.2197
+G1 X17.5059 Y24.2049
+G1 X17.7945 Y24.1901
+G1 X18.0831 Y24.1754
+G1 X18.3716 Y24.1606
+G1 X18.6601 Y24.1458
+G1 X18.9485 Y24.1310
+G1 X19.2368 Y24.1163
+G1 X19.5250 Y24.1015
+G1 X19.8132 Y24.0867
+G1 X20.1014 Y24.0719
+G1 X20.3894 Y24.0572
+G1 X20.6774 Y24.0424
+G1 X20.9654 Y24.0276
+G1 X21.2532 Y24.0129
+G1 X21.5410 Y23.9981
+G1 X21.8288 Y23.9833
+G1 X22.1164 Y23.9685
+G1 X22.4040 Y23.9538
+G1 X22.6916 Y23.9390
+G1 X22.9791 Y23.9242
+G1 X23.2665 Y23.9095
+G1 X23.5538 Y23.8947
+G1 X23.8411 Y23.8799
+G1 X24.1284 Y23.8651
+G1 X24.4155 Y23.8504
+(Safe converted infill-to-infill connector to fill-infill path 231)
+G1 X24.7163 Y24.5140
+(fill-infill path 231, 81 points)
+G1 X24.4269 Y24.5288
+G1 X24.1374 Y24.5436
+G1 X23.8479 Y24.5584
+G1 X23.5583 Y24.5733
+G1 X23.2686 Y24.5881
+G1 X22.9789 Y24.6029
+G1 X22.6891 Y24.6177
+G1 X22.3992 Y24.6325
+G1 X22.1093 Y24.6473
+G1 X21.8193 Y24.6621
+G1 X21.5292 Y24.6770
+G1 X21.2391 Y24.6918
+G1 X20.9489 Y24.7066
+G1 X20.6586 Y24.7214
+G1 X20.3683 Y24.7362
+G1 X20.0779 Y24.7510
+G1 X19.7874 Y24.7659
+G1 X19.4968 Y24.7807
+G1 X19.2062 Y24.7955
+G1 X18.9156 Y24.8103
+G1 X18.6248 Y24.8251
+G1 X18.3340 Y24.8399
+G1 X18.0431 Y24.8548
+G1 X17.7522 Y24.8696
+G1 X17.4611 Y24.8844
+G1 X17.1701 Y24.8992
+G1 X16.8789 Y24.9140
+G1 X16.5877 Y24.9288
+G1 X16.2964 Y24.9436
+G1 X16.0050 Y24.9585
+G1 X15.7136 Y24.9733
+G1 X15.4221 Y24.9881
+G1 X15.1305 Y25.0029
+G1 X14.8389 Y25.0177
+G1 X14.5472 Y25.0325
+G1 X14.2554 Y25.0474
+G1 X13.9635 Y25.0622
+G1 X13.6716 Y25.0770
+G1 X13.3796 Y25.0918
+G1 X13.0876 Y25.1066
+G1 X12.7954 Y25.1214
+G1 X12.5032 Y25.1362
+G1 X12.2110 Y25.1511
+G1 X11.9186 Y25.1659
+G1 X11.6262 Y25.1807
+G1 X11.3337 Y25.1955
+G1 X11.0412 Y25.2103
+G1 X10.7486 Y25.2251
+G1 X10.4559 Y25.2400
+G1 X10.1631 Y25.2548
+G1 X9.8703 Y25.2696
+G1 X9.5774 Y25.2844
+G1 X9.2844 Y25.2992
+G1 X8.9914 Y25.3140
+G1 X8.6982 Y25.3288
+G1 X8.4051 Y25.3437
+G1 X8.1118 Y25.3585
+G1 X7.8185 Y25.3733
+G1 X7.5251 Y25.3881
+G1 X7.2316 Y25.4029
+G1 X6.9381 Y25.4177
+G1 X6.6444 Y25.4326
+G1 X6.3507 Y25.4474
+G1 X6.0570 Y25.4622
+G1 X5.7632 Y25.4770
+G1 X5.4693 Y25.4918
+G1 X5.1753 Y25.5066
+G1 X4.8812 Y25.5215
+G1 X4.5871 Y25.5363
+G1 X4.2929 Y25.5511
+G1 X3.9987 Y25.5659
+G1 X3.7043 Y25.5807
+G1 X3.4099 Y25.5955
+G1 X3.1154 Y25.6103
+G1 X2.8209 Y25.6252
+G1 X2.5262 Y25.6400
+G1 X2.2315 Y25.6548
+G1 X1.9368 Y25.6696
+G1 X1.6419 Y25.6844
+G1 X1.3470 Y25.6992
+(Safe converted infill-to-infill connector to fill-infill path 232)
+G1 X1.9132 Y26.3438
+(fill-infill path 232, 77 points)
+G1 X2.2104 Y26.3289
+G1 X2.5076 Y26.3141
+G1 X2.8046 Y26.2992
+G1 X3.1016 Y26.2844
+G1 X3.3985 Y26.2695
+G1 X3.6953 Y26.2546
+G1 X3.9921 Y26.2398
+G1 X4.2887 Y26.2249
+G1 X4.5854 Y26.2101
+G1 X4.8819 Y26.1952
+G1 X5.1783 Y26.1804
+G1 X5.4747 Y26.1655
+G1 X5.7710 Y26.1507
+G1 X6.0672 Y26.1358
+G1 X6.3634 Y26.1210
+G1 X6.6595 Y26.1061
+G1 X6.9555 Y26.0913
+G1 X7.2514 Y26.0764
+G1 X7.5472 Y26.0616
+G1 X7.8430 Y26.0467
+G1 X8.1387 Y26.0319
+G1 X8.4343 Y26.0170
+G1 X8.7299 Y26.0022
+G1 X9.0254 Y25.9873
+G1 X9.3208 Y25.9724
+G1 X9.6161 Y25.9576
+G1 X9.9114 Y25.9427
+G1 X10.2065 Y25.9279
+G1 X10.5017 Y25.9130
+G1 X10.7967 Y25.8982
+G1 X11.0917 Y25.8833
+G1 X11.3865 Y25.8685
+G1 X11.6814 Y25.8536
+G1 X11.9761 Y25.8388
+G1 X12.2708 Y25.8239
+G1 X12.5654 Y25.8091
+G1 X12.8599 Y25.7942
+G1 X13.1543 Y25.7794
+G1 X13.4487 Y25.7645
+G1 X13.7430 Y25.7497
+G1 X14.0373 Y25.7348
+G1 X14.3314 Y25.7200
+G1 X14.6255 Y25.7051
+G1 X14.9195 Y25.6903
+G1 X15.2135 Y25.6754
+G1 X15.5073 Y25.6605
+G1 X15.8011 Y25.6457
+G1 X16.0949 Y25.6308
+G1 X16.3885 Y25.6160
+G1 X16.6821 Y25.6011
+G1 X16.9756 Y25.5863
+G1 X17.2690 Y25.5714
+G1 X17.5624 Y25.5566
+G1 X17.8557 Y25.5417
+G1 X18.1489 Y25.5269
+G1 X18.4421 Y25.5120
+G1 X18.7352 Y25.4972
+G1 X19.0282 Y25.4823
+G1 X19.3211 Y25.4675
+G1 X19.6140 Y25.4526
+G1 X19.9068 Y25.4378
+G1 X20.1995 Y25.4229
+G1 X20.4922 Y25.4081
+G1 X20.7847 Y25.3932
+G1 X21.0773 Y25.3783
+G1 X21.3697 Y25.3635
+G1 X21.6621 Y25.3486
+G1 X21.9544 Y25.3338
+G1 X22.2466 Y25.3189
+G1 X22.5388 Y25.3041
+G1 X22.8309 Y25.2892
+G1 X23.1229 Y25.2744
+G1 X23.4148 Y25.2595
+G1 X23.7067 Y25.2447
+G1 X23.9985 Y25.2298
+G1 X24.2903 Y25.2150
+(Safe converted infill-to-infill connector to fill-infill path 233)
+G1 X24.5884 Y25.8792
+(fill-infill path 233, 78 points)
+G1 X24.2951 Y25.8941
+G1 X24.0016 Y25.9089
+G1 X23.7081 Y25.9238
+G1 X23.4145 Y25.9386
+G1 X23.1209 Y25.9535
+G1 X22.8272 Y25.9684
+G1 X22.5334 Y25.9832
+G1 X22.2395 Y25.9981
+G1 X21.9455 Y26.0129
+G1 X21.6515 Y26.0278
+G1 X21.3574 Y26.0427
+G1 X21.0632 Y26.0575
+G1 X20.7690 Y26.0724
+G1 X20.4747 Y26.0872
+G1 X20.1803 Y26.1021
+G1 X19.8858 Y26.1169
+G1 X19.5913 Y26.1318
+G1 X19.2967 Y26.1467
+G1 X19.0020 Y26.1615
+G1 X18.7073 Y26.1764
+G1 X18.4124 Y26.1912
+G1 X18.1175 Y26.2061
+G1 X17.8226 Y26.2210
+G1 X17.5275 Y26.2358
+G1 X17.2324 Y26.2507
+G1 X16.9372 Y26.2655
+G1 X16.6419 Y26.2804
+G1 X16.3466 Y26.2952
+G1 X16.0511 Y26.3101
+G1 X15.7556 Y26.3250
+G1 X15.4601 Y26.3398
+G1 X15.1644 Y26.3547
+G1 X14.8687 Y26.3695
+G1 X14.5729 Y26.3844
+G1 X14.2770 Y26.3993
+G1 X13.9811 Y26.4141
+G1 X13.6851 Y26.4290
+G1 X13.3890 Y26.4438
+G1 X13.0928 Y26.4587
+G1 X12.7965 Y26.4735
+G1 X12.5002 Y26.4884
+G1 X12.2038 Y26.5033
+G1 X11.9073 Y26.5181
+G1 X11.6108 Y26.5330
+G1 X11.3141 Y26.5478
+G1 X11.0174 Y26.5627
+G1 X10.7207 Y26.5776
+G1 X10.4238 Y26.5924
+G1 X10.1269 Y26.6073
+G1 X9.8299 Y26.6221
+G1 X9.5328 Y26.6370
+G1 X9.2356 Y26.6518
+G1 X8.9384 Y26.6667
+G1 X8.6411 Y26.6816
+G1 X8.3437 Y26.6964
+G1 X8.0462 Y26.7113
+G1 X7.7486 Y26.7261
+G1 X7.4510 Y26.7410
+G1 X7.1533 Y26.7559
+G1 X6.8555 Y26.7707
+G1 X6.5577 Y26.7856
+G1 X6.2597 Y26.8004
+G1 X5.9617 Y26.8153
+G1 X5.6636 Y26.8301
+G1 X5.3655 Y26.8450
+G1 X5.0672 Y26.8599
+G1 X4.7689 Y26.8747
+G1 X4.4705 Y26.8896
+G1 X4.1720 Y26.9044
+G1 X3.8735 Y26.9193
+G1 X3.5748 Y26.9341
+G1 X3.2761 Y26.9490
+G1 X2.9773 Y26.9639
+G1 X2.6784 Y26.9787
+G1 X2.3795 Y26.9936
+G1 X2.0804 Y27.0084
+G1 X1.7813 Y27.0233
+(Safe converted infill-to-infill connector to fill-infill path 234)
+G1 X2.3544 Y27.6680
+(fill-infill path 234, 74 points)
+G1 X2.6562 Y27.6530
+G1 X2.9580 Y27.6381
+G1 X3.2596 Y27.6232
+G1 X3.5612 Y27.6083
+G1 X3.8626 Y27.5934
+G1 X4.1640 Y27.5785
+G1 X4.4653 Y27.5636
+G1 X4.7666 Y27.5487
+G1 X5.0677 Y27.5338
+G1 X5.3688 Y27.5189
+G1 X5.6698 Y27.5040
+G1 X5.9707 Y27.4890
+G1 X6.2715 Y27.4741
+G1 X6.5723 Y27.4592
+G1 X6.8729 Y27.4443
+G1 X7.1735 Y27.4294
+G1 X7.4740 Y27.4145
+G1 X7.7744 Y27.3996
+G1 X8.0748 Y27.3847
+G1 X8.3750 Y27.3698
+G1 X8.6752 Y27.3549
+G1 X8.9753 Y27.3400
+G1 X9.2753 Y27.3250
+G1 X9.5753 Y27.3101
+G1 X9.8751 Y27.2952
+G1 X10.1749 Y27.2803
+G1 X10.4746 Y27.2654
+G1 X10.7742 Y27.2505
+G1 X11.0738 Y27.2356
+G1 X11.3732 Y27.2207
+G1 X11.6726 Y27.2058
+G1 X11.9719 Y27.1909
+G1 X12.2711 Y27.1760
+G1 X12.5703 Y27.1610
+G1 X12.8693 Y27.1461
+G1 X13.1683 Y27.1312
+G1 X13.4672 Y27.1163
+G1 X13.7660 Y27.1014
+G1 X14.0648 Y27.0865
+G1 X14.3635 Y27.0716
+G1 X14.6621 Y27.0567
+G1 X14.9606 Y27.0418
+G1 X15.2590 Y27.0269
+G1 X15.5574 Y27.0120
+G1 X15.8557 Y26.9970
+G1 X16.1539 Y26.9821
+G1 X16.4520 Y26.9672
+G1 X16.7500 Y26.9523
+G1 X17.0480 Y26.9374
+G1 X17.3459 Y26.9225
+G1 X17.6437 Y26.9076
+G1 X17.9414 Y26.8927
+G1 X18.2391 Y26.8778
+G1 X18.5367 Y26.8629
+G1 X18.8342 Y26.8479
+G1 X19.1316 Y26.8330
+G1 X19.4289 Y26.8181
+G1 X19.7262 Y26.8032
+G1 X20.0234 Y26.7883
+G1 X20.3205 Y26.7734
+G1 X20.6176 Y26.7585
+G1 X20.9145 Y26.7436
+G1 X21.2114 Y26.7287
+G1 X21.5082 Y26.7138
+G1 X21.8050 Y26.6989
+G1 X22.1016 Y26.6839
+G1 X22.3982 Y26.6690
+G1 X22.6947 Y26.6541
+G1 X22.9912 Y26.6392
+G1 X23.2875 Y26.6243
+G1 X23.5838 Y26.6094
+G1 X23.8800 Y26.5945
+G1 X24.1761 Y26.5796
+(Safe converted infill-to-infill connector to fill-infill path 235)
+G1 X24.5091 Y27.2426
+(fill-infill path 235, 76 points)
+G1 X24.2142 Y27.2573
+G1 X23.9192 Y27.2721
+G1 X23.6242 Y27.2869
+G1 X23.3290 Y27.3016
+G1 X23.0338 Y27.3164
+G1 X22.7385 Y27.3312
+G1 X22.4431 Y27.3459
+G1 X22.1477 Y27.3607
+G1 X21.8522 Y27.3755
+G1 X21.5565 Y27.3902
+G1 X21.2609 Y27.4050
+G1 X20.9651 Y27.4198
+G1 X20.6693 Y27.4345
+G1 X20.3733 Y27.4493
+G1 X20.0774 Y27.4641
+G1 X19.7813 Y27.4788
+G1 X19.4851 Y27.4936
+G1 X19.1889 Y27.5084
+G1 X18.8926 Y27.5231
+G1 X18.5962 Y27.5379
+G1 X18.2997 Y27.5527
+G1 X18.0032 Y27.5674
+G1 X17.7066 Y27.5822
+G1 X17.4099 Y27.5970
+G1 X17.1131 Y27.6117
+G1 X16.8162 Y27.6265
+G1 X16.5193 Y27.6413
+G1 X16.2223 Y27.6560
+G1 X15.9252 Y27.6708
+G1 X15.6280 Y27.6856
+G1 X15.3308 Y27.7003
+G1 X15.0334 Y27.7151
+G1 X14.7360 Y27.7299
+G1 X14.4385 Y27.7446
+G1 X14.1410 Y27.7594
+G1 X13.8433 Y27.7742
+G1 X13.5456 Y27.7889
+G1 X13.2478 Y27.8037
+G1 X12.9499 Y27.8185
+G1 X12.6519 Y27.8332
+G1 X12.3538 Y27.8480
+G1 X12.0557 Y27.8628
+G1 X11.7575 Y27.8775
+G1 X11.4592 Y27.8923
+G1 X11.1608 Y27.9071
+G1 X10.8624 Y27.9218
+G1 X10.5638 Y27.9366
+G1 X10.2652 Y27.9514
+G1 X9.9665 Y27.9661
+G1 X9.6677 Y27.9809
+G1 X9.3689 Y27.9957
+G1 X9.0699 Y28.0104
+G1 X8.7709 Y28.0252
+G1 X8.4718 Y28.0400
+G1 X8.1726 Y28.0547
+G1 X7.8734 Y28.0695
+G1 X7.5740 Y28.0843
+G1 X7.2746 Y28.0990
+G1 X6.9751 Y28.1138
+G1 X6.6755 Y28.1286
+G1 X6.3758 Y28.1433
+G1 X6.0760 Y28.1581
+G1 X5.7762 Y28.1729
+G1 X5.4763 Y28.1876
+G1 X5.1763 Y28.2024
+G1 X4.8762 Y28.2172
+G1 X4.5760 Y28.2319
+G1 X4.2757 Y28.2467
+G1 X3.9754 Y28.2615
+G1 X3.6750 Y28.2762
+G1 X3.3745 Y28.2910
+G1 X3.0739 Y28.3058
+G1 X2.7732 Y28.3205
+G1 X2.4725 Y28.3353
+G1 X2.1716 Y28.3501
+(Safe converted infill-to-infill connector to fill-infill path 236)
+G1 X2.7525 Y28.9949
+(fill-infill path 236, 72 points)
+G1 X3.0561 Y28.9800
+G1 X3.3596 Y28.9652
+G1 X3.6631 Y28.9504
+G1 X3.9664 Y28.9356
+G1 X4.2697 Y28.9208
+G1 X4.5729 Y28.9060
+G1 X4.8760 Y28.8911
+G1 X5.1790 Y28.8763
+G1 X5.4819 Y28.8615
+G1 X5.7847 Y28.8467
+G1 X6.0875 Y28.8319
+G1 X6.3902 Y28.8171
+G1 X6.6927 Y28.8022
+G1 X6.9952 Y28.7874
+G1 X7.2977 Y28.7726
+G1 X7.6000 Y28.7578
+G1 X7.9022 Y28.7430
+G1 X8.2044 Y28.7282
+G1 X8.5064 Y28.7133
+G1 X8.8084 Y28.6985
+G1 X9.1103 Y28.6837
+G1 X9.4121 Y28.6689
+G1 X9.7139 Y28.6541
+G1 X10.0155 Y28.6393
+G1 X10.3171 Y28.6244
+G1 X10.6186 Y28.6096
+G1 X10.9200 Y28.5948
+G1 X11.2213 Y28.5800
+G1 X11.5225 Y28.5652
+G1 X11.8236 Y28.5504
+G1 X12.1247 Y28.5355
+G1 X12.4257 Y28.5207
+G1 X12.7265 Y28.5059
+G1 X13.0274 Y28.4911
+G1 X13.3281 Y28.4763
+G1 X13.6287 Y28.4615
+G1 X13.9293 Y28.4466
+G1 X14.2297 Y28.4318
+G1 X14.5301 Y28.4170
+G1 X14.8304 Y28.4022
+G1 X15.1307 Y28.3874
+G1 X15.4308 Y28.3726
+G1 X15.7309 Y28.3578
+G1 X16.0308 Y28.3429
+G1 X16.3307 Y28.3281
+G1 X16.6305 Y28.3133
+G1 X16.9303 Y28.2985
+G1 X17.2299 Y28.2837
+G1 X17.5295 Y28.2689
+G1 X17.8289 Y28.2540
+G1 X18.1283 Y28.2392
+G1 X18.4277 Y28.2244
+G1 X18.7269 Y28.2096
+G1 X19.0260 Y28.1948
+G1 X19.3251 Y28.1800
+G1 X19.6241 Y28.1651
+G1 X19.9230 Y28.1503
+G1 X20.2218 Y28.1355
+G1 X20.5206 Y28.1207
+G1 X20.8192 Y28.1059
+G1 X21.1178 Y28.0911
+G1 X21.4163 Y28.0762
+G1 X21.7147 Y28.0614
+G1 X22.0131 Y28.0466
+G1 X22.3113 Y28.0318
+G1 X22.6095 Y28.0170
+G1 X22.9076 Y28.0022
+G1 X23.2056 Y27.9873
+G1 X23.5036 Y27.9725
+G1 X23.8014 Y27.9577
+G1 X24.0992 Y27.9429
+(Safe converted infill-to-infill connector to fill-infill path 237)
+G1 X24.3522 Y28.6104
+(fill-infill path 237, 70 points)
+G1 X24.0539 Y28.6251
+G1 X23.7555 Y28.6399
+G1 X23.4570 Y28.6546
+G1 X23.1584 Y28.6694
+G1 X22.8598 Y28.6841
+G1 X22.5610 Y28.6989
+G1 X22.2622 Y28.7136
+G1 X21.9633 Y28.7284
+G1 X21.6643 Y28.7432
+G1 X21.3652 Y28.7579
+G1 X21.0660 Y28.7727
+G1 X20.7668 Y28.7874
+G1 X20.4675 Y28.8022
+G1 X20.1680 Y28.8169
+G1 X19.8686 Y28.8317
+G1 X19.5690 Y28.8465
+G1 X19.2693 Y28.8612
+G1 X18.9696 Y28.8760
+G1 X18.6697 Y28.8907
+G1 X18.3698 Y28.9055
+G1 X18.0698 Y28.9202
+G1 X17.7697 Y28.9350
+G1 X17.4696 Y28.9498
+G1 X17.1693 Y28.9645
+G1 X16.8690 Y28.9793
+G1 X16.5686 Y28.9940
+G1 X16.2681 Y29.0088
+G1 X15.9675 Y29.0235
+G1 X15.6668 Y29.0383
+G1 X15.3660 Y29.0530
+G1 X15.0652 Y29.0678
+G1 X14.7643 Y29.0826
+G1 X14.4633 Y29.0973
+G1 X14.1622 Y29.1121
+G1 X13.8610 Y29.1268
+G1 X13.5597 Y29.1416
+G1 X13.2583 Y29.1563
+G1 X12.9569 Y29.1711
+G1 X12.6554 Y29.1859
+G1 X12.3538 Y29.2006
+G1 X12.0521 Y29.2154
+G1 X11.7503 Y29.2301
+G1 X11.4484 Y29.2449
+G1 X11.1464 Y29.2596
+G1 X10.8444 Y29.2744
+G1 X10.5423 Y29.2892
+G1 X10.2400 Y29.3039
+G1 X9.9377 Y29.3187
+G1 X9.6353 Y29.3334
+G1 X9.3329 Y29.3482
+G1 X9.0303 Y29.3629
+G1 X8.7276 Y29.3777
+G1 X8.4249 Y29.3925
+G1 X8.1221 Y29.4072
+G1 X7.8192 Y29.4220
+G1 X7.5162 Y29.4367
+G1 X7.2131 Y29.4515
+G1 X6.9099 Y29.4662
+G1 X6.6066 Y29.4810
+G1 X6.3033 Y29.4957
+G1 X5.9998 Y29.5105
+G1 X5.6963 Y29.5253
+G1 X5.3927 Y29.5400
+G1 X5.0890 Y29.5548
+G1 X4.7852 Y29.5695
+G1 X4.4813 Y29.5843
+G1 X4.1773 Y29.5990
+G1 X3.8733 Y29.6138
+G1 X3.5691 Y29.6286
+(Safe converted infill-to-infill connector to fill-infill path 238)
+G1 X17.4543 Y29.6286
+(fill-infill path 238, 24 points)
+G1 X17.7540 Y29.6139
+G1 X18.0535 Y29.5993
+G1 X18.3530 Y29.5846
+G1 X18.6524 Y29.5700
+G1 X18.9517 Y29.5554
+G1 X19.2509 Y29.5407
+G1 X19.5500 Y29.5261
+G1 X19.8490 Y29.5115
+G1 X20.1480 Y29.4968
+G1 X20.4469 Y29.4822
+G1 X20.7457 Y29.4676
+G1 X21.0444 Y29.4529
+G1 X21.3430 Y29.4383
+G1 X21.6415 Y29.4237
+G1 X21.9399 Y29.4090
+G1 X22.2383 Y29.3944
+G1 X22.5366 Y29.3798
+G1 X22.8348 Y29.3651
+G1 X23.1329 Y29.3505
+G1 X23.4309 Y29.3358
+G1 X23.7288 Y29.3212
+G1 X24.0267 Y29.3066
+G1 X24.3245 Y29.2919
+M3 S575
+G4 P0.030
+(PATH_END id=fill-infill_227)
+(Travel to outline path 239)
+G1 X24.3503 Y29.6286 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=outline_001 kind=outline space=machine_deg source=component_002 points=1520 max_surface_segment_mm=0.0999)
+(outline path 239, 1520 points)
+G1 X24.3554 Y29.3934 F1200.000
+G1 X24.3609 Y29.1583
+G1 X24.3669 Y28.9231
+G1 X24.3732 Y28.6880
+G1 X24.3798 Y28.4529
+G1 X24.3869 Y28.2177
+G1 X24.4344 Y28.0882
+G1 X24.4820 Y27.9588
+G1 X24.4527 Y27.7660
+G1 X24.4239 Y27.5732
+G1 X24.4722 Y27.4348
+G1 X24.5206 Y27.2964
+G1 X24.4919 Y27.1125
+G1 X24.4635 Y26.9287
+G1 X24.5116 Y26.7757
+G1 X24.5597 Y26.6227
+G1 X24.5326 Y26.4534
+G1 X24.5058 Y26.2841
+G1 X24.5786 Y26.2036
+G1 X24.5993 Y25.9575
+G1 X24.6203 Y25.7115
+G1 X24.6418 Y25.4654
+G1 X24.6636 Y25.2193
+G1 X24.6857 Y24.9733
+G1 X24.7083 Y24.7272
+G1 X24.7311 Y24.4812
+G1 X24.7103 Y24.2950
+G1 X24.6897 Y24.1089
+G1 X24.7370 Y23.9638
+G1 X24.7843 Y23.8188
+G1 X24.7636 Y23.6416
+G1 X24.7432 Y23.4643
+G1 X24.7968 Y23.3380
+G1 X24.8505 Y23.2116
+G1 X24.8634 Y22.9713
+G1 X24.8767 Y22.7309
+G1 X24.8904 Y22.4906
+G1 X24.9045 Y22.2503
+G1 X24.9190 Y22.0100
+G1 X24.9338 Y21.7697
+G1 X24.9491 Y21.5294
+G1 X24.9647 Y21.2890
+G1 X25.0127 Y21.0651
+G1 X25.0610 Y20.8411
+G1 X25.1095 Y20.6172
+G1 X25.1201 Y20.3648
+G1 X25.1311 Y20.1125
+G1 X25.1426 Y19.8602
+G1 X25.1546 Y19.6078
+G1 X25.1670 Y19.3555
+G1 X25.2210 Y19.2135
+G1 X25.2751 Y19.0716
+G1 X25.2572 Y18.8913
+G1 X25.2396 Y18.7109
+G1 X25.2992 Y18.5877
+G1 X25.3588 Y18.4644
+G1 X25.3782 Y18.2233
+G1 X25.3981 Y17.9822
+G1 X25.4183 Y17.7411
+G1 X25.4389 Y17.5000
+G1 X25.4599 Y17.2589
+G1 X25.4813 Y17.0178
+G1 X25.5031 Y16.7767
+G1 X25.5253 Y16.5357
+G1 X25.5747 Y16.3140
+G1 X25.6244 Y16.0924
+G1 X25.6743 Y15.8708
+G1 X25.7245 Y15.6492
+G1 X25.7391 Y15.3874
+G1 X25.7542 Y15.1256
+G1 X25.7698 Y14.8639
+G1 X25.7859 Y14.6021
+G1 X25.8414 Y14.3809
+G1 X25.8972 Y14.1596
+G1 X25.9533 Y13.9384
+G1 X26.0096 Y13.7172
+G1 X26.0476 Y13.4596
+G1 X26.0860 Y13.2020
+G1 X26.1248 Y12.9444
+G1 X26.1641 Y12.6868
+G1 X26.2039 Y12.4292
+G1 X26.2441 Y12.1716
+G1 X26.2373 Y11.9769
+G1 X26.2308 Y11.7823
+G1 X26.2884 Y11.5622
+G1 X26.3463 Y11.3421
+G1 X26.4045 Y11.1221
+G1 X26.4629 Y10.9020
+G1 X26.4999 Y10.6516
+G1 X26.5372 Y10.4013
+G1 X26.5750 Y10.1509
+G1 X26.6133 Y9.9006
+G1 X26.6520 Y9.6502
+G1 X26.6911 Y9.3999
+G1 X26.7307 Y9.1495
+G1 X26.7708 Y8.8992
+G1 X26.8113 Y8.6489
+G1 X26.8523 Y8.3985
+G1 X26.9116 Y8.2426
+G1 X26.9711 Y8.0868
+G1 X26.9715 Y7.9204
+G1 X26.9721 Y7.7540
+G1 X27.0338 Y7.5892
+G1 X27.0957 Y7.4244
+G1 X27.0952 Y7.2669
+G1 X27.0949 Y7.1094
+G1 X27.1530 Y6.9384
+G1 X27.2114 Y6.7674
+G1 X27.2699 Y6.5964
+G1 X27.3144 Y6.3401
+G1 X27.3595 Y6.0838
+G1 X27.4051 Y5.8275
+G1 X27.4512 Y5.5712
+G1 X27.4978 Y5.3149
+G1 X27.5449 Y5.0586
+G1 X27.5925 Y4.8023
+G1 X27.6406 Y4.5459
+G1 X27.6893 Y4.2896
+G1 X27.7544 Y4.1458
+G1 X27.8196 Y4.0020
+G1 X27.8242 Y3.8235
+G1 X27.8291 Y3.6451
+G1 X27.8969 Y3.4923
+G1 X27.9648 Y3.3395
+G1 X27.9685 Y3.1700
+G1 X27.9723 Y3.0006
+G1 X28.0509 Y2.9200
+G1 X28.0989 Y2.6783
+G1 X28.1474 Y2.4366
+G1 X28.1963 Y2.1949
+G1 X28.2458 Y1.9532
+G1 X28.2957 Y1.7115
+G1 X28.3461 Y1.4698
+G1 X28.4107 Y1.3283
+G1 X28.4755 Y1.1868
+G1 X28.5234 Y0.9510
+G1 X28.5718 Y0.7152
+G1 X28.6207 Y0.4794
+G1 X28.6701 Y0.2436
+G1 X28.7199 Y0.0078
+G1 X28.7703 Y-0.2280
+G1 X28.8211 Y-0.4637
+G1 X28.8948 Y-0.6045
+G1 X28.9686 Y-0.7452
+G1 X29.0285 Y-0.9991
+G1 X29.0889 Y-1.2529
+G1 X29.1500 Y-1.5067
+G1 X29.2116 Y-1.7606
+G1 X29.2738 Y-2.0144
+G1 X29.3366 Y-2.2682
+G1 X29.4000 Y-2.5221
+G1 X29.4640 Y-2.7759
+G1 X29.5286 Y-3.0297
+G1 X29.5939 Y-3.2836
+G1 X29.6674 Y-3.4220
+G1 X29.7412 Y-3.5604
+G1 X29.7957 Y-3.8135
+G1 X29.8508 Y-4.0665
+G1 X29.9065 Y-4.3196
+G1 X29.9629 Y-4.5726
+G1 X30.0513 Y-4.8026
+G1 X30.1402 Y-5.0325
+G1 X30.2297 Y-5.2625
+G1 X30.3198 Y-5.4924
+G1 X30.3876 Y-5.7393
+G1 X30.4561 Y-5.9863
+G1 X30.5252 Y-6.2332
+G1 X30.5950 Y-6.4801
+G1 X30.6654 Y-6.7270
+G1 X30.7364 Y-6.9739
+G1 X30.8081 Y-7.2208
+G1 X30.8804 Y-7.4678
+G1 X30.9534 Y-7.7147
+G1 X31.0437 Y-7.9123
+G1 X31.1345 Y-8.1100
+G1 X31.2258 Y-8.3076
+G1 X31.2493 Y-8.4945
+G1 X31.2732 Y-8.6815
+G1 X31.3607 Y-8.8257
+G1 X31.4484 Y-8.9700
+G1 X31.4972 Y-9.1692
+G1 X31.5464 Y-9.3685
+G1 X31.5961 Y-9.5677
+G1 X31.6978 Y-9.7917
+G1 X31.8001 Y-10.0156
+G1 X31.9031 Y-10.2396
+G1 X31.9833 Y-10.4872
+G1 X32.0642 Y-10.7348
+G1 X32.1459 Y-10.9824
+G1 X32.2284 Y-11.2300
+G1 X32.3115 Y-11.4776
+G1 X32.3954 Y-11.7252
+G1 X32.4801 Y-11.9729
+G1 X32.5655 Y-12.2205
+G1 X32.6517 Y-12.4681
+G1 X32.7560 Y-12.6388
+G1 X32.8606 Y-12.8095
+G1 X32.9490 Y-13.0614
+G1 X33.0381 Y-13.3133
+G1 X33.1281 Y-13.5653
+G1 X33.2189 Y-13.8172
+G1 X33.3106 Y-14.0691
+G1 X33.4031 Y-14.3211
+G1 X33.5137 Y-14.5427
+G1 X33.6250 Y-14.7644
+G1 X33.7371 Y-14.9860
+G1 X33.8499 Y-15.2076
+G1 X33.9401 Y-15.4694
+G1 X34.0312 Y-15.7311
+G1 X34.1232 Y-15.9929
+G1 X34.2162 Y-16.2547
+G1 X34.3318 Y-16.4758
+G1 X34.4481 Y-16.6970
+G1 X34.5653 Y-16.9181
+G1 X34.6832 Y-17.1393
+G1 X34.8019 Y-17.3604
+G1 X34.9020 Y-17.5812
+G1 X35.0029 Y-17.8020
+G1 X35.1046 Y-18.0228
+G1 X35.2071 Y-18.2436
+G1 X35.3103 Y-18.4644
+G1 X35.4143 Y-18.6852
+G1 X35.4689 Y-18.8798
+G1 X35.5240 Y-19.0745
+G1 X35.6554 Y-19.2877
+G1 X35.7876 Y-19.5010
+G1 X35.9207 Y-19.7142
+G1 X36.0327 Y-19.9564
+G1 X36.1456 Y-20.1987
+G1 X36.2596 Y-20.4409
+G1 X36.3745 Y-20.6831
+G1 X36.4905 Y-20.9254
+G1 X36.6075 Y-21.1676
+G1 X36.7256 Y-21.4098
+G1 X36.8447 Y-21.6520
+G1 X36.9648 Y-21.8943
+G1 X37.1632 Y-22.1076
+G1 X37.2796 Y-22.3419
+G1 X37.3970 Y-22.5761
+G1 X37.5154 Y-22.8103
+G1 X37.6348 Y-23.0446
+G1 X37.7553 Y-23.2788
+G1 X37.8768 Y-23.5131
+G1 X37.9995 Y-23.7473
+G1 X38.1548 Y-23.9862
+G1 X38.3114 Y-24.2252
+G1 X38.4693 Y-24.4642
+G1 X38.6284 Y-24.7031
+G1 X38.7582 Y-24.9361
+G1 X38.8891 Y-25.1691
+G1 X39.0211 Y-25.4021
+G1 X39.1543 Y-25.6351
+G1 X39.2887 Y-25.8681
+G1 X39.4242 Y-26.1011
+G1 X39.5610 Y-26.3341
+G1 X39.6989 Y-26.5671
+G1 X39.8263 Y-26.7110
+G1 X39.9543 Y-26.8548
+G1 X40.0304 Y-27.0332
+G1 X40.1072 Y-27.2116
+G1 X40.2427 Y-27.3644
+G1 X40.3789 Y-27.5172
+G1 X40.4519 Y-27.6867
+G1 X40.5254 Y-27.8562
+G1 X40.6694 Y-28.0179
+G1 X40.8142 Y-28.1796
+G1 X40.9662 Y-28.4188
+G1 X41.1196 Y-28.6580
+G1 X41.2744 Y-28.8972
+G1 X41.4307 Y-29.1364
+G1 X41.5884 Y-29.3756
+G1 X41.7475 Y-29.6148
+G1 X41.4404 Y-29.6141
+G1 X41.1332 Y-29.6134
+G1 X40.8261 Y-29.6128
+G1 X40.5189 Y-29.6121
+G1 X40.2118 Y-29.6115
+G1 X39.9046 Y-29.6108
+G1 X39.5975 Y-29.6102
+G1 X39.2904 Y-29.6095
+G1 X38.9833 Y-29.6088
+G1 X38.6761 Y-29.6082
+G1 X38.3690 Y-29.6075
+G1 X38.0619 Y-29.6069
+G1 X37.7548 Y-29.6062
+G1 X37.4477 Y-29.6056
+G1 X37.1406 Y-29.6049
+G1 X36.8335 Y-29.6043
+G1 X36.5264 Y-29.6036
+G1 X36.2193 Y-29.6029
+G1 X35.9122 Y-29.6023
+G1 X35.6052 Y-29.6016
+G1 X35.2981 Y-29.6010
+G1 X34.9910 Y-29.6003
+G1 X34.6839 Y-29.5997
+G1 X34.3769 Y-29.5990
+G1 X34.0698 Y-29.5983
+G1 X33.7627 Y-29.5977
+G1 X33.4557 Y-29.5970
+G1 X33.1486 Y-29.5964
+G1 X32.8416 Y-29.5957
+G1 X32.5346 Y-29.5951
+G1 X32.2275 Y-29.5944
+G1 X31.9205 Y-29.5937
+G1 X31.6135 Y-29.5931
+G1 X31.3064 Y-29.5924
+G1 X30.9994 Y-29.5918
+G1 X30.6924 Y-29.5911
+G1 X30.3854 Y-29.5905
+G1 X30.0784 Y-29.5898
+G1 X29.7714 Y-29.5891
+G1 X29.4644 Y-29.5885
+G1 X29.1574 Y-29.5878
+G1 X28.8504 Y-29.5872
+G1 X28.7162 Y-29.3419
+G1 X28.5831 Y-29.0967
+G1 X28.4512 Y-28.8514
+G1 X28.3205 Y-28.6062
+G1 X28.1908 Y-28.3609
+G1 X28.0623 Y-28.1156
+G1 X27.9349 Y-27.8704
+G1 X27.8086 Y-27.6251
+G1 X27.6833 Y-27.3799
+G1 X27.5591 Y-27.1346
+G1 X27.4360 Y-26.8894
+G1 X27.3326 Y-26.7548
+G1 X27.2297 Y-26.6202
+G1 X27.1338 Y-26.4001
+G1 X27.0387 Y-26.1800
+G1 X26.9444 Y-25.9599
+G1 X26.8508 Y-25.7398
+G1 X26.7580 Y-25.5197
+G1 X26.6224 Y-25.2834
+G1 X26.4878 Y-25.0470
+G1 X26.3541 Y-24.8106
+G1 X26.2215 Y-24.5742
+G1 X26.1656 Y-24.3622
+G1 X26.1104 Y-24.1501
+G1 X26.0019 Y-24.0051
+G1 X25.8939 Y-23.8602
+G1 X25.8494 Y-23.6829
+G1 X25.8053 Y-23.5056
+G1 X25.6940 Y-23.3507
+G1 X25.5833 Y-23.1957
+G1 X25.4786 Y-22.9354
+G1 X25.3749 Y-22.6751
+G1 X25.2722 Y-22.4149
+G1 X25.1703 Y-22.1546
+G1 X25.0693 Y-21.8943
+G1 X24.9576 Y-21.6625
+G1 X24.8466 Y-21.4308
+G1 X24.7364 Y-21.1991
+G1 X24.6270 Y-20.9674
+G1 X24.5183 Y-20.7356
+G1 X24.4103 Y-20.5039
+G1 X24.3030 Y-20.2722
+G1 X24.2619 Y-20.0762
+G1 X24.2212 Y-19.8801
+G1 X24.1190 Y-19.7174
+G1 X24.0173 Y-19.5546
+G1 X23.9179 Y-19.3108
+G1 X23.8192 Y-19.0670
+G1 X23.7213 Y-18.8232
+G1 X23.6241 Y-18.5794
+G1 X23.5275 Y-18.3356
+G1 X23.4317 Y-18.0918
+G1 X23.3366 Y-17.8480
+G1 X23.2421 Y-17.6042
+G1 X23.1483 Y-17.3604
+G1 X23.0552 Y-17.1166
+G1 X22.9628 Y-16.8728
+G1 X22.8710 Y-16.6290
+G1 X22.8066 Y-16.4091
+G1 X22.7427 Y-16.1892
+G1 X22.6792 Y-15.9693
+G1 X22.6163 Y-15.7495
+G1 X22.5538 Y-15.5296
+G1 X22.4622 Y-15.3893
+G1 X22.3709 Y-15.2490
+G1 X22.2834 Y-14.9870
+G1 X22.1967 Y-14.7250
+G1 X22.1106 Y-14.4630
+G1 X22.0251 Y-14.2011
+G1 X21.9404 Y-13.9391
+G1 X21.8562 Y-13.6771
+G1 X21.7728 Y-13.4151
+G1 X21.6899 Y-13.1532
+G1 X21.6077 Y-12.8912
+G1 X21.5261 Y-12.6292
+G1 X21.4235 Y-12.3875
+G1 X21.2455 Y-12.2264
+G1 X20.9746 Y-12.1861
+G1 X20.7038 Y-12.1458
+G1 X20.4331 Y-12.1055
+G1 X20.1624 Y-12.0652
+G1 X20.0732 Y-11.9847
+G1 X19.8151 Y-11.9746
+G1 X19.5571 Y-11.9646
+G1 X19.3564 Y-11.8941
+G1 X19.1559 Y-11.8235
+G1 X18.9454 Y-11.8153
+G1 X18.7350 Y-11.8071
+G1 X18.5246 Y-11.7990
+G1 X18.3410 Y-11.7307
+G1 X18.1575 Y-11.6624
+G1 X17.9568 Y-11.6527
+G1 X17.7561 Y-11.6430
+G1 X17.5554 Y-11.6334
+G1 X17.3579 Y-11.5673
+G1 X17.1604 Y-11.5013
+G1 X16.8916 Y-11.4649
+G1 X16.6229 Y-11.4286
+G1 X16.3542 Y-11.3923
+G1 X16.0856 Y-11.3559
+G1 X15.8171 Y-11.3196
+G1 X15.5486 Y-11.2833
+G1 X15.2803 Y-11.2470
+G1 X15.0588 Y-11.1727
+G1 X14.8375 Y-11.0984
+G1 X14.5821 Y-11.0899
+G1 X14.3267 Y-11.0814
+G1 X14.1267 Y-11.0094
+G1 X13.9268 Y-10.9373
+G1 X13.7350 Y-10.9301
+G1 X13.5433 Y-10.9229
+G1 X13.3516 Y-10.9158
+G1 X13.1433 Y-10.8460
+G1 X12.9351 Y-10.7762
+G1 X12.7346 Y-10.7675
+G1 X12.5340 Y-10.7588
+G1 X12.3335 Y-10.7502
+G1 X12.1390 Y-10.6826
+G1 X11.9446 Y-10.6150
+G1 X11.6770 Y-10.5791
+G1 X11.4095 Y-10.5432
+G1 X11.1420 Y-10.5073
+G1 X10.8746 Y-10.4715
+G1 X10.6072 Y-10.4356
+G1 X10.3400 Y-10.3997
+G1 X10.0728 Y-10.3638
+G1 X9.8213 Y-10.3173
+G1 X9.5699 Y-10.2709
+G1 X9.3186 Y-10.2245
+G1 X9.0673 Y-10.1781
+G1 X8.8162 Y-10.1317
+G1 X8.7322 Y-10.0511
+G1 X8.5402 Y-10.0449
+G1 X8.3483 Y-10.0387
+G1 X8.1563 Y-10.0326
+G1 X7.9514 Y-9.9613
+G1 X7.7465 Y-9.8900
+G1 X7.5477 Y-9.8823
+G1 X7.3489 Y-9.8746
+G1 X7.1502 Y-9.8670
+G1 X6.9559 Y-9.7979
+G1 X6.7618 Y-9.7288
+G1 X6.4952 Y-9.6934
+G1 X6.2287 Y-9.6579
+G1 X5.9622 Y-9.6224
+G1 X5.6958 Y-9.5870
+G1 X5.4294 Y-9.5515
+G1 X5.1631 Y-9.5160
+G1 X4.8969 Y-9.4806
+G1 X4.6480 Y-9.4279
+G1 X4.3992 Y-9.3753
+G1 X4.1505 Y-9.3227
+G1 X3.9019 Y-9.2701
+G1 X3.6533 Y-9.2175
+G1 X3.4048 Y-9.1649
+G1 X3.3191 Y-9.2977
+G1 X3.2333 Y-9.4305
+G1 X3.1771 Y-9.6864
+G1 X3.1209 Y-9.9422
+G1 X3.0647 Y-10.1981
+G1 X3.0085 Y-10.4539
+G1 X2.9273 Y-10.5345
+G1 X2.9184 Y-10.7389
+G1 X2.9095 Y-10.9434
+G1 X2.8445 Y-11.1727
+G1 X2.7794 Y-11.4020
+G1 X2.7143 Y-11.6313
+G1 X2.6491 Y-11.8607
+G1 X2.5839 Y-12.0900
+G1 X2.5186 Y-12.3193
+G1 X2.4532 Y-12.5486
+G1 X2.4116 Y-12.7687
+G1 X2.3700 Y-12.9887
+G1 X2.3284 Y-13.2088
+G1 X2.2867 Y-13.4289
+G1 X2.2450 Y-13.6489
+G1 X2.2032 Y-13.8690
+G1 X2.1287 Y-14.0145
+G1 X2.0542 Y-14.1599
+G1 X2.0464 Y-14.3457
+G1 X2.0386 Y-14.5314
+G1 X1.9661 Y-14.6679
+G1 X1.8935 Y-14.8045
+G1 X1.8836 Y-15.0267
+G1 X1.8737 Y-15.2490
+G1 X1.8033 Y-15.3893
+G1 X1.7327 Y-15.5296
+G1 X1.7202 Y-15.7205
+G1 X1.7076 Y-15.9114
+G1 X1.6436 Y-16.1477
+G1 X1.5794 Y-16.3839
+G1 X1.5152 Y-16.6202
+G1 X1.4508 Y-16.8565
+G1 X1.3862 Y-17.0928
+G1 X1.3215 Y-17.3291
+G1 X1.2567 Y-17.5654
+G1 X1.1917 Y-17.8017
+G1 X1.1266 Y-18.0379
+G1 X1.0613 Y-18.2742
+G1 X0.9959 Y-18.5105
+G1 X0.9688 Y-18.7144
+G1 X0.9415 Y-18.9182
+G1 X0.9143 Y-19.1221
+G1 X0.8444 Y-19.3559
+G1 X0.7744 Y-19.5896
+G1 X0.7041 Y-19.8234
+G1 X0.6337 Y-20.0571
+G1 X0.5631 Y-20.2909
+G1 X0.4922 Y-20.5247
+G1 X0.4387 Y-20.7833
+G1 X0.3851 Y-21.0419
+G1 X0.3312 Y-21.3005
+G1 X0.2771 Y-21.5592
+G1 X0.2229 Y-21.8178
+G1 X0.1429 Y-21.9769
+G1 X0.0628 Y-22.1360
+G1 X0.0538 Y-22.3055
+G1 X0.0448 Y-22.4750
+G1 X-0.0334 Y-22.6278
+G1 X-0.1117 Y-22.7805
+G1 X-0.1234 Y-22.9891
+G1 X-0.1352 Y-23.1978
+G1 X-0.2174 Y-23.4359
+G1 X-0.3000 Y-23.6739
+G1 X-0.3828 Y-23.9120
+G1 X-0.4660 Y-24.1501
+G1 X-0.5241 Y-24.3968
+G1 X-0.5824 Y-24.6434
+G1 X-0.6410 Y-24.8901
+G1 X-0.6998 Y-25.1367
+G1 X-0.7589 Y-25.3834
+G1 X-0.8182 Y-25.6301
+G1 X-0.8778 Y-25.8767
+G1 X-0.9376 Y-26.1234
+G1 X-1.0209 Y-26.2647
+G1 X-1.1044 Y-26.4060
+G1 X-1.1165 Y-26.5959
+G1 X-1.1285 Y-26.7858
+G1 X-1.2163 Y-27.0332
+G1 X-1.3046 Y-27.2807
+G1 X-1.3932 Y-27.5281
+G1 X-1.4822 Y-27.7756
+G1 X-1.5003 Y-27.9707
+G1 X-1.5185 Y-28.1658
+G1 X-1.5898 Y-28.4027
+G1 X-1.6615 Y-28.6396
+G1 X-1.7336 Y-28.8765
+G1 X-1.8060 Y-29.1134
+G1 X-1.8788 Y-29.3503
+G1 X-1.9520 Y-29.5872
+G1 X-2.2580 Y-29.5882
+G1 X-2.5641 Y-29.5891
+G1 X-2.8702 Y-29.5901
+G1 X-3.1763 Y-29.5911
+G1 X-3.4824 Y-29.5921
+G1 X-3.7885 Y-29.5931
+G1 X-4.0946 Y-29.5941
+G1 X-4.4007 Y-29.5951
+G1 X-4.7068 Y-29.5960
+G1 X-5.0129 Y-29.5970
+G1 X-5.3191 Y-29.5980
+G1 X-5.6252 Y-29.5990
+G1 X-5.9314 Y-29.6000
+G1 X-6.2375 Y-29.6010
+G1 X-6.5437 Y-29.6020
+G1 X-6.8498 Y-29.6029
+G1 X-7.1560 Y-29.6039
+G1 X-7.4622 Y-29.6049
+G1 X-7.7683 Y-29.6059
+G1 X-8.0745 Y-29.6069
+G1 X-8.3807 Y-29.6079
+G1 X-8.6869 Y-29.6088
+G1 X-8.9931 Y-29.6098
+G1 X-9.2993 Y-29.6108
+G1 X-9.6055 Y-29.6118
+G1 X-9.9117 Y-29.6128
+G1 X-10.2180 Y-29.6138
+G1 X-10.5242 Y-29.6148
+G1 X-10.8304 Y-29.6157
+G1 X-11.1367 Y-29.6167
+G1 X-11.4429 Y-29.6177
+G1 X-11.7492 Y-29.6187
+G1 X-12.0555 Y-29.6197
+G1 X-12.3617 Y-29.6207
+G1 X-12.6680 Y-29.6217
+G1 X-12.9743 Y-29.6226
+G1 X-13.2806 Y-29.6236
+G1 X-13.5869 Y-29.6246
+G1 X-13.8931 Y-29.6256
+G1 X-14.1995 Y-29.6266
+G1 X-14.5058 Y-29.6276
+G1 X-14.8121 Y-29.6286
+G1 X-14.8316 Y-29.4675
+G1 X-14.7274 Y-29.3869
+G1 X-14.6351 Y-29.1265
+G1 X-14.5436 Y-28.8661
+G1 X-14.4528 Y-28.6056
+G1 X-14.3628 Y-28.3452
+G1 X-14.2720 Y-28.2215
+G1 X-14.1815 Y-28.0978
+G1 X-14.0910 Y-27.8492
+G1 X-14.0012 Y-27.6006
+G1 X-13.9120 Y-27.3520
+G1 X-13.8235 Y-27.1034
+G1 X-13.7357 Y-26.8548
+G1 X-13.6360 Y-26.7110
+G1 X-13.5366 Y-26.5671
+G1 X-13.5042 Y-26.3798
+G1 X-13.4721 Y-26.1924
+G1 X-13.3614 Y-25.9638
+G1 X-13.2513 Y-25.7352
+G1 X-13.1418 Y-25.5066
+G1 X-13.0330 Y-25.2780
+G1 X-12.9505 Y-25.0404
+G1 X-12.8686 Y-24.8028
+G1 X-12.7872 Y-24.5652
+G1 X-12.7064 Y-24.3276
+G1 X-12.6260 Y-24.0900
+G1 X-12.5462 Y-23.8524
+G1 X-12.4669 Y-23.6148
+G1 X-12.3881 Y-23.3772
+G1 X-12.2821 Y-23.1475
+G1 X-12.1767 Y-22.9177
+G1 X-12.0719 Y-22.6880
+G1 X-11.9676 Y-22.4582
+G1 X-11.8958 Y-22.2050
+G1 X-11.8244 Y-21.9517
+G1 X-11.7536 Y-21.6985
+G1 X-11.6832 Y-21.4452
+G1 X-11.5988 Y-21.3072
+G1 X-11.5147 Y-21.1692
+G1 X-11.4411 Y-20.9360
+G1 X-11.3679 Y-20.7028
+G1 X-11.2952 Y-20.4696
+G1 X-11.2228 Y-20.2365
+G1 X-11.1508 Y-20.0033
+G1 X-11.0793 Y-19.7701
+G1 X-11.0081 Y-19.5369
+G1 X-10.9373 Y-19.3038
+G1 X-10.8483 Y-19.1488
+G1 X-10.7595 Y-18.9939
+G1 X-10.7389 Y-18.8120
+G1 X-10.7184 Y-18.6300
+G1 X-10.6336 Y-18.4897
+G1 X-10.5489 Y-18.3494
+G1 X-10.4816 Y-18.1135
+G1 X-10.4147 Y-17.8776
+G1 X-10.3481 Y-17.6417
+G1 X-10.2819 Y-17.4057
+G1 X-10.2160 Y-17.1698
+G1 X-10.1504 Y-16.9339
+G1 X-10.0852 Y-16.6980
+G1 X-10.0096 Y-16.5569
+G1 X-9.9341 Y-16.4158
+G1 X-9.8660 Y-16.1744
+G1 X-9.7982 Y-15.9330
+G1 X-9.7307 Y-15.6916
+G1 X-9.6636 Y-15.4503
+G1 X-9.5967 Y-15.2089
+G1 X-9.5303 Y-14.9675
+G1 X-9.4432 Y-14.8850
+G1 X-9.3848 Y-14.6345
+G1 X-9.3267 Y-14.3839
+G1 X-9.2689 Y-14.1334
+G1 X-9.2114 Y-13.8828
+G1 X-9.1346 Y-13.7394
+G1 X-9.0579 Y-13.5960
+G1 X-8.9827 Y-13.3409
+G1 X-8.9078 Y-13.0857
+G1 X-8.8333 Y-12.8306
+G1 X-8.7591 Y-12.5755
+G1 X-8.6852 Y-12.3204
+G1 X-8.6116 Y-12.0652
+G1 X-8.5384 Y-11.8101
+G1 X-8.4654 Y-11.5550
+G1 X-8.3927 Y-11.2999
+G1 X-8.3204 Y-11.0447
+G1 X-8.2483 Y-10.7896
+G1 X-8.1765 Y-10.5345
+G1 X-8.1050 Y-10.2794
+G1 X-8.0338 Y-10.0242
+G1 X-7.9628 Y-9.7691
+G1 X-7.8921 Y-9.5140
+G1 X-7.8217 Y-9.2589
+G1 X-7.7515 Y-9.0037
+G1 X-7.6816 Y-8.7486
+G1 X-7.6119 Y-8.4935
+G1 X-7.5425 Y-8.2384
+G1 X-7.4733 Y-7.9832
+G1 X-7.4044 Y-7.7281
+G1 X-7.3356 Y-7.4730
+G1 X-7.4954 Y-7.3118
+G1 X-7.7587 Y-7.2716
+G1 X-8.0219 Y-7.2313
+G1 X-8.2852 Y-7.1910
+G1 X-8.5483 Y-7.1507
+G1 X-8.6280 Y-7.0701
+G1 X-8.8204 Y-7.0640
+G1 X-9.0128 Y-7.0579
+G1 X-9.2052 Y-7.0518
+G1 X-9.4021 Y-6.9804
+G1 X-9.5989 Y-6.9090
+G1 X-9.7817 Y-6.9014
+G1 X-9.9644 Y-6.8938
+G1 X-10.1472 Y-6.8862
+G1 X-10.3582 Y-6.8170
+G1 X-10.5692 Y-6.7479
+G1 X-10.8243 Y-6.7124
+G1 X-11.0794 Y-6.6770
+G1 X-11.3344 Y-6.6416
+G1 X-11.5894 Y-6.6061
+G1 X-11.8444 Y-6.5707
+G1 X-12.0993 Y-6.5352
+G1 X-12.3542 Y-6.4998
+G1 X-12.4271 Y-6.4256
+G1 X-12.6609 Y-6.3935
+G1 X-12.8946 Y-6.3614
+G1 X-13.1284 Y-6.3292
+G1 X-13.3621 Y-6.2971
+G1 X-13.5958 Y-6.2650
+G1 X-13.8295 Y-6.2328
+G1 X-14.0631 Y-6.2007
+G1 X-14.2968 Y-6.1686
+G1 X-14.4913 Y-6.0957
+G1 X-14.6859 Y-6.0228
+G1 X-14.8692 Y-6.0162
+G1 X-15.0526 Y-6.0096
+G1 X-15.2359 Y-6.0030
+G1 X-15.4042 Y-5.9323
+G1 X-15.5725 Y-5.8617
+G1 X-15.8063 Y-5.8415
+G1 X-16.0401 Y-5.8214
+G1 X-16.2739 Y-5.8012
+G1 X-16.5077 Y-5.7811
+G1 X-16.6206 Y-5.7005
+G1 X-16.8232 Y-5.6796
+G1 X-17.0259 Y-5.6586
+G1 X-17.2285 Y-5.6376
+G1 X-17.4311 Y-5.6166
+G1 X-17.5064 Y-5.5394
+G1 X-17.7470 Y-5.5036
+G1 X-17.9876 Y-5.4678
+G1 X-18.2282 Y-5.4320
+G1 X-18.4688 Y-5.3962
+G1 X-18.7093 Y-5.3604
+G1 X-18.9499 Y-5.3246
+G1 X-19.1904 Y-5.2887
+G1 X-19.4309 Y-5.2529
+G1 X-19.6713 Y-5.2171
+G1 X-19.7598 Y-5.1366
+G1 X-19.9438 Y-5.1310
+G1 X-20.1278 Y-5.1254
+G1 X-20.3118 Y-5.1198
+G1 X-20.4782 Y-5.0476
+G1 X-20.6445 Y-4.9754
+G1 X-20.7684 Y-5.0560
+G1 X-20.8923 Y-5.1366
+G1 X-20.9013 Y-5.4028
+G1 X-20.9107 Y-5.6689
+G1 X-20.9205 Y-5.9351
+G1 X-20.9309 Y-6.2013
+G1 X-20.9417 Y-6.4675
+G1 X-20.9529 Y-6.7337
+G1 X-20.9647 Y-6.9999
+G1 X-20.9769 Y-7.2661
+G1 X-20.9895 Y-7.5322
+G1 X-21.0026 Y-7.7984
+G1 X-21.0162 Y-8.0646
+G1 X-21.0303 Y-8.3308
+G1 X-21.0449 Y-8.5970
+G1 X-21.0599 Y-8.8632
+G1 X-21.0754 Y-9.1294
+G1 X-21.0913 Y-9.3955
+G1 X-21.1078 Y-9.6617
+G1 X-21.1247 Y-9.9279
+G1 X-21.1422 Y-10.1941
+G1 X-21.1601 Y-10.4603
+G1 X-21.1785 Y-10.7265
+G1 X-21.1973 Y-10.9927
+G1 X-21.2167 Y-11.2588
+G1 X-21.2366 Y-11.5250
+G1 X-21.2570 Y-11.7912
+G1 X-21.2778 Y-12.0574
+G1 X-21.2992 Y-12.3236
+G1 X-21.3211 Y-12.5898
+G1 X-21.3434 Y-12.8560
+G1 X-21.3663 Y-13.1221
+G1 X-21.3897 Y-13.3883
+G1 X-21.4136 Y-13.6545
+G1 X-21.4380 Y-13.9207
+G1 X-21.4630 Y-14.1869
+G1 X-21.4885 Y-14.4531
+G1 X-21.5145 Y-14.7193
+G1 X-21.5410 Y-14.9854
+G1 X-21.5680 Y-15.2516
+G1 X-21.5956 Y-15.5178
+G1 X-21.6237 Y-15.7840
+G1 X-21.6524 Y-16.0502
+G1 X-21.6816 Y-16.3164
+G1 X-21.7114 Y-16.5826
+G1 X-21.7417 Y-16.8487
+G1 X-21.7726 Y-17.1149
+G1 X-21.8040 Y-17.3811
+G1 X-21.8360 Y-17.6473
+G1 X-21.8685 Y-17.9135
+G1 X-21.9017 Y-18.1797
+G1 X-21.9354 Y-18.4459
+G1 X-21.9697 Y-18.7120
+G1 X-22.0045 Y-18.9782
+G1 X-22.0400 Y-19.2444
+G1 X-22.0760 Y-19.5106
+G1 X-22.1127 Y-19.7768
+G1 X-22.1499 Y-20.0430
+G1 X-22.1877 Y-20.3092
+G1 X-22.2262 Y-20.5753
+G1 X-22.2653 Y-20.8415
+G1 X-22.3050 Y-21.1077
+G1 X-22.3453 Y-21.3739
+G1 X-22.3862 Y-21.6401
+G1 X-22.4278 Y-21.9063
+G1 X-22.4700 Y-22.1725
+G1 X-22.5129 Y-22.4386
+G1 X-22.5564 Y-22.7048
+G1 X-22.6006 Y-22.9710
+G1 X-22.6454 Y-23.2372
+G1 X-22.6909 Y-23.5034
+G1 X-22.7371 Y-23.7696
+G1 X-22.7840 Y-24.0358
+G1 X-22.8315 Y-24.3019
+G1 X-22.8798 Y-24.5681
+G1 X-22.9287 Y-24.8343
+G1 X-22.9784 Y-25.1005
+G1 X-23.0287 Y-25.3667
+G1 X-23.0798 Y-25.6329
+G1 X-23.1316 Y-25.8991
+G1 X-23.1842 Y-26.1652
+G1 X-23.2375 Y-26.4314
+G1 X-23.2915 Y-26.6976
+G1 X-23.3463 Y-26.9638
+G1 X-23.4019 Y-27.2300
+G1 X-23.4582 Y-27.4962
+G1 X-23.5153 Y-27.7624
+G1 X-23.5732 Y-28.0285
+G1 X-23.6319 Y-28.2947
+G1 X-23.6914 Y-28.5609
+G1 X-23.7518 Y-28.8271
+G1 X-23.8129 Y-29.0933
+G1 X-23.8749 Y-29.3595
+G1 X-23.9377 Y-29.6257
+G1 X-24.2405 Y-29.6257
+G1 X-24.5434 Y-29.6258
+G1 X-24.8462 Y-29.6259
+G1 X-25.1490 Y-29.6259
+G1 X-25.4519 Y-29.6260
+G1 X-25.7547 Y-29.6261
+G1 X-26.0576 Y-29.6262
+G1 X-26.3604 Y-29.6262
+G1 X-26.6632 Y-29.6263
+G1 X-26.9661 Y-29.6264
+G1 X-27.2689 Y-29.6264
+G1 X-27.5718 Y-29.6265
+G1 X-27.8746 Y-29.6266
+G1 X-28.1775 Y-29.6267
+G1 X-28.4803 Y-29.6267
+G1 X-28.7831 Y-29.6268
+G1 X-29.0860 Y-29.6269
+G1 X-29.3888 Y-29.6269
+G1 X-29.6917 Y-29.6270
+G1 X-29.9945 Y-29.6271
+G1 X-30.2974 Y-29.6272
+G1 X-30.6002 Y-29.6272
+G1 X-30.9031 Y-29.6273
+G1 X-31.2059 Y-29.6274
+G1 X-31.5088 Y-29.6275
+G1 X-31.8116 Y-29.6275
+G1 X-32.1145 Y-29.6276
+G1 X-32.4173 Y-29.6277
+G1 X-32.7202 Y-29.6277
+G1 X-33.0230 Y-29.6278
+G1 X-33.3259 Y-29.6279
+G1 X-33.6287 Y-29.6280
+G1 X-33.9316 Y-29.6280
+G1 X-34.2344 Y-29.6281
+G1 X-34.5373 Y-29.6282
+G1 X-34.8401 Y-29.6282
+G1 X-35.1430 Y-29.6283
+G1 X-35.4458 Y-29.6284
+G1 X-35.7487 Y-29.6285
+G1 X-36.0515 Y-29.6285
+G1 X-36.3544 Y-29.6286
+G1 X-36.4145 Y-29.5572
+G1 X-36.3188 Y-29.2897
+G1 X-36.2244 Y-29.0222
+G1 X-36.1312 Y-28.7547
+G1 X-36.0393 Y-28.4872
+G1 X-35.9487 Y-28.2197
+G1 X-35.8593 Y-27.9522
+G1 X-35.7711 Y-27.6847
+G1 X-35.6841 Y-27.4172
+G1 X-35.5984 Y-27.1497
+G1 X-35.5138 Y-26.8822
+G1 X-35.4303 Y-26.6147
+G1 X-35.3481 Y-26.3472
+G1 X-35.2670 Y-26.0797
+G1 X-35.1870 Y-25.8122
+G1 X-35.1081 Y-25.5447
+G1 X-35.0304 Y-25.2772
+G1 X-34.9538 Y-25.0097
+G1 X-34.8782 Y-24.7422
+G1 X-34.8038 Y-24.4747
+G1 X-34.7304 Y-24.2072
+G1 X-34.6581 Y-23.9397
+G1 X-34.5868 Y-23.6722
+G1 X-34.5166 Y-23.4047
+G1 X-34.4474 Y-23.1372
+G1 X-34.3792 Y-22.8697
+G1 X-34.3121 Y-22.6023
+G1 X-34.2459 Y-22.3348
+G1 X-34.1808 Y-22.0673
+G1 X-34.1166 Y-21.7998
+G1 X-34.0535 Y-21.5323
+G1 X-33.9913 Y-21.2648
+G1 X-33.9300 Y-20.9973
+G1 X-33.8697 Y-20.7298
+G1 X-33.8104 Y-20.4623
+G1 X-33.7520 Y-20.1948
+G1 X-33.6946 Y-19.9273
+G1 X-33.6381 Y-19.6598
+G1 X-33.5825 Y-19.3923
+G1 X-33.5278 Y-19.1248
+G1 X-33.4740 Y-18.8573
+G1 X-33.4211 Y-18.5898
+G1 X-33.3691 Y-18.3223
+G1 X-33.3180 Y-18.0548
+G1 X-33.2678 Y-17.7873
+G1 X-33.2184 Y-17.5198
+G1 X-33.1699 Y-17.2523
+G1 X-33.1223 Y-16.9848
+G1 X-33.0756 Y-16.7173
+G1 X-33.0297 Y-16.4498
+G1 X-32.9846 Y-16.1823
+G1 X-32.9404 Y-15.9148
+G1 X-32.8970 Y-15.6473
+G1 X-32.8544 Y-15.3798
+G1 X-32.8127 Y-15.1123
+G1 X-32.7717 Y-14.8449
+G1 X-32.7316 Y-14.5774
+G1 X-32.6924 Y-14.3099
+G1 X-32.6539 Y-14.0424
+G1 X-32.6162 Y-13.7749
+G1 X-32.5793 Y-13.5074
+G1 X-32.5432 Y-13.2399
+G1 X-32.5079 Y-12.9724
+G1 X-32.4733 Y-12.7049
+G1 X-32.4396 Y-12.4374
+G1 X-32.4066 Y-12.1699
+G1 X-32.3744 Y-11.9024
+G1 X-32.3430 Y-11.6349
+G1 X-32.3123 Y-11.3674
+G1 X-32.2824 Y-11.0999
+G1 X-32.2533 Y-10.8324
+G1 X-32.2249 Y-10.5649
+G1 X-32.1972 Y-10.2974
+G1 X-32.1703 Y-10.0299
+G1 X-32.1442 Y-9.7624
+G1 X-32.1188 Y-9.4949
+G1 X-32.0941 Y-9.2274
+G1 X-32.0702 Y-8.9599
+G1 X-32.0470 Y-8.6924
+G1 X-32.0245 Y-8.4249
+G1 X-32.0028 Y-8.1574
+G1 X-31.9818 Y-7.8899
+G1 X-31.9615 Y-7.6224
+G1 X-31.9419 Y-7.3549
+G1 X-31.9230 Y-7.0875
+G1 X-31.9049 Y-6.8200
+G1 X-31.8875 Y-6.5525
+G1 X-31.8708 Y-6.2850
+G1 X-31.8548 Y-6.0175
+G1 X-31.8395 Y-5.7500
+G1 X-31.8250 Y-5.4825
+G1 X-31.8111 Y-5.2150
+G1 X-31.7979 Y-4.9475
+G1 X-31.7855 Y-4.6800
+G1 X-31.7737 Y-4.4125
+G1 X-31.7627 Y-4.1450
+G1 X-31.7523 Y-3.8775
+G1 X-31.7426 Y-3.6100
+G1 X-31.7337 Y-3.3425
+G1 X-31.7254 Y-3.0750
+G1 X-31.7178 Y-2.8075
+G1 X-31.7110 Y-2.5400
+G1 X-31.7048 Y-2.2725
+G1 X-31.6993 Y-2.0050
+G1 X-31.6945 Y-1.7375
+G1 X-31.6904 Y-1.4700
+G1 X-31.6870 Y-1.2025
+G1 X-31.6843 Y-0.9350
+G1 X-31.6823 Y-0.6675
+G1 X-31.6809 Y-0.4000
+G1 X-31.6803 Y-0.1325
+G1 X-31.6803 Y0.1350
+G1 X-31.6811 Y0.4025
+G1 X-31.6825 Y0.6699
+G1 X-31.6846 Y0.9374
+G1 X-31.6874 Y1.2049
+G1 X-31.6909 Y1.4724
+G1 X-31.6951 Y1.7399
+G1 X-31.7000 Y2.0074
+G1 X-31.7055 Y2.2749
+G1 X-31.7118 Y2.5424
+G1 X-31.7188 Y2.8099
+G1 X-31.7264 Y3.0774
+G1 X-31.7348 Y3.3449
+G1 X-31.7438 Y3.6124
+G1 X-31.7536 Y3.8799
+G1 X-31.7640 Y4.1474
+G1 X-31.7752 Y4.4149
+G1 X-31.7870 Y4.6824
+G1 X-31.7996 Y4.9499
+G1 X-31.8128 Y5.2174
+G1 X-31.8268 Y5.4849
+G1 X-31.8414 Y5.7524
+G1 X-31.8568 Y6.0199
+G1 X-31.8729 Y6.2874
+G1 X-31.8897 Y6.5549
+G1 X-31.9072 Y6.8224
+G1 X-31.9254 Y7.0899
+G1 X-31.9443 Y7.3574
+G1 X-31.9640 Y7.6249
+G1 X-31.9844 Y7.8924
+G1 X-32.0055 Y8.1599
+G1 X-32.0273 Y8.4274
+G1 X-32.0499 Y8.6948
+G1 X-32.0732 Y8.9623
+G1 X-32.0972 Y9.2298
+G1 X-32.1220 Y9.4973
+G1 X-32.1475 Y9.7648
+G1 X-32.1737 Y10.0323
+G1 X-32.2007 Y10.2998
+G1 X-32.2284 Y10.5673
+G1 X-32.2569 Y10.8348
+G1 X-32.2862 Y11.1023
+G1 X-32.3162 Y11.3698
+G1 X-32.3469 Y11.6373
+G1 X-32.3784 Y11.9048
+G1 X-32.4107 Y12.1723
+G1 X-32.4438 Y12.4398
+G1 X-32.4777 Y12.7073
+G1 X-32.5123 Y12.9748
+G1 X-32.5477 Y13.2423
+G1 X-32.5839 Y13.5098
+G1 X-32.6209 Y13.7773
+G1 X-32.6587 Y14.0448
+G1 X-32.6972 Y14.3123
+G1 X-32.7366 Y14.5798
+G1 X-32.7768 Y14.8473
+G1 X-32.8179 Y15.1148
+G1 X-32.8597 Y15.3823
+G1 X-32.9023 Y15.6498
+G1 X-32.9458 Y15.9173
+G1 X-32.9902 Y16.1848
+G1 X-33.0353 Y16.4522
+G1 X-33.0813 Y16.7197
+G1 X-33.1282 Y16.9872
+G1 X-33.1759 Y17.2547
+G1 X-33.2245 Y17.5222
+G1 X-33.2740 Y17.7897
+G1 X-33.3243 Y18.0572
+G1 X-33.3755 Y18.3247
+G1 X-33.4276 Y18.5922
+G1 X-33.4806 Y18.8597
+G1 X-33.5345 Y19.1272
+G1 X-33.5893 Y19.3947
+G1 X-33.6450 Y19.6622
+G1 X-33.7016 Y19.9297
+G1 X-33.7592 Y20.1972
+G1 X-33.8177 Y20.4647
+G1 X-33.8771 Y20.7322
+G1 X-33.9375 Y20.9997
+G1 X-33.9988 Y21.2672
+G1 X-34.0611 Y21.5347
+G1 X-34.1244 Y21.8022
+G1 X-34.1887 Y22.0697
+G1 X-34.2539 Y22.3372
+G1 X-34.3202 Y22.6047
+G1 X-34.3875 Y22.8722
+G1 X-34.4557 Y23.1397
+G1 X-34.5250 Y23.4072
+G1 X-34.5954 Y23.6747
+G1 X-34.6668 Y23.9422
+G1 X-34.7392 Y24.2096
+G1 X-34.8127 Y24.4771
+G1 X-34.8873 Y24.7446
+G1 X-34.9629 Y25.0121
+G1 X-35.0397 Y25.2796
+G1 X-35.1175 Y25.5471
+G1 X-35.1965 Y25.8146
+G1 X-35.2766 Y26.0821
+G1 X-35.3579 Y26.3496
+G1 X-35.4402 Y26.6171
+G1 X-35.5238 Y26.8846
+G1 X-35.6085 Y27.1521
+G1 X-35.6944 Y27.4196
+G1 X-35.7815 Y27.6871
+G1 X-35.8698 Y27.9546
+G1 X-35.9594 Y28.2221
+G1 X-36.0501 Y28.4896
+G1 X-36.1421 Y28.7571
+G1 X-36.2354 Y29.0246
+G1 X-36.3300 Y29.2921
+G1 X-36.4258 Y29.5596
+G1 X-36.3594 Y29.6424
+G1 X-36.0565 Y29.6423
+G1 X-35.7536 Y29.6423
+G1 X-35.4507 Y29.6422
+G1 X-35.1478 Y29.6421
+G1 X-34.8449 Y29.6420
+G1 X-34.5420 Y29.6420
+G1 X-34.2391 Y29.6419
+G1 X-33.9362 Y29.6418
+G1 X-33.6333 Y29.6418
+G1 X-33.3304 Y29.6417
+G1 X-33.0275 Y29.6416
+G1 X-32.7246 Y29.6415
+G1 X-32.4217 Y29.6415
+G1 X-32.1189 Y29.6414
+G1 X-31.8160 Y29.6413
+G1 X-31.5131 Y29.6413
+G1 X-31.2102 Y29.6412
+G1 X-30.9073 Y29.6411
+G1 X-30.6044 Y29.6410
+G1 X-30.3015 Y29.6410
+G1 X-29.9986 Y29.6409
+G1 X-29.6957 Y29.6408
+G1 X-29.3929 Y29.6407
+G1 X-29.0900 Y29.6407
+G1 X-28.7871 Y29.6406
+G1 X-28.4842 Y29.6405
+G1 X-28.1813 Y29.6405
+G1 X-27.8784 Y29.6404
+G1 X-27.5755 Y29.6403
+G1 X-27.2727 Y29.6402
+G1 X-26.9698 Y29.6402
+G1 X-26.6669 Y29.6401
+G1 X-26.3640 Y29.6400
+G1 X-26.0611 Y29.6400
+G1 X-25.7583 Y29.6399
+G1 X-25.4554 Y29.6398
+G1 X-25.1525 Y29.6397
+G1 X-24.8496 Y29.6397
+G1 X-24.5467 Y29.6396
+G1 X-24.2438 Y29.6395
+G1 X-23.9410 Y29.6395
+G1 X-23.8779 Y29.3724
+G1 X-23.8157 Y29.1053
+G1 X-23.7543 Y28.8383
+G1 X-23.6937 Y28.5712
+G1 X-23.6340 Y28.3042
+G1 X-23.5751 Y28.0371
+G1 X-23.5170 Y27.7700
+G1 X-23.4597 Y27.5030
+G1 X-23.4031 Y27.2359
+G1 X-23.3474 Y26.9689
+G1 X-23.2924 Y26.7018
+G1 X-23.2381 Y26.4347
+G1 X-23.1847 Y26.1677
+G1 X-23.1319 Y25.9006
+G1 X-23.0799 Y25.6336
+G1 X-23.0287 Y25.3665
+G1 X-22.9782 Y25.0994
+G1 X-22.9284 Y24.8324
+G1 X-22.8793 Y24.5653
+G1 X-22.8309 Y24.2983
+G1 X-22.7832 Y24.0312
+G1 X-22.7362 Y23.7641
+G1 X-22.6898 Y23.4971
+G1 X-22.6442 Y23.2300
+G1 X-22.5992 Y22.9630
+G1 X-22.5549 Y22.6959
+G1 X-22.5113 Y22.4288
+G1 X-22.4683 Y22.1618
+G1 X-22.4260 Y21.8947
+G1 X-22.3843 Y21.6277
+G1 X-22.3432 Y21.3606
+G1 X-22.3028 Y21.0935
+G1 X-22.2630 Y20.8265
+G1 X-22.2239 Y20.5594
+G1 X-22.1853 Y20.2924
+G1 X-22.1474 Y20.0253
+G1 X-22.1101 Y19.7582
+G1 X-22.0734 Y19.4912
+G1 X-22.0372 Y19.2241
+G1 X-22.0017 Y18.9571
+G1 X-21.9668 Y18.6900
+G1 X-21.9325 Y18.4229
+G1 X-21.8987 Y18.1559
+G1 X-21.8655 Y17.8888
+G1 X-21.8329 Y17.6218
+G1 X-21.8009 Y17.3547
+G1 X-21.7694 Y17.0876
+G1 X-21.7385 Y16.8206
+G1 X-21.7081 Y16.5535
+G1 X-21.6783 Y16.2865
+G1 X-21.6491 Y16.0194
+G1 X-21.6204 Y15.7523
+G1 X-21.5922 Y15.4853
+G1 X-21.5646 Y15.2182
+G1 X-21.5375 Y14.9512
+G1 X-21.5110 Y14.6841
+G1 X-21.4850 Y14.4170
+G1 X-21.4595 Y14.1500
+G1 X-21.4345 Y13.8829
+G1 X-21.4101 Y13.6159
+G1 X-21.3862 Y13.3488
+G1 X-21.3628 Y13.0817
+G1 X-21.3399 Y12.8147
+G1 X-21.3176 Y12.5476
+G1 X-21.2957 Y12.2806
+G1 X-21.2743 Y12.0135
+G1 X-21.2535 Y11.7464
+G1 X-21.2331 Y11.4794
+G1 X-21.2133 Y11.2123
+G1 X-21.1939 Y10.9453
+G1 X-21.1751 Y10.6782
+G1 X-21.1567 Y10.4111
+G1 X-21.1388 Y10.1441
+G1 X-21.1215 Y9.8770
+G1 X-21.1046 Y9.6100
+G1 X-21.0882 Y9.3429
+G1 X-21.0722 Y9.0758
+G1 X-21.0568 Y8.8088
+G1 X-21.0418 Y8.5417
+G1 X-21.0273 Y8.2747
+G1 X-21.0133 Y8.0076
+G1 X-20.9998 Y7.7405
+G1 X-20.9867 Y7.4735
+G1 X-20.9741 Y7.2064
+G1 X-20.9620 Y6.9394
+G1 X-20.9503 Y6.6723
+G1 X-20.9391 Y6.4052
+G1 X-20.9284 Y6.1382
+G1 X-20.9181 Y5.8711
+G1 X-20.9083 Y5.6041
+G1 X-20.8990 Y5.3370
+G1 X-20.8310 Y5.2596
+G1 X-20.6483 Y5.0953
+G1 X-20.4664 Y5.0897
+G1 X-20.2846 Y5.0840
+G1 X-20.1027 Y5.0784
+G1 X-19.8877 Y5.0063
+G1 X-19.6728 Y4.9342
+G1 X-19.4176 Y4.8996
+G1 X-19.1624 Y4.8650
+G1 X-18.9073 Y4.8304
+G1 X-18.6521 Y4.7958
+G1 X-18.3971 Y4.7612
+G1 X-18.1420 Y4.7266
+G1 X-17.8870 Y4.6920
+G1 X-17.8045 Y4.6119
+G1 X-17.5481 Y4.5740
+G1 X-17.2917 Y4.5361
+G1 X-17.0353 Y4.4982
+G1 X-16.7790 Y4.4604
+G1 X-16.5227 Y4.4225
+G1 X-16.2664 Y4.3846
+G1 X-16.0102 Y4.3467
+G1 X-15.7540 Y4.3088
+G1 X-15.4978 Y4.2709
+G1 X-15.2417 Y4.2330
+G1 X-14.9856 Y4.1952
+G1 X-14.8134 Y4.1215
+G1 X-14.6414 Y4.0479
+G1 X-14.4415 Y4.0418
+G1 X-14.2416 Y4.0357
+G1 X-14.0417 Y4.0296
+G1 X-13.8152 Y3.9582
+G1 X-13.5887 Y3.8868
+G1 X-13.3865 Y3.8667
+G1 X-13.1843 Y3.8465
+G1 X-12.9822 Y3.8264
+G1 X-12.7800 Y3.8062
+G1 X-12.6981 Y3.7257
+G1 X-12.5172 Y3.7166
+G1 X-12.3364 Y3.7075
+G1 X-12.1555 Y3.6984
+G1 X-11.9413 Y3.6315
+G1 X-11.7271 Y3.5645
+G1 X-11.5374 Y3.5539
+G1 X-11.3476 Y3.5434
+G1 X-11.1578 Y3.5328
+G1 X-10.9572 Y3.4681
+G1 X-10.7566 Y3.4034
+G1 X-10.5162 Y3.3676
+G1 X-10.2758 Y3.3318
+G1 X-10.0354 Y3.2960
+G1 X-9.7950 Y3.2602
+G1 X-9.5546 Y3.2244
+G1 X-9.3143 Y3.1886
+G1 X-9.0740 Y3.1528
+G1 X-8.8336 Y3.1170
+G1 X-8.5934 Y3.0812
+G1 X-8.4935 Y3.0006
+G1 X-8.2473 Y2.9907
+G1 X-8.0010 Y2.9808
+G1 X-7.8030 Y2.9101
+G1 X-7.6049 Y2.8395
+G1 X-7.4234 Y2.8314
+G1 X-7.2419 Y2.8233
+G1 X-7.0603 Y2.8152
+G1 X-6.8482 Y2.7467
+G1 X-6.6361 Y2.6783
+G1 X-6.3850 Y2.6427
+G1 X-6.1340 Y2.6070
+G1 X-5.8830 Y2.5714
+G1 X-5.6320 Y2.5357
+G1 X-5.3810 Y2.5001
+G1 X-5.1301 Y2.4644
+G1 X-4.8791 Y2.4288
+G1 X-4.7001 Y2.5978
+G1 X-4.6452 Y2.8318
+G1 X-4.5903 Y3.0658
+G1 X-4.5355 Y3.2999
+G1 X-4.4808 Y3.5339
+G1 X-4.4261 Y3.7679
+G1 X-4.3714 Y4.0020
+G1 X-4.2975 Y4.1458
+G1 X-4.2237 Y4.2896
+G1 X-4.2164 Y4.4770
+G1 X-4.2091 Y4.6644
+G1 X-4.1350 Y4.8617
+G1 X-4.0610 Y5.0591
+G1 X-3.9869 Y5.2564
+G1 X-3.9335 Y5.5034
+G1 X-3.8802 Y5.7505
+G1 X-3.8269 Y5.9975
+G1 X-3.7736 Y6.2445
+G1 X-3.7203 Y6.4915
+G1 X-3.6671 Y6.7385
+G1 X-3.6138 Y6.9855
+G1 X-3.5606 Y7.2326
+G1 X-3.5074 Y7.4796
+G1 X-3.4303 Y7.7093
+G1 X-3.3531 Y7.9390
+G1 X-3.2760 Y8.1688
+G1 X-3.1988 Y8.3985
+G1 X-3.1544 Y8.6518
+G1 X-3.1101 Y8.9050
+G1 X-3.0658 Y9.1583
+G1 X-3.0214 Y9.4116
+G1 X-2.9524 Y9.5496
+G1 X-2.8833 Y9.6876
+G1 X-2.8267 Y9.9415
+G1 X-2.7701 Y10.1954
+G1 X-2.7135 Y10.4493
+G1 X-2.6568 Y10.7032
+G1 X-2.6001 Y10.9572
+G1 X-2.5433 Y11.2111
+G1 X-2.4865 Y11.4650
+G1 X-2.4296 Y11.7189
+G1 X-2.3727 Y11.9729
+G1 X-2.3157 Y12.2268
+G1 X-2.2391 Y12.4581
+G1 X-2.1624 Y12.6893
+G1 X-2.0856 Y12.9206
+G1 X-2.0087 Y13.1519
+G1 X-1.9585 Y13.3904
+G1 X-1.9082 Y13.6288
+G1 X-1.8579 Y13.8673
+G1 X-1.8075 Y14.1058
+G1 X-1.7570 Y14.3442
+G1 X-1.7065 Y14.5827
+G1 X-1.6558 Y14.8212
+G1 X-1.5810 Y15.0513
+G1 X-1.5061 Y15.2814
+G1 X-1.4310 Y15.5115
+G1 X-1.3557 Y15.7416
+G1 X-1.2803 Y15.9717
+G1 X-1.2345 Y16.2223
+G1 X-1.1886 Y16.4728
+G1 X-1.1426 Y16.7234
+G1 X-1.0965 Y16.9740
+G1 X-1.0190 Y17.2068
+G1 X-0.9414 Y17.4396
+G1 X-0.8636 Y17.6725
+G1 X-0.7855 Y17.9053
+G1 X-0.7323 Y18.1429
+G1 X-0.6789 Y18.3805
+G1 X-0.6255 Y18.6180
+G1 X-0.5718 Y18.8556
+G1 X-0.5180 Y19.0932
+G1 X-0.4641 Y19.3308
+G1 X-0.4100 Y19.5684
+G1 X-0.3386 Y19.7391
+G1 X-0.2671 Y19.9098
+G1 X-0.1954 Y20.0806
+G1 X-0.1418 Y20.3132
+G1 X-0.0880 Y20.5459
+G1 X-0.0341 Y20.7786
+G1 X0.0200 Y21.0113
+G1 X0.0743 Y21.2439
+G1 X0.1287 Y21.4766
+G1 X0.1833 Y21.7093
+G1 X0.2381 Y21.9420
+G1 X0.3110 Y22.1982
+G1 X0.3841 Y22.4544
+G1 X0.4576 Y22.7106
+G1 X0.5313 Y22.9669
+G1 X0.6053 Y23.2231
+G1 X0.6796 Y23.4793
+G1 X0.7543 Y23.7355
+G1 X0.8292 Y23.9917
+G1 X0.9044 Y24.2480
+G1 X0.9800 Y24.5042
+G1 X1.0559 Y24.7604
+G1 X1.1321 Y25.0166
+G1 X1.2087 Y25.2728
+G1 X1.2856 Y25.5290
+G1 X1.3628 Y25.7853
+G1 X1.4405 Y26.0415
+G1 X1.5185 Y26.2977
+G1 X1.5969 Y26.5539
+G1 X1.6756 Y26.8101
+G1 X1.7548 Y27.0664
+G1 X1.8343 Y27.3226
+G1 X1.9143 Y27.5788
+G1 X1.9946 Y27.8350
+G1 X2.0754 Y28.0912
+G1 X2.1566 Y28.3475
+G1 X2.2383 Y28.6037
+G1 X2.3204 Y28.8599
+G1 X2.4029 Y29.1161
+G1 X2.4859 Y29.3723
+G1 X2.5694 Y29.6286
+G1 X2.8762 Y29.6286
+G1 X3.1829 Y29.6286
+G1 X3.4897 Y29.6286
+G1 X3.7965 Y29.6286
+G1 X4.1033 Y29.6286
+G1 X4.4100 Y29.6286
+G1 X4.7168 Y29.6286
+G1 X5.0236 Y29.6286
+G1 X5.3303 Y29.6286
+G1 X5.6371 Y29.6286
+G1 X5.9439 Y29.6286
+G1 X6.2507 Y29.6286
+G1 X6.5574 Y29.6286
+G1 X6.8642 Y29.6286
+G1 X7.1710 Y29.6286
+G1 X7.4778 Y29.6286
+G1 X7.7845 Y29.6286
+G1 X8.0913 Y29.6286
+G1 X8.3981 Y29.6286
+G1 X8.7048 Y29.6286
+G1 X9.0116 Y29.6286
+G1 X9.3184 Y29.6286
+G1 X9.6252 Y29.6286
+G1 X9.9319 Y29.6286
+G1 X10.2387 Y29.6286
+G1 X10.5455 Y29.6286
+G1 X10.8523 Y29.6286
+G1 X11.1590 Y29.6286
+G1 X11.4658 Y29.6286
+G1 X11.7726 Y29.6286
+G1 X12.0793 Y29.6286
+G1 X12.3861 Y29.6286
+G1 X12.6929 Y29.6286
+G1 X12.9997 Y29.6286
+G1 X13.3064 Y29.6286
+G1 X13.6132 Y29.6286
+G1 X13.9200 Y29.6286
+G1 X14.2268 Y29.6286
+G1 X14.5335 Y29.6286
+G1 X14.8403 Y29.6286
+G1 X15.1471 Y29.6286
+G1 X15.4538 Y29.6286
+G1 X15.7606 Y29.6286
+G1 X16.0674 Y29.6286
+G1 X16.3742 Y29.6286
+G1 X16.6809 Y29.6286
+G1 X16.9877 Y29.6286
+G1 X17.2945 Y29.6286
+G1 X17.6013 Y29.6286
+G1 X17.9080 Y29.6286
+G1 X18.2148 Y29.6286
+G1 X18.5216 Y29.6286
+G1 X18.8283 Y29.6286
+G1 X19.1351 Y29.6286
+G1 X19.4419 Y29.6286
+G1 X19.7487 Y29.6286
+G1 X20.0554 Y29.6286
+G1 X20.3622 Y29.6286
+G1 X20.6690 Y29.6286
+G1 X20.9758 Y29.6286
+G1 X21.2825 Y29.6286
+G1 X21.5893 Y29.6286
+G1 X21.8961 Y29.6286
+G1 X22.2028 Y29.6286
+G1 X22.5096 Y29.6286
+G1 X22.8164 Y29.6286
+G1 X23.1232 Y29.6286
+G1 X23.4299 Y29.6286
+G1 X23.7367 Y29.6286
+G1 X24.0435 Y29.6286
+G1 X24.3503 Y29.6286
+M3 S575
+G4 P0.030
+(PATH_END id=outline_001)
+(Travel to outline path 240)
+G1 X13.5714 Y22.4170 F3000.000
+M3 S700
+G4 P0.060
+(PATH_START id=outline_002 kind=outline space=machine_deg source=component_002 points=313 max_surface_segment_mm=0.0986)
+(outline path 240, 313 points)
+G1 X13.4524 Y22.5378 F1200.000
+G1 X13.3333 Y22.6587
+G1 X13.0714 Y22.6587
+G1 X12.8095 Y22.6587
+G1 X12.5476 Y22.6587
+G1 X12.2856 Y22.6587
+G1 X12.0237 Y22.6587
+G1 X11.8823 Y22.5378
+G1 X11.7412 Y22.4170
+G1 X11.7277 Y22.2558
+G1 X11.6306 Y22.1350
+G1 X11.5338 Y22.0141
+G1 X11.5175 Y21.8127
+G1 X11.5014 Y21.6113
+G1 X11.4020 Y21.4502
+G1 X11.3030 Y21.2890
+G1 X11.2876 Y21.0876
+G1 X11.2724 Y20.8862
+G1 X11.1772 Y20.7654
+G1 X11.0822 Y20.6445
+G1 X11.0676 Y20.4431
+G1 X11.0532 Y20.2417
+G1 X10.9560 Y20.0806
+G1 X10.8591 Y19.9194
+G1 X10.8481 Y19.7583
+G1 X10.8372 Y19.5972
+G1 X10.7410 Y19.4360
+G1 X10.6450 Y19.2749
+G1 X10.6028 Y19.0601
+G1 X10.5607 Y18.8452
+G1 X10.5190 Y18.6304
+G1 X10.4241 Y18.4692
+G1 X10.3295 Y18.3081
+G1 X10.3199 Y18.1470
+G1 X10.3105 Y17.9858
+G1 X10.2165 Y17.8247
+G1 X10.1227 Y17.6636
+G1 X10.1115 Y17.4622
+G1 X10.1004 Y17.2608
+G1 X10.0073 Y17.0996
+G1 X9.9145 Y16.9385
+G1 X9.8598 Y16.6968
+G1 X9.8054 Y16.4551
+G1 X9.7514 Y16.2134
+G1 X9.6976 Y15.9717
+G1 X9.6061 Y15.8106
+G1 X9.5148 Y15.6494
+G1 X9.5055 Y15.4480
+G1 X9.4964 Y15.2466
+G1 X9.4021 Y15.0049
+G1 X9.3083 Y14.7632
+G1 X9.2148 Y14.5215
+G1 X9.1217 Y14.2798
+G1 X9.0289 Y14.0381
+G1 X9.0211 Y13.8367
+G1 X9.0133 Y13.6353
+G1 X8.9214 Y13.3936
+G1 X8.8297 Y13.1519
+G1 X8.7385 Y12.9102
+G1 X8.6475 Y12.6685
+G1 X8.6408 Y12.4671
+G1 X8.6341 Y12.2657
+G1 X8.5478 Y12.1448
+G1 X8.4615 Y12.0240
+G1 X8.4540 Y11.7823
+G1 X8.4466 Y11.5406
+G1 X8.3608 Y11.4197
+G1 X8.2751 Y11.2989
+G1 X8.2694 Y11.0975
+G1 X8.2637 Y10.8960
+G1 X8.1773 Y10.7349
+G1 X8.0910 Y10.5738
+G1 X8.0049 Y10.4127
+G1 X7.9998 Y10.2112
+G1 X7.9948 Y10.0098
+G1 X7.9090 Y9.8487
+G1 X7.8235 Y9.6876
+G1 X7.8188 Y9.4861
+G1 X7.8143 Y9.2847
+G1 X7.7300 Y9.1639
+G1 X7.6458 Y9.0430
+G1 X7.6416 Y8.8416
+G1 X7.6375 Y8.6402
+G1 X7.5528 Y8.4791
+G1 X7.4682 Y8.3179
+G1 X7.4644 Y8.1165
+G1 X7.4607 Y7.9151
+G1 X7.3772 Y7.7943
+G1 X7.2938 Y7.6734
+G1 X7.2904 Y7.4720
+G1 X7.2871 Y7.2706
+G1 X7.2021 Y7.0289
+G1 X7.1173 Y6.7872
+G1 X7.0327 Y6.5455
+G1 X6.9483 Y6.3038
+G1 X6.8641 Y6.0621
+G1 X6.8616 Y5.8607
+G1 X6.8591 Y5.6593
+G1 X6.7754 Y5.4176
+G1 X6.6919 Y5.1759
+G1 X6.6085 Y4.9342
+G1 X6.5253 Y4.6925
+G1 X6.5235 Y4.4911
+G1 X6.5217 Y4.2896
+G1 X6.4396 Y4.1285
+G1 X6.3575 Y3.9674
+G1 X6.3563 Y3.8062
+G1 X6.3552 Y3.6451
+G1 X6.2728 Y3.4034
+G1 X6.1906 Y3.1617
+G1 X6.1085 Y2.9200
+G1 X6.0266 Y2.6783
+G1 X5.9987 Y2.4635
+G1 X5.9709 Y2.2486
+G1 X5.9432 Y2.0338
+G1 X5.8620 Y1.8727
+G1 X5.7809 Y1.7115
+G1 X5.7805 Y1.5504
+G1 X5.7800 Y1.3893
+G1 X5.6991 Y1.2281
+G1 X5.6182 Y1.0670
+G1 X5.6179 Y0.8656
+G1 X5.6176 Y0.6642
+G1 X5.7786 Y0.5030
+G1 X5.9665 Y0.4762
+G1 X6.1545 Y0.4493
+G1 X6.3425 Y0.4225
+G1 X6.4230 Y0.3419
+G1 X6.6647 Y0.3419
+G1 X6.9064 Y0.3419
+G1 X7.1078 Y0.2613
+G1 X7.3091 Y0.1808
+G1 X7.5307 Y0.1606
+G1 X7.7522 Y0.1405
+G1 X7.9738 Y0.1204
+G1 X8.1953 Y0.1002
+G1 X8.3967 Y0.0196
+G1 X8.5982 Y-0.0609
+G1 X8.7861 Y-0.0609
+G1 X8.9741 Y-0.0609
+G1 X9.1621 Y-0.0609
+G1 X9.3636 Y-0.1415
+G1 X9.5650 Y-0.2220
+G1 X9.7530 Y-0.2220
+G1 X9.9410 Y-0.2220
+G1 X10.1290 Y-0.2220
+G1 X10.2902 Y-0.3026
+G1 X10.4514 Y-0.3832
+G1 X10.6662 Y-0.3832
+G1 X10.8811 Y-0.3832
+G1 X11.0959 Y-0.3832
+G1 X11.2975 Y-0.4637
+G1 X11.4990 Y-0.5443
+G1 X11.7407 Y-0.5443
+G1 X11.9825 Y-0.5443
+G1 X12.1841 Y-0.6249
+G1 X12.3857 Y-0.7054
+G1 X12.5737 Y-0.7054
+G1 X12.7617 Y-0.7054
+G1 X12.9497 Y-0.7054
+G1 X13.1514 Y-0.7860
+G1 X13.3531 Y-0.8666
+G1 X13.5747 Y-0.8867
+G1 X13.7964 Y-0.9069
+G1 X14.0180 Y-0.9270
+G1 X14.2397 Y-0.9471
+G1 X14.4415 Y-1.0277
+G1 X14.6433 Y-1.1083
+G1 X14.8851 Y-1.1083
+G1 X15.1268 Y-1.1083
+G1 X15.3287 Y-1.1888
+G1 X15.5306 Y-1.2694
+G1 X15.7455 Y-1.2694
+G1 X15.9604 Y-1.2694
+G1 X16.1753 Y-1.2694
+G1 X16.3370 Y-1.3500
+G1 X16.4987 Y-1.4305
+G1 X16.6868 Y-1.4305
+G1 X16.8748 Y-1.4305
+G1 X17.0629 Y-1.4305
+G1 X17.2650 Y-1.5111
+G1 X17.4671 Y-1.5917
+G1 X17.6552 Y-1.5917
+G1 X17.8433 Y-1.5917
+G1 X18.0313 Y-1.5917
+G1 X18.1126 Y-1.6722
+G1 X18.2328 Y-1.5917
+G1 X18.3530 Y-1.5111
+G1 X18.2718 Y-1.4305
+G1 X18.2703 Y-1.2291
+G1 X18.2690 Y-1.0277
+G1 X18.1876 Y-0.8666
+G1 X18.1063 Y-0.7054
+G1 X18.0652 Y-0.4436
+G1 X18.0244 Y-0.1818
+G1 X17.9841 Y0.0801
+G1 X17.9441 Y0.3419
+G1 X17.8639 Y0.5030
+G1 X17.7839 Y0.6642
+G1 X17.7845 Y0.8253
+G1 X17.7853 Y0.9864
+G1 X17.7058 Y1.1744
+G1 X17.6265 Y1.3624
+G1 X17.5474 Y1.5504
+G1 X17.5492 Y1.7518
+G1 X17.5512 Y1.9532
+G1 X17.4732 Y2.1949
+G1 X17.3956 Y2.4366
+G1 X17.3182 Y2.6783
+G1 X17.2411 Y2.9200
+G1 X17.2049 Y3.1819
+G1 X17.1691 Y3.4437
+G1 X17.1337 Y3.7055
+G1 X17.0985 Y3.9674
+G1 X17.0212 Y4.1285
+G1 X16.9439 Y4.2896
+G1 X16.9485 Y4.4911
+G1 X16.9533 Y4.6925
+G1 X16.8754 Y4.8133
+G1 X16.7976 Y4.9342
+G1 X16.7761 Y5.1490
+G1 X16.7550 Y5.3639
+G1 X16.7340 Y5.5787
+G1 X16.6601 Y5.8204
+G1 X16.5864 Y6.0621
+G1 X16.5129 Y6.3038
+G1 X16.4396 Y6.5455
+G1 X16.4464 Y6.7469
+G1 X16.4533 Y6.9483
+G1 X16.3778 Y7.1094
+G1 X16.3024 Y7.2706
+G1 X16.3098 Y7.4720
+G1 X16.3175 Y7.6734
+G1 X16.2408 Y7.7943
+G1 X16.1642 Y7.9151
+G1 X16.1722 Y8.1165
+G1 X16.1804 Y8.3179
+G1 X16.1040 Y8.4388
+G1 X16.0276 Y8.5596
+G1 X16.0379 Y8.8013
+G1 X16.0486 Y9.0430
+G1 X15.9742 Y9.2042
+G1 X15.8999 Y9.3653
+G1 X15.8256 Y9.5264
+G1 X15.8351 Y9.7278
+G1 X15.8447 Y9.9293
+G1 X15.7688 Y10.0501
+G1 X15.6929 Y10.1710
+G1 X15.7029 Y10.3724
+G1 X15.7131 Y10.5738
+G1 X15.6394 Y10.7349
+G1 X15.5657 Y10.8960
+G1 X15.5764 Y11.0975
+G1 X15.5872 Y11.2989
+G1 X15.5116 Y11.4197
+G1 X15.4361 Y11.5406
+G1 X15.4472 Y11.7420
+G1 X15.4586 Y11.9434
+G1 X15.3855 Y12.1045
+G1 X15.3124 Y12.2657
+G1 X15.2865 Y12.5275
+G1 X15.2609 Y12.7893
+G1 X15.2356 Y13.0512
+G1 X15.2105 Y13.3130
+G1 X15.1429 Y13.5547
+G1 X15.0755 Y13.7964
+G1 X15.0083 Y14.0381
+G1 X14.9411 Y14.2798
+G1 X14.8741 Y14.5215
+G1 X14.8877 Y14.7229
+G1 X14.9016 Y14.9243
+G1 X14.8294 Y15.0855
+G1 X14.7572 Y15.2466
+G1 X14.7685 Y15.4077
+G1 X14.7801 Y15.5689
+G1 X14.7080 Y15.7300
+G1 X14.6360 Y15.8911
+G1 X14.6477 Y16.0523
+G1 X14.6597 Y16.2134
+G1 X14.5908 Y16.4148
+G1 X14.5219 Y16.6162
+G1 X14.5342 Y16.7774
+G1 X14.5466 Y16.9385
+G1 X14.4748 Y17.0996
+G1 X14.4030 Y17.2608
+G1 X14.4189 Y17.4622
+G1 X14.4349 Y17.6636
+G1 X14.3633 Y17.8247
+G1 X14.2916 Y17.9858
+G1 X14.2200 Y18.1470
+G1 X14.2364 Y18.3484
+G1 X14.2532 Y18.5498
+G1 X14.1884 Y18.7915
+G1 X14.1237 Y19.0332
+G1 X14.0590 Y19.2749
+G1 X13.9945 Y19.5166
+G1 X14.0120 Y19.7180
+G1 X14.0298 Y19.9194
+G1 X13.9584 Y20.0806
+G1 X13.8869 Y20.2417
+G1 X13.9050 Y20.4431
+G1 X13.9233 Y20.6445
+G1 X13.8483 Y20.7654
+G1 X13.7732 Y20.8862
+G1 X13.7918 Y21.0876
+G1 X13.8106 Y21.2890
+G1 X13.7392 Y21.4502
+G1 X13.6678 Y21.6113
+G1 X13.5963 Y21.7724
+G1 X13.6155 Y21.9739
+G1 X13.6350 Y22.1753
+G1 X13.5714 Y22.4170
+M3 S575
+G4 P0.030
+(PATH_END id=outline_002)
+(Return to zero with pen up)
+G1 X0.0000 Y0.0000 F3000.000
+M3 S575
+G4 P0.030
