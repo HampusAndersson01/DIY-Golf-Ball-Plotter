@@ -17,4 +17,4 @@ Recommended rule settings:
 
 This repository now exposes the required checks through:
 
-- [.github/workflows/ci.yml](C:/Users/hampe/Documents/GIT/Golfball%20Printer/.github/workflows/ci.yml:1)
+- [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
