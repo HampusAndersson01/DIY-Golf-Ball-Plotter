@@ -1,0 +1,67 @@
+name: Feature request
+description: Propose an enhancement to the plotting pipeline, analysis workflow, UI, or tooling.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the requested capability.
+      placeholder: Group anti-aliased shades into printable color clusters instead of reporting raw pixel colors.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary area
+      options:
+        - Path planning
+        - Geometry
+        - Outline/detail tracing
+        - Image processing
+        - Color analysis
+        - Frontend
+        - G-code/export
+        - Tests
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      placeholder: The analyzer reports too many raw shade variations for printable artwork.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed approach
+      placeholder: Use perceptual grouping, merge nearby clusters, and sort final print colors by coverage.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - Arsenal-like logos resolve to roughly 4-6 printable color groups
+        - Single-color images auto-select the only detected color
+        - Existing frontend flow remains compatible
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Constraints or non-goals
+      placeholder: Do not rewrite unrelated upload, preview, mask, or G-code pipeline logic.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope checks
+      options:
+        - label: I checked whether an existing issue already covers this request.
+          required: true
+        - label: I described the expected outcome in a testable way.
+          required: true
