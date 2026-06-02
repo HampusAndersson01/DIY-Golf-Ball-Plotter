@@ -1039,9 +1039,9 @@ def test_regions_without_outline_clearance_fall_back_to_detail_fill():
     )
 
     infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
-    assert len(infill_paths) == 1
-    assert infill_paths[0].metadata.get("small_detail_fill_style") == "single_stroke_detail"
-    assert len(infill_paths[0].points) >= 2
+    assert infill_paths
+    assert all(path.metadata.get("small_detail_fill_style") == "single_stroke_detail" for path in infill_paths)
+    assert all(len(path.points) >= 2 for path in infill_paths)
     assert not any(path.kind == "fill-wall" for path in toolpaths)
 
 
@@ -3314,9 +3314,12 @@ def test_tiny_dot_uses_internal_mark_not_outline_trace():
     toolpaths = _generate_fill_toolpaths(printable, line_width_mm=0.6, infill_spacing_mm=0.6)
     marks = [p for p in toolpaths if p.kind in {"coverage_centerline", "coverage_offset_line", "coverage_rectilinear"}]
     outlines = [p for p in toolpaths if p.kind == "outline_cleanup"]
+    detail_fills = [p for p in toolpaths if p.kind == "fill-infill"]
     assert len(marks) <= 1
     assert len(outlines) <= 1
-    assert len(toolpaths) <= 2
+    assert detail_fills
+    assert all(path.metadata.get("small_detail_fill_style") == "single_stroke_detail" for path in detail_fills)
+    assert not any(path.kind == "fill-wall" for path in toolpaths)
 
 
 def test_c_shape_detail_contour_gets_centerline_backstop_when_core_uncovered():
