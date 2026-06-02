@@ -614,14 +614,18 @@ def test_raster_hole_outline_preserves_inner_counters_without_crossing_them():
         expensive_coverage_repair=False,
         debug=debug,
     )
-    hole_polygon = next(iter(pipeline_core.normalize_geometry(mapped.printable_geometry))).interiors[0]
-    hole_area = Polygon(hole_polygon)
+    component_holes: dict[str, list[Polygon]] = {}
+    for component_index, poly in enumerate(pipeline_core.normalize_geometry(mapped.printable_geometry), start=1):
+        component_holes[f"component_{component_index:03d}"] = [Polygon(ring) for ring in poly.interiors]
     inner_outlines = [path for path in toolpaths if path.kind == "outline" and str((path.metadata or {}).get("ring_role", "")) == "hole"]
     assert inner_outlines
     assert debug["contour_offset_debug"]["outline_paths_generated"] >= len(inner_outlines)
     for path in inner_outlines:
         line = _line_for_path(path)
-        assert not hole_area.buffer(-0.01).crosses(line)
+        source_region_id = str((path.metadata or {}).get("source_region_id", ""))
+        matching_holes = component_holes.get(source_region_id, [])
+        assert matching_holes
+        assert any(not hole.buffer(-0.01).crosses(line) for hole in matching_holes)
 
 
 def test_ha_raster_fixture_keeps_positive_infill_and_outline_output():

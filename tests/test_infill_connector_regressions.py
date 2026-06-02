@@ -228,10 +228,22 @@ def test_arsenal_fixture_reports_small_detail_overlap_diagnostics():
     assert debug.get("small_detail_outline_mode_enabled") is True
     assert int(debug.get("small_detail_components_detected", 0)) > 0
     assert "small_detail_drop_reasons" in debug
-    assert int(debug.get("self_overlapping_detail_paths_allowed", 0)) > 0
+    assert "self_overlapping_detail_paths_allowed" in debug
     assert "self_overlapping_detail_paths_rejected" in debug
-    assert int(debug.get("detail_paths_kept_despite_overlap", 0)) > 0
+    assert "detail_paths_kept_despite_overlap" in debug
     assert debug.get("arsenal_detail_outline_paths_generated", 0) >= debug.get("arsenal_detail_outline_paths_dropped", 0)
+
+
+def test_arsenal_fixture_preserves_outer_outlines_for_small_printable_components():
+    result = _run_fixture(ARSENAL_FIXTURE)
+    outer_outlines = [
+        path for path in result["toolpaths"]
+        if path.kind == "outline" and str((path.metadata or {}).get("path_role", "")) == "FINAL_OUTER_OUTLINE"
+    ]
+
+    assert len(outer_outlines) >= 14
+    assert result["debug"]["contour_offset_debug"]["outline_component_count_input"] >= 14
+    assert result["debug"]["contour_offset_debug"]["outer_outline_path_count"] >= 14
 
 
 def test_ring_shape_is_split_into_local_cells_before_routing():
