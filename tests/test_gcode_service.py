@@ -1,3 +1,7 @@
+import json
+from pathlib import Path
+import tempfile
+
 import pytest
 from shapely.geometry import LineString, Polygon
 
@@ -347,6 +351,102 @@ def test_safe_existing_infill_travel_is_converted_without_changing_geometry():
         if path.kind == "fill-infill"
     ]
     assert round_tripped_fill_points == original_fill_points
+
+
+def test_preview_and_gcode_pen_up_travels_match_without_stale_preview_geometry():
+    surface_toolpaths = [
+        Toolpath(points=[Point(8.0, 0.0), Point(10.0, 0.0)], kind="fill-infill", closed=False),
+        Toolpath(points=[Point(0.0, 0.0), Point(2.0, 0.0)], kind="fill-infill", closed=False),
+        Toolpath(
+            points=[Point(-1.0, -1.0), Point(11.0, -1.0), Point(11.0, 1.0), Point(-1.0, 1.0), Point(-1.0, -1.0)],
+            kind="outline",
+            closed=True,
+        ),
+    ]
+    debug: dict[str, object] = {}
+    gcode, preview = GcodeService().generate_from_toolpaths(
+        toolpaths=surface_toolpaths,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=True,
+        debug=debug,
+    )
+
+    assert debug["preview_uses_optimized_order"] is True
+    assert debug["gcode_uses_optimized_order"] is True
+    assert debug["stale_preview_travel_count"] == 0
+    assert debug["preview_only_travel_count"] == 0
+    assert debug["gcode_only_travel_count"] == 0
+    assert debug["matched_preview_gcode_travel_count"] == len(debug["preview_travel_debug"])
+    assert len(debug["preview_travel_debug"]) == len(debug["gcode_travel_debug"])
+    assert any(entry.get("kind") == "travel" for entry in preview)
+    assert any(line.startswith("G1 ") for line in gcode)
+
+
+def test_travel_debug_artifacts_are_written_from_final_gcode_and_update_path_stats():
+    surface_toolpaths = [
+        Toolpath(points=[Point(8.0, 0.0), Point(10.0, 0.0)], kind="fill-infill", closed=False),
+        Toolpath(points=[Point(0.0, 0.0), Point(2.0, 0.0)], kind="fill-infill", closed=False),
+        Toolpath(
+            points=[Point(-1.0, -1.0), Point(11.0, -1.0), Point(11.0, 1.0), Point(-1.0, 1.0), Point(-1.0, -1.0)],
+            kind="outline",
+            closed=True,
+        ),
+    ]
+    debug: dict[str, object] = {}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        artifact_dir = Path(tmpdir)
+        (artifact_dir / "path_stats.json").write_text("{}", encoding="utf-8")
+        debug["coverage_debug_artifact_dir"] = str(artifact_dir)
+
+        gcode, _preview = GcodeService().generate_from_toolpaths(
+            toolpaths=surface_toolpaths,
+            draw_feed=1200.0,
+            travel_feed=3000.0,
+            sample_step_deg=1.0,
+            placement_offset_x=0.0,
+            placement_offset_y=0.0,
+            pen_up_s=575,
+            pen_down_s=700,
+            servo_ramp_enabled=True,
+            servo_ramp_step=20,
+            servo_ramp_delay_ms=10.0,
+            pen_up_dwell_ms=30.0,
+            pen_down_dwell_ms=60.0,
+            gcode_mode="simple",
+            include_comments=True,
+            debug=debug,
+        )
+
+        preview_travel_debug = json.loads((artifact_dir / "preview_travel_debug.json").read_text(encoding="utf-8"))
+        gcode_travel_debug = json.loads((artifact_dir / "gcode_travel_debug.json").read_text(encoding="utf-8"))
+        path_stats = json.loads((artifact_dir / "path_stats.json").read_text(encoding="utf-8"))
+
+    parsed_gcode_travels = pipeline_core.parse_gcode_pen_up_travel_debug(gcode, pen_up_s=575, pen_down_s=700)
+    assert len(gcode_travel_debug) == len(parsed_gcode_travels)
+    assert [row["gcode_line_range_if_exported"] for row in gcode_travel_debug] == [
+        row["gcode_line_range_if_exported"] for row in parsed_gcode_travels
+    ]
+    assert path_stats["travel_bug_source"] == "final_gcode_order"
+    assert path_stats["preview_uses_final_export_order"] is True
+    assert path_stats["gcode_uses_final_export_order"] is True
+    assert path_stats["stale_preview_travel_count"] == 0
+    assert path_stats["preview_only_travel_count"] == 0
+    assert path_stats["gcode_only_travel_count"] == 0
+    assert path_stats["matched_preview_gcode_travel_count"] == len(preview_travel_debug)
+    assert path_stats["final_pen_up_travel_length_mm"] == path_stats["optimized_pen_up_travel_length_mm"]
+    assert path_stats["longest_final_pen_up_travel_mm"] == path_stats["optimized_longest_pen_up_travel_mm"]
 
 
 def test_unsafe_existing_infill_travel_crossing_hole_stays_pen_up():

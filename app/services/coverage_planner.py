@@ -1173,6 +1173,38 @@ def _generate_debug_artifacts(
             "coverage_after_endpoint_clamp_percent": float(debug.get("coverage_report", {}).get("coverage_after_endpoint_clamp_percent", 0.0)),
             "coverage_after_outline_percent": float(debug.get("coverage_after_outline_percent", coverage_report.get("coverage_percent", 0.0))),
             "accepted_connectors": int(sum(1 for path in final_paths if path.kind == "fill-infill-travel")),
+            "travel_optimization_mode": str(debug.get("travel_optimization_mode", "")),
+            "optimizer_runs_on_final_export_paths": bool(debug.get("optimizer_runs_on_final_export_paths", False)),
+            "uses_surface_mm_for_ordering": bool(debug.get("uses_surface_mm_for_ordering", False)),
+            "geometry_changed": bool(debug.get("geometry_changed", False)),
+            "path_points_moved": bool(debug.get("path_points_moved", False)),
+            "detail_filter_mode": str(debug.get("detail_filter_mode", pipeline_core.DETAIL_FILTER_MODE)),
+            "detail_paths_generated_raw": int(debug.get("detail_paths_generated_raw", 0)),
+            "detail_paths_kept": int(debug.get("detail_paths_kept", 0)),
+            "detail_paths_dropped": int(debug.get("detail_paths_dropped", 0)),
+            "detail_drop_reasons": dict(debug.get("detail_drop_reasons", {})),
+            "detail_paths_dropped_as_travel_or_debug": int(debug.get("detail_paths_dropped_as_travel_or_debug", 0)),
+            "detail_paths_dropped_as_redundant_overlap": int(debug.get("detail_paths_dropped_as_redundant_overlap", 0)),
+            "detail_new_coverage_area_mm2_total": float(debug.get("detail_new_coverage_area_mm2_total", 0.0)),
+            "detail_already_covered_ratio_avg": float(debug.get("detail_already_covered_ratio_avg", 0.0)),
+            "detail_source_whitelist_enforced": bool(debug.get("detail_source_whitelist_enforced", True)),
+            "travel_geometry_allowed_as_detail": bool(debug.get("travel_geometry_allowed_as_detail", False)),
+            "infill_geometry_changed": bool(debug.get("infill_geometry_changed", False)),
+            "outline_geometry_changed": bool(debug.get("outline_geometry_changed", False)),
+            "detail_dropped_path_records": list(debug.get("detail_dropped_path_records", [])),
+            "paths_reordered_count": int(debug.get("paths_reordered_count", 0)),
+            "open_paths_reversed_count": int(debug.get("open_paths_reversed_count", 0)),
+            "raw_travel_length_mm": float(debug.get("raw_travel_length_mm", 0.0)),
+            "optimized_travel_length_mm": float(debug.get("optimized_travel_length_mm", 0.0)),
+            "travel_length_reduction_percent": float(debug.get("travel_length_reduction_percent", 0.0)),
+            "raw_longest_travel_mm": float(debug.get("raw_longest_travel_mm", 0.0)),
+            "optimized_longest_travel_mm": float(debug.get("optimized_longest_travel_mm", 0.0)),
+            "raw_travel_crossing_count": int(debug.get("raw_travel_crossing_count", 0)),
+            "optimized_travel_crossing_count": int(debug.get("optimized_travel_crossing_count", 0)),
+            "bad_choice_count_after_optimization": int(debug.get("bad_choice_count_after_optimization", 0)),
+            "top_longest_travels_before": list(debug.get("top_longest_travels_before", [])),
+            "top_longest_travels_after": list(debug.get("top_longest_travels_after", [])),
+            "top_longest_travels": list(debug.get("top_longest_travels_after", []))[:25],
         }, handle, indent=2)
 
 
@@ -1388,11 +1420,47 @@ def plan_coverage_first_toolpaths(
                 continue
             detail_paths.append(Toolpath(points=clipped_points, kind="detail-trace", closed=False, source="detail_trace", metadata=metadata))
 
+    detail_filter_stats: dict[str, Any] = {
+        "detail_filter_mode": pipeline_core.DETAIL_FILTER_MODE,
+        "detail_paths_generated_raw": 0,
+        "detail_paths_kept": 0,
+        "detail_paths_dropped": 0,
+        "detail_drop_reasons": {},
+        "detail_paths_dropped_as_travel_or_debug": 0,
+        "detail_paths_dropped_as_redundant_overlap": 0,
+        "detail_new_coverage_area_mm2_total": 0.0,
+        "detail_already_covered_ratio_avg": 0.0,
+        "detail_source_whitelist_enforced": True,
+        "travel_geometry_allowed_as_detail": False,
+        "infill_geometry_changed": False,
+        "outline_geometry_changed": False,
+        "detail_dropped_path_records": [],
+    }
     if detail_paths:
-        all_paths.extend(detail_paths)
-        pre_endpoint_clamp_paths.extend(_clone_toolpath(path) for path in detail_paths)
+        existing_painted_area = _paths_footprint_union(
+            [path for path in all_paths if path.kind in {"fill-infill", "outline", "fill-infill-travel"}],
+            pen_radius_mm=pen_radius_mm,
+        )
+        detail_filter_stats = pipeline_core._filter_detail_trace_candidates_for_export(
+            detail_paths,
+            target_geometry=printable_geometry,
+            existing_painted_area=existing_painted_area,
+            line_width_mm=line_width_mm,
+            allow_detail_overlap_outline=True,
+            validate_detail_with_pen_footprint=True,
+            max_detail_overspill_mm=min(0.05, line_width_mm * 0.10, max(0.0, float(os.getenv("MAX_DETAIL_OVERSPILL_MM", "0.05")))),
+            max_detail_overspill_area_ratio=max(0.0, float(os.getenv("MAX_DETAIL_OVERSPILL_AREA_RATIO", "0.03"))),
+            min_detail_new_coverage_mm2=max(0.0, float(os.getenv("MIN_DETAIL_NEW_COVERAGE_MM2", "0.02"))),
+            max_already_covered_ratio=max(0.0, min(1.0, float(os.getenv("MAX_ALREADY_COVERED_RATIO", "0.90")))),
+            candidate_component_index_fn=lambda _path: None,
+            candidate_centeredness_fn=lambda _path, _idx: 0.0,
+        )
+        kept_detail_paths = list(detail_filter_stats["accepted_detail_paths"])
+        all_paths.extend(kept_detail_paths)
+        pre_endpoint_clamp_paths.extend(_clone_toolpath(path) for path in kept_detail_paths)
 
     if debug is not None:
+        debug.update(detail_filter_stats)
         hole_count = sum(len(poly.interiors) for poly in _geometry_parts(printable_geometry))
         cell_count = max(1, len(component_debug) + hole_count)
         debug["local_cell_count"] = int(cell_count)
@@ -1673,6 +1741,15 @@ def plan_coverage_first_toolpaths(
             "paths_by_kind": dict(Counter(path.kind for path in final_paths)),
             "draw_length_mm": draw_length_mm,
             "travel_length_mm": travel_length_mm,
+            "travel_optimization_mode": str(debug.get("travel_optimization_mode", "")),
+            "optimizer_runs_on_final_export_paths": bool(debug.get("optimizer_runs_on_final_export_paths", False)),
+            "uses_surface_mm_for_ordering": bool(debug.get("uses_surface_mm_for_ordering", False)),
+            "raw_travel_length_mm": float(debug.get("raw_travel_length_mm", 0.0)),
+            "optimized_travel_length_mm": float(debug.get("optimized_travel_length_mm", 0.0)),
+            "raw_longest_travel_mm": float(debug.get("raw_longest_travel_mm", 0.0)),
+            "optimized_longest_travel_mm": float(debug.get("optimized_longest_travel_mm", 0.0)),
+            "paths_reordered_count": int(debug.get("paths_reordered_count", 0)),
+            "top_longest_travels_after": list(debug.get("top_longest_travels_after", [])),
         }
         debug["coverage_component_summary"] = component_debug
         debug["coverage_final_missed_px"] = int(np.count_nonzero(missed > 0))
@@ -1686,6 +1763,7 @@ def plan_coverage_first_toolpaths(
         debug["coverage_after_outline_percent"] = float(coverage_report.get("coverage_percent", 0.0))
         if os.getenv("WRITE_COVERAGE_DEBUG_ARTIFACTS", "1") != "0":
             artifact_dir = Path(os.getenv("COVERAGE_DEBUG_ARTIFACT_DIR", str(Path(tempfile.gettempdir()) / "golfball_plotter_coverage_debug")))
+            debug["coverage_debug_artifact_dir"] = str(artifact_dir)
             _generate_debug_artifacts(
                 output_dir=artifact_dir,
                 shape=target_mask.shape,

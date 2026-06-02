@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import logging
+import json
+import tempfile
+from pathlib import Path
 
 from . import pipeline_core
 
@@ -153,6 +156,24 @@ class GcodeService:
     def generate_from_toolpaths(self, **kwargs):
         toolpaths = kwargs["toolpaths"]
         debug = kwargs.get("debug")
+        surface_toolpaths_before_export = None
+
+        def _write_travel_debug_files(gcode: list[str], preview: list[dict[str, object]]) -> None:
+            if not isinstance(debug, dict):
+                return
+            parity = pipeline_core.build_preview_gcode_travel_parity_debug(
+                preview=preview,
+                gcode=gcode,
+                pen_up_s=int(kwargs["pen_up_s"]),
+                pen_down_s=int(kwargs["pen_down_s"]),
+                final_export_paths=list(debug.get("final_export_paths", [])) if isinstance(debug.get("final_export_paths"), list) else None,
+                pen_state_debug=list(debug.get("pen_state_debug", [])) if isinstance(debug.get("pen_state_debug"), list) else None,
+            )
+            debug.update(parity)
+            artifact_dir = Path(str(debug.get("coverage_debug_artifact_dir") or (Path(tempfile.gettempdir()) / "golfball_plotter_coverage_debug")))
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            (artifact_dir / "preview_travel_debug.json").write_text(json.dumps(parity["preview_travel_debug"], indent=2), encoding="utf-8")
+            (artifact_dir / "gcode_travel_debug.json").write_text(json.dumps(parity["gcode_travel_debug"], indent=2), encoding="utf-8")
 
         def _update_path_debug(gcode: list[str], preview: list[dict[str, object]]) -> None:
             if not isinstance(debug, dict):
@@ -160,6 +181,7 @@ class GcodeService:
             projected_debug = pipeline_core.build_projected_path_debug(toolpaths, toolpaths, preview)
             debug["preview_and_gcode_share_same_projected_paths"] = bool(projected_debug.get("preview_and_gcode_share_same_projected_paths", False))
             debug["preview_gcode_path_mismatch_count"] = 0 if debug["preview_and_gcode_share_same_projected_paths"] else 1
+            _write_travel_debug_files(gcode, preview)
 
         self.logger.info(
             "Generating G-code from %d toolpaths (mode=%s include_comments=%s placement=(%s,%s))",
@@ -169,14 +191,23 @@ class GcodeService:
             kwargs.get("placement_offset_x"),
             kwargs.get("placement_offset_y"),
         )
-        if "placement_offset_x" in kwargs or "placement_offset_y" in kwargs:
-            if toolpaths and getattr(toolpaths[0], "coordinate_space", "surface_mm") != "machine_deg":
-                toolpaths = pipeline_core.prepare_toolpaths_for_projection(toolpaths)
-                toolpaths = pipeline_core.project_toolpaths_to_ball_angles(
-                    toolpaths,
-                    center_lon_deg=kwargs.get("placement_offset_x", 0.0),
-                    center_lat_deg=kwargs.get("placement_offset_y", 0.0),
+        if toolpaths and getattr(toolpaths[0], "coordinate_space", "surface_mm") != "machine_deg":
+            surface_toolpaths_before_export = [pipeline_core.clone_toolpath(path) for path in toolpaths]
+            optimized_surface_toolpaths, export_debug = pipeline_core.optimize_post_generation_travel_order(surface_toolpaths_before_export)
+            if isinstance(debug, dict):
+                debug.update(export_debug)
+            prepared_toolpaths = pipeline_core.prepare_toolpaths_for_projection(optimized_surface_toolpaths)
+            projected_toolpaths = pipeline_core.project_toolpaths_to_ball_angles(
+                prepared_toolpaths,
+                center_lon_deg=kwargs.get("placement_offset_x", 0.0),
+                center_lat_deg=kwargs.get("placement_offset_y", 0.0),
+            )
+            if isinstance(debug, dict):
+                debug["final_export_paths"] = pipeline_core.build_final_export_path_entries(
+                    optimized_surface_toolpaths,
+                    projected_toolpaths,
                 )
+            toolpaths = projected_toolpaths
         elif "placement_offset_x" not in kwargs and "placement_offset_y" not in kwargs:
             gcode, preview = self._generate_from_angle_toolpaths_legacy(**kwargs)
             debug = kwargs.get("debug")
@@ -196,6 +227,11 @@ class GcodeService:
                 except Exception as exc:  # pragma: no cover - diagnostics only
                     self.logger.debug("Unable to build runtime estimate: %s", exc)
             _update_path_debug(gcode, preview)
+            if isinstance(debug, dict):
+                try:
+                    pipeline_core.rewrite_final_export_path_stats_artifact(debug)
+                except Exception as exc:  # pragma: no cover - diagnostics only
+                    self.logger.debug("Unable to rewrite final export path stats: %s", exc)
             self.logger.info("Generated legacy angle G-code lines=%d preview_paths=%d", len(gcode), len(preview))
             return gcode, preview
         gcode, preview = pipeline_core.generate_gcode_from_toolpaths(
@@ -234,5 +270,10 @@ class GcodeService:
             except Exception as exc:  # pragma: no cover - diagnostics only
                 self.logger.debug("Unable to build runtime estimate: %s", exc)
         _update_path_debug(gcode, preview)
+        if isinstance(debug, dict):
+            try:
+                pipeline_core.rewrite_final_export_path_stats_artifact(debug)
+            except Exception as exc:  # pragma: no cover - diagnostics only
+                self.logger.debug("Unable to rewrite final export path stats: %s", exc)
         self.logger.info("Generated projected G-code lines=%d preview_paths=%d", len(gcode), len(preview))
         return gcode, preview

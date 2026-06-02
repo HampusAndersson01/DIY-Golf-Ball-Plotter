@@ -1,5 +1,6 @@
 import io
 import math
+from collections import Counter
 from pathlib import Path
 
 import cv2
@@ -123,6 +124,15 @@ def _normalized_path_signature(paths: list[Toolpath], kind: str) -> list[tuple[t
             continue
         signature.append(tuple((round(point.x, 6), round(point.y, 6)) for point in path.points))
     return signature
+
+
+def _canonical_geometry_signature(path: Toolpath) -> tuple[object, ...]:
+    rounded = tuple((round(point.x, 6), round(point.y, 6)) for point in path.points)
+    if not path.closed:
+        return (path.kind, path.closed, min(rounded, tuple(reversed(rounded))))
+    core = rounded[:-1] if len(rounded) >= 2 and rounded[0] == rounded[-1] else rounded
+    rotations = [tuple(core[index:] + core[:index]) for index in range(len(core))]
+    return (path.kind, path.closed, min(rotations))
 
 
 def _build_raster_fixture_toolpaths(
@@ -374,6 +384,113 @@ def test_collapsed_offsets_do_not_emit_legacy_detail_or_centerline_fallback():
     )
     assert any(path.kind == "outline" for path in toolpaths)
     assert not any(path.kind in {"detail-trace", "detail-continuation", "collapse-centerline", "gap-repair-centerline"} for path in toolpaths)
+
+
+def test_post_generation_travel_optimizer_preserves_geometry_and_layer_order():
+    raw_paths = [
+        Toolpath(
+            points=[Point(0.0, 8.0), Point(0.0, 10.0)],
+            kind="fill-infill",
+            closed=False,
+            metadata={"source_component_id": 1},
+        ),
+        Toolpath(
+            points=[Point(10.0, 0.0), Point(10.0, 2.0)],
+            kind="fill-infill",
+            closed=False,
+            metadata={"source_component_id": 2},
+        ),
+        Toolpath(
+            points=[Point(0.0, 0.0), Point(0.0, 2.0)],
+            kind="fill-infill",
+            closed=False,
+            metadata={"source_component_id": 1},
+        ),
+        Toolpath(
+            points=[Point(10.0, 8.0), Point(10.0, 10.0)],
+            kind="fill-infill",
+            closed=False,
+            metadata={"source_component_id": 2},
+        ),
+        Toolpath(
+            points=[Point(-1.0, -1.0), Point(11.0, -1.0), Point(11.0, 11.0), Point(-1.0, 11.0), Point(-1.0, -1.0)],
+            kind="outline",
+            closed=True,
+            metadata={"source_component_id": 1},
+        ),
+    ]
+
+    optimized, diagnostics = pipeline_core.optimize_post_generation_travel_order(raw_paths)
+
+    assert diagnostics["travel_optimization_mode"] == "final_export_event_stream_ordering"
+    assert diagnostics["optimizer_runs_after_path_merging"] is True
+    assert diagnostics["optimizer_runs_on_final_export_paths"] is True
+    assert diagnostics["preview_uses_optimized_order"] is True
+    assert diagnostics["gcode_uses_optimized_order"] is True
+    assert diagnostics["uses_surface_mm_for_ordering"] is True
+    assert diagnostics["geometry_changed"] is False
+    assert diagnostics["path_points_moved"] is False
+    assert diagnostics["paths_reordered"] is True
+    assert diagnostics["paths_reordered_count"] >= 2
+    assert diagnostics["optimized_pen_up_travel_length_mm"] < diagnostics["raw_pen_up_travel_length_mm"]
+    assert diagnostics["optimized_longest_pen_up_travel_mm"] < diagnostics["raw_longest_pen_up_travel_mm"]
+    assert diagnostics["open_paths_reversed_count"] >= 1
+    assert diagnostics["bad_choice_count_after_optimization"] == 0
+    assert diagnostics["stale_travel_geometry_removed"] is True
+    assert all(path.kind != "outline" for path in optimized[:-1])
+    assert optimized[-1].kind == "outline"
+
+    before = Counter(_canonical_geometry_signature(path) for path in raw_paths)
+    after = Counter(_canonical_geometry_signature(path) for path in optimized)
+    assert before == after
+
+
+def test_post_generation_travel_optimizer_keeps_preview_and_gcode_path_order_aligned():
+    raw_paths = [
+        Toolpath(points=[Point(8.0, 0.0), Point(10.0, 0.0)], kind="fill-infill", closed=False),
+        Toolpath(points=[Point(0.0, 0.0), Point(2.0, 0.0)], kind="fill-infill", closed=False),
+        Toolpath(points=[Point(-1.0, -1.0), Point(11.0, -1.0), Point(11.0, 1.0), Point(-1.0, 1.0), Point(-1.0, -1.0)], kind="outline", closed=True),
+    ]
+    optimized, diagnostics = pipeline_core.optimize_post_generation_travel_order(raw_paths)
+    prepared = pipeline_core.prepare_toolpaths_for_projection(optimized, default_pen_width_mm=0.6)
+    projected = pipeline_core.assign_stable_path_ids(
+        pipeline_core.project_toolpaths_to_ball_angles(prepared, center_lon_deg=0.0, center_lat_deg=0.0)
+    )
+    gcode, preview = GcodeService().generate_from_toolpaths(
+        toolpaths=projected,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=True,
+    )
+
+    preview_ids: list[str] = []
+    for entry in preview:
+        if entry.get("kind") == "travel":
+            continue
+        effective_id = str(entry.get("chain_path_id") or entry.get("id"))
+        if preview_ids and preview_ids[-1] == effective_id:
+            continue
+        preview_ids.append(effective_id)
+    gcode_ids = []
+    for line in gcode:
+        if not line.startswith("(PATH_START"):
+            continue
+        path_id = line.split("id=", 1)[1].split(" ", 1)[0]
+        gcode_ids.append(path_id)
+
+    assert diagnostics["paths_reordered_count"] >= 1
+    assert preview_ids == gcode_ids
 
 
 def test_text_outline_generated_from_final_target_mask_and_emits_gcode_outline_paths():
@@ -2027,6 +2144,97 @@ def test_detail_trace_is_suppressed_when_outline_and_infill_already_cover_region
     )
     detail_paths = [path for path in toolpaths if path.kind == "detail-trace"]
     assert len(detail_paths) == 0
+
+
+def test_detail_filter_drops_redundant_overlap_path():
+    target = _rect(width_mm=12.0, height_mm=6.0)
+    candidate = Toolpath(
+        points=[Point(1.0, 3.0), Point(11.0, 3.0)],
+        kind="detail-trace",
+        closed=False,
+        source="detail_trace",
+    )
+    existing = _paths_footprint_geometry(
+        [Toolpath(points=[Point(1.0, 3.0), Point(11.0, 3.0)], kind="fill-infill", closed=False)],
+        pen_width_mm=0.6,
+    )
+
+    result = pipeline_core._filter_detail_trace_candidates_for_export(
+        [candidate],
+        target_geometry=target,
+        existing_painted_area=existing,
+        line_width_mm=0.6,
+        allow_detail_overlap_outline=True,
+        validate_detail_with_pen_footprint=True,
+        max_detail_overspill_mm=0.05,
+        max_detail_overspill_area_ratio=0.03,
+        min_detail_new_coverage_mm2=0.02,
+        max_already_covered_ratio=0.90,
+        candidate_component_index_fn=lambda _path: None,
+        candidate_centeredness_fn=lambda _path, _idx: 0.0,
+    )
+
+    assert result["detail_paths_kept"] == 0
+    assert result["detail_paths_dropped_as_redundant_overlap"] > 0
+
+
+def test_detail_filter_rejects_travel_source_as_detail():
+    target = _rect(width_mm=12.0, height_mm=6.0)
+    candidate = Toolpath(
+        points=[Point(1.0, 3.0), Point(11.0, 3.0)],
+        kind="detail-trace",
+        closed=False,
+        source="travel",
+    )
+
+    result = pipeline_core._filter_detail_trace_candidates_for_export(
+        [candidate],
+        target_geometry=target,
+        existing_painted_area=Polygon(),
+        line_width_mm=0.6,
+        allow_detail_overlap_outline=True,
+        validate_detail_with_pen_footprint=True,
+        max_detail_overspill_mm=0.05,
+        max_detail_overspill_area_ratio=0.03,
+        min_detail_new_coverage_mm2=0.02,
+        max_already_covered_ratio=0.90,
+        candidate_component_index_fn=lambda _path: None,
+        candidate_centeredness_fn=lambda _path, _idx: 0.0,
+    )
+
+    assert result["detail_paths_kept"] == 0
+    assert result["travel_geometry_allowed_as_detail"] is False
+    assert result["detail_paths_dropped_as_travel_or_debug"] > 0
+
+
+def test_detail_filter_keeps_useful_uncovered_thin_detail():
+    target = Polygon([(0.0, 0.0), (10.0, 0.0), (10.0, 1.0), (0.0, 1.0)])
+    candidate = Toolpath(
+        points=[Point(0.5, 0.5), Point(9.5, 0.5)],
+        kind="detail-trace",
+        closed=False,
+        source="detail_trace",
+    )
+
+    result = pipeline_core._filter_detail_trace_candidates_for_export(
+        [candidate],
+        target_geometry=target,
+        existing_painted_area=Polygon(),
+        line_width_mm=0.6,
+        allow_detail_overlap_outline=True,
+        validate_detail_with_pen_footprint=True,
+        max_detail_overspill_mm=0.05,
+        max_detail_overspill_area_ratio=0.03,
+        min_detail_new_coverage_mm2=0.02,
+        max_already_covered_ratio=0.90,
+        candidate_component_index_fn=lambda _path: None,
+        candidate_centeredness_fn=lambda _path, _idx: 0.0,
+    )
+
+    assert result["detail_paths_kept"] == 1
+    kept = result["accepted_detail_paths"][0]
+    assert kept.kind == "detail-trace"
+    assert kept.metadata["detail_new_coverage_area_mm2"] > 0.02
 
 
 def test_narrow_c_like_residual_prefers_clean_centerline_detail_trace():

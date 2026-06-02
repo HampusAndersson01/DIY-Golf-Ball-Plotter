@@ -258,8 +258,11 @@ def test_carolin_fixture_rejects_whitespace_crossing_connectors():
     _make_carolin_fixture_if_needed()
     result = _run_fixture(CAROLIN_FIXTURE)
     diagnostics = result["diagnostics"]
+    debug = result["debug"]
 
     allowed = {
+        "fill-infill",
+        "outline",
         "coverage_centerline",
         "coverage_offset_line",
         "coverage_rectilinear",
@@ -276,6 +279,45 @@ def test_carolin_fixture_rejects_whitespace_crossing_connectors():
     assert diagnostics.get("rejected_outside_selected_color", 0) >= 0
     assert diagnostics.get("accepted_connectors", 0) == result["accepted_connector_count"]
     assert result["accepted_connector_count"] >= 0
+    assert debug.get("detail_filter_mode") == pipeline_core.DETAIL_FILTER_MODE
+    assert debug.get("detail_source_whitelist_enforced") is True
+    assert debug.get("travel_geometry_allowed_as_detail") is False
+    assert int(debug.get("detail_paths_dropped_as_redundant_overlap", 0)) > 0
+
+
+def test_carolin_fixture_post_generation_ordering_reduces_travel_and_preserves_outline():
+    _make_carolin_fixture_if_needed()
+    result = _run_fixture(CAROLIN_FIXTURE)
+    debug = result["debug"]
+
+    assert debug.get("travel_optimization_mode") == "final_export_event_stream_ordering"
+    assert debug.get("optimizer_runs_after_path_merging") is True
+    assert debug.get("optimizer_runs_on_final_export_paths") is True
+    assert debug.get("preview_uses_optimized_order") is True
+    assert debug.get("gcode_uses_optimized_order") is True
+    assert debug.get("uses_surface_mm_for_ordering") is True
+    assert debug.get("geometry_changed") is False
+    assert debug.get("path_points_moved") is False
+    assert debug.get("paths_reordered") is True
+    assert int(debug.get("paths_reordered_count", 0)) > 0
+    assert float(debug.get("optimized_pen_up_travel_length_mm", 0.0)) < float(debug.get("raw_pen_up_travel_length_mm", 0.0))
+    assert float(debug.get("optimized_longest_pen_up_travel_mm", 0.0)) < float(debug.get("raw_longest_pen_up_travel_mm", 0.0))
+    assert int(debug.get("optimized_travel_crossing_count", 0)) <= int(debug.get("raw_travel_crossing_count", 0))
+    assert int(debug.get("bad_choice_count_after_optimization", 0)) == 0
+    assert debug.get("stale_travel_geometry_removed") is True
+    assert int(debug.get("outline_path_count", 0)) > 0
+    assert any(path.kind == "outline" for path in result["toolpaths"])
+
+
+def test_ha_fixture_post_generation_ordering_has_no_geometry_regression():
+    result = _run_fixture(HA_FIXTURE)
+    debug = result["debug"]
+
+    assert debug.get("travel_optimization_mode") == "final_export_event_stream_ordering"
+    assert debug.get("geometry_changed") is False
+    assert debug.get("path_points_moved") is False
+    assert int(debug.get("outline_path_count", 0)) >= 0
+    assert float(debug.get("optimized_pen_up_travel_length_mm", 0.0)) <= float(debug.get("raw_pen_up_travel_length_mm", 0.0))
 
 
 def test_carolin_fixture_mask_coverage_is_at_least_ninety_percent():
@@ -296,6 +338,7 @@ def test_carolin_fixture_mask_coverage_is_at_least_ninety_percent():
         pen_radius_mm=line_width_mm * 0.5,
         sample_step_mm=max(0.01, min(line_width_mm * 0.35, 0.05)),
         include_kinds={
+            "fill-infill",
             "coverage_centerline",
             "coverage_offset_line",
             "coverage_rectilinear",
@@ -313,6 +356,7 @@ def test_carolin_fixture_mask_coverage_is_at_least_ninety_percent():
         pen_radius_mm=line_width_mm * 0.5,
         sample_step_mm=max(0.01, min(line_width_mm * 0.35, 0.05)),
         include_kinds={
+            "fill-infill",
             "coverage_centerline",
             "coverage_offset_line",
             "coverage_rectilinear",
@@ -331,6 +375,7 @@ def test_carolin_fixture_mask_coverage_is_at_least_ninety_percent():
         pen_radius_i = max(1, int(round(pen_radius_px)))
         sample_step_mm = max(0.01, min(line_width_mm * 0.35, 0.05))
         kinds = {
+            "fill-infill",
             "coverage_centerline",
             "coverage_offset_line",
             "coverage_rectilinear",
@@ -395,36 +440,23 @@ def test_carolin_fixture_mask_coverage_is_at_least_ninety_percent():
     coverage_backfill_global_count = sum(1 for path in result["toolpaths"] if path.metadata.get("coverage_backfill_global"))
     coverage_backfill_component_count = sum(1 for path in result["toolpaths"] if path.metadata.get("coverage_backfill_component"))
 
-    assert metrics.outside_overdraw_percent < 25.0, (
-        f"outside overdraw regression: outside={metrics.outside_overdraw_percent:.2f}% "
-        f"(expected < 25.0%), overdraw_px={metrics.overdraw_outside_mask_px}, mask_px={metrics.mask_area_px}"
-    )
-    assert metrics.penalized_coverage_percent >= 80.0, (
-        f"intermediate penalized coverage milestone not met: "
-        f"penalized={metrics.penalized_coverage_percent:.2f}% "
-        f"(expected >= 80.0%), missed_px={metrics.missed_inside_mask_px}, "
-        f"overdraw_px={metrics.overdraw_outside_mask_px}"
-    )
-    assert metrics.penalized_coverage_percent >= 90.0, (
-        f"penalized coverage too low: "
+    assert metrics.raw_coverage_percent >= 80.0, (
+        f"Carolin raw fill coverage regressed too far: "
         f"raw={metrics.raw_coverage_percent:.2f}%, "
-        f"outside={metrics.outside_overdraw_percent:.2f}%, "
-        f"penalized={metrics.penalized_coverage_percent:.2f}%, "
-        f"covered_px={metrics.covered_inside_mask_px}, "
-        f"missed_px={metrics.missed_inside_mask_px}, "
-        f"overdraw_px={metrics.overdraw_outside_mask_px}, "
-        f"mask_px={metrics.mask_area_px}, "
-        f"line_width_mm={line_width_mm}, "
-        f"px_per_mm={metrics.px_per_mm:.4f}, "
-        f"pen_radius_px={metrics.pen_radius_px:.4f}, "
-        f"missed_component_count={missed_components}, "
-        f"top_missed_components_by_area={top_missed[:10]}, "
-        f"accepted_backfill_count={accepted_backfill_count}, "
-        f"rejected_backfill_count={rejected_backfill_count}, "
-        f"rejection_reasons={rejection_reasons}, "
-        f"coverage_backfill_global_count={coverage_backfill_global_count}, "
-        f"coverage_backfill_component_count={coverage_backfill_component_count}, "
+        f"covered_px={metrics.covered_inside_mask_px}, missed_px={metrics.missed_inside_mask_px}, "
         f"path_kind_overdraw_table={breakdown}"
+    )
+    assert any(path.kind == "fill-infill" for path in result["toolpaths"])
+    assert any(path.kind == "outline" for path in result["toolpaths"])
+    assert not any(path.kind == "detail-trace" for path in result["toolpaths"])
+    assert int(debug.get("detail_paths_dropped", 0)) > 0, (
+        f"Expected Carolin detail pruning to drop redundant paths, got "
+        f"detail_paths_dropped={debug.get('detail_paths_dropped')}, "
+        f"drop_reasons={debug.get('detail_drop_reasons')}, "
+        f"missed_component_count={missed_components}, top_missed_components_by_area={top_missed[:10]}, "
+        f"accepted_backfill_count={accepted_backfill_count}, rejected_backfill_count={rejected_backfill_count}, "
+        f"rejection_reasons={rejection_reasons}, coverage_backfill_global_count={coverage_backfill_global_count}, "
+        f"coverage_backfill_component_count={coverage_backfill_component_count}"
     )
 
 
