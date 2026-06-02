@@ -407,6 +407,8 @@ At the same time, some parts are still prototype-level:
 - Add a practical calibration guide
 - Publish CAD/STL files if and when the design is ready
 
+For a more implementation-focused plan, see [ROADMAP.md](ROADMAP.md). That roadmap is ordered by engineering dependency and risk rather than by week-by-week scheduling.
+
 ## Tech Stack
 
 - Python 3.11+
