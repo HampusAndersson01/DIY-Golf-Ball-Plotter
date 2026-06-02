@@ -221,6 +221,19 @@ def test_arsenal_cell_based_routing_is_no_worse_than_legacy_routing():
     assert modern["diagnostics"].get("rejected_outside_selected_color", 0) == 0
 
 
+def test_arsenal_fixture_reports_small_detail_overlap_diagnostics():
+    result = _run_fixture(ARSENAL_FIXTURE)
+    debug = result["debug"]
+
+    assert debug.get("small_detail_outline_mode_enabled") is True
+    assert int(debug.get("small_detail_components_detected", 0)) > 0
+    assert "small_detail_drop_reasons" in debug
+    assert int(debug.get("self_overlapping_detail_paths_allowed", 0)) > 0
+    assert "self_overlapping_detail_paths_rejected" in debug
+    assert int(debug.get("detail_paths_kept_despite_overlap", 0)) > 0
+    assert debug.get("arsenal_detail_outline_paths_generated", 0) >= debug.get("arsenal_detail_outline_paths_dropped", 0)
+
+
 def test_ring_shape_is_split_into_local_cells_before_routing():
     outer = Polygon([(0.0, 0.0), (120.0, 0.0), (120.0, 80.0), (0.0, 80.0)])
     inner = Polygon([(35.0, 18.0), (85.0, 18.0), (85.0, 62.0), (35.0, 62.0)])

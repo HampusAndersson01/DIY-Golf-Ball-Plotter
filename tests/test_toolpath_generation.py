@@ -2237,6 +2237,46 @@ def test_detail_filter_keeps_useful_uncovered_thin_detail():
     assert kept.metadata["detail_new_coverage_area_mm2"] > 0.02
 
 
+def test_detail_filter_keeps_centered_small_detail_despite_heavy_overlap():
+    target = Polygon([(0.0, 0.0), (12.0, 0.0), (12.0, 1.0), (0.0, 1.0)])
+    candidate = Toolpath(
+        points=[Point(0.6, 0.5), Point(11.4, 0.5)],
+        kind="detail-trace",
+        closed=False,
+        source="detail_trace",
+    )
+    existing = _paths_footprint_geometry(
+        [Toolpath(points=[Point(0.6, 0.5), Point(11.4, 0.5)], kind="fill-infill", closed=False)],
+        pen_width_mm=0.6,
+    )
+
+    result = pipeline_core._filter_detail_trace_candidates_for_export(
+        [candidate],
+        target_geometry=target,
+        existing_painted_area=existing,
+        line_width_mm=0.6,
+        allow_detail_overlap_outline=True,
+        validate_detail_with_pen_footprint=True,
+        max_detail_overspill_mm=0.05,
+        max_detail_overspill_area_ratio=0.03,
+        min_detail_new_coverage_mm2=0.02,
+        max_already_covered_ratio=0.90,
+        candidate_component_index_fn=lambda _path: 0,
+        candidate_centeredness_fn=lambda _path, _idx: 0.05,
+        candidate_component_metrics_fn=lambda _path, _idx: {
+            "component_id": 1,
+            "area_mm2": 1.0,
+            "bbox_mm": (12.0, 1.0),
+            "estimated_width_mm": 1.0,
+        },
+    )
+
+    assert result["detail_paths_kept"] == 1
+    kept = result["accepted_detail_paths"][0]
+    assert kept.metadata["detail_overlap_exception_applied"] is True
+    assert kept.metadata["detail_overlap_exception_reason"] == "small_detail_centered_overlap"
+
+
 def test_narrow_c_like_residual_prefers_clean_centerline_detail_trace():
     outer = Polygon([(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)])
     cut = Polygon([(3.0, 1.5), (10.0, 1.5), (10.0, 6.5), (3.0, 6.5)])

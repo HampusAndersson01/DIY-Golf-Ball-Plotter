@@ -4140,6 +4140,7 @@ def _filter_detail_trace_candidates_for_export(
     max_already_covered_ratio: float,
     candidate_component_index_fn: Callable[[Toolpath], int | None],
     candidate_centeredness_fn: Callable[[Toolpath, int | None], float],
+    candidate_component_metrics_fn: Optional[Callable[[Toolpath, int | None], dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     accepted_detail_paths: list[Toolpath] = []
     accepted_detail_footprints: list[Any] = []
@@ -4159,17 +4160,56 @@ def _filter_detail_trace_candidates_for_export(
             continue
 
         candidate_id = candidate.path_id or _path_debug_identifier(candidate, candidate_index)
+        candidate_length_mm = segment_length(candidate.points)
+        line = LineString([(point.x, point.y) for point in candidate.points])
+        component_idx = candidate_component_index_fn(candidate)
+        centeredness = candidate_centeredness_fn(candidate, component_idx)
+        component_metrics = candidate_component_metrics_fn(candidate, component_idx) if candidate_component_metrics_fn is not None else {}
+        if not isinstance(component_metrics, dict):
+            component_metrics = {}
+        component_id = component_metrics.get("component_id", component_idx + 1 if component_idx is not None else None)
+        component_area_mm2 = float(component_metrics.get("area_mm2", 0.0) or 0.0)
+        bbox_mm = component_metrics.get("bbox_mm")
+        if isinstance(bbox_mm, (tuple, list)) and len(bbox_mm) >= 2:
+            bbox_mm = (float(bbox_mm[0]), float(bbox_mm[1]))
+        else:
+            bounds = line.bounds if not line.is_empty else (0.0, 0.0, 0.0, 0.0)
+            bbox_mm = (float(bounds[2] - bounds[0]), float(bounds[3] - bounds[1]))
+        estimated_width_mm = float(component_metrics.get("estimated_width_mm", min(bbox_mm[0], bbox_mm[1])) or 0.0)
+        long_axis_mm = float(max(bbox_mm[0], bbox_mm[1]))
+        long_enough_for_detail = candidate_length_mm >= (line_width_mm * 2.0)
+        elongated_narrow_path = (
+            estimated_width_mm > max(1e-6, line_width_mm * 0.25)
+            and estimated_width_mm <= (line_width_mm * 2.75)
+            and candidate_length_mm >= (line_width_mm * 3.0)
+            and (candidate_length_mm / max(estimated_width_mm, 1e-6)) >= 4.0
+            and long_axis_mm >= (line_width_mm * 3.0)
+        )
+        is_small_detail_component = component_idx is not None and (
+            (estimated_width_mm > 0.0 and estimated_width_mm <= (line_width_mm * 1.75))
+            or (component_area_mm2 > 0.0 and component_area_mm2 <= max(line_width_mm * line_width_mm * 10.0, 2.0))
+        )
+        if not is_small_detail_component and elongated_narrow_path:
+            is_small_detail_component = True
+        was_self_overlapping = bool(not line.is_simple) if not line.is_empty else False
 
         def _reject(reason: str, *, new_coverage_area_mm2: float = 0.0, already_covered_ratio: float = 1.0) -> None:
             drop_reasons[reason] += 1
             rejected_detail_paths.append(candidate)
             dropped_records.append({
                 "path_id": candidate_id,
+                "component_id": component_id,
+                "area_mm2": component_area_mm2,
+                "bbox_mm": bbox_mm,
+                "estimated_width_mm": estimated_width_mm,
+                "path_length_mm": float(candidate_length_mm),
                 "source": str(candidate.source or ""),
                 "canonical_source": canonical_source or "",
                 "drop_reason": reason,
                 "new_coverage_area_mm2": float(new_coverage_area_mm2),
                 "already_covered_ratio": float(already_covered_ratio),
+                "was_self_overlapping": bool(was_self_overlapping),
+                "outside_overflow_mm2": 0.0,
             })
 
         canonical_source, source_rejection_reason = _canonical_detail_source(candidate)
@@ -4177,11 +4217,10 @@ def _filter_detail_trace_candidates_for_export(
             _reject(source_rejection_reason or "unknown_source")
             continue
 
-        if segment_length(candidate.points) < min_candidate_length_mm:
+        if candidate_length_mm < min_candidate_length_mm:
             _reject("too_short")
             continue
 
-        line = LineString([(point.x, point.y) for point in candidate.points])
         stroke = line.buffer(radius, cap_style=1, join_style=1)
         if stroke.is_empty:
             _reject("empty_footprint")
@@ -4212,10 +4251,21 @@ def _filter_detail_trace_candidates_for_export(
         new_coverage_area = float(new_coverage.area) if new_coverage is not None and not new_coverage.is_empty else 0.0
         already_covered_ratio = max(0.0, min(1.0, 1.0 - (new_coverage_area / max(1e-9, target_footprint_area))))
         already_covered_ratios.append(already_covered_ratio)
+        overlap_exception_applied = False
+        overlap_exception_reason = ""
+        overlap_exception_candidate = (
+            is_small_detail_component
+            and long_enough_for_detail
+            and canonical_source in {"thin_feature_centerline", "skeleton_required_for_unfilled_thin_region"}
+            and centeredness <= (line_width_mm * 0.42)
+        )
 
         if new_coverage_area < min_detail_new_coverage_mm2 or already_covered_ratio > max_already_covered_ratio:
-            _reject("redundant_overlap", new_coverage_area_mm2=new_coverage_area, already_covered_ratio=already_covered_ratio)
-            continue
+            if not overlap_exception_candidate:
+                _reject("redundant_overlap", new_coverage_area_mm2=new_coverage_area, already_covered_ratio=already_covered_ratio)
+                continue
+            overlap_exception_applied = True
+            overlap_exception_reason = "small_detail_centered_overlap"
 
         overspill = None
         overspill_area = 0.0
@@ -4240,14 +4290,14 @@ def _filter_detail_trace_candidates_for_export(
                 if overspill is not None and not overspill.is_empty:
                     overspill_warning_regions.append(overspill)
                 _reject("overspill", new_coverage_area_mm2=new_coverage_area, already_covered_ratio=already_covered_ratio)
+                if dropped_records:
+                    dropped_records[-1]["outside_overflow_mm2"] = float(overspill_area)
                 continue
 
         overlap_area = 0.0
         if accepted_detail_coverage is not None and not accepted_detail_coverage.is_empty:
             overlap_area = float(stroke.intersection(accepted_detail_coverage).area)
         overlap_ratio = overlap_area / max(1e-9, float(stroke.area))
-        component_idx = candidate_component_index_fn(candidate)
-        centeredness = candidate_centeredness_fn(candidate, component_idx)
         is_narrow_component = component_idx is not None
         is_centerline_like = canonical_source == "skeleton_required_for_unfilled_thin_region"
         if is_narrow_component and is_centerline_like and overlap_ratio >= 0.82 and centeredness <= (line_width_mm * 0.42):
@@ -4256,8 +4306,9 @@ def _filter_detail_trace_candidates_for_export(
 
         chord = math.hypot(candidate.points[-1].x - candidate.points[0].x, candidate.points[-1].y - candidate.points[0].y)
         if chord > 1e-6 and (segment_length(candidate.points) / chord) > 4.0 and len(candidate.points) > 12:
-            _reject("noisy_loop", new_coverage_area_mm2=new_coverage_area, already_covered_ratio=already_covered_ratio)
-            continue
+            if not overlap_exception_candidate:
+                _reject("noisy_loop", new_coverage_area_mm2=new_coverage_area, already_covered_ratio=already_covered_ratio)
+                continue
 
         is_edge_detail = False
         if allow_detail_overlap_outline and target_boundary is not None:
@@ -4284,6 +4335,14 @@ def _filter_detail_trace_candidates_for_export(
                 "detail_max_protrusion_mm": protrusion_mm,
                 "detail_overlap_ratio_with_accepted": overlap_ratio,
                 "detail_centeredness_mm": centeredness,
+                "detail_component_id": component_id,
+                "detail_component_area_mm2": component_area_mm2,
+                "detail_component_bbox_mm": bbox_mm,
+                "detail_component_estimated_width_mm": estimated_width_mm,
+                "detail_path_length_mm": float(candidate_length_mm),
+                "detail_path_self_overlapping": bool(was_self_overlapping),
+                "detail_overlap_exception_applied": bool(overlap_exception_applied),
+                "detail_overlap_exception_reason": overlap_exception_reason,
             },
         ))
         total_new_coverage_area += new_coverage_area
@@ -15175,6 +15234,20 @@ def generate_toolpaths(
                 return 0.0
             return float(sum(distances) / max(1, len(distances)))
 
+        def _candidate_component_metrics(path: Toolpath, component_idx: int | None) -> dict[str, Any]:
+            if component_idx is None or component_idx < 0 or component_idx >= len(residual_components_for_detail):
+                return {}
+            component = residual_components_for_detail[component_idx]
+            if component is None or component.is_empty:
+                return {}
+            min_x, min_y, max_x, max_y = component.bounds
+            return {
+                "component_id": component_idx + 1,
+                "area_mm2": float(component.area),
+                "bbox_mm": (float(max_x - min_x), float(max_y - min_y)),
+                "estimated_width_mm": float(min(max_x - min_x, max_y - min_y)),
+            }
+
         # Coverage-aware ordering: prefer centered centerline candidates first so
         # later overlaps are treated as duplicates, not independent fragments.
         scored_candidates: list[tuple[float, float, float, Toolpath]] = []
@@ -15201,12 +15274,50 @@ def generate_toolpaths(
             max_already_covered_ratio=max_already_covered_ratio,
             candidate_component_index_fn=_candidate_component_index,
             candidate_centeredness_fn=_candidate_centeredness,
+            candidate_component_metrics_fn=_candidate_component_metrics,
         )
         accepted_detail_paths = list(detail_filter_stats["accepted_detail_paths"])
         accepted_detail_footprints = list(detail_filter_stats["accepted_detail_footprints"])
         rejected_detail_paths = list(detail_filter_stats["rejected_detail_paths"])
         overspill_warning_regions = list(detail_filter_stats["overspill_warning_regions"])
         debug.update(detail_filter_stats)
+        dropped_records = list(detail_filter_stats.get("detail_dropped_path_records", []))
+        accepted_component_ids = {
+            int(path.metadata.get("detail_component_id"))
+            for path in accepted_detail_paths
+            if path.metadata.get("detail_component_id") is not None
+        }
+        dropped_component_ids = {
+            int(record["component_id"])
+            for record in dropped_records
+            if record.get("component_id") is not None
+        }
+        small_detail_drop_reasons: Counter[str] = Counter()
+        for record in dropped_records:
+            if record.get("component_id") is not None:
+                small_detail_drop_reasons[str(record.get("drop_reason", "unknown"))] += 1
+        overlap_preserved_count = sum(
+            1 for path in accepted_detail_paths if bool(path.metadata.get("detail_overlap_exception_applied", False))
+        )
+        overlap_rejected_count = sum(
+            1
+            for record in dropped_records
+            if str(record.get("drop_reason", "")) in {"redundant_overlap", "redundant_centerline_overlap", "noisy_loop"}
+            and (bool(record.get("was_self_overlapping", False)) or record.get("component_id") is not None)
+        )
+        debug.update({
+            "small_detail_outline_mode_enabled": True,
+            "small_detail_components_detected": int(len(residual_components_for_detail)),
+            "small_detail_components_outlined": int(len(accepted_component_ids)),
+            "small_detail_components_dropped": int(len(dropped_component_ids - accepted_component_ids)),
+            "small_detail_drop_reasons": dict(small_detail_drop_reasons),
+            "self_overlapping_detail_paths_allowed": int(overlap_preserved_count),
+            "self_overlapping_detail_paths_rejected": int(overlap_rejected_count),
+            "detail_paths_kept_despite_overlap": int(overlap_preserved_count),
+            "detail_simplification_tolerance_mm": float(detail_tolerance_mm),
+            "arsenal_detail_outline_paths_generated": int(detail_filter_stats.get("detail_paths_generated_raw", 0)),
+            "arsenal_detail_outline_paths_dropped": int(detail_filter_stats.get("detail_paths_dropped", 0)),
+        })
 
         debug_append_toolpaths(debug, "detail_traces_rejected", rejected_detail_paths)
         debug_append_toolpaths(debug, "detail_traces_accepted", accepted_detail_paths)

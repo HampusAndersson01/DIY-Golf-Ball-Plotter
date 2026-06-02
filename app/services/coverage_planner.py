@@ -1436,11 +1436,86 @@ def plan_coverage_first_toolpaths(
         "outline_geometry_changed": False,
         "detail_dropped_path_records": [],
     }
+    printable_components: list[Any] = []
     if detail_paths:
         existing_painted_area = _paths_footprint_union(
             [path for path in all_paths if path.kind in {"fill-infill", "outline", "fill-infill-travel"}],
             pen_radius_mm=pen_radius_mm,
         )
+        residual_target = printable_geometry
+        if existing_painted_area is not None and not getattr(existing_painted_area, "is_empty", True):
+            try:
+                residual_target = printable_geometry.difference(existing_painted_area)
+            except Exception:
+                residual_target = printable_geometry.buffer(0).difference(existing_painted_area.buffer(0))
+        if residual_target is not None and not getattr(residual_target, "is_empty", True):
+            try:
+                residual_target = residual_target.buffer(0)
+            except Exception:
+                pass
+        printable_components = []
+        if residual_target is not None and not getattr(residual_target, "is_empty", True):
+            for geom in _geometry_parts(residual_target):
+                if geom is None or getattr(geom, "is_empty", True):
+                    continue
+                min_x, min_y, max_x, max_y = geom.bounds
+                local_width = min(float(max_x - min_x), float(max_y - min_y))
+                if local_width > (line_width_mm * 1.6):
+                    continue
+                printable_components.append(geom)
+        printable_component_boundaries = [component.boundary for component in printable_components]
+
+        def _candidate_component_index(path: Toolpath) -> int | None:
+            if len(path.points) < 2:
+                return None
+            shp = LineString([(point.x, point.y) for point in path.points])
+            if shp.is_empty:
+                return None
+            best_idx: int | None = None
+            best_overlap = 0.0
+            for idx, component in enumerate(printable_components):
+                try:
+                    overlap = float(shp.intersection(component).length)
+                except Exception:
+                    overlap = 0.0
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_idx = idx
+            return best_idx
+
+        def _candidate_centeredness(path: Toolpath, component_idx: int | None) -> float:
+            if component_idx is None or component_idx < 0 or component_idx >= len(printable_component_boundaries):
+                return 0.0
+            boundary = printable_component_boundaries[component_idx]
+            if boundary is None or boundary.is_empty or len(path.points) < 2:
+                return 0.0
+            samples = path.points
+            if len(samples) > 16:
+                step = max(1, int(len(samples) / 16))
+                samples = [samples[index] for index in range(0, len(samples), step)]
+            distances: list[float] = []
+            for pt in samples:
+                try:
+                    distances.append(float(ShapelyPoint(pt.x, pt.y).distance(boundary)))
+                except Exception:
+                    continue
+            if not distances:
+                return 0.0
+            return float(sum(distances) / max(1, len(distances)))
+
+        def _candidate_component_metrics(path: Toolpath, component_idx: int | None) -> dict[str, Any]:
+            if component_idx is None or component_idx < 0 or component_idx >= len(printable_components):
+                return {}
+            component = printable_components[component_idx]
+            if component is None or component.is_empty:
+                return {}
+            min_x, min_y, max_x, max_y = component.bounds
+            return {
+                "component_id": component_idx + 1,
+                "area_mm2": float(component.area),
+                "bbox_mm": (float(max_x - min_x), float(max_y - min_y)),
+                "estimated_width_mm": float(min(max_x - min_x, max_y - min_y)),
+            }
         detail_filter_stats = pipeline_core._filter_detail_trace_candidates_for_export(
             detail_paths,
             target_geometry=printable_geometry,
@@ -1452,8 +1527,9 @@ def plan_coverage_first_toolpaths(
             max_detail_overspill_area_ratio=max(0.0, float(os.getenv("MAX_DETAIL_OVERSPILL_AREA_RATIO", "0.03"))),
             min_detail_new_coverage_mm2=max(0.0, float(os.getenv("MIN_DETAIL_NEW_COVERAGE_MM2", "0.02"))),
             max_already_covered_ratio=max(0.0, min(1.0, float(os.getenv("MAX_ALREADY_COVERED_RATIO", "0.90")))),
-            candidate_component_index_fn=lambda _path: None,
-            candidate_centeredness_fn=lambda _path, _idx: 0.0,
+            candidate_component_index_fn=_candidate_component_index,
+            candidate_centeredness_fn=_candidate_centeredness,
+            candidate_component_metrics_fn=_candidate_component_metrics,
         )
         kept_detail_paths = list(detail_filter_stats["accepted_detail_paths"])
         all_paths.extend(kept_detail_paths)
@@ -1461,6 +1537,47 @@ def plan_coverage_first_toolpaths(
 
     if debug is not None:
         debug.update(detail_filter_stats)
+        accepted_detail_paths = list(detail_filter_stats.get("accepted_detail_paths", []))
+        dropped_records = list(detail_filter_stats.get("detail_dropped_path_records", []))
+        accepted_component_ids = {
+            int(path.metadata.get("detail_component_id"))
+            for path in accepted_detail_paths
+            if path.metadata.get("detail_component_id") is not None
+        }
+        dropped_component_ids = {
+            int(record["component_id"])
+            for record in dropped_records
+            if record.get("component_id") is not None
+        }
+        small_detail_drop_reasons: dict[str, int] = {}
+        for record in dropped_records:
+            component_id = record.get("component_id")
+            if component_id is None:
+                continue
+            reason = str(record.get("drop_reason", "unknown"))
+            small_detail_drop_reasons[reason] = int(small_detail_drop_reasons.get(reason, 0)) + 1
+        overlap_preserved_count = sum(
+            1 for path in accepted_detail_paths if bool(path.metadata.get("detail_overlap_exception_applied", False))
+        )
+        overlap_rejected_count = sum(
+            1
+            for record in dropped_records
+            if str(record.get("drop_reason", "")) in {"redundant_overlap", "redundant_centerline_overlap", "noisy_loop"}
+            and (bool(record.get("was_self_overlapping", False)) or record.get("component_id") is not None)
+        )
+        debug.update({
+            "small_detail_outline_mode_enabled": True,
+            "small_detail_components_detected": int(len(printable_components)),
+            "small_detail_components_outlined": int(len(accepted_component_ids)),
+            "small_detail_components_dropped": int(len(dropped_component_ids - accepted_component_ids)),
+            "small_detail_drop_reasons": small_detail_drop_reasons,
+            "self_overlapping_detail_paths_allowed": int(overlap_preserved_count),
+            "self_overlapping_detail_paths_rejected": int(overlap_rejected_count),
+            "detail_paths_kept_despite_overlap": int(overlap_preserved_count),
+            "detail_simplification_tolerance_mm": float(detail_tolerance_mm),
+            "arsenal_detail_outline_paths_generated": int(detail_filter_stats.get("detail_paths_generated_raw", 0)),
+            "arsenal_detail_outline_paths_dropped": int(detail_filter_stats.get("detail_paths_dropped", 0)),
+        })
         hole_count = sum(len(poly.interiors) for poly in _geometry_parts(printable_geometry))
         cell_count = max(1, len(component_debug) + hole_count)
         debug["local_cell_count"] = int(cell_count)
