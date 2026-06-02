@@ -12514,6 +12514,112 @@ def generate_toolpaths(
             q = int(math.ceil(math.pi / (4.0 * denom)))
             return max(16, min(64, q))
 
+        def _component_outline_metrics(component: Any) -> tuple[float, float]:
+            if component is None or component.is_empty:
+                return 0.0, 0.0
+            min_x, min_y, max_x, max_y = component.bounds
+            min_dim = max(0.0, min(float(max_x - min_x), float(max_y - min_y)))
+            return float(component.area), min_dim
+
+        def _build_outline_paths_from_geometry(
+            outline_geometry: Any,
+            *,
+            offset_mm: float,
+            source_label: str,
+            simplify_outline_mm: float,
+        ) -> tuple[list[Toolpath], dict[str, Any]]:
+            outline_paths_local: list[Toolpath] = []
+            component_count_input = 0
+            component_count_output = 0
+            paths_generated = 0
+            paths_dropped = 0
+            thin_components = 0
+            small_components = 0
+            thin_components_outlined = 0
+            small_components_outlined = 0
+            drop_reasons: dict[str, int] = {}
+            total_length_mm = 0.0
+
+            components = normalize_geometry(outline_geometry)
+            component_count_input = len(components)
+            thin_threshold_mm = pen_width_mm * 1.05
+            small_area_threshold_mm2 = max(1e-6, pen_width_mm * pen_width_mm * 0.35)
+            for cidx, poly in enumerate(components, start=1):
+                area_mm2, min_dim_mm = _component_outline_metrics(poly)
+                is_thin = bool(min_dim_mm > 0.0 and min_dim_mm <= thin_threshold_mm)
+                is_small = bool(area_mm2 > 0.0 and area_mm2 <= small_area_threshold_mm2)
+                if is_thin:
+                    thin_components += 1
+                if is_small:
+                    small_components += 1
+                component_generated = False
+
+                outer = simplify_segment_points([Point(float(x), float(y)) for x, y in poly.exterior.coords], simplify_outline_mm, True)
+                if len(outer) >= 4:
+                    outline_paths_local.append(Toolpath(
+                        points=outer,
+                        kind="outline",
+                        closed=True,
+                        source=source_label,
+                        metadata={
+                            "path_role": "FINAL_OUTER_OUTLINE",
+                            "ring_role": "outer",
+                            "offset_mm": float(offset_mm),
+                            "outline_generation_source": source_label,
+                            "source_region_id": f"component_{int(cidx):03d}",
+                        },
+                    ))
+                    component_generated = True
+                    paths_generated += 1
+                    total_length_mm += float(segment_length(outer + [outer[0]])) if outer else 0.0
+                else:
+                    drop_reasons["outer_ring_too_short"] = int(drop_reasons.get("outer_ring_too_short", 0)) + 1
+                    paths_dropped += 1
+
+                for ring in poly.interiors:
+                    inner = simplify_segment_points([Point(float(x), float(y)) for x, y in ring.coords], simplify_outline_mm, True)
+                    if len(inner) >= 4:
+                        outline_paths_local.append(Toolpath(
+                            points=inner,
+                            kind="outline",
+                            closed=True,
+                            source=f"{source_label}_hole",
+                            metadata={
+                                "path_role": "FINAL_INNER_OUTLINE",
+                                "ring_role": "hole",
+                                "offset_mm": float(offset_mm),
+                                "outline_generation_source": source_label,
+                                "source_region_id": f"component_{int(cidx):03d}",
+                                "is_hole": True,
+                            },
+                        ))
+                        component_generated = True
+                        paths_generated += 1
+                        total_length_mm += float(segment_length(inner + [inner[0]])) if inner else 0.0
+                    else:
+                        drop_reasons["inner_ring_too_short"] = int(drop_reasons.get("inner_ring_too_short", 0)) + 1
+                        paths_dropped += 1
+
+                if component_generated:
+                    component_count_output += 1
+                    if is_thin:
+                        thin_components_outlined += 1
+                    if is_small:
+                        small_components_outlined += 1
+
+            return outline_paths_local, {
+                "outline_component_count_input": int(component_count_input),
+                "outline_component_count_output": int(component_count_output),
+                "outline_paths_generated": int(paths_generated),
+                "outline_paths_dropped": int(paths_dropped),
+                "outline_drop_reasons": dict(sorted(drop_reasons.items())),
+                "thin_components_outlined": int(thin_components_outlined),
+                "small_components_outlined": int(small_components_outlined),
+                "outline_total_length_mm": float(total_length_mm),
+                "outline_thin_component_count": int(thin_components),
+                "outline_small_component_count": int(small_components),
+            }
+
         hole_voids: list[Any] = []
         for poly in normalize_geometry(printable_geometry):
             for ring in poly.interiors:
@@ -13423,40 +13529,53 @@ def generate_toolpaths(
         residual_before = printable_geometry if covered_geom is None or covered_geom.is_empty else printable_geometry.difference(covered_geom)
         fill_paths = optimize_toolpath_order(accepted_paths, strategy=travel_ordering)
 
-        outline_paths: list[Toolpath] = []
         final_outer_outline_inset_mm = float(pen_radius)
         final_inner_outline_inset_mm = float(pen_radius)
-        final_outline_geom = _offset_geometry(
+        legacy_outline_geom = _offset_geometry(
             printable_geometry,
             -final_outer_outline_inset_mm,
             join_style=offset_join_style,
             miter_limit=offset_miter_limit,
             quad_segs=_quad_segs_for_tolerance(max(0.01, pen_radius), offset_arc_tolerance_mm),
         )
-        if final_outline_geom is None or final_outline_geom.is_empty:
-            final_outline_geom = printable_geometry
-        for cidx, poly in enumerate(normalize_geometry(final_outline_geom), start=1):
-            outer = simplify_segment_points([Point(float(x), float(y)) for x, y in poly.exterior.coords], 0.0, True)
-            if len(outer) >= 4:
-                    outline_paths.append(Toolpath(
-                        points=outer,
-                        kind="outline",
-                        closed=True,
-                        source="final_outline_offset_outer",
-                    metadata={"path_role": "FINAL_OUTER_OUTLINE", "ring_role": "outer", "offset_mm": float(final_outer_outline_inset_mm), "source_region_id": f"component_{int(cidx):03d}"},
-                ))
-            for ring in poly.interiors:
-                inner = simplify_segment_points([Point(float(x), float(y)) for x, y in ring.coords], 0.0, True)
-                if len(inner) >= 4:
-                        outline_paths.append(Toolpath(
-                            points=inner,
-                            kind="outline",
-                            closed=True,
-                            source="final_outline_offset_inner",
-                            metadata={"path_role": "FINAL_INNER_OUTLINE", "ring_role": "hole", "offset_mm": float(final_inner_outline_inset_mm), "source_region_id": f"component_{int(cidx):03d}", "is_hole": True},
-                        ))
+        if legacy_outline_geom is None or legacy_outline_geom.is_empty:
+            legacy_outline_geom = printable_geometry
 
-        for outline_path in outline_paths:
+        geometry_quality = bundle.metadata.get("geometry_quality") if isinstance(bundle.metadata, dict) else None
+        is_raster_source = bool(isinstance(geometry_quality, dict) and str(geometry_quality.get("source_mode", "")) == "raster")
+        target_component_count = len(normalize_geometry(printable_geometry))
+        legacy_component_count = len(normalize_geometry(legacy_outline_geom))
+        target_area = float(printable_geometry.area) if printable_geometry is not None and not printable_geometry.is_empty else 0.0
+        legacy_area = float(legacy_outline_geom.area) if legacy_outline_geom is not None and not legacy_outline_geom.is_empty else 0.0
+        lost_component_count = max(0, target_component_count - legacy_component_count)
+        lost_area_ratio = 0.0 if target_area <= 1e-9 else max(0.0, (target_area - legacy_area) / target_area)
+        use_final_target_outline = bool(
+            is_raster_source
+            and (
+                legacy_outline_geom is None
+                or legacy_outline_geom.is_empty
+                or legacy_component_count < target_component_count
+                or lost_area_ratio >= 0.18
+            )
+        )
+        outline_source_geom = printable_geometry if use_final_target_outline else legacy_outline_geom
+        outline_generation_source = "final_target_mask" if use_final_target_outline else "final_outline_offset"
+        outline_emit_offset_mm = 0.0 if use_final_target_outline else float(final_outer_outline_inset_mm)
+
+        outline_paths, outline_debug = _build_outline_paths_from_geometry(
+            outline_source_geom,
+            offset_mm=outline_emit_offset_mm,
+            source_label=outline_generation_source,
+            simplify_outline_mm=0.0 if use_final_target_outline else 0.0,
+        )
+        coverage_outline_paths, _coverage_outline_debug = _build_outline_paths_from_geometry(
+            legacy_outline_geom,
+            offset_mm=float(final_outer_outline_inset_mm),
+            source_label="final_outline_offset_coverage",
+            simplify_outline_mm=0.0,
+        )
+
+        for outline_path in coverage_outline_paths:
             fp = _path_footprint(outline_path)
             if fp is None or fp.is_empty:
                 continue
@@ -13580,6 +13699,17 @@ def generate_toolpaths(
             }
             debug_obj["contour_offset_debug"] = {
                 "outline_offset_mm": float(final_outer_outline_inset_mm),
+                "outline_generation_source": outline_generation_source,
+                "outline_component_count_input": int(outline_debug.get("outline_component_count_input", 0)),
+                "outline_component_count_output": int(outline_debug.get("outline_component_count_output", 0)),
+                "outline_paths_generated": int(outline_debug.get("outline_paths_generated", 0)),
+                "outline_paths_dropped": int(outline_debug.get("outline_paths_dropped", 0)),
+                "outline_drop_reasons": dict(outline_debug.get("outline_drop_reasons", {})),
+                "thin_components_outlined": int(outline_debug.get("thin_components_outlined", 0)),
+                "small_components_outlined": int(outline_debug.get("small_components_outlined", 0)),
+                "outline_total_length_mm": float(outline_debug.get("outline_total_length_mm", 0.0)),
+                "outline_source_component_count_lost_by_inset": int(lost_component_count),
+                "outline_source_area_loss_ratio_from_inset": float(lost_area_ratio),
                 "contour_overlap_spacing_factor": float(contour_overlap_spacing_factor),
                 "offset_step_mm": float(offset_step_mm),
                 "offset_join_style": "miter" if offset_join_style == 2 else "round",
@@ -14991,9 +15121,12 @@ def generate_gcode_from_toolpaths(
         connector_pen_down_paths = 0
         connector_total_paths = 0
         detail_continuation_pen_down_paths = 0
+        outline_path_start_count_in_gcode = 0
         toolpath_by_id = {tp.path_id: tp for tp in toolpaths if tp.path_id}
         for entry in preview:
             src_kind = str(entry.get("source_path_kind") or entry.get("kind") or "")
+            if str(entry.get("kind") or "") == "outline" and bool(entry.get("pen_down", False)):
+                outline_path_start_count_in_gcode += 1
             if src_kind in {"fill-infill-travel", "coverage_connector"}:
                 connector_total_paths += 1
                 if bool(entry.get("pen_down", False)):
@@ -15033,6 +15166,7 @@ def generate_gcode_from_toolpaths(
         debug["rejected_travel_reasons"] = dict(sorted(rejected_travel_reasons.items()))
         debug["converted_connectors_outside_outline_area_mm2"] = float(converted_connectors_outside_outline_area_mm2)
         debug["actual_gcode_pen_lift_count"] = actual_pen_lift_count
+        debug["outline_path_start_count_in_gcode"] = int(outline_path_start_count_in_gcode)
         debug["projected_toolpath_hash"] = hash_toolpaths(toolpaths)
 
     return g, preview

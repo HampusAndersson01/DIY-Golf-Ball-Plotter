@@ -636,10 +636,12 @@ def _boundary_paths_for_component(
                     region_id=int(component_id),
                     metadata={
                         "boundary_kind": "exterior",
+                        "ring_role": "outer",
                         "component_id": int(component_id),
                         "source_region_id": f"component_{int(component_id):03d}",
                         "path_role": "FINAL_OUTER_OUTLINE",
                         "generated_from": "final_fill_clip_polygon",
+                        "outline_generation_source": "final_target_mask",
                         "source_polygon_matches_infill_clip_polygon": True,
                         "outline_uses_infill_clip_polygon": True,
                         "outline_offset_mm": 0.0,
@@ -663,10 +665,12 @@ def _boundary_paths_for_component(
                         region_id=int(component_id),
                         metadata={
                             "boundary_kind": "hole",
+                            "ring_role": "hole",
                             "component_id": int(component_id),
                             "source_region_id": f"component_{int(component_id):03d}",
                             "path_role": "FINAL_INNER_OUTLINE",
                             "generated_from": "final_fill_clip_polygon",
+                            "outline_generation_source": "final_target_mask",
                             "source_polygon_matches_infill_clip_polygon": True,
                             "outline_uses_infill_clip_polygon": True,
                             "outline_offset_mm": 0.0,
@@ -1334,6 +1338,20 @@ def plan_coverage_first_toolpaths(
                 "infill_beyond_outline_after_mm2": float(_infill_beyond_outline_area_mm2(fill_paths, allowed_geom=component_endpoint_limit, pen_radius_mm=pen_radius_mm)),
             })
 
+        boundary = _boundary_paths_for_component(
+            component_geometry,
+            component_id=component_id,
+            simplify_tolerance_mm=simplify_tolerance_mm,
+            line_width_mm=line_width_mm,
+        )
+        boundary_paths.extend(boundary)
+        if outline_after_fill:
+            all_paths.extend(boundary)
+            pre_endpoint_clamp_paths.extend(_clone_toolpath(path) for path in boundary)
+        else:
+            all_paths = boundary + all_paths
+            pre_endpoint_clamp_paths = [_clone_toolpath(path) for path in boundary] + pre_endpoint_clamp_paths
+
     detail_clip_region = None
     if enable_fill and printable_geometry is not None and not getattr(printable_geometry, "is_empty", True):
         detail_clip_region = printable_geometry.buffer(-(line_width_mm * 0.5), join_style=1)
@@ -1373,15 +1391,6 @@ def plan_coverage_first_toolpaths(
     if detail_paths:
         all_paths.extend(detail_paths)
         pre_endpoint_clamp_paths.extend(_clone_toolpath(path) for path in detail_paths)
-
-        boundary = _boundary_paths_for_component(component_geometry, component_id=component_id, simplify_tolerance_mm=simplify_tolerance_mm, line_width_mm=line_width_mm)
-        boundary_paths.extend(boundary)
-        if outline_after_fill:
-            all_paths.extend(boundary)
-            pre_endpoint_clamp_paths.extend(_clone_toolpath(path) for path in boundary)
-        else:
-            all_paths = boundary + all_paths
-            pre_endpoint_clamp_paths = [_clone_toolpath(path) for path in boundary] + pre_endpoint_clamp_paths
 
     if debug is not None:
         hole_count = sum(len(poly.interiors) for poly in _geometry_parts(printable_geometry))
@@ -1560,6 +1569,36 @@ def plan_coverage_first_toolpaths(
     pre_endpoint_clamp_final_paths = pipeline_core.assign_stable_path_ids(pre_endpoint_clamp_final_paths)
 
     if debug is not None:
+        outline_paths_generated = int(sum(1 for path in final_paths if path.kind == "outline"))
+        outline_component_labels = {
+            str((path.metadata or {}).get("source_region_id", ""))
+            for path in final_paths
+            if path.kind == "outline" and str((path.metadata or {}).get("source_region_id", ""))
+        }
+        outline_total_length_mm = float(sum(pipeline_core.segment_length(path.points) for path in final_paths if path.kind == "outline" and len(path.points) >= 2))
+        thin_components_outlined = int(sum(
+            1
+            for item in component_debug
+            if item.get("mode") == "thin" and any(str((path.metadata or {}).get("source_region_id", "")) == f"component_{int(item['component_id']):03d}" for path in final_paths if path.kind == "outline")
+        ))
+        small_components_outlined = int(sum(
+            1
+            for item in component_debug
+            if int(item.get("area_px", 0)) <= 4 and any(str((path.metadata or {}).get("source_region_id", "")) == f"component_{int(item['component_id']):03d}" for path in final_paths if path.kind == "outline")
+        ))
+        debug["contour_offset_debug"] = {
+            "outline_generation_source": "final_target_mask",
+            "outline_component_count_input": int(len(component_ids)),
+            "outline_component_count_output": int(len(outline_component_labels)),
+            "outline_paths_generated": int(outline_paths_generated),
+            "outline_paths_dropped": 0,
+            "outline_drop_reasons": {},
+            "thin_components_outlined": int(thin_components_outlined),
+            "small_components_outlined": int(small_components_outlined),
+            "outline_total_length_mm": float(outline_total_length_mm),
+            "outer_outline_path_count": int(sum(1 for path in final_paths if path.kind == "outline" and str((path.metadata or {}).get("path_role", "")) == "FINAL_OUTER_OUTLINE")),
+            "inner_outline_path_count": int(sum(1 for path in final_paths if path.kind == "outline" and str((path.metadata or {}).get("path_role", "")) == "FINAL_INNER_OUTLINE")),
+        }
         pre_endpoint_clamp_painted = _path_points_to_mask(pre_endpoint_clamp_final_paths, shape=target_mask.shape, current_to_source_matrix=current_to_source, pen_radius_px=max(1, int(round(line_width_mm * px_per_mm / 2.0))))
         current_painted = _path_points_to_mask(final_paths, shape=target_mask.shape, current_to_source_matrix=current_to_source, pen_radius_px=max(1, int(round(line_width_mm * px_per_mm / 2.0))))
         target = target_mask > 0

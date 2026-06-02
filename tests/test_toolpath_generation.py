@@ -1,10 +1,11 @@
+import io
 import math
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 from shapely import affinity
 from shapely.geometry import LineString, MultiPolygon, Point as ShapelyPoint, Polygon
 
@@ -21,6 +22,7 @@ from tests.test_svg_parser import CONFIG
 
 ROOT = Path(__file__).resolve().parents[1]
 HA_FIXTURE = ROOT / "tests" / "fixtures" / "images" / "ha-compact-lightbg.png"
+CAROLIN_FIXTURE = ROOT / "tests" / "fixtures" / "images" / "Carolin Line.png"
 
 
 def _rect(width_mm: float, height_mm: float) -> Polygon:
@@ -112,6 +114,80 @@ def _paths_footprint_geometry(paths: list[Toolpath], pen_width_mm: float):
     if not stroke_geoms:
         return Polygon()
     return pipeline_core.unary_union(stroke_geoms)
+
+
+def _normalized_path_signature(paths: list[Toolpath], kind: str) -> list[tuple[tuple[float, float], ...]]:
+    signature: list[tuple[tuple[float, float], ...]] = []
+    for path in paths:
+        if path.kind != kind:
+            continue
+        signature.append(tuple((round(point.x, 6), round(point.y, 6)) for point in path.points))
+    return signature
+
+
+def _build_raster_fixture_toolpaths(
+    fixture: Path,
+    *,
+    pen_width_mm: float = 0.8,
+    infill_spacing_mm: float = 0.8,
+    tolerance: int = 24,
+    min_region_area_px: float = 8.0,
+    simplify_tolerance_px: float = 0.35,
+):
+    raster = RasterAnalysisService(CONFIG, MachineState(default_pen_up_s=575))
+    geometry = GeometryService()
+    toolpath_service = ToolpathService()
+    image_bytes = fixture.read_bytes()
+    analysis = raster.analyze_image(image_bytes, max_colors=32)
+    selected = next((c.id for c in analysis.colors if c.hex == "#000000"), analysis.colors[0].id)
+    mask = raster.build_mask(
+        image_bytes,
+        [selected],
+        tolerance=tolerance,
+        min_component_area_px=0,
+        open_radius_px=0,
+        close_radius_px=1,
+    )
+    regions = raster.extract_regions(mask, min_region_area_px=min_region_area_px, simplify_tolerance_px=simplify_tolerance_px)
+    mapped = geometry.map_bundle_to_angles(regions.bundle, regions.bounds, "contain", True, 4.0)
+    debug: dict[str, object] = {}
+    toolpaths = toolpath_service.generate_from_regions(
+        mapped,
+        pen_width_mm=pen_width_mm,
+        wall_count=1,
+        infill_pattern="hatch",
+        infill_spacing_mm=infill_spacing_mm,
+        infill_density=100.0,
+        infill_angle_deg=0.0,
+        fill_strategy="contour_offset",
+        outline_after_fill=True,
+        min_region_area=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=True,
+        small_shape_mode="single-wall",
+        thin_detail_mode=True,
+        thin_detail_min_area_mm2=0.0,
+        thin_detail_simplify_mm=0.0,
+        thin_detail_overlap=True,
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+        allow_pen_down_infill_connectors=True,
+        infill_path_mode="rectilinear",
+        expensive_coverage_repair=False,
+        debug=debug,
+    )
+    return raster, geometry, mapped, toolpaths, debug
+
+
+def _make_logo_bytes() -> bytes:
+    image = Image.new("RGB", (120, 120), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((15, 15, 105, 105), fill="black")
+    draw.ellipse((40, 40, 80, 80), fill="white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def _fill_modes(paths: list[Toolpath]) -> set[str]:
@@ -298,6 +374,145 @@ def test_collapsed_offsets_do_not_emit_legacy_detail_or_centerline_fallback():
     )
     assert any(path.kind == "outline" for path in toolpaths)
     assert not any(path.kind in {"detail-trace", "detail-continuation", "collapse-centerline", "gap-repair-centerline"} for path in toolpaths)
+
+
+def test_text_outline_generated_from_final_target_mask_and_emits_gcode_outline_paths():
+    _raster, _geometry, mapped, toolpaths, debug = _build_raster_fixture_toolpaths(CAROLIN_FIXTURE)
+    projected = pipeline_core.project_toolpaths_to_ball_angles(
+        pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=0.8),
+        center_lon_deg=0.0,
+        center_lat_deg=0.0,
+    )
+    gcode_debug: dict[str, object] = {}
+    gcode, _preview = GcodeService().generate_from_toolpaths(
+        toolpaths=projected,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=True,
+        debug=gcode_debug,
+    )
+
+    contour_debug = debug["contour_offset_debug"]
+    assert contour_debug["outline_generation_source"] == "final_target_mask"
+    assert contour_debug["outline_paths_generated"] > 0
+    assert contour_debug["outline_total_length_mm"] > 0.0
+    assert gcode_debug["outline_path_start_count_in_gcode"] > 0
+    assert any("PATH_START id=outline_" in line and "kind=outline" in line for line in gcode)
+    assert mapped.metadata["geometry_quality"]["source_mode"] == "raster"
+
+
+def test_thin_raster_text_components_are_not_skipped_by_outline_generation():
+    _raster, _geometry, _mapped, toolpaths, debug = _build_raster_fixture_toolpaths(CAROLIN_FIXTURE)
+    assert any(path.kind == "outline" for path in toolpaths)
+    assert debug["contour_offset_debug"]["thin_components_outlined"] > 0
+
+
+def test_raster_text_outline_switch_does_not_change_infill_geometry():
+    _raster, _geometry, mapped, raster_toolpaths, raster_debug = _build_raster_fixture_toolpaths(CAROLIN_FIXTURE)
+    plain_bundle = GeometryBundle(
+        outline_segments=list(mapped.outline_segments),
+        fill_boundary_segments=list(mapped.fill_boundary_segments),
+        detail_segments=list(mapped.detail_segments),
+        fill_shapes=list(mapped.fill_shapes),
+        printable_geometry=mapped.printable_geometry,
+        cutout_geometry=mapped.cutout_geometry,
+        metadata={},
+    )
+    plain_debug: dict[str, object] = {}
+    plain_toolpaths = generate_toolpaths(
+        plain_bundle,
+        enable_fill=True,
+        line_width_mm=0.8,
+        wall_count=1,
+        infill_density=100.0,
+        infill_spacing_mm=0.8,
+        infill_angle_deg=0.0,
+        outline_after_fill=True,
+        min_fill_area_mm2=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=True,
+        small_shape_mode="single-wall",
+        fill_strategy="contour_offset",
+        thin_detail_mode=True,
+        thin_detail_min_area_mm2=0.0,
+        thin_detail_simplify_mm=0.0,
+        thin_detail_overlap=True,
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+        allow_pen_down_infill_connectors=True,
+        infill_path_mode="rectilinear",
+        expensive_coverage_repair=False,
+        debug=plain_debug,
+    )
+
+    assert raster_debug["contour_offset_debug"]["outline_generation_source"] == "final_target_mask"
+    assert plain_debug["contour_offset_debug"]["outline_generation_source"] == "final_target_mask"
+    assert _normalized_path_signature(raster_toolpaths, "fill-infill") == _normalized_path_signature(plain_toolpaths, "fill-infill")
+    assert sum(1 for path in raster_toolpaths if path.kind == "fill-infill") == sum(1 for path in plain_toolpaths if path.kind == "fill-infill")
+
+
+def test_raster_hole_outline_preserves_inner_counters_without_crossing_them():
+    raster = RasterAnalysisService(CONFIG, MachineState(default_pen_up_s=575))
+    geometry = GeometryService()
+    toolpath_service = ToolpathService()
+    mask = raster.build_mask(_make_logo_bytes(), ["#000000"], tolerance=8, min_component_area_px=0, open_radius_px=0, close_radius_px=0)
+    regions = raster.extract_regions(mask, min_region_area_px=10, simplify_tolerance_px=0)
+    mapped = geometry.map_bundle_to_angles(regions.bundle, regions.bounds, "contain", True, 4.0)
+    debug: dict[str, object] = {}
+    toolpaths = toolpath_service.generate_from_regions(
+        mapped,
+        pen_width_mm=0.75,
+        wall_count=1,
+        infill_pattern="hatch",
+        infill_spacing_mm=0.75,
+        infill_density=100.0,
+        infill_angle_deg=0.0,
+        fill_strategy="contour_offset",
+        outline_after_fill=True,
+        min_region_area=0.0,
+        min_fill_width_mm=0.0,
+        simplify_tolerance_mm=0.0,
+        remove_duplicate_paths=True,
+        small_shape_mode="single-wall",
+        thin_detail_mode=True,
+        thin_detail_min_area_mm2=0.0,
+        thin_detail_simplify_mm=0.0,
+        thin_detail_overlap=True,
+        min_segment_length_mm=0.0,
+        travel_optimization="nearest-neighbor",
+        allow_pen_down_infill_connectors=True,
+        infill_path_mode="rectilinear",
+        expensive_coverage_repair=False,
+        debug=debug,
+    )
+    hole_polygon = next(iter(pipeline_core.normalize_geometry(mapped.printable_geometry))).interiors[0]
+    hole_area = Polygon(hole_polygon)
+    inner_outlines = [path for path in toolpaths if path.kind == "outline" and str((path.metadata or {}).get("ring_role", "")) == "hole"]
+    assert inner_outlines
+    assert debug["contour_offset_debug"]["outline_paths_generated"] >= len(inner_outlines)
+    for path in inner_outlines:
+        line = _line_for_path(path)
+        assert not hole_area.buffer(-0.01).crosses(line)
+
+
+def test_ha_raster_fixture_keeps_positive_infill_and_outline_output():
+    _raster, _geometry, _mapped, toolpaths, debug = _build_raster_fixture_toolpaths(HA_FIXTURE)
+    assert any(path.kind == "fill-infill" for path in toolpaths)
+    assert any(path.kind == "outline" for path in toolpaths)
+    assert debug["contour_offset_debug"]["outline_paths_generated"] > 0
+    assert debug["contour_offset_debug"]["outline_total_length_mm"] > 0.0
 
 
 def test_gcode_audit_has_no_legacy_detail_trace_path_start():
