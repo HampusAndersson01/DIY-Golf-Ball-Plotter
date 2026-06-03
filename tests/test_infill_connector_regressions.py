@@ -263,6 +263,35 @@ def test_arsenal_fixture_uses_serpentine_fill_for_wide_detail_regions():
     assert len(detail_serpentine_paths) > len(detail_centerlines)
 
 
+def test_arsenal_detail_repair_pass_reaches_required_coverage():
+    result = _run_fixture(ARSENAL_FIXTURE)
+    debug = result["debug"]
+    region_rows = list(debug.get("detail_region_repair_rows", []))
+    fillable_rows = [row for row in region_rows if bool(row.get("fillable", False))]
+
+    assert debug.get("detail_repair_pass_enabled") is True
+    assert float(debug.get("required_detail_coverage_percent", 0.0)) == pytest.approx(90.0, abs=1e-9)
+    assert float(debug.get("detail_coverage_after_repair_percent", 0.0)) >= 90.0
+    assert int(debug.get("detail_fillable_regions_failing_after_repair", -1)) == 0
+    assert fillable_rows
+    assert all(float(row.get("coverage_after_percent", 0.0)) >= 90.0 for row in fillable_rows)
+
+
+def test_arsenal_detail_repair_strokes_improve_coverage_without_overflow():
+    result = _run_fixture(ARSENAL_FIXTURE)
+    debug = result["debug"]
+    repair_paths = [
+        path for path in result["toolpaths"]
+        if path.kind == "fill-infill" and str((path.metadata or {}).get("fill_mode", "")).startswith("detail_repair_")
+    ]
+
+    assert float(debug.get("detail_coverage_after_repair_percent", 0.0)) > float(debug.get("detail_coverage_before_repair_percent", 0.0))
+    assert int(debug.get("detail_repair_strokes_added", 0)) > 0
+    assert repair_paths
+    assert float(debug.get("detail_repair_outside_overflow_mm2", 0.0)) <= float(debug.get("outside_region_overflow_tolerance_mm2", 0.0))
+    assert not any(path.kind == "outline" and path.source == "detail_repair_fill" for path in result["toolpaths"])
+
+
 def test_ring_shape_is_split_into_local_cells_before_routing():
     outer = Polygon([(0.0, 0.0), (120.0, 0.0), (120.0, 80.0), (0.0, 80.0)])
     inner = Polygon([(35.0, 18.0), (85.0, 18.0), (85.0, 62.0), (35.0, 62.0)])
@@ -325,6 +354,7 @@ def test_carolin_fixture_rejects_whitespace_crossing_connectors():
     assert debug.get("detail_source_whitelist_enforced") is True
     assert debug.get("travel_geometry_allowed_as_detail") is False
     assert int(debug.get("detail_paths_dropped_as_redundant_overlap", 0)) > 0
+    assert int(debug.get("detail_repair_strokes_added", 0)) == 0
 
 
 def test_carolin_fixture_post_generation_ordering_reduces_travel_and_preserves_outline():
@@ -338,6 +368,14 @@ def test_carolin_fixture_post_generation_ordering_reduces_travel_and_preserves_o
     assert debug.get("preview_uses_optimized_order") is True
     assert debug.get("gcode_uses_optimized_order") is True
     assert debug.get("uses_surface_mm_for_ordering") is True
+
+
+def test_ha_fixture_skips_detail_repair_augmentation():
+    result = _run_fixture(HA_FIXTURE)
+    debug = result["debug"]
+
+    assert int(debug.get("detail_repair_strokes_added", 0)) == 0
+    assert float(debug.get("detail_coverage_after_repair_percent", 0.0)) == pytest.approx(0.0, abs=1e-9)
     assert debug.get("geometry_changed") is False
     assert debug.get("path_points_moved") is False
     assert debug.get("paths_reordered") is True
