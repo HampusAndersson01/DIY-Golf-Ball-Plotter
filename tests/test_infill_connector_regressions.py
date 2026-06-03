@@ -270,14 +270,14 @@ def test_arsenal_detail_repair_pass_reaches_required_coverage():
     fillable_rows = [row for row in region_rows if bool(row.get("fillable", False))]
 
     assert debug.get("detail_repair_pass_enabled") is True
-    assert float(debug.get("required_detail_coverage_percent", 0.0)) == pytest.approx(90.0, abs=1e-9)
-    assert float(debug.get("detail_coverage_after_repair_percent", 0.0)) >= 90.0
+    assert float(debug.get("required_detail_coverage_percent", 0.0)) >= 95.0
+    assert float(debug.get("detail_coverage_after_repair_percent", 0.0)) >= float(debug.get("required_detail_coverage_percent", 0.0))
     assert int(debug.get("detail_fillable_regions_failing_after_repair", -1)) == 0
     assert int(debug.get("regions_failing_after_repair", -1)) == 0
     assert int(debug.get("missed_blob_count_after_repair", -1)) == 0
-    assert float(debug.get("largest_missed_blob_equivalent_diameter_mm_after", 1.0)) <= 0.25
+    assert float(debug.get("largest_missed_blob_equivalent_diameter_mm_after", 1.0)) <= 0.10
     assert fillable_rows
-    assert all(float(row.get("coverage_after_percent", 0.0)) >= 90.0 for row in fillable_rows)
+    assert all(float(row.get("coverage_after_percent", 0.0)) >= float(debug.get("required_detail_coverage_percent", 0.0)) for row in fillable_rows)
 
 
 def test_arsenal_detail_repair_strokes_improve_coverage_without_overflow():

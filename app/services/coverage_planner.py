@@ -1667,8 +1667,8 @@ def plan_coverage_first_toolpaths(
     classified_thin_component_ids: set[int] = set()
     detail_region_rows: list[dict[str, Any]] = []
     detail_repair_pass_enabled = False
-    required_detail_coverage_percent = 90.0
-    largest_allowed_missed_blob_equivalent_diameter_mm = 0.25
+    required_detail_coverage_percent = 98.0
+    largest_allowed_missed_blob_equivalent_diameter_mm = 0.10
     min_repair_blob_area_mm2 = 0.01
     outside_region_overflow_tolerance_mm2 = 0.005
     max_detail_repair_iterations_per_region = 30
