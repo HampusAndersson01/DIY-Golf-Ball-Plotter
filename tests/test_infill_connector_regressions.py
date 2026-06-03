@@ -273,6 +273,9 @@ def test_arsenal_detail_repair_pass_reaches_required_coverage():
     assert float(debug.get("required_detail_coverage_percent", 0.0)) == pytest.approx(90.0, abs=1e-9)
     assert float(debug.get("detail_coverage_after_repair_percent", 0.0)) >= 90.0
     assert int(debug.get("detail_fillable_regions_failing_after_repair", -1)) == 0
+    assert int(debug.get("regions_failing_after_repair", -1)) == 0
+    assert int(debug.get("missed_blob_count_after_repair", -1)) == 0
+    assert float(debug.get("largest_missed_blob_equivalent_diameter_mm_after", 1.0)) <= 0.25
     assert fillable_rows
     assert all(float(row.get("coverage_after_percent", 0.0)) >= 90.0 for row in fillable_rows)
 
@@ -290,6 +293,27 @@ def test_arsenal_detail_repair_strokes_improve_coverage_without_overflow():
     assert repair_paths
     assert float(debug.get("detail_repair_outside_overflow_mm2", 0.0)) <= float(debug.get("outside_region_overflow_tolerance_mm2", 0.0))
     assert not any(path.kind == "outline" and path.source == "detail_repair_fill" for path in result["toolpaths"])
+
+
+def test_arsenal_local_blob_validation_blocks_global_only_passes():
+    result = _run_fixture(ARSENAL_FIXTURE)
+    debug = result["debug"]
+
+    assert float(debug.get("detail_coverage_before_repair_percent", 0.0)) >= 90.0
+    assert int(debug.get("regions_failing_before_repair", 0)) > 0
+    assert int(debug.get("missed_blob_count_before_repair", 0)) > 0
+    assert debug.get("coverage_validation_target") == "selected_color_mask"
+    assert debug.get("local_coverage_validation_enabled") is True
+
+
+def test_arsenal_fill_may_overlap_outline_when_repairing_target_gaps():
+    result = _run_fixture(ARSENAL_FIXTURE)
+    debug = result["debug"]
+
+    assert debug.get("fill_allowed_to_overlap_outline") is True
+    assert debug.get("repair_clipped_against") == "selected_color_mask"
+    assert float(debug["infill_debug"]["pen_width_mm"]) == pytest.approx(0.6, abs=1e-9)
+    assert float(debug["infill_debug"]["spacing_mm"]) == pytest.approx(0.6, abs=1e-9)
 
 
 def test_ring_shape_is_split_into_local_cells_before_routing():
@@ -355,6 +379,7 @@ def test_carolin_fixture_rejects_whitespace_crossing_connectors():
     assert debug.get("travel_geometry_allowed_as_detail") is False
     assert int(debug.get("detail_paths_dropped_as_redundant_overlap", 0)) > 0
     assert int(debug.get("detail_repair_strokes_added", 0)) == 0
+    assert debug.get("coverage_validation_target") == "selected_color_mask"
 
 
 def test_carolin_fixture_post_generation_ordering_reduces_travel_and_preserves_outline():
@@ -376,6 +401,8 @@ def test_ha_fixture_skips_detail_repair_augmentation():
 
     assert int(debug.get("detail_repair_strokes_added", 0)) == 0
     assert float(debug.get("detail_coverage_after_repair_percent", 0.0)) == pytest.approx(0.0, abs=1e-9)
+    assert float(debug["infill_debug"]["pen_width_mm"]) == pytest.approx(0.6, abs=1e-9)
+    assert float(debug["infill_debug"]["spacing_mm"]) == pytest.approx(0.6, abs=1e-9)
     assert debug.get("geometry_changed") is False
     assert debug.get("path_points_moved") is False
     assert debug.get("paths_reordered") is True

@@ -951,6 +951,21 @@ def _connected_mask_blob_rows(
     return blob_rows
 
 
+def _blob_summary(blob_rows: list[dict[str, Any]]) -> dict[str, float | int]:
+    if not blob_rows:
+        return {
+            "missed_blob_count": 0,
+            "largest_missed_blob_area_mm2": 0.0,
+            "largest_missed_blob_equivalent_diameter_mm": 0.0,
+        }
+    largest_area_mm2 = float(max(float(row.get("area_mm2", 0.0)) for row in blob_rows))
+    return {
+        "missed_blob_count": int(len(blob_rows)),
+        "largest_missed_blob_area_mm2": float(largest_area_mm2),
+        "largest_missed_blob_equivalent_diameter_mm": float(_equivalent_diameter_mm(largest_area_mm2)),
+    }
+
+
 def _longest_mask_centerline_candidate(
     component_mask: np.ndarray,
     *,
@@ -1432,6 +1447,23 @@ def _generate_debug_artifacts(
     final_check[(painted > 0) & (target_mask > 0)] = (50, 180, 50)
     cv2.imwrite(str(output_dir / "13_final_coverage_check.png"), final_check)
 
+    accepted_ids = {id(path) for path in accepted_repair_paths}
+    before_repair_paths = [path for path in final_paths if id(path) not in accepted_ids]
+    before_repair_painted = _path_points_to_mask(before_repair_paths, shape=shape, current_to_source_matrix=current_to_source_matrix, pen_radius_px=pen_radius_px)
+    outline_only = [path for path in final_paths if path.kind == "outline"]
+    outline_painted = _path_points_to_mask(outline_only, shape=shape, current_to_source_matrix=current_to_source_matrix, pen_radius_px=pen_radius_px)
+    combined_after = painted
+    missed_before = ((target_mask > 0) & ~(before_repair_painted > 0)).astype(np.uint8) * 255
+    missed_after = ((target_mask > 0) & ~(combined_after > 0)).astype(np.uint8) * 255
+    cv2.imwrite(str(output_dir / "target_mask.png"), (target_mask > 0).astype(np.uint8) * 255)
+    cv2.imwrite(str(output_dir / "fill_coverage_before_repair.png"), _mask_to_overlay(before_repair_painted, (80, 120, 220)))
+    cv2.imwrite(str(output_dir / "outline_coverage.png"), _mask_to_overlay(outline_painted, (0, 180, 0)))
+    cv2.imwrite(str(output_dir / "combined_coverage_after_repair.png"), _mask_to_overlay(combined_after, (60, 160, 80)))
+    cv2.imwrite(str(output_dir / "missed_blobs_before_repair.png"), _mask_to_overlay(missed_before, (0, 0, 255)))
+    cv2.imwrite(str(output_dir / "missed_blobs_after_repair.png"), _mask_to_overlay(missed_after, (0, 0, 255)))
+    cv2.imwrite(str(output_dir / "repair_strokes.png"), _render_paths_overlay(shape, accepted_repair_paths, current_to_source_matrix=current_to_source_matrix, colors={"fill-infill": (220, 0, 0), "coverage_centerline": (220, 0, 0), "outline": (220, 0, 0), "detail-trace": (220, 0, 0)}))
+    cv2.imwrite(str(output_dir / "overflow_pixels.png"), _mask_to_overlay(overflow, (255, 0, 0)))
+
     coverage_report = {"pen_radius_px": int(pen_radius_px), **_painted_metrics(target_mask=target_mask, painted_mask=painted, allowed_mask=allowed_mask, px_per_mm=px_per_mm)}
     coverage_report.update({
         "number_of_components": int(sum(1 for path in final_paths if path.kind != "detail-trace")),
@@ -1636,9 +1668,10 @@ def plan_coverage_first_toolpaths(
     detail_region_rows: list[dict[str, Any]] = []
     detail_repair_pass_enabled = False
     required_detail_coverage_percent = 90.0
+    largest_allowed_missed_blob_equivalent_diameter_mm = 0.25
     min_repair_blob_area_mm2 = 0.01
     outside_region_overflow_tolerance_mm2 = 0.005
-    max_detail_repair_iterations_per_region = 20
+    max_detail_repair_iterations_per_region = 30
     detail_coverage_before_repair_percent = 0.0
     detail_coverage_after_repair_percent = 0.0
     detail_fillable_regions_total = 0
@@ -1652,6 +1685,17 @@ def plan_coverage_first_toolpaths(
     detail_repair_outside_overflow_mm2 = 0.0
     detail_regions_still_below_90: list[dict[str, Any]] = []
     detail_region_infos: list[dict[str, Any]] = []
+    local_coverage_validation_enabled = False
+    coverage_validation_target = "selected_color_mask"
+    repair_clipped_against = "selected_color_mask"
+    fill_allowed_to_overlap_outline = True
+    regions_total = 0
+    region_coverage_min_percent = 0.0
+    missed_blob_count_before_repair = 0
+    missed_blob_count_after_repair = 0
+    largest_missed_blob_area_mm2_before = 0.0
+    largest_missed_blob_area_mm2_after = 0.0
+    largest_missed_blob_equivalent_diameter_mm_after = 0.0
 
     for component_id in component_ids:
         component_mask = (labels == component_id).astype(np.uint8)
@@ -1910,7 +1954,7 @@ def plan_coverage_first_toolpaths(
 
         detail_repair_pass_enabled = bool(detail_region_infos)
         if detail_repair_pass_enabled:
-            detail_fill_coverage_paths = _detail_coverage_paths(all_paths)
+            local_coverage_validation_enabled = True
             total_fillable_area_mm2 = 0.0
             total_covered_before_mm2 = 0.0
             total_covered_after_mm2 = 0.0
@@ -1922,6 +1966,12 @@ def plan_coverage_first_toolpaths(
                 region_px_per_mm = float(info["px_per_mm"])
                 region_pen_radius_px = max(1, int(round(pen_radius_mm * region_px_per_mm)))
                 pen_radius_px_by_region[region_component_id] = region_pen_radius_px
+                region_geometry = info["geometry"]
+                region_outline_paths = _boundary_paths_for_geometry(
+                    region_geometry,
+                    simplify_tolerance_mm=simplify_tolerance_mm,
+                    line_width_mm=line_width_mm,
+                )
                 region_current_to_source = (
                     region_px_per_mm,
                     0.0,
@@ -1931,7 +1981,7 @@ def plan_coverage_first_toolpaths(
                     -float(info["origin_y"]) * region_px_per_mm,
                 )
                 painted_before = _path_points_to_mask(
-                    detail_fill_coverage_paths,
+                    [*_detail_coverage_paths(all_paths), *region_outline_paths],
                     shape=region_mask.shape,
                     current_to_source_matrix=region_current_to_source,
                     pen_radius_px=region_pen_radius_px,
@@ -1946,6 +1996,11 @@ def plan_coverage_first_toolpaths(
                     ((region_mask > 0) & ~(painted_before > 0)).astype(np.uint8),
                     px_per_mm=region_px_per_mm,
                     min_blob_area_mm2=min_repair_blob_area_mm2,
+                )
+                blob_summary_before = _blob_summary(blob_rows_before)
+                visible_blob_count_before = sum(
+                    1 for blob in blob_rows_before
+                    if _equivalent_diameter_mm(float(blob.get("area_mm2", 0.0))) > largest_allowed_missed_blob_equivalent_diameter_mm
                 )
                 coverage_before_percent = float(metrics_before_region["coverage_percent"])
                 area_mm2 = float(info["area_mm2"])
@@ -1969,14 +2024,23 @@ def plan_coverage_first_toolpaths(
                     "missed_area_before_mm2": float(metrics_before_region["missed_area_mm2"]),
                     "missed_area_after_mm2": float(metrics_before_region["missed_area_mm2"]),
                     "missed_area_mm2": float(metrics_before_region["missed_area_mm2"]),
-                    "missed_blob_count": int(len(blob_rows_before)),
-                    "largest_missed_blob_mm2": float(max((float(blob["area_mm2"]) for blob in blob_rows_before), default=0.0)),
+                    "missed_blob_count": int(visible_blob_count_before),
+                    "missed_blob_count_before_repair": int(visible_blob_count_before),
+                    "missed_blob_count_after_repair": int(visible_blob_count_before),
+                    "largest_missed_blob_mm2": float(blob_summary_before["largest_missed_blob_area_mm2"]),
+                    "largest_missed_blob_area_mm2_before": float(blob_summary_before["largest_missed_blob_area_mm2"]),
+                    "largest_missed_blob_area_mm2_after": float(blob_summary_before["largest_missed_blob_area_mm2"]),
+                    "largest_missed_blob_diameter_before_mm": float(blob_summary_before["largest_missed_blob_equivalent_diameter_mm"]),
+                    "largest_missed_blob_diameter_after_mm": float(blob_summary_before["largest_missed_blob_equivalent_diameter_mm"]),
                     "fillable": bool(fillable_region),
                     "failure_reason_if_still_below_90": "",
                     "repair_strokes_added": 0,
                     "detail_repair_iterations": 0,
                 }
                 detail_region_rows.append(row)
+                regions_total += 1
+                missed_blob_count_before_repair += int(visible_blob_count_before)
+                largest_missed_blob_area_mm2_before = max(largest_missed_blob_area_mm2_before, float(blob_summary_before["largest_missed_blob_area_mm2"]))
                 if not fillable_region:
                     row["failure_reason_if_still_below_90"] = "non_fillable_below_pen_diameter"
                     continue
@@ -1984,7 +2048,10 @@ def plan_coverage_first_toolpaths(
                 total_fillable_area_mm2 += area_mm2
                 total_covered_before_mm2 += float(metrics_before_region["painted_inside_area_mm2"])
                 total_covered_after_mm2 += float(metrics_before_region["painted_inside_area_mm2"])
-                if coverage_before_percent < required_detail_coverage_percent:
+                if (
+                    coverage_before_percent < required_detail_coverage_percent
+                    or float(blob_summary_before["largest_missed_blob_equivalent_diameter_mm"]) > largest_allowed_missed_blob_equivalent_diameter_mm
+                ):
                     detail_fillable_regions_failing_before_repair += 1
 
             if total_fillable_area_mm2 > 0.0:
@@ -2018,7 +2085,7 @@ def plan_coverage_first_toolpaths(
                     -float(info["origin_x"]) * region_px_per_mm,
                     -float(info["origin_y"]) * region_px_per_mm,
                 )
-                current_detail_paths = _detail_coverage_paths(all_paths)
+                current_detail_paths = [*_detail_coverage_paths(all_paths), *region_outline_paths]
                 current_painted = _path_points_to_mask(
                     current_detail_paths,
                     shape=region_mask.shape,
@@ -2031,11 +2098,26 @@ def plan_coverage_first_toolpaths(
                     allowed_mask=region_mask,
                     px_per_mm=region_px_per_mm,
                 )
-                if float(current_metrics["coverage_percent"]) >= required_detail_coverage_percent:
+                current_blob_rows = _connected_mask_blob_rows(
+                    ((region_mask > 0) & ~(current_painted > 0)).astype(np.uint8),
+                    px_per_mm=region_px_per_mm,
+                    min_blob_area_mm2=min_repair_blob_area_mm2,
+                )
+                current_blob_summary = _blob_summary(current_blob_rows)
+                if (
+                    float(current_metrics["coverage_percent"]) >= required_detail_coverage_percent
+                    and float(current_blob_summary["largest_missed_blob_equivalent_diameter_mm"]) <= largest_allowed_missed_blob_equivalent_diameter_mm
+                ):
                     row["coverage_after_percent"] = float(current_metrics["coverage_percent"])
                     row["coverage_percent"] = float(current_metrics["coverage_percent"])
                     row["missed_area_after_mm2"] = float(current_metrics["missed_area_mm2"])
                     row["missed_area_mm2"] = float(current_metrics["missed_area_mm2"])
+                    row["missed_blob_count_after_repair"] = int(sum(
+                        1 for blob in current_blob_rows
+                        if _equivalent_diameter_mm(float(blob.get("area_mm2", 0.0))) > largest_allowed_missed_blob_equivalent_diameter_mm
+                    ))
+                    row["largest_missed_blob_area_mm2_after"] = float(current_blob_summary["largest_missed_blob_area_mm2"])
+                    row["largest_missed_blob_diameter_after_mm"] = float(current_blob_summary["largest_missed_blob_equivalent_diameter_mm"])
                     continue
 
                 detail_repair_regions_processed += 1
@@ -2121,7 +2203,7 @@ def plan_coverage_first_toolpaths(
                                 candidate_inside_px = int(np.count_nonzero((candidate_mask > 0) & region_mask))
                                 already_covered_px = int(np.count_nonzero((candidate_mask > 0) & (current_painted > 0) & region_mask))
                                 already_covered_ratio = float(already_covered_px / max(1, candidate_inside_px))
-                                if newly_covered_target_area_mm2 <= 0.0:
+                                if newly_covered_target_area_mm2 <= 0.005:
                                     continue
                                 if outside_region_overflow_mm2 > outside_region_overflow_tolerance_mm2:
                                     continue
@@ -2169,7 +2251,16 @@ def plan_coverage_first_toolpaths(
                         float(detail_repair_outside_overflow_mm2),
                         float(best_choice["outside_region_overflow_mm2"]),
                     )
-                    if float(current_metrics["coverage_percent"]) >= required_detail_coverage_percent:
+                    current_blob_rows = _connected_mask_blob_rows(
+                        ((region_mask > 0) & ~(current_painted > 0)).astype(np.uint8),
+                        px_per_mm=region_px_per_mm,
+                        min_blob_area_mm2=min_repair_blob_area_mm2,
+                    )
+                    current_blob_summary = _blob_summary(current_blob_rows)
+                    if (
+                        float(current_metrics["coverage_percent"]) >= required_detail_coverage_percent
+                        and float(current_blob_summary["largest_missed_blob_equivalent_diameter_mm"]) <= largest_allowed_missed_blob_equivalent_diameter_mm
+                    ):
                         no_improvement_reason = ""
                         break
                     if float(current_metrics["painted_inside_area_mm2"]) <= previous_covered_mm2 + 1e-9:
@@ -2187,9 +2278,20 @@ def plan_coverage_first_toolpaths(
                     px_per_mm=region_px_per_mm,
                     min_blob_area_mm2=min_repair_blob_area_mm2,
                 )
-                row["missed_blob_count"] = int(len(blob_rows_after))
-                row["largest_missed_blob_mm2"] = float(max((float(blob["area_mm2"]) for blob in blob_rows_after), default=0.0))
-                if float(current_metrics["coverage_percent"]) < required_detail_coverage_percent:
+                blob_summary_after = _blob_summary(blob_rows_after)
+                visible_blob_count_after = sum(
+                    1 for blob in blob_rows_after
+                    if _equivalent_diameter_mm(float(blob.get("area_mm2", 0.0))) > largest_allowed_missed_blob_equivalent_diameter_mm
+                )
+                row["missed_blob_count"] = int(visible_blob_count_after)
+                row["missed_blob_count_after_repair"] = int(visible_blob_count_after)
+                row["largest_missed_blob_mm2"] = float(blob_summary_after["largest_missed_blob_area_mm2"])
+                row["largest_missed_blob_area_mm2_after"] = float(blob_summary_after["largest_missed_blob_area_mm2"])
+                row["largest_missed_blob_diameter_after_mm"] = float(blob_summary_after["largest_missed_blob_equivalent_diameter_mm"])
+                if (
+                    float(current_metrics["coverage_percent"]) < required_detail_coverage_percent
+                    or float(blob_summary_after["largest_missed_blob_equivalent_diameter_mm"]) > largest_allowed_missed_blob_equivalent_diameter_mm
+                ):
                     if row["detail_repair_iterations"] >= max_detail_repair_iterations_per_region and not no_improvement_reason:
                         no_improvement_reason = "max_iterations_reached"
                     row["failure_reason_if_still_below_90"] = no_improvement_reason or "coverage_below_threshold_after_repair"
@@ -2198,12 +2300,21 @@ def plan_coverage_first_toolpaths(
             detail_fillable_regions_failing_after_repair = 0
             detail_repair_remaining_missed_area_mm2 = 0.0
             detail_regions_still_below_90 = []
+            missed_blob_count_after_repair = 0
+            largest_missed_blob_area_mm2_after = 0.0
+            largest_missed_blob_equivalent_diameter_mm_after = 0.0
             for info, row in zip(detail_region_infos, detail_region_rows):
                 if not row.get("fillable", False):
                     continue
                 region_component_id = int(info["component_id"])
                 region_mask = np.asarray(info["mask"]) > 0
                 region_px_per_mm = float(info["px_per_mm"])
+                region_geometry = info["geometry"]
+                region_outline_paths = _boundary_paths_for_geometry(
+                    region_geometry,
+                    simplify_tolerance_mm=simplify_tolerance_mm,
+                    line_width_mm=line_width_mm,
+                )
                 region_current_to_source = (
                     region_px_per_mm,
                     0.0,
@@ -2213,7 +2324,7 @@ def plan_coverage_first_toolpaths(
                     -float(info["origin_y"]) * region_px_per_mm,
                 )
                 final_painted = _path_points_to_mask(
-                    _detail_coverage_paths(all_paths),
+                    [*_detail_coverage_paths(all_paths), *region_outline_paths],
                     shape=region_mask.shape,
                     current_to_source_matrix=region_current_to_source,
                     pen_radius_px=pen_radius_px_by_region[region_component_id],
@@ -2228,14 +2339,33 @@ def plan_coverage_first_toolpaths(
                 row["coverage_percent"] = float(final_metrics["coverage_percent"])
                 row["missed_area_after_mm2"] = float(final_metrics["missed_area_mm2"])
                 row["missed_area_mm2"] = float(final_metrics["missed_area_mm2"])
+                final_blob_rows = _connected_mask_blob_rows(
+                    ((region_mask > 0) & ~(final_painted > 0)).astype(np.uint8),
+                    px_per_mm=region_px_per_mm,
+                    min_blob_area_mm2=min_repair_blob_area_mm2,
+                )
+                final_blob_summary = _blob_summary(final_blob_rows)
+                row["missed_blob_count_after_repair"] = int(final_blob_summary["missed_blob_count"])
+                row["largest_missed_blob_area_mm2_after"] = float(final_blob_summary["largest_missed_blob_area_mm2"])
+                row["largest_missed_blob_diameter_after_mm"] = float(final_blob_summary["largest_missed_blob_equivalent_diameter_mm"])
                 total_covered_after_mm2 += float(final_metrics["painted_inside_area_mm2"])
                 detail_repair_remaining_missed_area_mm2 += float(final_metrics["missed_area_mm2"])
-                if float(final_metrics["coverage_percent"]) < required_detail_coverage_percent:
+                missed_blob_count_after_repair += int(sum(
+                    1 for blob in final_blob_rows
+                    if _equivalent_diameter_mm(float(blob.get("area_mm2", 0.0))) > largest_allowed_missed_blob_equivalent_diameter_mm
+                ))
+                largest_missed_blob_area_mm2_after = max(largest_missed_blob_area_mm2_after, float(final_blob_summary["largest_missed_blob_area_mm2"]))
+                largest_missed_blob_equivalent_diameter_mm_after = max(largest_missed_blob_equivalent_diameter_mm_after, float(final_blob_summary["largest_missed_blob_equivalent_diameter_mm"]))
+                if (
+                    float(final_metrics["coverage_percent"]) < required_detail_coverage_percent
+                    or float(final_blob_summary["largest_missed_blob_equivalent_diameter_mm"]) > largest_allowed_missed_blob_equivalent_diameter_mm
+                ):
                     detail_fillable_regions_failing_after_repair += 1
                     detail_regions_still_below_90.append({
                         "region_id": row["region_id"],
                         "coverage_after_percent": float(final_metrics["coverage_percent"]),
                         "missed_area_after_mm2": float(final_metrics["missed_area_mm2"]),
+                        "largest_missed_blob_equivalent_diameter_mm": float(final_blob_summary["largest_missed_blob_equivalent_diameter_mm"]),
                         "failure_reason": row.get("failure_reason_if_still_below_90", "") or "coverage_below_threshold_after_repair",
                     })
 
@@ -2243,6 +2373,7 @@ def plan_coverage_first_toolpaths(
                 detail_coverage_after_repair_percent = 100.0 * total_covered_after_mm2 / total_fillable_area_mm2
                 detail_region_total_area_mm2 = total_fillable_area_mm2
                 detail_region_covered_area_mm2 = total_covered_after_mm2
+                region_coverage_min_percent = min((float(row.get("coverage_after_percent", 100.0)) for row in detail_region_rows if bool(row.get("fillable", False))), default=100.0)
 
     detail_clip_region = None
     if enable_fill and printable_geometry is not None and not getattr(printable_geometry, "is_empty", True):
@@ -2472,6 +2603,7 @@ def plan_coverage_first_toolpaths(
             "detail_fillable_regions_failing_after_repair": int(detail_fillable_regions_failing_after_repair),
             "detail_repair_regions_processed": int(detail_repair_regions_processed),
             "detail_repair_strokes_added": int(detail_repair_strokes_added),
+            "repair_strokes_added": int(detail_repair_strokes_added),
             "detail_repair_iterations_total": int(detail_repair_iterations_total),
             "detail_repair_new_coverage_mm2": float(detail_repair_new_coverage_mm2),
             "detail_repair_remaining_missed_area_mm2": float(detail_repair_remaining_missed_area_mm2),
@@ -2479,6 +2611,21 @@ def plan_coverage_first_toolpaths(
             "outside_region_overflow_tolerance_mm2": float(outside_region_overflow_tolerance_mm2),
             "detail_regions_still_below_90": detail_regions_still_below_90,
             "detail_region_repair_rows": detail_region_rows,
+            "coverage_validation_target": str(coverage_validation_target),
+            "fill_allowed_to_overlap_outline": bool(fill_allowed_to_overlap_outline),
+            "repair_clipped_against": str(repair_clipped_against),
+            "local_coverage_validation_enabled": bool(local_coverage_validation_enabled),
+            "global_coverage_percent": float(detail_coverage_after_repair_percent),
+            "region_coverage_min_percent": float(region_coverage_min_percent),
+            "regions_total": int(regions_total),
+            "regions_failing_before_repair": int(detail_fillable_regions_failing_before_repair),
+            "regions_failing_after_repair": int(detail_fillable_regions_failing_after_repair),
+            "missed_blob_count_before_repair": int(missed_blob_count_before_repair),
+            "missed_blob_count_after_repair": int(missed_blob_count_after_repair),
+            "largest_missed_blob_area_mm2_before": float(largest_missed_blob_area_mm2_before),
+            "largest_missed_blob_area_mm2_after": float(largest_missed_blob_area_mm2_after),
+            "largest_missed_blob_equivalent_diameter_mm_after": float(largest_missed_blob_equivalent_diameter_mm_after),
+            "largest_allowed_missed_blob_equivalent_diameter_mm": float(largest_allowed_missed_blob_equivalent_diameter_mm),
         })
         hole_count = sum(len(poly.interiors) for poly in _geometry_parts(printable_geometry))
         cell_count = max(1, len(component_debug) + hole_count)
@@ -2817,4 +2964,14 @@ def plan_coverage_first_toolpaths(
                 allowed_mask=allowed_mask,
                 debug=debug,
             )
+            debug["debug_artifacts_generated"] = [
+                "target_mask.png",
+                "fill_coverage_before_repair.png",
+                "outline_coverage.png",
+                "combined_coverage_after_repair.png",
+                "missed_blobs_before_repair.png",
+                "missed_blobs_after_repair.png",
+                "repair_strokes.png",
+                "overflow_pixels.png",
+            ]
     return final_paths
