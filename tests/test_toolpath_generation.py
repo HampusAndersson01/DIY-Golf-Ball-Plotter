@@ -2558,6 +2558,50 @@ def test_fill_does_not_reserve_outline_space():
     assert debug["infill_debug"]["endpoint_extension_mm"] == pytest.approx(0.3, abs=1e-6)
 
 
+def test_scanline_fill_keeps_short_valid_rows_in_tapered_narrow_regions():
+    tapered = Polygon([
+        (0.0, 0.0),
+        (0.7, 0.0),
+        (0.7, 4.0),
+        (0.06, 4.0),
+        (0.0, 2.0),
+    ])
+    resolution_mm = max(0.03, min(0.06, max(0.03, 0.6 * 0.08)))
+    mask, origin_x, origin_y, px_per_mm = coverage_planner._rasterize_geometry(
+        tapered,
+        resolution_mm=resolution_mm,
+        pad_mm=max(0.25, 0.6),
+    )
+
+    fill_paths, stats = coverage_planner._scanline_fill_paths(
+        tapered,
+        angle_deg=0.0,
+        spacing_mm=0.48,
+        line_width_mm=0.6,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        px_per_mm=px_per_mm,
+        component_id=1,
+        allow_connectors=False,
+        max_overflow_mm=0.05,
+    )
+
+    row_offsets = [
+        float((path.metadata or {}).get("scanline_offset_mm", -1.0))
+        for path in fill_paths
+        if path.kind == "fill-infill"
+    ]
+    lengths = [
+        pipeline_core.segment_length(path.points)
+        for path in fill_paths
+        if path.kind == "fill-infill"
+    ]
+
+    assert stats["row_count"] >= 8
+    assert any(offset == pytest.approx(2.4, abs=1e-6) for offset in row_offsets)
+    assert any(length < 0.09 for length in lengths)
+
+
 def test_endpoint_coverage_improves_without_outline_clearance():
     printable = affinity.rotate(_rect(14.0, 5.0), 31.0, origin="centroid")
     debug: dict[str, object] = {}
@@ -2795,8 +2839,14 @@ def test_machine_motion_debug_matches_preview_and_gcode_paths():
     comparison = debug["path_coordinate_comparison"]
 
     assert comparison["same_kind_by_path"]["outline_001"] is True
-    assert comparison["same_kind_by_path"]["travel-0002"] is True
     assert comparison["same_kind_by_path"]["fill-infill_001"] is True
+    travel_entries = {
+        path_id: same_kind
+        for path_id, same_kind in comparison["same_kind_by_path"].items()
+        if str(path_id).startswith("travel")
+    }
+    assert travel_entries
+    assert all(value is True for value in travel_entries.values())
     assert all((delta or 0.0) <= 1e-9 for path_id, delta in comparison["max_point_delta_deg_by_path"].items() if path_id != "coverage_centerline_001")
 
 

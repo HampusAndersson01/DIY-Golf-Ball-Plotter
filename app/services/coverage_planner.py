@@ -461,7 +461,10 @@ def _scanline_fill_paths(
     rotated = affinity.rotate(component_geometry, -angle_deg, origin=(centroid.x, centroid.y))
     min_x, min_y, max_x, max_y = rotated.bounds
     step = max(0.2, float(spacing_mm))
-    min_segment_length_mm = max(0.02, line_width_mm * 0.15)
+    # Keep short but valid scanline spans in narrow glyph/detail regions.
+    # The previous 0.15x pen-width floor (0.09 mm at 0.6 mm pen width)
+    # caused alternating rows to disappear in tapered shapes.
+    min_segment_length_mm = max(0.02, min(line_width_mm * 0.10, max(0.04, spacing_mm * 0.125)))
     allowed_geom = component_geometry.buffer(max_overflow_mm, join_style=1) if max_overflow_mm > 0 else component_geometry
     endpoint_extension_mm = max(0.0, line_width_mm * 0.5)
 
