@@ -246,6 +246,23 @@ def test_arsenal_fixture_preserves_outer_outlines_for_small_printable_components
     assert result["debug"]["contour_offset_debug"]["outer_outline_path_count"] >= 14
 
 
+def test_arsenal_fixture_uses_serpentine_fill_for_wide_detail_regions():
+    result = _run_fixture(ARSENAL_FIXTURE)
+    debug = result["debug"]
+    detail_serpentine_paths = [
+        path for path in result["toolpaths"]
+        if path.kind == "fill-infill" and str((path.metadata or {}).get("fill_mode", "")) == "detail_serpentine_fill"
+    ]
+    detail_centerlines = [path for path in result["toolpaths"] if path.kind == "detail-trace"]
+
+    assert int(debug.get("detail_region_count", 0)) > 0
+    assert int(debug.get("detail_regions_classified_wide", 0)) > 0
+    assert int(debug.get("detail_regions_serpentine_filled", 0)) > 0
+    assert int(debug.get("arsenal_detail_serpentine_paths_generated", 0)) > 0
+    assert detail_serpentine_paths
+    assert len(detail_serpentine_paths) > len(detail_centerlines)
+
+
 def test_ring_shape_is_split_into_local_cells_before_routing():
     outer = Polygon([(0.0, 0.0), (120.0, 0.0), (120.0, 80.0), (0.0, 80.0)])
     inner = Polygon([(35.0, 18.0), (85.0, 18.0), (85.0, 62.0), (35.0, 62.0)])

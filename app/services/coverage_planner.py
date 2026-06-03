@@ -1351,6 +1351,17 @@ def plan_coverage_first_toolpaths(
         line_width_mm=line_width_mm,
     )
     source_printable_parts = _geometry_parts(printable_geometry)
+    detail_region_count = 0
+    detail_regions_classified_wide = 0
+    detail_regions_classified_thin = 0
+    detail_regions_serpentine_filled = 0
+    detail_regions_centerline_traced = 0
+    detail_classification_threshold_width_mm = max(1.0, line_width_mm * 1.65)
+    detail_classification_threshold_area_mm2 = 0.5
+    arsenal_detail_serpentine_paths_generated = 0
+    detail_region_total_area_mm2 = 0.0
+    detail_region_covered_area_mm2 = 0.0
+    classified_thin_component_ids: set[int] = set()
 
     for component_id in component_ids:
         component_mask = (labels == component_id).astype(np.uint8)
@@ -1459,6 +1470,139 @@ def plan_coverage_first_toolpaths(
         else:
             all_paths = boundary + all_paths
             pre_endpoint_clamp_paths = [_clone_toolpath(path) for path in boundary] + pre_endpoint_clamp_paths
+
+    use_source_geometry_outlines = len(component_ids) < len(source_printable_parts)
+    if use_source_geometry_outlines:
+        existing_fill_area = _paths_footprint_union(
+            [path for path in all_paths if path.kind == "fill-infill"],
+            pen_radius_mm=pen_radius_mm,
+        )
+        fallback_spacing = max(0.0, line_width_mm * (1.0 - float(infill_overlap_percent) / 100.0))
+        detail_fill_spacing_mm = min(max(0.25, infill_spacing_mm if infill_spacing_mm > 0 else fallback_spacing), max(0.35, line_width_mm))
+        for component_id, component_geometry in enumerate(source_printable_parts, start=1):
+            if component_geometry is None or getattr(component_geometry, "is_empty", True):
+                continue
+            component_area_mm2 = float(component_geometry.area)
+            if component_area_mm2 <= 1e-9:
+                continue
+            detail_region_count += 1
+            detail_region_total_area_mm2 += component_area_mm2
+            component_mask, comp_origin_x, comp_origin_y, comp_px_per_mm = _rasterize_geometry(
+                component_geometry,
+                resolution_mm=resolution_mm,
+                pad_mm=max(0.25, line_width_mm),
+            )
+            dt = cv2.distanceTransform((component_mask > 0).astype(np.uint8), cv2.DIST_L2, 3)
+            dt_positive = dt[dt > 0]
+            max_width_mm = float(np.max(dt_positive) * 2.0 / max(1e-9, comp_px_per_mm)) if dt_positive.size else 0.0
+            median_width_mm = float(np.median(dt_positive) * 2.0 / max(1e-9, comp_px_per_mm)) if dt_positive.size else 0.0
+            is_wide_detail_region = bool(
+                max_width_mm >= (line_width_mm * 2.0)
+                or median_width_mm >= (line_width_mm * 1.4)
+                or (max_width_mm >= detail_classification_threshold_width_mm and component_area_mm2 >= detail_classification_threshold_area_mm2)
+            )
+
+            covered_area_before_mm2 = 0.0
+            if existing_fill_area is not None and not getattr(existing_fill_area, "is_empty", True):
+                try:
+                    covered_area_before_mm2 = float(component_geometry.intersection(existing_fill_area).area)
+                except Exception:
+                    covered_area_before_mm2 = float(component_geometry.buffer(0).intersection(existing_fill_area.buffer(0)).area)
+            coverage_ratio_before = covered_area_before_mm2 / max(component_area_mm2, 1e-9)
+
+            if not is_wide_detail_region:
+                detail_regions_classified_thin += 1
+                classified_thin_component_ids.add(component_id)
+                continue
+
+            detail_regions_classified_wide += 1
+            if coverage_ratio_before >= 0.90:
+                detail_region_covered_area_mm2 += covered_area_before_mm2
+                continue
+
+            angle_deg = _component_fill_angle(component_mask)
+            fill_paths, fill_stats = _scanline_fill_paths(
+                component_geometry,
+                angle_deg=angle_deg if math.isfinite(angle_deg) else infill_angle_deg,
+                spacing_mm=detail_fill_spacing_mm,
+                line_width_mm=line_width_mm,
+                origin_x=comp_origin_x,
+                origin_y=comp_origin_y,
+                px_per_mm=comp_px_per_mm,
+                component_id=component_id,
+                allow_connectors=allow_pen_down_infill_connectors,
+                max_overflow_mm=0.05,
+                fill_mode_label="detail_serpentine_fill",
+            )
+            component_boundary_paths = _boundary_paths_for_geometry(
+                component_geometry,
+                simplify_tolerance_mm=simplify_tolerance_mm,
+                line_width_mm=line_width_mm,
+            )
+            component_outline_footprint = _paths_footprint_union(component_boundary_paths, pen_radius_mm=pen_radius_mm)
+            component_endpoint_limit = component_geometry.union(component_outline_footprint) if component_outline_footprint is not None and not getattr(component_outline_footprint, "is_empty", True) else component_geometry
+            unclamped_fill_paths = [_clone_toolpath(path) for path in fill_paths]
+            fill_paths, endpoint_clamp_stats = _clamp_infill_endpoints_to_outline_limit(
+                fill_paths,
+                allowed_geom=component_endpoint_limit,
+                pen_radius_mm=pen_radius_mm,
+                max_retract_mm=pen_radius_mm,
+                precision_mm=0.02,
+            )
+            if not fill_paths:
+                detail_regions_classified_thin += 1
+                classified_thin_component_ids.add(component_id)
+                detail_regions_classified_wide = max(0, detail_regions_classified_wide - 1)
+                continue
+            for path in fill_paths:
+                path.source = "detail_serpentine_fill"
+                path.kind = "fill-infill"
+                path.metadata = {
+                    **(path.metadata or {}),
+                    "fill_mode": "detail_serpentine_fill",
+                    "fill_strategy": "DETAIL_SERPENTINE_FILL",
+                    "source_region_id": f"detail_region_{component_id:03d}",
+                    "detail_region_component_id": int(component_id),
+                    "detail_region_classification": "wide",
+                    "detail_region_max_width_mm": float(max_width_mm),
+                    "detail_region_median_width_mm": float(median_width_mm),
+                    "detail_region_area_mm2": float(component_area_mm2),
+                }
+            all_paths.extend(fill_paths)
+            pre_endpoint_clamp_paths.extend(unclamped_fill_paths)
+            detail_regions_serpentine_filled += 1
+            arsenal_detail_serpentine_paths_generated += len(fill_paths)
+            component_debug.append({
+                "component_id": int(component_id),
+                "mode": "detail-wide",
+                "area_px": int(np.count_nonzero(component_mask > 0)),
+                "estimated_width_mm": float(max_width_mm),
+                "median_width_mm": float(median_width_mm),
+                "segment_count": int(fill_stats.get("segment_count", 0)),
+                "row_count": int(fill_stats.get("row_count", 0)),
+                "path_count": len(fill_paths),
+                "endpoint_extension_mm": float(fill_stats.get("endpoint_extension_mm", line_width_mm * 0.5)),
+                "endpoint_extensions_added": int(fill_stats.get("endpoint_extensions_added", 0)),
+                "endpoint_extensions_clipped": int(fill_stats.get("endpoint_extensions_clipped", 0)),
+                "endpoint_clamp_mode": str(endpoint_clamp_stats.get("endpoint_clamp_mode", "postprocess_only")),
+                "endpoints_checked": int(endpoint_clamp_stats.get("endpoints_checked", 0)),
+                "endpoints_clamped": int(endpoint_clamp_stats.get("endpoints_clamped", 0)),
+                "max_endpoint_retract_mm": float(endpoint_clamp_stats.get("max_endpoint_retract_mm", 0.0)),
+                "infill_beyond_outline_before_mm2": float(_infill_beyond_outline_area_mm2(unclamped_fill_paths, allowed_geom=component_endpoint_limit, pen_radius_mm=pen_radius_mm)),
+                "infill_beyond_outline_after_mm2": float(_infill_beyond_outline_area_mm2(fill_paths, allowed_geom=component_endpoint_limit, pen_radius_mm=pen_radius_mm)),
+                "detail_region_augmented": True,
+            })
+            existing_fill_area = _paths_footprint_union(
+                [path for path in all_paths if path.kind == "fill-infill"],
+                pen_radius_mm=pen_radius_mm,
+            )
+            covered_area_after_mm2 = 0.0
+            if existing_fill_area is not None and not getattr(existing_fill_area, "is_empty", True):
+                try:
+                    covered_area_after_mm2 = float(component_geometry.intersection(existing_fill_area).area)
+                except Exception:
+                    covered_area_after_mm2 = float(component_geometry.buffer(0).intersection(existing_fill_area.buffer(0)).area)
+            detail_region_covered_area_mm2 += max(covered_area_before_mm2, covered_area_after_mm2)
 
     detail_clip_region = None
     if enable_fill and printable_geometry is not None and not getattr(printable_geometry, "is_empty", True):
@@ -1616,6 +1760,19 @@ def plan_coverage_first_toolpaths(
     if debug is not None:
         debug.update(detail_filter_stats)
         accepted_detail_paths = list(detail_filter_stats.get("accepted_detail_paths", []))
+        detail_regions_centerline_traced = 0
+        arsenal_detail_centerline_paths_generated = 0
+        for path in accepted_detail_paths:
+            component_id = (path.metadata or {}).get("detail_component_id")
+            if component_id is None:
+                continue
+            try:
+                parsed_component_id = int(component_id)
+            except Exception:
+                continue
+            if parsed_component_id in classified_thin_component_ids:
+                detail_regions_centerline_traced += 1
+                arsenal_detail_centerline_paths_generated += 1
         dropped_records = list(detail_filter_stats.get("detail_dropped_path_records", []))
         accepted_component_ids = {
             int(path.metadata.get("detail_component_id"))
@@ -1655,6 +1812,17 @@ def plan_coverage_first_toolpaths(
             "detail_simplification_tolerance_mm": float(detail_tolerance_mm),
             "arsenal_detail_outline_paths_generated": int(detail_filter_stats.get("detail_paths_generated_raw", 0)),
             "arsenal_detail_outline_paths_dropped": int(detail_filter_stats.get("detail_paths_dropped", 0)),
+            "detail_region_count": int(detail_region_count),
+            "detail_regions_classified_wide": int(detail_regions_classified_wide),
+            "detail_regions_classified_thin": int(detail_regions_classified_thin),
+            "detail_regions_serpentine_filled": int(detail_regions_serpentine_filled),
+            "detail_regions_centerline_traced": int(detail_regions_centerline_traced),
+            "detail_fill_coverage_percent": float((100.0 * detail_region_covered_area_mm2 / max(1e-9, detail_region_total_area_mm2)) if detail_region_total_area_mm2 > 0 else 0.0),
+            "detail_missed_area_mm2": float(max(0.0, detail_region_total_area_mm2 - detail_region_covered_area_mm2)),
+            "detail_classification_threshold_width_mm": float(detail_classification_threshold_width_mm),
+            "detail_classification_threshold_area_mm2": float(detail_classification_threshold_area_mm2),
+            "arsenal_detail_serpentine_paths_generated": int(arsenal_detail_serpentine_paths_generated),
+            "arsenal_detail_centerline_paths_generated": int(arsenal_detail_centerline_paths_generated),
         })
         hole_count = sum(len(poly.interiors) for poly in _geometry_parts(printable_geometry))
         cell_count = max(1, len(component_debug) + hole_count)
