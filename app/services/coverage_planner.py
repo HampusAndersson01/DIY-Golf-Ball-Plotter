@@ -658,6 +658,7 @@ def _thin_detail_fill_paths_for_component(
     component_geometry: Any,
     component_endpoint_limit: Any,
     mark_outline_fallback: bool,
+    prefer_connected_centerline: bool,
     origin_x: float,
     origin_y: float,
     px_per_mm: float,
@@ -723,7 +724,7 @@ def _thin_detail_fill_paths_for_component(
     supplemental_paths_added = 0
     repair_paths_added = 0
     repair_iterations = 0
-    prefer_single_centerline = bool(not has_holes and width_mm <= (line_width_mm * 1.35))
+    prefer_single_centerline = bool(prefer_connected_centerline or (not has_holes and width_mm <= (line_width_mm * 1.35)))
     if mark_outline_fallback:
         for path in base_paths:
             path.metadata = {
@@ -2189,6 +2190,7 @@ def plan_coverage_first_toolpaths(
     detail_repair_outside_overflow_mm2 = 0.0
     detail_regions_still_below_90: list[dict[str, Any]] = []
     detail_region_infos: list[dict[str, Any]] = []
+    preferred_centerline_outline_regions: list[Any] = []
     local_coverage_validation_enabled = False
     coverage_validation_target = "selected_color_mask"
     repair_clipped_against = "selected_color_mask"
@@ -2221,6 +2223,7 @@ def plan_coverage_first_toolpaths(
         width_mm = float(np.max(dt) * 2.0 / max(1e-9, px_per_mm)) if np.any(dt > 0) else 0.0
         min_dim_mm = float(min(xs.max() - xs.min() + 1, ys.max() - ys.min() + 1) / px_per_mm)
         thin_region = bool(width_mm <= line_width_mm * 1.5 or min_dim_mm <= line_width_mm * 1.5)
+        prefer_connected_centerline = bool(thin_region and width_mm <= line_width_mm * 1.5)
         angle_deg = _component_fill_angle(component_mask)
         component_boundary_paths = _boundary_paths_for_component(
             component_geometry,
@@ -2229,6 +2232,10 @@ def plan_coverage_first_toolpaths(
             line_width_mm=line_width_mm,
             centerline_offset_mm=pen_radius_mm,
         )
+        if prefer_connected_centerline:
+            component_boundary_paths = []
+            if component_geometry is not None and not getattr(component_geometry, "is_empty", True):
+                preferred_centerline_outline_regions.append(component_geometry)
         component_outline_footprint = _paths_footprint_union(component_boundary_paths, pen_radius_mm=pen_radius_mm)
         component_endpoint_limit = component_geometry.union(component_outline_footprint) if component_geometry is not None and not getattr(component_geometry, "is_empty", True) else component_outline_footprint
         if thin_region and thin_detail_mode:
@@ -2240,6 +2247,7 @@ def plan_coverage_first_toolpaths(
                 component_geometry=component_geometry,
                 component_endpoint_limit=component_endpoint_limit,
                 mark_outline_fallback=not bool(component_boundary_paths),
+                prefer_connected_centerline=prefer_connected_centerline,
                 origin_x=origin_x,
                 origin_y=origin_y,
                 px_per_mm=px_per_mm,
@@ -2318,7 +2326,7 @@ def plan_coverage_first_toolpaths(
                 "infill_beyond_outline_after_mm2": float(_infill_beyond_outline_area_mm2(fill_paths, allowed_geom=component_endpoint_limit, pen_radius_mm=pen_radius_mm)),
             })
 
-        boundary = _boundary_paths_for_component(
+        boundary = [] if prefer_connected_centerline else _boundary_paths_for_component(
             component_geometry,
             component_id=component_id,
             simplify_tolerance_mm=simplify_tolerance_mm,
@@ -3335,6 +3343,25 @@ def plan_coverage_first_toolpaths(
                 width_mm = float(max(w, h) / px_per_mm)
                 angle_deg = _component_fill_angle(missed_component_mask)
                 missed_geometry = _component_mask_to_geometry(missed_component_mask * 255, origin_x=origin_x, origin_y=origin_y, px_per_mm=px_per_mm)
+                if preferred_centerline_outline_regions and missed_geometry is not None and not getattr(missed_geometry, "is_empty", True):
+                    skip_repair_for_centerline_region = False
+                    for centerline_region in preferred_centerline_outline_regions:
+                        if centerline_region is None or getattr(centerline_region, "is_empty", True):
+                            continue
+                        try:
+                            if not missed_geometry.intersection(centerline_region).is_empty:
+                                skip_repair_for_centerline_region = True
+                                break
+                        except Exception:
+                            try:
+                                if not missed_geometry.buffer(0).intersection(centerline_region.buffer(0)).is_empty:
+                                    skip_repair_for_centerline_region = True
+                                    break
+                            except Exception:
+                                continue
+                    if skip_repair_for_centerline_region:
+                        repair_rejection_reason_counts["centerline_outline_region_already_represented"] += 1
+                        continue
                 candidates = _candidate_paths_for_missed_component(
                     missed_component_mask,
                     origin_x=origin_x,
@@ -3440,12 +3467,18 @@ def plan_coverage_first_toolpaths(
             thin_components_outlined = int(sum(
                 1
                 for item in component_debug
-                if item.get("mode") == "thin" and any(str((path.metadata or {}).get("source_region_id", "")) == f"component_{int(item['component_id']):03d}" for path in final_paths if path.kind == "outline")
+                if item.get("mode") == "thin" and any(
+                    str((path.metadata or {}).get("source_region_id", "")) == f"component_{int(item['component_id']):03d}"
+                    for path in actual_outline_paths
+                )
             ))
             small_components_outlined = int(sum(
                 1
                 for item in component_debug
-                if int(item.get("area_px", 0)) <= 4 and any(str((path.metadata or {}).get("source_region_id", "")) == f"component_{int(item['component_id']):03d}" for path in final_paths if path.kind == "outline")
+                if int(item.get("area_px", 0)) <= 4 and any(
+                    str((path.metadata or {}).get("source_region_id", "")) == f"component_{int(item['component_id']):03d}"
+                    for path in actual_outline_paths
+                )
             ))
         outline_footprint = _paths_footprint_union(actual_outline_paths, pen_radius_mm=pen_radius_mm)
         outline_overflow_geom = (
