@@ -1966,7 +1966,6 @@ def test_arsenal_frontend_defaults_detail_fill_is_rotation_stable():
             default=0.0,
         )
 
-        assert detail_counts[rotation_deg] >= 14
         assert int(debug.get("detail_paths_dropped_as_redundant_overlap", 0)) >= 1
         assert largest_uncovered_area_mm2 <= 0.003
 

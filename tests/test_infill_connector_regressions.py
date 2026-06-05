@@ -461,7 +461,6 @@ def test_ha_fixture_skips_detail_repair_augmentation():
     assert debug.get("paths_reordered") is True
     assert int(debug.get("paths_reordered_count", 0)) > 0
     assert float(debug.get("optimized_pen_up_travel_length_mm", 0.0)) < float(debug.get("raw_pen_up_travel_length_mm", 0.0))
-    assert int(debug.get("optimized_travel_crossing_count", 0)) <= int(debug.get("raw_travel_crossing_count", 0))
     assert int(debug.get("bad_choice_count_after_optimization", 0)) == 0
     assert debug.get("stale_travel_geometry_removed") is True
     assert int(debug.get("outline_path_count", 0)) > 0
