@@ -982,11 +982,12 @@ def rasterize_source_mask_to_target_frame(
     surface_to_target_matrix: tuple[float, float, float, float, float, float],
     shape: tuple[int, int],
 ) -> np.ndarray:
+    # This pipeline already stores the composed raster-space affine in the orientation OpenCV needs
+    # for destination rasterization, so we apply it directly instead of inverting it again.
     source_to_target = multiply_svg_matrices(surface_to_target_matrix, source_to_surface_matrix)
-    target_to_source = invert_svg_matrix(source_to_target)
     affine = np.asarray([
-        [float(target_to_source[0]), float(target_to_source[2]), float(target_to_source[4])],
-        [float(target_to_source[1]), float(target_to_source[3]), float(target_to_source[5])],
+        [float(source_to_target[0]), float(source_to_target[2]), float(source_to_target[4])],
+        [float(source_to_target[1]), float(source_to_target[3]), float(source_to_target[5])],
     ], dtype=np.float32)
     warped = cv2.warpAffine(
         (np.asarray(source_mask) > 0).astype(np.uint8) * 255,
@@ -6892,6 +6893,8 @@ def audit_exported_path_coverage(
     current_to_source = tuple(float(value) for value in current_to_source_matrix)
     preview_target_mask = target_mask_np.copy()
     if isinstance(preview_source_mask, np.ndarray) and isinstance(preview_source_to_surface_matrix, (tuple, list)) and len(preview_source_to_surface_matrix) == 6:
+        # The preview source mask is rasterized through the same composed affine convention used for exported toolpaths,
+        # so the preview and diagnostic masks are compared in the same current-frame raster.
         preview_target_mask = rasterize_source_mask_to_target_frame(
             preview_source_mask,
             source_to_surface_matrix=tuple(float(value) for value in preview_source_to_surface_matrix),
