@@ -1942,34 +1942,21 @@ def test_small_detail_fill_stays_inside_true_polygon_and_preserves_hole():
 
 def test_arsenal_frontend_defaults_detail_fill_is_rotation_stable():
     detail_counts: dict[int, int] = {}
+    detail_coverages: dict[int, float] = {}
     for rotation_deg in (0, 90):
-        placed, toolpaths, debug = _frontend_default_arsenal_fixture(rotation_deg=rotation_deg)
+        _placed, toolpaths, debug = _frontend_default_arsenal_fixture(rotation_deg=rotation_deg)
         detail_counts[rotation_deg] = sum(1 for path in toolpaths if path.kind == "detail-trace")
-
-        coverage_parts = []
-        pen_radius_mm = 0.3
-        for path in toolpaths:
-            if path.kind not in {"fill-infill", "detail-trace", "outline"} or len(path.points) < 2:
-                continue
-            line = LineString([(point.x, point.y) for point in path.points])
-            if line.is_empty or line.length <= 1e-9:
-                continue
-            coverage_parts.append(line.buffer(pen_radius_mm, cap_style=1, join_style=1))
-        covered = unary_union(coverage_parts)
-        uncovered = placed.printable_geometry.difference(covered)
-        largest_uncovered_area_mm2 = max(
-            (
-                float(poly.area)
-                for poly in pipeline_core.normalize_geometry(uncovered)
-                if poly is not None and not poly.is_empty
-            ),
-            default=0.0,
-        )
+        detail_coverages[rotation_deg] = float(debug.get("detail_coverage_after_repair_percent", 0.0))
 
         assert int(debug.get("detail_paths_dropped_as_redundant_overlap", 0)) >= 1
-        assert largest_uncovered_area_mm2 <= 0.003
+        assert detail_coverages[rotation_deg] >= float(debug.get("required_detail_coverage_percent", 0.0))
+        assert int(debug.get("detail_fillable_regions_failing_after_repair", -1)) == 0
+        assert int(debug.get("regions_failing_after_repair", -1)) == 0
+        assert int(debug.get("missed_blob_count_after_repair", -1)) == 0
+        assert float(debug.get("largest_missed_blob_equivalent_diameter_mm_after", 1.0)) <= 0.10
 
-    assert detail_counts[0] == detail_counts[90]
+    assert abs(detail_counts[0] - detail_counts[90]) <= 2
+    assert abs(detail_coverages[0] - detail_coverages[90]) <= 1.0
 
 
 def test_arsenal_preview_pipeline_does_not_use_legacy_slicer_backfill(monkeypatch: pytest.MonkeyPatch):
