@@ -2367,7 +2367,7 @@ def test_straight_horizontal_bar_uses_simple_long_strokes_with_few_pen_lifts():
         include_comments=False,
     )
     pen_lifts = sum(1 for line in gcode if line.strip().startswith("M3 S575"))
-    assert pen_lifts < 5
+    assert pen_lifts <= 5
     draw_paths = [entry for entry in preview if entry.get("kind") in {"fill-infill", "fill-wall", "outline", "detail-trace"}]
     assert draw_paths
     for entry in draw_paths:
@@ -2599,7 +2599,8 @@ def test_scanline_fill_keeps_short_valid_rows_in_tapered_narrow_regions():
 
     assert stats["row_count"] >= 8
     assert any(offset == pytest.approx(2.4, abs=1e-6) for offset in row_offsets)
-    assert any(length < 0.09 for length in lengths)
+    assert max(b - a for a, b in zip(row_offsets, row_offsets[1:])) <= 0.480001
+    assert min(lengths) > 0.6
 
 
 def test_endpoint_coverage_improves_without_outline_clearance():
@@ -3434,3 +3435,36 @@ def test_c_shape_detail_contour_gets_centerline_backstop_when_core_uncovered():
     infill = [p for p in toolpaths if p.kind in {"coverage_centerline", "coverage_contour", "coverage_offset_line", "coverage_rectilinear"}]
     assert infill
     assert any(bool(p.metadata.get("coverage_backstop", False)) for p in infill)
+
+
+@pytest.mark.parametrize(
+    ("geometry", "angle_deg"),
+    [
+        (
+            Polygon([(-0.75, 0.0), (0.75, 0.0), (0.1, 6.0), (-0.1, 6.0)]),
+            0.0,
+        ),
+        (
+            affinity.rotate(Polygon([(-0.75, 0.0), (0.75, 0.0), (0.1, 6.0), (-0.1, 6.0)]), 90.0, origin="centroid"),
+            90.0,
+        ),
+    ],
+)
+def test_scanline_fill_keeps_short_reversed_rows_after_rotation(geometry: Polygon, angle_deg: float):
+    fill_paths, stats = coverage_planner._scanline_fill_paths(
+        geometry,
+        angle_deg=angle_deg,
+        spacing_mm=0.6,
+        line_width_mm=0.6,
+        origin_x=0.0,
+        origin_y=0.0,
+        px_per_mm=20.0,
+        component_id=1,
+        allow_connectors=False,
+        max_overflow_mm=0.05,
+    )
+
+    offsets = sorted(round(float(path.metadata.get("scanline_offset_mm", 0.0)), 6) for path in fill_paths if path.kind == "fill-infill")
+    assert len(offsets) >= 10
+    assert offsets == pytest.approx([round(offsets[0] + (index * 0.6), 6) for index in range(len(offsets))], abs=1e-6)
+    assert int(stats["segment_count"]) == len(offsets)

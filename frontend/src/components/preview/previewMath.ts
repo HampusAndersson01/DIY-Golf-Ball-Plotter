@@ -48,6 +48,7 @@ export function getCurrentMarker(path: PreviewPath, machine: MachineState | null
 
 export function pathColor(kind: string) {
   if (kind === 'fill-wall' || kind === 'outline' || kind === 'outline_cleanup' || kind === 'coverage_contour') return '#f6b756'
+  if (kind === 'fill-repair') return '#fb7185'
   if (kind === 'fill-infill' || kind === 'coverage_rectilinear' || kind === 'coverage_offset_line' || kind === 'coverage_centerline') return '#46c0c6'
   if (kind === 'fill-infill-travel' || kind === 'coverage_connector') return '#84cc16'
   if (kind === 'detail-trace') return '#de5eb4'

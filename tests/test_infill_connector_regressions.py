@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 from io import BytesIO
@@ -285,11 +286,13 @@ def test_arsenal_detail_repair_strokes_improve_coverage_without_overflow():
     debug = result["debug"]
     repair_paths = [
         path for path in result["toolpaths"]
-        if path.kind == "fill-infill" and str((path.metadata or {}).get("fill_mode", "")).startswith("detail_repair_")
+        if path.kind == "fill-repair" and path.source == "mask_space_coverage_repair"
     ]
 
     assert float(debug.get("detail_coverage_after_repair_percent", 0.0)) > float(debug.get("detail_coverage_before_repair_percent", 0.0))
     assert int(debug.get("detail_repair_strokes_added", 0)) > 0
+    assert int(debug.get("repair_candidates_accepted", 0)) > 0
+    assert debug.get("repair_paths_exported") is True
     assert repair_paths
     assert float(debug.get("detail_repair_outside_overflow_mm2", 0.0)) <= float(debug.get("outside_region_overflow_tolerance_mm2", 0.0))
     assert not any(path.kind == "outline" and path.source == "detail_repair_fill" for path in result["toolpaths"])
@@ -312,8 +315,58 @@ def test_arsenal_fill_may_overlap_outline_when_repairing_target_gaps():
 
     assert debug.get("fill_allowed_to_overlap_outline") is True
     assert debug.get("repair_clipped_against") == "selected_color_mask"
+    assert debug.get("coverage_preview_gcode_consistent") is True
     assert float(debug["infill_debug"]["pen_width_mm"]) == pytest.approx(0.6, abs=1e-9)
     assert float(debug["infill_debug"]["spacing_mm"]) == pytest.approx(0.6, abs=1e-9)
+
+
+def test_arsenal_missed_blob_diagnostics_and_path_stats_are_written(monkeypatch: pytest.MonkeyPatch):
+    artifact_dir = Path(tempfile.gettempdir()) / "golfball_plotter_test_artifacts" / "arsenal_missed_blob_debug"
+    monkeypatch.setenv("COVERAGE_DEBUG_ARTIFACT_DIR", str(artifact_dir))
+    monkeypatch.setenv("WRITE_COVERAGE_DEBUG_ARTIFACTS", "1")
+    result = _run_fixture(ARSENAL_FIXTURE)
+    debug = result["debug"]
+
+    diagnostics_path = artifact_dir / "missed_blob_diagnostics.json"
+    path_stats_path = artifact_dir / "path_stats.json"
+    assert diagnostics_path.exists()
+    assert path_stats_path.exists()
+
+    diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    path_stats = json.loads(path_stats_path.read_text(encoding="utf-8"))
+
+    assert isinstance(diagnostics, list)
+    assert path_stats["missed_blob_debug_enabled"] is True
+    assert path_stats["coverage_target"] == "selected_color_mask"
+    assert path_stats["repair_clipping"] == "selected_color_mask"
+    assert path_stats["fill_allowed_to_overlap_outline"] is True
+    assert path_stats["repair_paths_exported"] is True
+    assert path_stats["coverage_preview_gcode_consistent"] is True
+    assert int(path_stats["repair_candidates_accepted"]) > 0
+    assert int(debug.get("repair_candidates_accepted", 0)) == int(path_stats["repair_candidates_accepted"])
+
+
+def test_arsenal_exported_path_coverage_audit_matches_preview_target(monkeypatch: pytest.MonkeyPatch):
+    artifact_dir = Path(tempfile.gettempdir()) / "golfball_plotter_test_artifacts" / "arsenal_export_coverage_audit"
+    monkeypatch.setenv("COVERAGE_DEBUG_ARTIFACT_DIR", str(artifact_dir))
+    monkeypatch.setenv("WRITE_COVERAGE_DEBUG_ARTIFACTS", "1")
+    result = _run_fixture(ARSENAL_FIXTURE)
+    debug = result["debug"]
+
+    path_stats = json.loads((artifact_dir / "path_stats.json").read_text(encoding="utf-8"))
+    coverage_report = json.loads((artifact_dir / "coverage_from_exported_paths_report.json").read_text(encoding="utf-8"))
+    mask_report = json.loads((artifact_dir / "mask_consistency_report.json").read_text(encoding="utf-8"))
+    resampling_report = json.loads((artifact_dir / "path_resampling_report.json").read_text(encoding="utf-8"))
+
+    assert mask_report["preview_target_vs_diagnostic_target_iou"] >= 0.995
+    assert coverage_report["coverage_rasterization_space"] == "surface-mm-on-ball"
+    assert coverage_report["final_repair_scope"] == "all_selected_color_components"
+    assert int(coverage_report["visible_missed_blob_count_before_repair"]) > 0
+    assert int(coverage_report["visible_missed_blob_count_after_repair"]) == 0
+    assert float(coverage_report["largest_visible_missed_blob_equivalent_diameter_mm_after"]) <= 0.15
+    assert float(resampling_report["max_surface_segment_mm_after"]) <= 0.15 + 1e-9
+    assert path_stats["repair_paths_exported"] is True
+    assert debug.get("root_cause_category_corrected") in {"coverage_under_sampling_fixed", "false_negative_coverage_simulation"}
 
 
 def test_ring_shape_is_split_into_local_cells_before_routing():
@@ -357,6 +410,7 @@ def test_carolin_fixture_rejects_whitespace_crossing_connectors():
 
     allowed = {
         "fill-infill",
+        "fill-repair",
         "outline",
         "coverage_centerline",
         "coverage_offset_line",

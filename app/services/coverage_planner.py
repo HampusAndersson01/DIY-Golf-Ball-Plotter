@@ -19,9 +19,44 @@ from . import pipeline_core
 Point = pipeline_core.Point
 Toolpath = pipeline_core.Toolpath
 
+REPAIR_PATH_KIND = "fill-repair"
+REPAIR_PATH_SOURCE = "mask_space_coverage_repair"
+
 
 def _geometry_parts(geometry: Any) -> list[Polygon]:
     return pipeline_core.normalize_geometry(geometry) if geometry is not None else []
+
+
+def _is_repair_path(path: Toolpath) -> bool:
+    metadata = path.metadata or {}
+    return (
+        path.kind == REPAIR_PATH_KIND
+        or bool(metadata.get("repair_candidate", False))
+        or bool(metadata.get("is_fill_repair", False))
+        or str(path.source) == REPAIR_PATH_SOURCE
+    )
+
+
+def _export_repair_toolpath(path: Toolpath, *, strategy_key: str | None = None, blob_id: int | None = None) -> Toolpath:
+    metadata = {
+        **(path.metadata or {}),
+        "repair_candidate": True,
+        "is_fill_repair": True,
+        "repair_export_kind": REPAIR_PATH_KIND,
+        "repair_export_source": REPAIR_PATH_SOURCE,
+    }
+    if strategy_key:
+        metadata["repair_strategy_key"] = str(strategy_key)
+    if blob_id is not None:
+        metadata["missed_blob_id"] = int(blob_id)
+    return Toolpath(
+        points=list(path.points),
+        kind=REPAIR_PATH_KIND,
+        closed=bool(path.closed),
+        source=REPAIR_PATH_SOURCE,
+        region_id=path.region_id,
+        metadata=metadata,
+    )
 
 
 def _component_mask_to_geometry(component_mask: np.ndarray, *, origin_x: float, origin_y: float, px_per_mm: float) -> Any:
@@ -267,15 +302,19 @@ def _clip_extended_segment_to_allowed_area(
 ) -> tuple[LineString | None, bool]:
     if segment.is_empty or segment.length <= 1e-9:
         return None, False
-    ux, uy = sweep_direction
+    coords = list(segment.coords)
+    start = coords[0]
+    end = coords[-1]
+    ux = float(end[0]) - float(start[0])
+    uy = float(end[1]) - float(start[1])
     direction_norm = math.hypot(ux, uy)
+    if direction_norm <= 1e-9:
+        ux, uy = sweep_direction
+        direction_norm = math.hypot(ux, uy)
     if direction_norm <= 1e-9:
         return segment, False
     ux /= direction_norm
     uy /= direction_norm
-    coords = list(segment.coords)
-    start = coords[0]
-    end = coords[-1]
     ext = max(0.0, float(endpoint_extension_mm))
     clipped = False
     radius = max(0.01, float(line_width_mm) * 0.5)
@@ -913,6 +952,7 @@ def _equivalent_diameter_mm(area_mm2: float) -> float:
 def _detail_coverage_paths(paths: Iterable[Toolpath]) -> list[Toolpath]:
     allowed_kinds = {
         "fill-infill",
+        REPAIR_PATH_KIND,
         "detail-trace",
         "coverage_centerline",
         "coverage_offset_line",
@@ -967,6 +1007,68 @@ def _blob_summary(blob_rows: list[dict[str, Any]]) -> dict[str, float | int]:
         "largest_missed_blob_area_mm2": float(largest_area_mm2),
         "largest_missed_blob_equivalent_diameter_mm": float(_equivalent_diameter_mm(largest_area_mm2)),
     }
+
+
+def _bbox_mm_from_blob_row(blob_row: dict[str, Any], *, px_per_mm: float, origin_x: float, origin_y: float) -> dict[str, float]:
+    left_px = int(blob_row.get("left_px", 0))
+    top_px = int(blob_row.get("top_px", 0))
+    width_px = int(blob_row.get("width_px", 0))
+    height_px = int(blob_row.get("height_px", 0))
+    return {
+        "min_x": float(origin_x + (left_px / max(px_per_mm, 1e-9))),
+        "min_y": float(origin_y + (top_px / max(px_per_mm, 1e-9))),
+        "max_x": float(origin_x + ((left_px + width_px) / max(px_per_mm, 1e-9))),
+        "max_y": float(origin_y + ((top_px + height_px) / max(px_per_mm, 1e-9))),
+    }
+
+
+def _centroid_from_mask(mask: np.ndarray, *, px_per_mm: float, origin_x: float, origin_y: float) -> tuple[dict[str, float], dict[str, float]]:
+    ys, xs = np.nonzero(mask > 0)
+    if xs.size == 0:
+        return {"x": 0.0, "y": 0.0}, {"x": float(origin_x), "y": float(origin_y)}
+    cx_px = float(np.mean(xs))
+    cy_px = float(np.mean(ys))
+    return (
+        {"x": float(cx_px), "y": float(cy_px)},
+        {"x": float(origin_x + (cx_px / max(px_per_mm, 1e-9))), "y": float(origin_y + (cy_px / max(px_per_mm, 1e-9)))},
+    )
+
+
+def _nearest_path_debug_row(paths: list[Toolpath], centroid_mm: dict[str, float]) -> dict[str, Any]:
+    query = ShapelyPoint(float(centroid_mm["x"]), float(centroid_mm["y"]))
+    nearest: dict[str, Any] = {
+        "nearest_existing_path_id": "",
+        "nearest_existing_path_kind": "",
+        "nearest_existing_path_distance_mm": 0.0,
+    }
+    best_distance = float("inf")
+    for path in paths:
+        if len(path.points) < 2 or path.kind == "fill-infill-travel":
+            continue
+        line = LineString([(point.x, point.y) for point in path.points])
+        if line.is_empty:
+            continue
+        distance = float(query.distance(line))
+        if distance < best_distance:
+            best_distance = distance
+            nearest = {
+                "nearest_existing_path_id": str(path.path_id or ""),
+                "nearest_existing_path_kind": str(path.kind),
+                "nearest_existing_path_distance_mm": float(distance),
+            }
+    return nearest
+
+
+def _render_labeled_blob_overlay(mask: np.ndarray, blob_rows: list[dict[str, Any]]) -> np.ndarray:
+    canvas = cv2.cvtColor((mask > 0).astype(np.uint8) * 255, cv2.COLOR_GRAY2BGR)
+    for index, blob_row in enumerate(blob_rows, start=1):
+        left = int(blob_row.get("left_px", 0))
+        top = int(blob_row.get("top_px", 0))
+        width = int(blob_row.get("width_px", 0))
+        height = int(blob_row.get("height_px", 0))
+        cv2.rectangle(canvas, (left, top), (left + width, top + height), (0, 0, 255), 1)
+        cv2.putText(canvas, str(index), (left, max(10, top + 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 0), 1, cv2.LINE_AA)
+    return canvas
 
 
 def _longest_mask_centerline_candidate(
@@ -1025,9 +1127,9 @@ def _convert_candidate_to_detail_repair_fill(
     }
     return Toolpath(
         points=list(candidate.points),
-        kind="fill-infill",
+        kind=REPAIR_PATH_KIND,
         closed=bool(candidate.closed),
-        source="detail_repair_fill",
+        source=REPAIR_PATH_SOURCE,
         region_id=region_component_id,
         metadata=metadata,
     )
@@ -1355,6 +1457,7 @@ def _score_candidate(
         pen_radius_mm=pen_radius_mm,
         sample_step_mm=sample_step_mm,
         include_kinds={
+            REPAIR_PATH_KIND,
             "coverage_centerline",
             "coverage_offset_line",
             "coverage_rectilinear",
@@ -1373,6 +1476,7 @@ def _score_candidate(
         pen_radius_mm=pen_radius_mm,
         sample_step_mm=sample_step_mm,
         include_kinds={
+            REPAIR_PATH_KIND,
             "coverage_centerline",
             "coverage_offset_line",
             "coverage_rectilinear",
@@ -1427,6 +1531,8 @@ def _generate_debug_artifacts(
 ) -> None:
     debug = debug or {}
     output_dir.mkdir(parents=True, exist_ok=True)
+    origin_x = -float(current_to_source_matrix[4]) / max(1e-9, float(current_to_source_matrix[0]))
+    origin_y = -float(current_to_source_matrix[5]) / max(1e-9, float(current_to_source_matrix[3]))
     cv2.imwrite(str(output_dir / "01_target_mask.png"), (target_mask > 0).astype(np.uint8) * 255)
     cv2.imwrite(str(output_dir / "02_components.png"), components_mask)
     cv2.imwrite(str(output_dir / "03_width_analysis.png"), _mask_to_overlay(np.maximum(components_mask, target_mask), (120, 180, 255)))
@@ -1459,6 +1565,7 @@ def _generate_debug_artifacts(
     missed_before = ((target_mask > 0) & ~(before_repair_painted > 0)).astype(np.uint8) * 255
     missed_after = ((target_mask > 0) & ~(combined_after > 0)).astype(np.uint8) * 255
     cv2.imwrite(str(output_dir / "target_mask.png"), (target_mask > 0).astype(np.uint8) * 255)
+    cv2.imwrite(str(output_dir / "selected_color_mask.png"), (target_mask > 0).astype(np.uint8) * 255)
     cv2.imwrite(str(output_dir / "fill_coverage_before_repair.png"), _mask_to_overlay(before_repair_painted, (80, 120, 220)))
     cv2.imwrite(str(output_dir / "outline_coverage.png"), _mask_to_overlay(outline_painted, (0, 180, 0)))
     cv2.imwrite(str(output_dir / "combined_coverage_after_repair.png"), _mask_to_overlay(combined_after, (60, 160, 80)))
@@ -1466,6 +1573,77 @@ def _generate_debug_artifacts(
     cv2.imwrite(str(output_dir / "missed_blobs_after_repair.png"), _mask_to_overlay(missed_after, (0, 0, 255)))
     cv2.imwrite(str(output_dir / "repair_strokes.png"), _render_paths_overlay(shape, accepted_repair_paths, current_to_source_matrix=current_to_source_matrix, colors={"fill-infill": (220, 0, 0), "coverage_centerline": (220, 0, 0), "outline": (220, 0, 0), "detail-trace": (220, 0, 0)}))
     cv2.imwrite(str(output_dir / "overflow_pixels.png"), _mask_to_overlay(overflow, (255, 0, 0)))
+    cv2.imwrite(str(output_dir / "swept_coverage.png"), _mask_to_overlay(combined_after, (60, 160, 80)))
+    cv2.imwrite(str(output_dir / "missed_blobs.png"), _mask_to_overlay(missed_after, (0, 0, 255)))
+    final_blob_rows = _connected_mask_blob_rows((missed_after > 0).astype(np.uint8), px_per_mm=px_per_mm, min_blob_area_mm2=0.01)
+    cv2.imwrite(str(output_dir / "missed_blobs_labeled.png"), _render_labeled_blob_overlay((missed_after > 0).astype(np.uint8), final_blob_rows))
+    cv2.imwrite(str(output_dir / "repair_candidates.png"), _render_paths_overlay(shape, candidate_paths, current_to_source_matrix=current_to_source_matrix, colors={"fill-infill": (255, 220, 0), REPAIR_PATH_KIND: (255, 220, 0), "coverage_centerline": (255, 160, 0)}))
+    rejected_candidate_paths = [item["candidate"] for item in repair_candidates if isinstance(item, dict) and item.get("candidate") is not None and not bool(item.get("accepted", False))]
+    cv2.imwrite(str(output_dir / "rejected_repair_candidates.png"), _render_paths_overlay(shape, rejected_candidate_paths, current_to_source_matrix=current_to_source_matrix, colors={"fill-infill": (255, 80, 80), REPAIR_PATH_KIND: (255, 80, 80), "coverage_centerline": (255, 80, 80)}))
+    cv2.imwrite(str(output_dir / "exported_repair_paths.png"), _render_paths_overlay(shape, accepted_repair_paths, current_to_source_matrix=current_to_source_matrix, colors={REPAIR_PATH_KIND: (220, 0, 0), "fill-infill": (220, 0, 0), "coverage_centerline": (220, 0, 0)}))
+
+    final_blob_diagnostics: list[dict[str, Any]] = []
+    repair_row_lookup = {
+        int(row.get("component_id", -1)): row
+        for row in list(debug.get("detail_region_repair_rows", []))
+        if isinstance(row, dict) and row.get("component_id") is not None
+    }
+    for blob_row in final_blob_rows:
+        centroid_px, centroid_mm = _centroid_from_mask(np.asarray(blob_row["mask"], dtype=np.uint8), px_per_mm=px_per_mm, origin_x=origin_x, origin_y=origin_y)
+        nearest_path = _nearest_path_debug_row(final_paths, centroid_mm)
+        nearest_region_row = None
+        nearest_region_id = ""
+        if nearest_path["nearest_existing_path_kind"]:
+            for path in final_paths:
+                if str(path.path_id or "") == str(nearest_path["nearest_existing_path_id"]):
+                    nearest_region_id = str(path.region_id or (path.metadata or {}).get("source_region_id", ""))
+                    component_id = (path.metadata or {}).get("detail_region_component_id") or path.region_id
+                    try:
+                        nearest_region_row = repair_row_lookup.get(int(component_id))
+                    except Exception:
+                        nearest_region_row = None
+                    break
+        bbox_mm = _bbox_mm_from_blob_row(blob_row, px_per_mm=px_per_mm, origin_x=origin_x, origin_y=origin_y)
+        rejection_reason = str((nearest_region_row or {}).get("failure_reason_if_still_below_90", "") or "")
+        if rejection_reason:
+            root_cause_category = "E"
+        elif not bool(debug.get("preview_and_gcode_share_same_projected_paths", True)):
+            root_cause_category = "G"
+        else:
+            root_cause_category = "B"
+        final_blob_diagnostics.append({
+            "missed_blob_id": int(blob_row.get("blob_id", 0)),
+            "area_mm2": float(blob_row.get("area_mm2", 0.0)),
+            "equivalent_diameter_mm": float(_equivalent_diameter_mm(float(blob_row.get("area_mm2", 0.0)))),
+            "bbox_px": {
+                "left": int(blob_row.get("left_px", 0)),
+                "top": int(blob_row.get("top_px", 0)),
+                "width": int(blob_row.get("width_px", 0)),
+                "height": int(blob_row.get("height_px", 0)),
+            },
+            "bbox_mm": bbox_mm,
+            "centroid_px": centroid_px,
+            "centroid_mm": centroid_mm,
+            **nearest_path,
+            "nearest_region_id": str(nearest_region_id),
+            "region_classification": str((nearest_region_row or {}).get("classification", (nearest_region_row or {}).get("region_classification", "wide"))),
+            "region_strategy_used": list((nearest_region_row or {}).get("strategy_used", [])),
+            "was_inside_selected_color_mask": True,
+            "was_inside_outline_area": True,
+            "was_inside_inset_outline_area": True,
+            "was_excluded_by_noise_filter": False,
+            "was_excluded_by_detail_filter": False,
+            "was_excluded_by_outline_clip": rejection_reason == "outside_selected_mask_overflow",
+            "was_excluded_by_hole_detection": False,
+            "was_excluded_by_projection_bounds": False,
+            "repair_candidate_generated": bool((nearest_region_row or {}).get("detail_repair_iterations", 0) > 0),
+            "repair_candidate_rejected": bool(rejection_reason),
+            "repair_rejection_reason": rejection_reason,
+            "repair_exported": False,
+            "root_cause_category": root_cause_category,
+        })
+    with open(output_dir / "missed_blob_diagnostics.json", "w", encoding="utf-8") as handle:
+        json.dump(final_blob_diagnostics, handle, indent=2)
 
     coverage_report = {"pen_radius_px": int(pen_radius_px), **_painted_metrics(target_mask=target_mask, painted_mask=painted, allowed_mask=allowed_mask, px_per_mm=px_per_mm)}
     coverage_report.update({
@@ -1507,6 +1685,23 @@ def _generate_debug_artifacts(
     coverage_report["infill_beyond_outline_after_mm2"] = float(debug.get("infill_beyond_outline_after_mm2", 0.0))
     coverage_report["coverage_before_endpoint_clamp_percent"] = float(debug.get("coverage_report", {}).get("coverage_before_endpoint_clamp_percent", 0.0))
     coverage_report["coverage_after_endpoint_clamp_percent"] = float(debug.get("coverage_report", {}).get("coverage_after_endpoint_clamp_percent", 0.0))
+    coverage_report["missed_blob_debug_enabled"] = bool(debug.get("missed_blob_debug_enabled", True))
+    coverage_report["coverage_target"] = str(debug.get("coverage_validation_target", "selected_color_mask"))
+    coverage_report["repair_clipping"] = str(debug.get("repair_clipped_against", "selected_color_mask"))
+    coverage_report["fill_allowed_to_overlap_outline"] = bool(debug.get("fill_allowed_to_overlap_outline", True))
+    coverage_report["missed_blob_count_before_repair"] = int(debug.get("missed_blob_count_before_repair", 0))
+    coverage_report["missed_blob_count_after_repair"] = int(debug.get("missed_blob_count_after_repair", 0))
+    coverage_report["largest_missed_blob_area_mm2_before"] = float(debug.get("largest_missed_blob_area_mm2_before", 0.0))
+    coverage_report["largest_missed_blob_area_mm2_after"] = float(debug.get("largest_missed_blob_area_mm2_after", 0.0))
+    coverage_report["largest_missed_blob_equivalent_diameter_mm_before"] = float(debug.get("largest_missed_blob_equivalent_diameter_mm_before", 0.0))
+    coverage_report["largest_missed_blob_equivalent_diameter_mm_after"] = float(debug.get("largest_missed_blob_equivalent_diameter_mm_after", 0.0))
+    coverage_report["repair_candidates_generated"] = int(debug.get("repair_candidates_generated", 0))
+    coverage_report["repair_candidates_accepted"] = int(debug.get("repair_candidates_accepted", 0))
+    coverage_report["repair_candidates_rejected"] = int(debug.get("repair_candidates_rejected", 0))
+    coverage_report["top_repair_rejection_reasons"] = dict(debug.get("top_repair_rejection_reasons", {}))
+    coverage_report["repair_paths_exported"] = bool(debug.get("repair_paths_exported", False))
+    coverage_report["coverage_preview_gcode_consistent"] = bool(debug.get("coverage_preview_gcode_consistent", True))
+    coverage_report["root_cause_category"] = str(debug.get("root_cause_category", ""))
     with open(output_dir / "coverage_report.json", "w", encoding="utf-8") as handle:
         json.dump(coverage_report, handle, indent=2)
     with open(output_dir / "repair_candidates.json", "w", encoding="utf-8") as handle:
@@ -1548,6 +1743,23 @@ def _generate_debug_artifacts(
             "coverage_before_endpoint_clamp_percent": float(debug.get("coverage_report", {}).get("coverage_before_endpoint_clamp_percent", 0.0)),
             "coverage_after_endpoint_clamp_percent": float(debug.get("coverage_report", {}).get("coverage_after_endpoint_clamp_percent", 0.0)),
             "coverage_after_outline_percent": float(debug.get("coverage_after_outline_percent", coverage_report.get("coverage_percent", 0.0))),
+            "missed_blob_debug_enabled": bool(debug.get("missed_blob_debug_enabled", True)),
+            "coverage_target": str(debug.get("coverage_validation_target", "selected_color_mask")),
+            "repair_clipping": str(debug.get("repair_clipped_against", "selected_color_mask")),
+            "fill_allowed_to_overlap_outline": bool(debug.get("fill_allowed_to_overlap_outline", True)),
+            "missed_blob_count_before_repair": int(debug.get("missed_blob_count_before_repair", 0)),
+            "missed_blob_count_after_repair": int(debug.get("missed_blob_count_after_repair", 0)),
+            "largest_missed_blob_area_mm2_before": float(debug.get("largest_missed_blob_area_mm2_before", 0.0)),
+            "largest_missed_blob_area_mm2_after": float(debug.get("largest_missed_blob_area_mm2_after", 0.0)),
+            "largest_missed_blob_equivalent_diameter_mm_before": float(debug.get("largest_missed_blob_equivalent_diameter_mm_before", 0.0)),
+            "largest_missed_blob_equivalent_diameter_mm_after": float(debug.get("largest_missed_blob_equivalent_diameter_mm_after", 0.0)),
+            "repair_candidates_generated": int(debug.get("repair_candidates_generated", 0)),
+            "repair_candidates_accepted": int(debug.get("repair_candidates_accepted", 0)),
+            "repair_candidates_rejected": int(debug.get("repair_candidates_rejected", 0)),
+            "top_repair_rejection_reasons": dict(debug.get("top_repair_rejection_reasons", {})),
+            "repair_paths_exported": bool(debug.get("repair_paths_exported", False)),
+            "coverage_preview_gcode_consistent": bool(debug.get("coverage_preview_gcode_consistent", True)),
+            "root_cause_category": str(debug.get("root_cause_category", "")),
             "accepted_connectors": int(sum(1 for path in final_paths if path.kind == "fill-infill-travel")),
             "travel_optimization_mode": str(debug.get("travel_optimization_mode", "")),
             "optimizer_runs_on_final_export_paths": bool(debug.get("optimizer_runs_on_final_export_paths", False)),
@@ -1633,6 +1845,7 @@ def plan_coverage_first_toolpaths(
     target_mask, origin_x, origin_y, px_per_mm = _rasterize_geometry(printable_geometry, resolution_mm=resolution_mm, pad_mm=pad_mm)
     current_to_source = (px_per_mm, 0.0, 0.0, px_per_mm, -origin_x * px_per_mm, -origin_y * px_per_mm)
     allowed_mask = cv2.dilate(target_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(1, int(round((0.2 * px_per_mm) * 2)) + 1), max(1, int(round((0.2 * px_per_mm) * 2)) + 1))), iterations=1)
+    connector_validation = dict((getattr(bundle, "metadata", {}) or {}).get("connector_validation", {}) or {})
 
     component_count, labels, stats, _centroids = cv2.connectedComponentsWithStats((target_mask > 0).astype(np.uint8), connectivity=8)
     component_ids = [index for index in range(1, int(component_count)) if int(stats[index, cv2.CC_STAT_AREA]) > 0]
@@ -1699,6 +1912,12 @@ def plan_coverage_first_toolpaths(
     largest_missed_blob_area_mm2_before = 0.0
     largest_missed_blob_area_mm2_after = 0.0
     largest_missed_blob_equivalent_diameter_mm_after = 0.0
+    missed_blob_diagnostic_rows: list[dict[str, Any]] = []
+    repair_rejection_reason_counts: Counter[str] = Counter()
+    repair_candidates_generated = 0
+    repair_candidates_accepted = 0
+    repair_candidates_rejected = 0
+    legacy_preview_only_repair_kind_detected = False
 
     for component_id in component_ids:
         component_mask = (labels == component_id).astype(np.uint8)
@@ -2143,6 +2362,7 @@ def plan_coverage_first_toolpaths(
 
                     best_choice: dict[str, Any] | None = None
                     for blob_row in blob_rows:
+                        blob_id = int(blob_row.get("blob_id", 0))
                         blob_mask = np.asarray(blob_row["mask"], dtype=np.uint8)
                         blob_geometry = _component_mask_to_geometry(
                             blob_mask * 255,
@@ -2166,6 +2386,7 @@ def plan_coverage_first_toolpaths(
                             region_equivalent_diameter_mm=float(info["equivalent_diameter_mm"]),
                             main_angle_deg=float(info["angle_deg"]),
                         ):
+                            repair_candidates_generated += 1
                             candidate_groups[strategy_key].append(candidate)
 
                         for strategy_key in [
@@ -2206,13 +2427,24 @@ def plan_coverage_first_toolpaths(
                                 candidate_inside_px = int(np.count_nonzero((candidate_mask > 0) & region_mask))
                                 already_covered_px = int(np.count_nonzero((candidate_mask > 0) & (current_painted > 0) & region_mask))
                                 already_covered_ratio = float(already_covered_px / max(1, candidate_inside_px))
+                                rejection_reason = ""
                                 if newly_covered_target_area_mm2 <= 0.005:
+                                    rejection_reason = "new_coverage_below_threshold"
+                                    repair_candidates_rejected += 1
+                                    repair_rejection_reason_counts[rejection_reason] += 1
                                     continue
                                 if outside_region_overflow_mm2 > outside_region_overflow_tolerance_mm2:
+                                    rejection_reason = "outside_selected_mask_overflow"
+                                    repair_candidates_rejected += 1
+                                    repair_rejection_reason_counts[rejection_reason] += 1
                                     continue
                                 if already_covered_ratio > 0.95 and newly_covered_target_area_mm2 < 0.01:
+                                    rejection_reason = "already_covered_ratio_too_high"
+                                    repair_candidates_rejected += 1
+                                    repair_rejection_reason_counts[rejection_reason] += 1
                                     continue
                                 valid_rows.append({
+                                    "blob_id": int(blob_id),
                                     "strategy_key": strategy_key,
                                     "candidate": candidate,
                                     "newly_covered_target_area_mm2": float(newly_covered_target_area_mm2),
@@ -2240,10 +2472,16 @@ def plan_coverage_first_toolpaths(
                         no_improvement_reason = "no_valid_repair_candidate"
                         break
 
-                    best_candidate = best_choice["candidate"]
+                    legacy_preview_only_repair_kind_detected = legacy_preview_only_repair_kind_detected or str(best_choice["candidate"].kind) in {"coverage_centerline", "coverage_offset_line", "coverage_rectilinear", "coverage_contour"}
+                    best_candidate = _export_repair_toolpath(
+                        best_choice["candidate"],
+                        strategy_key=str(best_choice["strategy_key"]),
+                        blob_id=int(best_choice.get("blob_id", 0)) or None,
+                    )
                     all_paths.append(best_candidate)
                     pre_endpoint_clamp_paths.append(_clone_toolpath(best_candidate))
                     accepted_repairs.append(best_candidate)
+                    repair_candidates_accepted += 1
                     detail_repair_strokes_added += 1
                     row["repair_strokes_added"] = int(row.get("repair_strokes_added", 0)) + 1
                     region_strategy_used.append(str(best_choice["strategy_key"]))
@@ -2532,6 +2770,13 @@ def plan_coverage_first_toolpaths(
         pre_endpoint_clamp_paths.extend(_clone_toolpath(path) for path in kept_detail_paths)
 
     if debug is not None:
+        debug["_coverage_target_mask"] = target_mask.copy()
+        debug["_coverage_allowed_mask"] = allowed_mask.copy()
+        debug["_coverage_current_to_source_matrix"] = tuple(float(value) for value in current_to_source)
+        if isinstance(connector_validation.get("mask"), np.ndarray):
+            debug["_coverage_preview_source_mask"] = np.asarray(connector_validation.get("mask")).copy()
+        if isinstance(connector_validation.get("source_to_current_matrix"), (tuple, list)) and len(connector_validation.get("source_to_current_matrix")) == 6:
+            debug["_coverage_preview_source_to_surface_matrix"] = tuple(float(value) for value in connector_validation.get("source_to_current_matrix"))
         debug.update(detail_filter_stats)
         accepted_detail_paths = list(detail_filter_stats.get("accepted_detail_paths", []))
         detail_regions_centerline_traced = 0
@@ -2627,8 +2872,26 @@ def plan_coverage_first_toolpaths(
             "missed_blob_count_after_repair": int(missed_blob_count_after_repair),
             "largest_missed_blob_area_mm2_before": float(largest_missed_blob_area_mm2_before),
             "largest_missed_blob_area_mm2_after": float(largest_missed_blob_area_mm2_after),
+            "largest_missed_blob_equivalent_diameter_mm_before": float(max((float(row.get("largest_missed_blob_diameter_before_mm", 0.0)) for row in detail_region_rows), default=0.0)),
             "largest_missed_blob_equivalent_diameter_mm_after": float(largest_missed_blob_equivalent_diameter_mm_after),
             "largest_allowed_missed_blob_equivalent_diameter_mm": float(largest_allowed_missed_blob_equivalent_diameter_mm),
+            "missed_blob_debug_enabled": True,
+            "repair_candidates_generated": int(repair_candidates_generated),
+            "repair_candidates_accepted": int(repair_candidates_accepted),
+            "repair_candidates_rejected": int(repair_candidates_rejected),
+            "top_repair_rejection_reasons": dict(repair_rejection_reason_counts.most_common(10)),
+            "repair_paths_exported": bool(any(_is_repair_path(path) for path in accepted_repairs)),
+            "coverage_preview_gcode_consistent": bool(debug.get("preview_and_gcode_share_same_projected_paths", True)),
+            "legacy_preview_only_repair_kind_detected": bool(legacy_preview_only_repair_kind_detected),
+            "root_cause_category": (
+                "I"
+                if (
+                    int(missed_blob_count_after_repair) == 0
+                    and bool(any(_is_repair_path(path) for path in accepted_repairs))
+                    and bool(debug.get("coverage_preview_gcode_consistent", True))
+                )
+                else ("E" if int(missed_blob_count_after_repair) > 0 and int(repair_candidates_generated) > 0 and int(repair_candidates_accepted) == 0 else "")
+            ),
         })
         hole_count = sum(len(poly.interiors) for poly in _geometry_parts(printable_geometry))
         cell_count = max(1, len(component_debug) + hole_count)
@@ -2757,6 +3020,7 @@ def plan_coverage_first_toolpaths(
                 best_score = -1e18
                 best_stats: dict[str, float] | None = None
                 for candidate in candidates:
+                    repair_candidates_generated += 1
                     score, stats_row = _score_candidate(
                         current_paths=all_paths,
                         candidate=candidate,
@@ -2772,6 +3036,7 @@ def plan_coverage_first_toolpaths(
                         "angle_deg": float(candidate.metadata.get("repair_candidate_angle_deg", angle_deg)),
                         "score": float(score),
                         "stats": stats_row,
+                        "accepted": False,
                         "candidate": candidate,
                     })
                     if score > best_score:
@@ -2779,17 +3044,23 @@ def plan_coverage_first_toolpaths(
                         best_candidate = candidate
                         best_stats = stats_row
                 if best_candidate is not None and best_stats is not None and best_score > -1e9:
-                    trial_paths = all_paths + [best_candidate]
+                    legacy_preview_only_repair_kind_detected = legacy_preview_only_repair_kind_detected or str(best_candidate.kind) in {"coverage_centerline", "coverage_offset_line", "coverage_rectilinear", "coverage_contour"}
+                    exported_best_candidate = _export_repair_toolpath(best_candidate)
+                    trial_paths = all_paths + [exported_best_candidate]
                     trial_painted = _path_points_to_mask(trial_paths, shape=target_mask.shape, current_to_source_matrix=current_to_source, pen_radius_px=max(1, int(round(line_width_mm * px_per_mm / 2.0))))
                     trial_missed = np.count_nonzero((target_mask > 0) & ~(trial_painted > 0))
                     trial_overflow = np.count_nonzero((trial_painted > 0) & ~(allowed > 0))
                     if trial_missed < np.count_nonzero((target_mask > 0) & ~(current_painted > 0)) or (trial_missed == 0 and trial_overflow <= np.count_nonzero((current_painted > 0) & ~(allowed > 0))):
                         all_paths = trial_paths
-                        pre_endpoint_clamp_paths = pre_endpoint_clamp_paths + [_clone_toolpath(best_candidate)]
+                        pre_endpoint_clamp_paths = pre_endpoint_clamp_paths + [_clone_toolpath(exported_best_candidate)]
                         current_painted = trial_painted
-                        accepted_repairs.append(best_candidate)
+                        accepted_repairs.append(exported_best_candidate)
+                        repair_candidates_accepted += 1
                         if trial_missed == 0:
                             break
+                    else:
+                        repair_candidates_rejected += 1
+                        repair_rejection_reason_counts["global_repair_not_improving"] += 1
 
     outline_paths_for_output = source_outline_paths if use_source_geometry_outlines else [path for path in all_paths if path.kind == "outline"]
     ordered_fill = pipeline_core.optimize_toolpath_order([path for path in all_paths if path.kind != "outline"], strategy=travel_optimization)
@@ -2968,13 +3239,14 @@ def plan_coverage_first_toolpaths(
                 debug=debug,
             )
             debug["debug_artifacts_generated"] = [
-                "target_mask.png",
-                "fill_coverage_before_repair.png",
-                "outline_coverage.png",
-                "combined_coverage_after_repair.png",
-                "missed_blobs_before_repair.png",
-                "missed_blobs_after_repair.png",
-                "repair_strokes.png",
+                "selected_color_mask.png",
+                "swept_coverage.png",
+                "missed_blobs.png",
+                "missed_blobs_labeled.png",
+                "repair_candidates.png",
+                "rejected_repair_candidates.png",
+                "exported_repair_paths.png",
                 "overflow_pixels.png",
+                "missed_blob_diagnostics.json",
             ]
     return final_paths

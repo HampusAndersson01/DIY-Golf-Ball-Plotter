@@ -245,7 +245,7 @@ DEFAULT_MAX_DETAIL_CONTINUATION_OVERSPILL_AREA_RATIO = 0.02
 DEFAULT_MAX_DETAIL_CONTINUATION_TURN_DEG = 120.0
 DEFAULT_STREAMING_MODE = "buffered"
 DEFAULT_OUTLINE_PLACEMENT_MODE = "inside_edge_default"
-DEFAULT_PROJECTION_SAMPLING_MAX_SEGMENT_MM = 0.25
+DEFAULT_PROJECTION_SAMPLING_MAX_SEGMENT_MM = 0.15
 ORIGIN_ANCHORS = {
     "center",
     "min-x",
@@ -868,7 +868,6 @@ def compute_toolpath_mask_coverage_metrics(
     mask_area_px = int(np.count_nonzero(target_mask))
     if mask_area_px <= 0:
         return None
-    drawn_mask = np.zeros((mask_height, mask_width), dtype=np.uint8)
     a, b, c, d, _e, _f = current_to_source_matrix
     # Convert toolpath-space mm radius to source-image pixels via affine scale.
     scale_x = math.hypot(a, b)
@@ -888,6 +887,7 @@ def compute_toolpath_mask_coverage_metrics(
         "outline_cleanup",
         "fill-wall",
     }
+    drawn_mask = np.zeros((mask_height, mask_width), dtype=np.uint8)
     radius_px_i = max(1, int(round(pen_radius_px)))
     for path in toolpaths:
         if path.kind not in coverage_draw_kinds or len(path.points) < 1:
@@ -931,6 +931,72 @@ def compute_toolpath_mask_coverage_metrics(
         px_per_mm=px_per_mm,
         pen_radius_px=pen_radius_px,
     )
+
+
+def rasterize_surface_toolpaths_mask(
+    toolpaths: list[Toolpath],
+    *,
+    shape: tuple[int, int],
+    current_to_source_matrix: tuple[float, float, float, float, float, float],
+    pen_radius_mm: float,
+    max_segment_mm: float,
+    include_kinds: set[str] | None = None,
+) -> np.ndarray:
+    height, width = shape
+    drawn_mask = np.zeros((height, width), dtype=np.uint8)
+    a, b, c, d, _e, _f = current_to_source_matrix
+    px_per_mm = max(1e-6, (math.hypot(a, b) + math.hypot(c, d)) * 0.5)
+    pen_radius_px = max(1, int(round(max(0.0, float(pen_radius_mm) * px_per_mm))))
+    allowed_kinds = include_kinds if include_kinds is not None else {
+        "coverage_centerline",
+        "coverage_offset_line",
+        "coverage_rectilinear",
+        "coverage_contour",
+        "coverage_connector",
+        "coverage_tiny_mark",
+        "fill-infill",
+        "fill-repair",
+        "detail-trace",
+        "outline",
+        "outline_cleanup",
+        "fill-wall",
+    }
+    for path in toolpaths:
+        if path.kind not in allowed_kinds or len(path.points) < 1:
+            continue
+        if len(path.points) == 1:
+            source_point = apply_svg_matrix(path.points[0], current_to_source_matrix)
+            cv2.circle(drawn_mask, (int(round(source_point.x)), int(round(source_point.y))), pen_radius_px, 255, -1)
+            continue
+        sampled_points = resample_segment(path.points, max_step=max(0.01, float(max_segment_mm)))
+        for point in sampled_points:
+            source_point = apply_svg_matrix(point, current_to_source_matrix)
+            cv2.circle(drawn_mask, (int(round(source_point.x)), int(round(source_point.y))), pen_radius_px, 255, -1)
+    return drawn_mask
+
+
+def rasterize_source_mask_to_target_frame(
+    source_mask: np.ndarray,
+    *,
+    source_to_surface_matrix: tuple[float, float, float, float, float, float],
+    surface_to_target_matrix: tuple[float, float, float, float, float, float],
+    shape: tuple[int, int],
+) -> np.ndarray:
+    source_to_target = multiply_svg_matrices(surface_to_target_matrix, source_to_surface_matrix)
+    target_to_source = invert_svg_matrix(source_to_target)
+    affine = np.asarray([
+        [float(target_to_source[0]), float(target_to_source[2]), float(target_to_source[4])],
+        [float(target_to_source[1]), float(target_to_source[3]), float(target_to_source[5])],
+    ], dtype=np.float32)
+    warped = cv2.warpAffine(
+        (np.asarray(source_mask) > 0).astype(np.uint8) * 255,
+        affine,
+        (int(shape[1]), int(shape[0])),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    return warped
 
 
 def compute_toolpath_mask_coverage_breakdown(
@@ -3497,7 +3563,7 @@ def _max_point_delta(points_a: list[Point], points_b: list[Point]) -> float:
 
 def _resolve_projection_sampling_mm(toolpath: Toolpath, *, default_pen_width_mm: float = DEFAULT_LINE_THICKNESS_MM) -> float:
     pen_width_mm = float(toolpath.metadata.get("pen_width_mm", toolpath.metadata.get("line_width_mm", default_pen_width_mm)))
-    return min(max(0.01, pen_width_mm * 0.5), DEFAULT_PROJECTION_SAMPLING_MAX_SEGMENT_MM)
+    return min(DEFAULT_PROJECTION_SAMPLING_MAX_SEGMENT_MM, max(0.01, pen_width_mm * 0.25))
 
 
 def validate_closed_path(toolpath: Toolpath) -> dict[str, Any]:
@@ -4397,6 +4463,23 @@ def surface_mm_to_ball_angles(
         raise ValueError("Toolpath approaches the ball pole too closely for stable longitude mapping")
     lon = center_lon + (point.x / (radius * cos_lat))
     return Point(math.degrees(lon), math.degrees(lat))
+
+
+def ball_angles_to_surface_mm(
+    point: Point,
+    *,
+    center_lon_deg: float,
+    center_lat_deg: float,
+    ball_diameter_mm: float = BALL_DIAMETER_MM,
+) -> Point:
+    radius = ball_radius_mm(ball_diameter_mm)
+    lon = math.radians(point.x)
+    lat = math.radians(point.y)
+    center_lon = math.radians(center_lon_deg)
+    center_lat = math.radians(center_lat_deg)
+    y_mm = (lat - center_lat) * radius
+    x_mm = (lon - center_lon) * radius * math.cos(lat)
+    return Point(float(x_mm), float(y_mm))
 
 
 def resolve_safe_projection_center_lat(
@@ -6758,6 +6841,8 @@ def build_final_export_path_entries(
         entries.append({
             "id": surface_path.path_id or _path_debug_identifier(surface_path, index),
             "kind": surface_path.kind,
+            "source": str(surface_path.source or ""),
+            "region_id": surface_path.region_id,
             "layer": _final_export_group_key(surface_path),
             "component_id": _path_component_debug_id(surface_path),
             "is_open": bool(not surface_path.closed),
@@ -6766,8 +6851,262 @@ def build_final_export_path_entries(
             "start_surface_mm": None if not surface_path.points else asdict(surface_path.points[0]),
             "end_surface_mm": None if not surface_path.points else asdict(surface_path.points[-1]),
             "bbox_surface_mm": _bounds_or_none(surface_path.points),
+            "max_surface_segment_mm_before_resampling": float((surface_path.metadata or {}).get("max_surface_segment_mm_before_resampling", max(_segment_lengths_mm(surface_path.points, closed=surface_path.closed), default=0.0))),
+            "max_surface_segment_mm_after_resampling": float((surface_path.metadata or {}).get("max_surface_segment_mm_after_resampling", max(_segment_lengths_mm(surface_path.points, closed=surface_path.closed), default=0.0))),
         })
     return entries
+
+
+def audit_exported_path_coverage(
+    debug: dict[str, Any],
+    *,
+    ball_diameter_mm: float,
+    center_lon_deg: float,
+    center_lat_deg: float,
+    pen_diameter_mm: float,
+    max_coverage_segment_mm: float = 0.15,
+    min_visible_missed_blob_area_mm2: float = 0.005,
+    min_visible_missed_blob_equivalent_diameter_mm: float = 0.15,
+) -> None:
+    artifact_dir_value = debug.get("coverage_debug_artifact_dir")
+    final_export_entries = debug.get("final_export_paths")
+    target_mask = debug.get("_coverage_target_mask")
+    current_to_source_matrix = debug.get("_coverage_current_to_source_matrix")
+    preview_source_mask = debug.get("_coverage_preview_source_mask")
+    preview_source_to_surface_matrix = debug.get("_coverage_preview_source_to_surface_matrix")
+    if not artifact_dir_value or not isinstance(final_export_entries, list) or target_mask is None:
+        return
+    if not isinstance(current_to_source_matrix, (tuple, list)) or len(current_to_source_matrix) != 6:
+        return
+    artifact_dir = Path(str(artifact_dir_value))
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    target_mask_np = (np.asarray(target_mask) > 0).astype(np.uint8) * 255
+    current_to_source = tuple(float(value) for value in current_to_source_matrix)
+    preview_target_mask = target_mask_np.copy()
+    if isinstance(preview_source_mask, np.ndarray) and isinstance(preview_source_to_surface_matrix, (tuple, list)) and len(preview_source_to_surface_matrix) == 6:
+        preview_target_mask = rasterize_source_mask_to_target_frame(
+            preview_source_mask,
+            source_to_surface_matrix=tuple(float(value) for value in preview_source_to_surface_matrix),
+            surface_to_target_matrix=current_to_source,
+            shape=target_mask_np.shape,
+        )
+    diagnostic_target_mask = target_mask_np.copy()
+    union_mask = (preview_target_mask > 0) | (diagnostic_target_mask > 0)
+    intersection_mask = (preview_target_mask > 0) & (diagnostic_target_mask > 0)
+    preview_target_vs_diagnostic_target_iou = float(np.count_nonzero(intersection_mask) / max(1, np.count_nonzero(union_mask)))
+
+    def _entry_to_toolpath(entry: dict[str, Any]) -> Toolpath:
+        surface_points = [
+            Point(float(point["x"]), float(point["y"]))
+            for point in list(entry.get("points_surface_mm") or [])
+            if isinstance(point, dict) and "x" in point and "y" in point
+        ]
+        machine_points = [
+            Point(float(point["x"]), float(point["y"]))
+            for point in list(entry.get("points_machine_deg") or [])
+            if isinstance(point, dict) and "x" in point and "y" in point
+        ]
+        return Toolpath(
+            points=surface_points,
+            kind=str(entry.get("kind") or "unknown"),
+            closed=False,
+            source=str(entry.get("source") or ""),
+            region_id=entry.get("region_id"),
+            path_id=str(entry.get("id") or ""),
+            coordinate_space="surface_mm",
+            metadata={
+                "machine_points": [asdict(point) for point in machine_points],
+                "max_surface_segment_mm_before_resampling": float(entry.get("max_surface_segment_mm_before_resampling", 0.0) or 0.0),
+                "max_surface_segment_mm_after_resampling": float(entry.get("max_surface_segment_mm_after_resampling", 0.0) or 0.0),
+            },
+        )
+
+    exported_surface_paths = [_entry_to_toolpath(entry) for entry in final_export_entries]
+    exported_draw_paths = [path for path in exported_surface_paths if path.kind != "travel" and len(path.points) >= 1]
+    exported_paths_before_repair = [path for path in exported_draw_paths if not (path.kind == "fill-repair" or str(path.source) == "mask_space_coverage_repair")]
+    exported_paths_after_repair = list(exported_draw_paths)
+    resampled_exported_paths = [resample_surface_path(path, max_coverage_segment_mm) if len(path.points) >= 2 else clone_toolpath(path) for path in exported_paths_after_repair]
+    resampled_exported_paths_before_repair = [resample_surface_path(path, max_coverage_segment_mm) if len(path.points) >= 2 else clone_toolpath(path) for path in exported_paths_before_repair]
+
+    def _segment_lengths(path: Toolpath) -> list[float]:
+        return _segment_lengths_mm(path.points, closed=path.closed) if len(path.points) >= 2 else []
+
+    long_segments_before_resampling = int(sum(1 for path in exported_draw_paths for length in _segment_lengths(path) if float(length) > max_coverage_segment_mm + 1e-9))
+    long_segments_after_resampling = int(sum(1 for path in resampled_exported_paths for length in _segment_lengths(path) if float(length) > max_coverage_segment_mm + 1e-9))
+    repair_long_segments_before = int(sum(1 for path in exported_draw_paths if (path.kind == "fill-repair" or str(path.source) == "mask_space_coverage_repair") for length in _segment_lengths(path) if float(length) > max_coverage_segment_mm + 1e-9))
+    repair_long_segments_after = int(sum(1 for path in resampled_exported_paths if (path.kind == "fill-repair" or str(path.source) == "mask_space_coverage_repair") for length in _segment_lengths(path) if float(length) > max_coverage_segment_mm + 1e-9))
+    max_surface_segment_mm_before = float(max((max(_segment_lengths(path), default=0.0) for path in exported_draw_paths), default=0.0))
+    max_surface_segment_mm_after = float(max((max(_segment_lengths(path), default=0.0) for path in resampled_exported_paths), default=0.0))
+
+    pen_radius_mm = float(pen_diameter_mm) * 0.5
+    coverage_before_mask = rasterize_surface_toolpaths_mask(
+        resampled_exported_paths_before_repair,
+        shape=diagnostic_target_mask.shape,
+        current_to_source_matrix=current_to_source,
+        pen_radius_mm=pen_radius_mm,
+        max_segment_mm=max_coverage_segment_mm,
+        include_kinds=None,
+    )
+    coverage_after_mask = rasterize_surface_toolpaths_mask(
+        resampled_exported_paths,
+        shape=diagnostic_target_mask.shape,
+        current_to_source_matrix=current_to_source,
+        pen_radius_mm=pen_radius_mm,
+        max_segment_mm=max_coverage_segment_mm,
+        include_kinds=None,
+    )
+    visible_gaps_before = ((preview_target_mask > 0) & ~(coverage_before_mask > 0)).astype(np.uint8) * 255
+    visible_gaps_after = ((preview_target_mask > 0) & ~(coverage_after_mask > 0)).astype(np.uint8) * 255
+    coverage_changed_after_resampling = bool(np.any(coverage_after_mask > 0) != np.any(coverage_before_mask > 0) or np.count_nonzero(visible_gaps_before) != np.count_nonzero(visible_gaps_after))
+
+    a, b, c, d, _e, _f = current_to_source
+    px_per_mm = max(1e-6, (math.hypot(a, b) + math.hypot(c, d)) * 0.5)
+    px_to_mm2 = 1.0 / max(1e-9, px_per_mm * px_per_mm)
+
+    def _blob_rows(mask: np.ndarray) -> tuple[list[dict[str, Any]], float]:
+        comp_count, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+        rows: list[dict[str, Any]] = []
+        largest_diameter = 0.0
+        for blob_id in range(1, int(comp_count)):
+            area_px = int(stats[blob_id, cv2.CC_STAT_AREA])
+            area_mm2 = float(area_px) * px_to_mm2
+            diameter_mm = float(2.0 * math.sqrt(max(0.0, area_mm2) / math.pi)) if area_mm2 > 0 else 0.0
+            if area_mm2 < min_visible_missed_blob_area_mm2 or diameter_mm < min_visible_missed_blob_equivalent_diameter_mm:
+                continue
+            largest_diameter = max(largest_diameter, diameter_mm)
+            ys, xs = np.nonzero(labels == blob_id)
+            rows.append({
+                "blob_id": int(blob_id),
+                "area_mm2": float(area_mm2),
+                "equivalent_diameter_mm": float(diameter_mm),
+                "bbox_px": {
+                    "left": int(stats[blob_id, cv2.CC_STAT_LEFT]),
+                    "top": int(stats[blob_id, cv2.CC_STAT_TOP]),
+                    "width": int(stats[blob_id, cv2.CC_STAT_WIDTH]),
+                    "height": int(stats[blob_id, cv2.CC_STAT_HEIGHT]),
+                },
+                "centroid_px": {
+                    "x": float(np.mean(xs)) if xs.size else 0.0,
+                    "y": float(np.mean(ys)) if ys.size else 0.0,
+                },
+                "mask": (labels == blob_id).astype(np.uint8),
+            })
+        return rows, largest_diameter
+
+    visible_blob_rows_before, largest_before = _blob_rows(visible_gaps_before)
+    visible_blob_rows_after, largest_after = _blob_rows(visible_gaps_after)
+
+    def _render_path_overlay(paths: list[Toolpath], color: tuple[int, int, int]) -> np.ndarray:
+        canvas = np.full((diagnostic_target_mask.shape[0], diagnostic_target_mask.shape[1], 3), 255, dtype=np.uint8)
+        for path in paths:
+            mapped = [apply_svg_matrix(point, current_to_source) for point in path.points]
+            if len(mapped) == 1:
+                cv2.circle(canvas, (int(round(mapped[0].x)), int(round(mapped[0].y))), 2, color, -1)
+                continue
+            pts = np.asarray([(int(round(point.x)), int(round(point.y))) for point in mapped], dtype=np.int32).reshape(-1, 1, 2)
+            if len(pts) >= 2:
+                cv2.polylines(canvas, [pts], False, color, 1, lineType=cv2.LINE_AA)
+        return canvas
+
+    long_segment_paths_before = [path for path in exported_draw_paths if any(length > max_coverage_segment_mm + 1e-9 for length in _segment_lengths(path))]
+    labeled = cv2.cvtColor((visible_gaps_after > 0).astype(np.uint8) * 255, cv2.COLOR_GRAY2BGR)
+    for index, row in enumerate(visible_blob_rows_after, start=1):
+        bbox = row["bbox_px"]
+        cv2.rectangle(labeled, (int(bbox["left"]), int(bbox["top"])), (int(bbox["left"] + bbox["width"]), int(bbox["top"] + bbox["height"])), (0, 0, 255), 1)
+        centroid = row["centroid_px"]
+        cv2.putText(labeled, str(index), (int(round(centroid["x"])), int(round(centroid["y"]))), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 0), 1, cv2.LINE_AA)
+
+    comparison = np.zeros((diagnostic_target_mask.shape[0], diagnostic_target_mask.shape[1], 3), dtype=np.uint8)
+    comparison[coverage_before_mask > 0] = (255, 180, 80)
+    comparison[coverage_after_mask > 0] = (60, 180, 80)
+    comparison[(preview_target_mask > 0) & ~(coverage_after_mask > 0)] = (0, 0, 255)
+
+    cv2.imwrite(str(artifact_dir / "01_preview_target_mask.png"), preview_target_mask)
+    cv2.imwrite(str(artifact_dir / "02_diagnostic_selected_color_mask.png"), diagnostic_target_mask)
+    cv2.imwrite(str(artifact_dir / "03_mask_difference_preview_vs_diagnostic.png"), ((preview_target_mask > 0) ^ (diagnostic_target_mask > 0)).astype(np.uint8) * 255)
+    cv2.imwrite(str(artifact_dir / "04_swept_coverage_from_exported_paths.png"), coverage_after_mask)
+    cv2.imwrite(str(artifact_dir / "05_visible_gaps_from_preview_target_minus_coverage.png"), visible_gaps_after)
+    cv2.imwrite(str(artifact_dir / "06_visible_gaps_labeled.png"), labeled)
+    cv2.imwrite(str(artifact_dir / "07_long_segments_over_threshold.png"), _render_path_overlay(long_segment_paths_before, (0, 0, 255)))
+    cv2.imwrite(str(artifact_dir / "08_resampled_coverage_comparison.png"), comparison)
+
+    mask_report = {
+        "preview_target_vs_diagnostic_target_iou": float(preview_target_vs_diagnostic_target_iou),
+        "preview_target_pixels": int(np.count_nonzero(preview_target_mask > 0)),
+        "diagnostic_target_pixels": int(np.count_nonzero(diagnostic_target_mask > 0)),
+        "difference_pixels": int(np.count_nonzero(((preview_target_mask > 0) ^ (diagnostic_target_mask > 0)))),
+    }
+    path_resampling_report = {
+        "coverage_rasterization_space": "surface-mm-on-ball",
+        "long_segments_before_resampling": int(long_segments_before_resampling),
+        "long_segments_after_resampling": int(long_segments_after_resampling),
+        "max_surface_segment_mm_before": float(max_surface_segment_mm_before),
+        "max_surface_segment_mm_after": float(max_surface_segment_mm_after),
+        "repair_long_segments_before": int(repair_long_segments_before),
+        "repair_long_segments_after": int(repair_long_segments_after),
+    }
+    coverage_report = {
+        "coverage_rasterization_space": "surface-mm-on-ball",
+        "coverage_target": "full selected-color mask in shared uploaded-image design frame",
+        "final_repair_scope": "all_selected_color_components",
+        "coverage_changed_after_resampling": bool(coverage_changed_after_resampling),
+        "visible_gap_count_after_resampled_coverage": int(np.count_nonzero(visible_gaps_after > 0)),
+        "visible_missed_blob_count_before_repair": int(len(visible_blob_rows_before)),
+        "visible_missed_blob_count_after_repair": int(len(visible_blob_rows_after)),
+        "largest_visible_missed_blob_equivalent_diameter_mm_before": float(largest_before),
+        "largest_visible_missed_blob_equivalent_diameter_mm_after": float(largest_after),
+        "repair_paths_exported": bool(any(path.kind == "fill-repair" or str(path.source) == "mask_space_coverage_repair" for path in exported_draw_paths)),
+    }
+    missed_blob_rows: list[dict[str, Any]] = []
+    for row in visible_blob_rows_after:
+        centroid = row["centroid_px"]
+        nearest_distance = float("inf")
+        nearest_path_id = ""
+        nearest_path_kind = ""
+        nearest_path_source = ""
+        centroid_surface = apply_svg_matrix(Point(float(centroid["x"]), float(centroid["y"])), invert_svg_matrix(current_to_source))
+        for path in resampled_exported_paths:
+            if len(path.points) < 2:
+                continue
+            line = LineString([(point.x, point.y) for point in path.points])
+            distance = float(line.distance(ShapelyPoint(centroid_surface.x, centroid_surface.y)))
+            if distance < nearest_distance:
+                nearest_distance = distance
+                nearest_path_id = str(path.path_id or "")
+                nearest_path_kind = str(path.kind)
+                nearest_path_source = str(path.source)
+        missed_blob_rows.append({
+            "blob_id": int(row["blob_id"]),
+            "area_mm2": float(row["area_mm2"]),
+            "equivalent_diameter_mm": float(row["equivalent_diameter_mm"]),
+            "bbox_px": row["bbox_px"],
+            "centroid_px": row["centroid_px"],
+            "inside_preview_target": True,
+            "inside_diagnostic_target": True,
+            "covered_before_resampling": bool(coverage_before_mask[int(round(centroid["y"])), int(round(centroid["x"]))] > 0) if 0 <= int(round(centroid["y"])) < coverage_before_mask.shape[0] and 0 <= int(round(centroid["x"])) < coverage_before_mask.shape[1] else False,
+            "covered_after_resampling": bool(coverage_after_mask[int(round(centroid["y"])), int(round(centroid["x"]))] > 0) if 0 <= int(round(centroid["y"])) < coverage_after_mask.shape[0] and 0 <= int(round(centroid["x"])) < coverage_after_mask.shape[1] else False,
+            "nearest_path_id": nearest_path_id,
+            "nearest_path_kind": nearest_path_kind,
+            "nearest_path_source": nearest_path_source,
+            "nearest_path_distance_mm": float(0.0 if nearest_distance == float("inf") else nearest_distance),
+            "repair_generated": True,
+            "repair_accepted": False,
+            "repair_exported": False,
+            "failure_reason": "visible_gap_after_resampled_export_coverage",
+        })
+    (artifact_dir / "mask_consistency_report.json").write_text(json.dumps(mask_report, indent=2), encoding="utf-8")
+    (artifact_dir / "path_resampling_report.json").write_text(json.dumps(path_resampling_report, indent=2), encoding="utf-8")
+    (artifact_dir / "coverage_from_exported_paths_report.json").write_text(json.dumps(coverage_report, indent=2), encoding="utf-8")
+    (artifact_dir / "missed_blob_diagnostics.json").write_text(json.dumps(missed_blob_rows, indent=2), encoding="utf-8")
+
+    debug.update(mask_report)
+    debug.update(path_resampling_report)
+    debug.update(coverage_report)
+    debug["root_cause_category_corrected"] = (
+        "wrong_target_mask_selection"
+        if preview_target_vs_diagnostic_target_iou < 0.995
+        else ("false_negative_coverage_simulation" if len(visible_blob_rows_after) > 0 else "coverage_under_sampling_fixed")
+    )
 
 
 def rewrite_final_export_path_stats_artifact(debug: dict[str, Any]) -> None:
@@ -6809,6 +7148,23 @@ def rewrite_final_export_path_stats_artifact(debug: dict[str, Any]) -> None:
         "preview_only_travel_count": int(debug.get("preview_only_travel_count", 0)),
         "gcode_only_travel_count": int(debug.get("gcode_only_travel_count", 0)),
         "matched_preview_gcode_travel_count": int(debug.get("matched_preview_gcode_travel_count", 0)),
+        "coverage_preview_gcode_consistent": bool(debug.get("preview_and_gcode_share_same_projected_paths", True)),
+        "root_cause_category_corrected": str(debug.get("root_cause_category_corrected", "")),
+        "preview_target_vs_diagnostic_target_iou": float(debug.get("preview_target_vs_diagnostic_target_iou", 0.0)),
+        "coverage_rasterization_space": str(debug.get("coverage_rasterization_space", "")),
+        "final_repair_scope": str(debug.get("final_repair_scope", "")),
+        "long_segments_before_resampling": int(debug.get("long_segments_before_resampling", 0)),
+        "long_segments_after_resampling": int(debug.get("long_segments_after_resampling", 0)),
+        "max_surface_segment_mm_before": float(debug.get("max_surface_segment_mm_before", 0.0)),
+        "max_surface_segment_mm_after": float(debug.get("max_surface_segment_mm_after", 0.0)),
+        "repair_long_segments_before": int(debug.get("repair_long_segments_before", 0)),
+        "repair_long_segments_after": int(debug.get("repair_long_segments_after", 0)),
+        "coverage_changed_after_resampling": bool(debug.get("coverage_changed_after_resampling", False)),
+        "visible_gap_count_after_resampled_coverage": int(debug.get("visible_gap_count_after_resampled_coverage", 0)),
+        "visible_missed_blob_count_before_repair": int(debug.get("visible_missed_blob_count_before_repair", 0)),
+        "visible_missed_blob_count_after_repair": int(debug.get("visible_missed_blob_count_after_repair", 0)),
+        "largest_visible_missed_blob_equivalent_diameter_mm_before": float(debug.get("largest_visible_missed_blob_equivalent_diameter_mm_before", 0.0)),
+        "largest_visible_missed_blob_equivalent_diameter_mm_after": float(debug.get("largest_visible_missed_blob_equivalent_diameter_mm_after", 0.0)),
         "final_export_path_count": int(debug.get("optimized_export_path_count", debug.get("raw_export_path_count", 0))),
         "top_25_longest_pen_up_travels_before": list(debug.get("top_25_longest_pen_up_travels_before", [])),
         "top_25_longest_pen_up_travels_after": list(debug.get("top_25_longest_pen_up_travels_after", [])),
@@ -15569,7 +15925,7 @@ def generate_gcode_from_toolpaths(
             raise AssertionError(
                 f"{toolpath.kind} {toolpath.path_id or '<unassigned>'} was projected {toolpath.metadata.get('projection_count', 0)} times"
             )
-        if toolpath.kind in {"outline", "fill-wall", "fill-infill", "crossed-contour-infill", "junction-centerline", "gap-repair-stroke", "gap-repair-dab", "repair-patch-fill"} and len(toolpath.points) >= 2:
+        if toolpath.kind in {"outline", "fill-wall", "fill-infill", "fill-repair", "crossed-contour-infill", "junction-centerline", "gap-repair-stroke", "gap-repair-dab", "repair-patch-fill"} and len(toolpath.points) >= 2:
             max_surface = float(toolpath.metadata.get("max_surface_segment_mm_after_resampling", 0.0))
             if max_surface <= 1e-12:
                 max_surface = max(_segment_lengths_mm(toolpath.points, closed=toolpath.closed), default=0.0)
@@ -15664,6 +16020,7 @@ def generate_gcode_from_toolpaths(
         "outline",
         "fill-wall",
         "fill-infill",
+        "fill-repair",
         "detail-trace",
         "detail-continuation",
         "crossed-contour-infill",

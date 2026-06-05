@@ -204,7 +204,7 @@ class GcodeService:
             )
             if isinstance(debug, dict):
                 debug["final_export_paths"] = pipeline_core.build_final_export_path_entries(
-                    optimized_surface_toolpaths,
+                    prepared_toolpaths,
                     projected_toolpaths,
                 )
             toolpaths = projected_toolpaths
@@ -272,8 +272,26 @@ class GcodeService:
         _update_path_debug(gcode, preview)
         if isinstance(debug, dict):
             try:
+                pipeline_core.audit_exported_path_coverage(
+                    debug,
+                    ball_diameter_mm=float(kwargs.get("ball_diameter_mm", pipeline_core.BALL_DIAMETER_MM)),
+                    center_lon_deg=float(kwargs.get("placement_offset_x", 0.0)),
+                    center_lat_deg=float(kwargs.get("placement_offset_y", 0.0)),
+                    pen_diameter_mm=float((toolpaths[0].metadata or {}).get("pen_width_mm", 0.6)) if toolpaths else 0.6,
+                )
+            except Exception as exc:  # pragma: no cover - diagnostics only
+                self.logger.debug("Unable to audit exported path coverage: %s", exc)
+            try:
                 pipeline_core.rewrite_final_export_path_stats_artifact(debug)
             except Exception as exc:  # pragma: no cover - diagnostics only
                 self.logger.debug("Unable to rewrite final export path stats: %s", exc)
+            for transient_key in (
+                "_coverage_target_mask",
+                "_coverage_allowed_mask",
+                "_coverage_current_to_source_matrix",
+                "_coverage_preview_source_mask",
+                "_coverage_preview_source_to_surface_matrix",
+            ):
+                debug.pop(transient_key, None)
         self.logger.info("Generated projected G-code lines=%d preview_paths=%d", len(gcode), len(preview))
         return gcode, preview
