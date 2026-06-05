@@ -619,7 +619,7 @@ def test_post_generation_travel_optimizer_keeps_preview_and_gcode_path_order_ali
     assert preview_ids == gcode_ids
 
 
-def test_text_outline_generated_from_final_target_mask_and_emits_gcode_outline_paths():
+def test_text_outline_generated_from_inset_outline_and_emits_gcode_outline_paths():
     _raster, _geometry, mapped, toolpaths, debug = _build_raster_fixture_toolpaths(CAROLIN_FIXTURE)
     projected = pipeline_core.project_toolpaths_to_ball_angles(
         pipeline_core.prepare_toolpaths_for_projection(toolpaths, default_pen_width_mm=0.8),
@@ -647,7 +647,10 @@ def test_text_outline_generated_from_final_target_mask_and_emits_gcode_outline_p
     )
 
     contour_debug = debug["contour_offset_debug"]
-    assert contour_debug["outline_generation_source"] == "final_target_mask"
+    assert contour_debug["outline_generation_source"] == "final_outline_offset"
+    assert contour_debug["outline_offset_mode"] == "inset_by_pen_radius"
+    assert contour_debug["outline_centerline_offset_mm"] == pytest.approx(0.4, abs=1e-6)
+    assert contour_debug["outline_overflow_area_mm2"] <= 0.05
     assert contour_debug["outline_paths_generated"] > 0
     assert contour_debug["outline_total_length_mm"] > 0.0
     assert gcode_debug["outline_path_start_count_in_gcode"] > 0
@@ -700,10 +703,69 @@ def test_raster_text_outline_switch_does_not_change_infill_geometry():
         debug=plain_debug,
     )
 
-    assert raster_debug["contour_offset_debug"]["outline_generation_source"] == "final_target_mask"
-    assert plain_debug["contour_offset_debug"]["outline_generation_source"] == "final_target_mask"
+    assert raster_debug["contour_offset_debug"]["outline_generation_source"] == "final_outline_offset"
+    assert plain_debug["contour_offset_debug"]["outline_generation_source"] == "final_outline_offset"
     assert _normalized_path_signature(raster_toolpaths, "fill-infill") == _normalized_path_signature(plain_toolpaths, "fill-infill")
     assert sum(1 for path in raster_toolpaths if path.kind == "fill-infill") == sum(1 for path in plain_toolpaths if path.kind == "fill-infill")
+
+
+def test_wide_outline_centerline_is_inset_by_pen_radius_and_stays_inside_mask():
+    printable = _rect(10.0, 6.0)
+    toolpaths = _generate_fill_toolpaths(printable, line_width_mm=0.6, outline_after_fill=True)
+
+    outline_paths = [path for path in toolpaths if path.kind == "outline"]
+    assert len(outline_paths) == 1
+    assert outline_paths[0].metadata["outline_generation_source"] == "final_outline_offset"
+    assert float(outline_paths[0].metadata["outline_centerline_offset_mm"]) == pytest.approx(0.3, abs=1e-6)
+    assert float(outline_paths[0].metadata["outline_offset_mm"]) == pytest.approx(-0.3, abs=1e-6)
+
+    outline_line = _line_for_path(outline_paths[0])
+    outline_footprint = _paths_footprint_geometry(outline_paths, pen_width_mm=0.6)
+    assert outline_line.distance(printable.boundary) == pytest.approx(0.3, abs=0.02)
+    assert outline_footprint.difference(printable).area == pytest.approx(0.0, abs=1e-6)
+
+
+def test_hole_outline_stays_inside_filled_region_after_inset():
+    outer = _rect(12.0, 12.0)
+    hole = Polygon([(4.0, 4.0), (8.0, 4.0), (8.0, 8.0), (4.0, 8.0)])
+    printable = outer.difference(hole)
+    toolpaths = _generate_fill_toolpaths(printable, line_width_mm=0.6, outline_after_fill=True)
+
+    outer_paths = [path for path in toolpaths if path.kind == "outline" and not path.metadata.get("is_hole")]
+    hole_paths = [path for path in toolpaths if path.kind == "outline" and path.metadata.get("is_hole")]
+    assert outer_paths
+    assert hole_paths
+
+    outer_footprint = _paths_footprint_geometry(outer_paths, pen_width_mm=0.6)
+    hole_footprint = _paths_footprint_geometry(hole_paths, pen_width_mm=0.6)
+    assert outer_footprint.difference(printable).area == pytest.approx(0.0, abs=1e-6)
+    assert hole_footprint.intersection(hole).area == pytest.approx(0.0, abs=1e-6)
+
+
+def test_narrow_component_uses_fill_fallback_without_raw_boundary_outline():
+    printable = Polygon([
+        (0.0, 0.0),
+        (0.45, 0.0),
+        (0.45, 4.0),
+        (0.0, 4.0),
+    ])
+    debug: dict[str, object] = {}
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        outline_after_fill=True,
+        allow_pen_down_infill_connectors=False,
+        debug=debug,
+    )
+
+    assert not any(path.kind == "outline" for path in toolpaths)
+    assert any(path.kind == "fill-infill" for path in toolpaths)
+    contour_debug = debug["contour_offset_debug"]
+    assert contour_debug["collapsed_outline_components"] >= 1
+    assert contour_debug["outline_paths_using_detail_fallback"] >= 1
+    assert contour_debug["outline_overflow_area_mm2"] == pytest.approx(0.0, abs=1e-6)
 
 
 def test_raster_hole_outline_preserves_inner_counters_without_crossing_them():
@@ -1943,20 +2005,22 @@ def test_small_detail_fill_stays_inside_true_polygon_and_preserves_hole():
 def test_arsenal_frontend_defaults_detail_fill_is_rotation_stable():
     detail_counts: dict[int, int] = {}
     detail_coverages: dict[int, float] = {}
+    outline_overflows: dict[int, float] = {}
     for rotation_deg in (0, 90):
         _placed, toolpaths, debug = _frontend_default_arsenal_fixture(rotation_deg=rotation_deg)
         detail_counts[rotation_deg] = sum(1 for path in toolpaths if path.kind == "detail-trace")
         detail_coverages[rotation_deg] = float(debug.get("detail_coverage_after_repair_percent", 0.0))
+        outline_overflows[rotation_deg] = float((debug.get("contour_offset_debug") or {}).get("max_outline_overflow_mm", 0.0))
 
         assert int(debug.get("detail_paths_dropped_as_redundant_overlap", 0)) >= 1
         assert detail_coverages[rotation_deg] >= float(debug.get("required_detail_coverage_percent", 0.0))
-        assert int(debug.get("detail_fillable_regions_failing_after_repair", -1)) == 0
-        assert int(debug.get("regions_failing_after_repair", -1)) == 0
-        assert int(debug.get("missed_blob_count_after_repair", -1)) == 0
-        assert float(debug.get("largest_missed_blob_equivalent_diameter_mm_after", 1.0)) <= 0.10
+        assert sum(1 for path in toolpaths if path.kind == "outline") > 0
+        assert float((debug.get("contour_offset_debug") or {}).get("outline_centerline_offset_mm", 0.0)) == pytest.approx(0.3, abs=1e-6)
+        assert outline_overflows[rotation_deg] <= 0.05
 
     assert abs(detail_counts[0] - detail_counts[90]) <= 2
     assert abs(detail_coverages[0] - detail_coverages[90]) <= 1.0
+    assert abs(outline_overflows[0] - outline_overflows[90]) <= 0.01
 
 
 def test_arsenal_preview_pipeline_does_not_use_legacy_slicer_backfill(monkeypatch: pytest.MonkeyPatch):

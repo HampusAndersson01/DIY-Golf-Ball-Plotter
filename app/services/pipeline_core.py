@@ -13996,6 +13996,16 @@ def generate_toolpaths(
             min_dim = max(0.0, min(float(max_x - min_x), float(max_y - min_y)))
             return float(component.area), min_dim
 
+        def _max_distance_outside_geometry(outside_geometry: Any, target_geometry: Any) -> float:
+            if outside_geometry is None or outside_geometry.is_empty or target_geometry is None or target_geometry.is_empty:
+                return 0.0
+            max_distance = 0.0
+            for poly in normalize_geometry(outside_geometry):
+                for ring in (poly.exterior, *poly.interiors):
+                    for x, y in ring.coords:
+                        max_distance = max(max_distance, float(ShapelyPoint(float(x), float(y)).distance(target_geometry)))
+            return max_distance
+
         def _build_outline_paths_from_geometry(
             outline_geometry: Any,
             *,
@@ -14040,6 +14050,8 @@ def generate_toolpaths(
                             "path_role": "FINAL_OUTER_OUTLINE",
                             "ring_role": "outer",
                             "offset_mm": float(offset_mm),
+                            "outline_centerline_offset_mm": float(offset_mm),
+                            "outline_offset_mm": -float(offset_mm),
                             "outline_generation_source": source_label,
                             "source_region_id": f"component_{int(cidx):03d}",
                         },
@@ -14063,6 +14075,8 @@ def generate_toolpaths(
                                 "path_role": "FINAL_INNER_OUTLINE",
                                 "ring_role": "hole",
                                 "offset_mm": float(offset_mm),
+                                "outline_centerline_offset_mm": float(offset_mm),
+                                "outline_offset_mm": -float(offset_mm),
                                 "outline_generation_source": source_label,
                                 "source_region_id": f"component_{int(cidx):03d}",
                                 "is_hole": True,
@@ -15006,36 +15020,33 @@ def generate_toolpaths(
 
         final_outer_outline_inset_mm = float(pen_radius)
         final_inner_outline_inset_mm = float(pen_radius)
-        legacy_outline_geom = _offset_geometry(
-            printable_geometry,
-            -final_outer_outline_inset_mm,
-            join_style=offset_join_style,
-            miter_limit=offset_miter_limit,
-            quad_segs=_quad_segs_for_tolerance(max(0.01, pen_radius), offset_arc_tolerance_mm),
-        )
-        if legacy_outline_geom is None or legacy_outline_geom.is_empty:
-            legacy_outline_geom = printable_geometry
-
-        geometry_quality = bundle.metadata.get("geometry_quality") if isinstance(bundle.metadata, dict) else None
-        is_raster_source = bool(isinstance(geometry_quality, dict) and str(geometry_quality.get("source_mode", "")) == "raster")
         target_component_count = len(normalize_geometry(printable_geometry))
-        legacy_component_count = len(normalize_geometry(legacy_outline_geom))
         target_area = float(printable_geometry.area) if printable_geometry is not None and not printable_geometry.is_empty else 0.0
-        legacy_area = float(legacy_outline_geom.area) if legacy_outline_geom is not None and not legacy_outline_geom.is_empty else 0.0
-        lost_component_count = max(0, target_component_count - legacy_component_count)
-        lost_area_ratio = 0.0 if target_area <= 1e-9 else max(0.0, (target_area - legacy_area) / target_area)
-        use_final_target_outline = bool(
-            is_raster_source
-            and (
-                legacy_outline_geom is None
-                or legacy_outline_geom.is_empty
-                or legacy_component_count < target_component_count
-                or lost_area_ratio >= 0.18
+        inset_outline_components: list[Any] = []
+        collapsed_outline_components: list[Any] = []
+        for component in normalize_geometry(printable_geometry):
+            inset_component = _offset_geometry(
+                component,
+                -final_outer_outline_inset_mm,
+                join_style=offset_join_style,
+                miter_limit=offset_miter_limit,
+                quad_segs=_quad_segs_for_tolerance(max(0.01, pen_radius), offset_arc_tolerance_mm),
             )
-        )
-        outline_source_geom = printable_geometry if use_final_target_outline else legacy_outline_geom
-        outline_generation_source = "final_target_mask" if use_final_target_outline else "final_outline_offset"
-        outline_emit_offset_mm = 0.0 if use_final_target_outline else float(final_outer_outline_inset_mm)
+            if inset_component is None or inset_component.is_empty:
+                collapsed_outline_components.append(component)
+                continue
+            inset_outline_components.extend(normalize_geometry(inset_component))
+
+        legacy_outline_geom = unary_union(inset_outline_components) if inset_outline_components else Polygon()
+        legacy_component_count = len(inset_outline_components)
+        legacy_area = float(legacy_outline_geom.area) if legacy_outline_geom is not None and not legacy_outline_geom.is_empty else 0.0
+        collapsed_outline_component_count = len(collapsed_outline_components)
+        collapsed_outline_area = sum(float(component.area) for component in collapsed_outline_components)
+        lost_component_count = int(collapsed_outline_component_count)
+        lost_area_ratio = 0.0 if target_area <= 1e-9 else max(0.0, collapsed_outline_area / target_area)
+        outline_source_geom = legacy_outline_geom
+        outline_generation_source = "final_outline_offset"
+        outline_emit_offset_mm = float(final_outer_outline_inset_mm)
 
         outline_paths, outline_debug = _build_outline_paths_from_geometry(
             outline_source_geom,
@@ -15155,6 +15166,14 @@ def generate_toolpaths(
         uncovered_after_area = 0.0 if residual_after is None or residual_after.is_empty else float(residual_after.area)
         uncovered_before_ratio = uncovered_before_area / mask_area
         uncovered_after_ratio = uncovered_after_area / mask_area
+        outline_coverage_geom = _stroke_coverage_geometry(outline_paths, pen_width_mm)
+        outline_overflow_geom = (
+            outline_coverage_geom.difference(printable_geometry)
+            if outline_coverage_geom is not None and not outline_coverage_geom.is_empty
+            else None
+        )
+        outline_overflow_area_mm2 = 0.0 if outline_overflow_geom is None or outline_overflow_geom.is_empty else float(outline_overflow_geom.area)
+        max_outline_overflow_mm = _max_distance_outside_geometry(outline_overflow_geom, printable_geometry)
         hole_area = 0.0 if hole_void_geom is None or hole_void_geom.is_empty else float(hole_void_geom.area)
         hole_overlap = covered_geom.intersection(hole_void_geom) if hole_void_geom is not None and not hole_void_geom.is_empty else None
         hole_overspill_area = 0.0 if hole_overlap is None or hole_overlap.is_empty else float(hole_overlap.area)
@@ -15173,7 +15192,10 @@ def generate_toolpaths(
                 "rejection_counts": {},
             }
             debug_obj["contour_offset_debug"] = {
+                "outline_offset_mode": "inset_by_pen_radius",
                 "outline_offset_mm": float(final_outer_outline_inset_mm),
+                "outline_centerline_offset_mm": float(final_outer_outline_inset_mm),
+                "pen_radius_mm": float(final_outer_outline_inset_mm),
                 "outline_generation_source": outline_generation_source,
                 "outline_component_count_input": int(outline_debug.get("outline_component_count_input", 0)),
                 "outline_component_count_output": int(outline_debug.get("outline_component_count_output", 0)),
@@ -15183,6 +15205,11 @@ def generate_toolpaths(
                 "thin_components_outlined": int(outline_debug.get("thin_components_outlined", 0)),
                 "small_components_outlined": int(outline_debug.get("small_components_outlined", 0)),
                 "outline_total_length_mm": float(outline_debug.get("outline_total_length_mm", 0.0)),
+                "outline_paths_using_inset": int(len(outline_paths)),
+                "outline_paths_using_detail_fallback": int(collapsed_outline_component_count),
+                "collapsed_outline_components": int(collapsed_outline_component_count),
+                "outline_overflow_area_mm2": float(outline_overflow_area_mm2),
+                "max_outline_overflow_mm": float(max_outline_overflow_mm),
                 "outline_source_component_count_lost_by_inset": int(lost_component_count),
                 "outline_source_area_loss_ratio_from_inset": float(lost_area_ratio),
                 "contour_overlap_spacing_factor": float(contour_overlap_spacing_factor),

@@ -879,12 +879,19 @@ def _boundary_paths_for_component(
     component_id: int,
     simplify_tolerance_mm: float,
     line_width_mm: float,
+    centerline_offset_mm: float = 0.0,
 ) -> list[Toolpath]:
     if component_geometry is None or getattr(component_geometry, "is_empty", True):
         return []
+    outline_geometry = component_geometry
+    if centerline_offset_mm > 0.0:
+        outline_geometry = component_geometry.buffer(-float(centerline_offset_mm), join_style=1)
+        if outline_geometry is None or getattr(outline_geometry, "is_empty", True):
+            return []
     boundary_paths: list[Toolpath] = []
     simplify_mm = max(0.0, min(max(simplify_tolerance_mm, 0.02), max(0.08, line_width_mm * 0.35)))
-    for polygon in _geometry_parts(component_geometry):
+    outline_generation_source = "final_outline_offset" if centerline_offset_mm > 0.0 else "final_target_mask"
+    for polygon in _geometry_parts(outline_geometry):
         exterior = pipeline_core.simplify_segment_points(
             [Point(float(x), float(y)) for x, y in polygon.exterior.coords],
             simplify_mm,
@@ -905,10 +912,12 @@ def _boundary_paths_for_component(
                         "source_region_id": f"component_{int(component_id):03d}",
                         "path_role": "FINAL_OUTER_OUTLINE",
                         "generated_from": "final_fill_clip_polygon",
-                        "outline_generation_source": "final_target_mask",
+                        "outline_generation_source": outline_generation_source,
                         "source_polygon_matches_infill_clip_polygon": True,
                         "outline_uses_infill_clip_polygon": True,
-                        "outline_offset_mm": 0.0,
+                        "offset_mm": float(centerline_offset_mm),
+                        "outline_centerline_offset_mm": float(centerline_offset_mm),
+                        "outline_offset_mm": -float(centerline_offset_mm),
                         "simplify_tolerance_mm": float(simplify_mm),
                     },
                 )
@@ -934,10 +943,12 @@ def _boundary_paths_for_component(
                             "source_region_id": f"component_{int(component_id):03d}",
                             "path_role": "FINAL_INNER_OUTLINE",
                             "generated_from": "final_fill_clip_polygon",
-                            "outline_generation_source": "final_target_mask",
+                            "outline_generation_source": outline_generation_source,
                             "source_polygon_matches_infill_clip_polygon": True,
                             "outline_uses_infill_clip_polygon": True,
-                            "outline_offset_mm": 0.0,
+                            "offset_mm": float(centerline_offset_mm),
+                            "outline_centerline_offset_mm": float(centerline_offset_mm),
+                            "outline_offset_mm": -float(centerline_offset_mm),
                             "simplify_tolerance_mm": float(simplify_mm),
                             "is_hole": True,
                         },
@@ -951,10 +962,19 @@ def _boundary_paths_for_geometry(
     *,
     simplify_tolerance_mm: float,
     line_width_mm: float,
+    centerline_offset_mm: float = 0.0,
 ) -> list[Toolpath]:
+    if geometry is None or getattr(geometry, "is_empty", True):
+        return []
+    outline_geometry = geometry
+    if centerline_offset_mm > 0.0:
+        outline_geometry = geometry.buffer(-float(centerline_offset_mm), join_style=1)
+        if outline_geometry is None or getattr(outline_geometry, "is_empty", True):
+            return []
     boundary_paths: list[Toolpath] = []
     simplify_mm = max(0.0, min(float(simplify_tolerance_mm), max(0.08, line_width_mm * 0.35)))
-    for component_id, polygon in enumerate(_geometry_parts(geometry), start=1):
+    outline_generation_source = "final_outline_offset" if centerline_offset_mm > 0.0 else "final_target_mask"
+    for component_id, polygon in enumerate(_geometry_parts(outline_geometry), start=1):
         exterior = pipeline_core.simplify_segment_points(
             [Point(float(x), float(y)) for x, y in polygon.exterior.coords],
             simplify_mm,
@@ -975,10 +995,12 @@ def _boundary_paths_for_geometry(
                         "source_region_id": f"component_{int(component_id):03d}",
                         "path_role": "FINAL_OUTER_OUTLINE",
                         "generated_from": "final_fill_clip_polygon",
-                        "outline_generation_source": "final_target_mask",
+                        "outline_generation_source": outline_generation_source,
                         "source_polygon_matches_infill_clip_polygon": True,
                         "outline_uses_infill_clip_polygon": True,
-                        "outline_offset_mm": 0.0,
+                        "offset_mm": float(centerline_offset_mm),
+                        "outline_centerline_offset_mm": float(centerline_offset_mm),
+                        "outline_offset_mm": -float(centerline_offset_mm),
                         "simplify_tolerance_mm": float(simplify_mm),
                     },
                 )
@@ -1004,10 +1026,12 @@ def _boundary_paths_for_geometry(
                             "source_region_id": f"component_{int(component_id):03d}",
                             "path_role": "FINAL_INNER_OUTLINE",
                             "generated_from": "final_fill_clip_polygon",
-                            "outline_generation_source": "final_target_mask",
+                            "outline_generation_source": outline_generation_source,
                             "source_polygon_matches_infill_clip_polygon": True,
                             "outline_uses_infill_clip_polygon": True,
-                            "outline_offset_mm": 0.0,
+                            "offset_mm": float(centerline_offset_mm),
+                            "outline_centerline_offset_mm": float(centerline_offset_mm),
+                            "outline_offset_mm": -float(centerline_offset_mm),
                             "simplify_tolerance_mm": float(simplify_mm),
                             "is_hole": True,
                         },
@@ -1442,6 +1466,7 @@ def _detail_repair_candidates_for_blob(
             working_geometry,
             simplify_tolerance_mm=max(0.0, simplify_tolerance_mm),
             line_width_mm=line_width_mm,
+            centerline_offset_mm=line_width_mm * 0.5,
         )
         for candidate in contour_paths[:2]:
             ordered_candidates.append((
@@ -1639,7 +1664,13 @@ def _candidate_paths_for_missed_component(
             candidate.metadata = {**candidate.metadata, "repair_candidate": True, "repair_candidate_type": "local_serpentine"}
         candidates.extend(serpentine[:3])
 
-    boundary = _boundary_paths_for_component(component_geometry, component_id=component_id, simplify_tolerance_mm=0.03, line_width_mm=line_width_mm)
+    boundary = _boundary_paths_for_component(
+        component_geometry,
+        component_id=component_id,
+        simplify_tolerance_mm=0.03,
+        line_width_mm=line_width_mm,
+        centerline_offset_mm=line_width_mm * 0.5,
+    )
     for candidate in boundary[:2]:
         candidate.metadata = {**candidate.metadata, "repair_candidate": True, "repair_candidate_type": "boundary_stroke"}
     candidates.extend(boundary[:2])
@@ -2090,6 +2121,7 @@ def plan_coverage_first_toolpaths(
         printable_geometry,
         simplify_tolerance_mm=simplify_tolerance_mm,
         line_width_mm=line_width_mm,
+        centerline_offset_mm=pen_radius_mm,
     )
     source_printable_parts = _geometry_parts(printable_geometry)
     detail_region_count = 0
@@ -2161,6 +2193,7 @@ def plan_coverage_first_toolpaths(
             component_id=component_id,
             simplify_tolerance_mm=simplify_tolerance_mm,
             line_width_mm=line_width_mm,
+            centerline_offset_mm=pen_radius_mm,
         )
         component_outline_footprint = _paths_footprint_union(component_boundary_paths, pen_radius_mm=pen_radius_mm)
         component_endpoint_limit = component_geometry.union(component_outline_footprint) if component_geometry is not None and not getattr(component_geometry, "is_empty", True) else component_outline_footprint
@@ -2255,6 +2288,7 @@ def plan_coverage_first_toolpaths(
             component_id=component_id,
             simplify_tolerance_mm=simplify_tolerance_mm,
             line_width_mm=line_width_mm,
+            centerline_offset_mm=pen_radius_mm,
         )
         boundary_paths.extend(boundary)
         if outline_after_fill:
@@ -2358,6 +2392,7 @@ def plan_coverage_first_toolpaths(
                 component_geometry,
                 simplify_tolerance_mm=simplify_tolerance_mm,
                 line_width_mm=line_width_mm,
+                centerline_offset_mm=pen_radius_mm,
             )
             component_outline_footprint = _paths_footprint_union(component_boundary_paths, pen_radius_mm=pen_radius_mm)
             component_endpoint_limit = component_geometry.union(component_outline_footprint) if component_outline_footprint is not None and not getattr(component_outline_footprint, "is_empty", True) else component_geometry
@@ -2447,6 +2482,7 @@ def plan_coverage_first_toolpaths(
                     region_geometry,
                     simplify_tolerance_mm=simplify_tolerance_mm,
                     line_width_mm=line_width_mm,
+                    centerline_offset_mm=pen_radius_mm,
                 )
                 region_current_to_source = (
                     region_px_per_mm,
@@ -2545,6 +2581,7 @@ def plan_coverage_first_toolpaths(
                     region_geometry,
                     simplify_tolerance_mm=simplify_tolerance_mm,
                     line_width_mm=line_width_mm,
+                    centerline_offset_mm=pen_radius_mm,
                 )
                 region_outline_footprint = _paths_footprint_union(region_outline_paths, pen_radius_mm=pen_radius_mm)
                 region_allowed_geom = (
@@ -2809,6 +2846,7 @@ def plan_coverage_first_toolpaths(
                     region_geometry,
                     simplify_tolerance_mm=simplify_tolerance_mm,
                     line_width_mm=line_width_mm,
+                    centerline_offset_mm=pen_radius_mm,
                 )
                 region_current_to_source = (
                     region_px_per_mm,
@@ -3339,7 +3377,9 @@ def plan_coverage_first_toolpaths(
             if path.kind == "outline" and str((path.metadata or {}).get("source_region_id", ""))
         }
         outline_total_length_mm = float(sum(pipeline_core.segment_length(path.points) for path in final_paths if path.kind == "outline" and len(path.points) >= 2))
+        outline_paths = [path for path in final_paths if path.kind == "outline"]
         printable_parts = source_printable_parts if use_source_geometry_outlines else _geometry_parts(printable_geometry)
+        collapsed_outline_components = max(0, int(len(printable_parts)) - int(len(outline_component_labels)))
         thin_threshold_mm = line_width_mm * 1.05
         small_area_threshold_mm2 = max(1e-6, line_width_mm * line_width_mm * 0.35)
         if use_source_geometry_outlines:
@@ -3364,8 +3404,25 @@ def plan_coverage_first_toolpaths(
                 for item in component_debug
                 if int(item.get("area_px", 0)) <= 4 and any(str((path.metadata or {}).get("source_region_id", "")) == f"component_{int(item['component_id']):03d}" for path in final_paths if path.kind == "outline")
             ))
+        outline_footprint = _paths_footprint_union(outline_paths, pen_radius_mm=pen_radius_mm)
+        outline_overflow_geom = (
+            outline_footprint.difference(printable_geometry)
+            if printable_geometry is not None and not getattr(printable_geometry, "is_empty", True) and outline_footprint is not None and not getattr(outline_footprint, "is_empty", True)
+            else Polygon()
+        )
+        outline_overflow_area_mm2 = float(outline_overflow_geom.area) if not getattr(outline_overflow_geom, "is_empty", True) else 0.0
+        max_outline_overflow_mm = 0.0
+        if not getattr(outline_overflow_geom, "is_empty", True) and printable_geometry is not None and not getattr(printable_geometry, "is_empty", True):
+            for poly in _geometry_parts(outline_overflow_geom):
+                for ring in (poly.exterior, *poly.interiors):
+                    for x, y in ring.coords:
+                        max_outline_overflow_mm = max(max_outline_overflow_mm, float(ShapelyPoint(float(x), float(y)).distance(printable_geometry)))
+        outline_generation_source = "final_outline_offset"
         debug["contour_offset_debug"] = {
-            "outline_generation_source": "final_target_mask",
+            "outline_generation_source": outline_generation_source,
+            "outline_offset_mode": "inset_by_pen_radius",
+            "outline_centerline_offset_mm": float(pen_radius_mm),
+            "pen_radius_mm": float(pen_radius_mm),
             "outline_component_count_input": int(len(printable_parts)) if use_source_geometry_outlines else int(len(component_ids)),
             "outline_component_count_output": int(len(outline_component_labels)),
             "outline_paths_generated": int(outline_paths_generated),
@@ -3374,6 +3431,11 @@ def plan_coverage_first_toolpaths(
             "thin_components_outlined": int(thin_components_outlined),
             "small_components_outlined": int(small_components_outlined),
             "outline_total_length_mm": float(outline_total_length_mm),
+            "outline_paths_using_inset": int(outline_paths_generated),
+            "outline_paths_using_detail_fallback": int(collapsed_outline_components),
+            "collapsed_outline_components": int(collapsed_outline_components),
+            "outline_overflow_area_mm2": float(outline_overflow_area_mm2),
+            "max_outline_overflow_mm": float(max_outline_overflow_mm),
             "outer_outline_path_count": int(sum(1 for path in final_paths if path.kind == "outline" and str((path.metadata or {}).get("path_role", "")) == "FINAL_OUTER_OUTLINE")),
             "inner_outline_path_count": int(sum(1 for path in final_paths if path.kind == "outline" and str((path.metadata or {}).get("path_role", "")) == "FINAL_INNER_OUTLINE")),
         }
