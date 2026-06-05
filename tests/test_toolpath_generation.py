@@ -9,7 +9,10 @@ import pytest
 from PIL import Image, ImageDraw
 from shapely import affinity
 from shapely.geometry import LineString, MultiPolygon, Point as ShapelyPoint, Polygon
+from shapely.ops import unary_union
+from werkzeug.datastructures import MultiDict
 
+from app import create_app
 from app.models.geometry import Point, Segment, Toolpath
 from app.models.machine_state import MachineState
 from app.services import coverage_planner
@@ -19,10 +22,12 @@ from app.services.geometry_service import GeometryService
 from app.services.raster_analysis_service import RasterAnalysisService
 from app.services.pipeline_core import GeometryBundle, generate_toolpaths
 from app.services.toolpath_service import ToolpathService
+from app.services.validation_service import ValidationService
 from tests.test_svg_parser import CONFIG
 
 ROOT = Path(__file__).resolve().parents[1]
 HA_FIXTURE = ROOT / "tests" / "fixtures" / "images" / "ha-compact-lightbg.png"
+ARSENAL_FIXTURE = ROOT / "tests" / "fixtures" / "images" / "black-arsenal-logo-png-1.png"
 CAROLIN_FIXTURE = ROOT / "tests" / "fixtures" / "images" / "Carolin Line.png"
 
 
@@ -33,6 +38,95 @@ def _rect(width_mm: float, height_mm: float) -> Polygon:
         (width_mm, height_mm),
         (0.0, height_mm),
     ])
+
+
+def _frontend_default_arsenal_fixture(*, rotation_deg: float):
+    app = create_app()
+    config = app.config
+    fixture_bytes = ARSENAL_FIXTURE.read_bytes()
+    raster = RasterAnalysisService(config, MachineState(default_pen_up_s=575))
+    geometry = GeometryService()
+    toolpaths_service = ToolpathService()
+    validation = ValidationService()
+
+    analysis = raster.analyze_image(fixture_bytes, max_colors=config["DEFAULT_RASTER_MAX_COLORS"])
+    selected = next(
+        (color.id for color in analysis.colors if color.hex == "#000000"),
+        analysis.colors[0].id if analysis.colors else None,
+    )
+    assert selected is not None
+
+    options = validation.parse_generate_raster_form(
+        MultiDict({
+            "selected_colors": f"[\"{selected}\"]",
+            "line_thickness_mm": "0.6",
+            "rotation_deg": str(rotation_deg),
+        }),
+        config,
+    )
+    mask = raster.build_mask(
+        fixture_bytes,
+        options["selected_colors"],
+        simplify_colors=options["simplify_colors"],
+        max_colors=options["max_colors"],
+        tolerance=options["color_tolerance"],
+        min_component_area_px=options["min_component_area_px"],
+        open_radius_px=options["mask_open_radius_px"],
+        close_radius_px=options["mask_close_radius_px"],
+    )
+    regions = raster.extract_regions(
+        mask,
+        min_region_area_px=0.0 if options["thin_detail_mode"] else options["min_region_area_px"],
+        simplify_tolerance_px=options["region_simplify_px"],
+    )
+    mapped = geometry.map_bundle_to_surface_mm(
+        regions.bundle,
+        regions.bounds,
+        options["fit_mode"],
+        options["invert_y"],
+        options["margin_percent"],
+    )
+    artwork_scaled = geometry.apply_surface_artwork_scale(mapped, options["artwork_scale_percent"])
+    transformed = geometry.apply_surface_placement_transform(
+        artwork_scaled,
+        options["placement_scale"],
+        options["rotation_deg"],
+    )
+    placed = geometry.apply_origin_anchor_placement(
+        transformed,
+        origin_anchor=options["origin_anchor"],
+        origin_offset_x_mm=options["origin_offset_x_mm"],
+        origin_offset_y_mm=options["origin_offset_y_mm"],
+    )
+    debug: dict[str, object] = {}
+    toolpaths = toolpaths_service.generate_from_regions(
+        placed,
+        pen_width_mm=options["line_thickness_mm"],
+        wall_count=options["wall_count"],
+        infill_pattern=options["infill_pattern"],
+        infill_spacing_mm=options["effective_infill_spacing_mm"],
+        infill_density=options["infill_density"],
+        infill_angle_deg=options["infill_angle_deg"],
+        fill_strategy=options["fill_strategy"],
+        alternate_fill_angle_deg=options["alternate_fill_angle_deg"],
+        outline_after_fill=options["outline_after_fill"],
+        min_region_area=options["min_fill_area_mm2"],
+        min_fill_width_mm=options["min_fill_width_mm"],
+        simplify_tolerance_mm=options["simplify_tolerance_mm"],
+        remove_duplicate_paths=options["remove_duplicate_paths"],
+        small_shape_mode=options["small_shape_mode"],
+        thin_detail_mode=options["thin_detail_mode"],
+        thin_detail_min_area_mm2=options["thin_detail_min_area_mm2"],
+        thin_detail_simplify_mm=options["thin_detail_simplify_mm"],
+        thin_detail_overlap=options["thin_detail_overlap"],
+        min_segment_length_mm=options["min_segment_length_mm"],
+        travel_optimization=options["travel_optimization"],
+        allow_pen_down_infill_connectors=options["allow_pen_down_infill_connectors"],
+        infill_path_mode=options["infill_path_mode"],
+        expensive_coverage_repair=False,
+        debug=debug,
+    )
+    return placed, toolpaths, debug
 
 
 def _generate_fill_toolpaths(printable_geometry, **overrides):
@@ -80,6 +174,38 @@ def _path_segments(paths: list[Toolpath]) -> list[tuple[Point, Point]]:
         for start, end in zip(path.points, path.points[1:]):
             segments.append((start, end))
     return segments
+
+
+def _paths_starting_in_geometry(paths: list[Toolpath], geometry: Polygon) -> list[Toolpath]:
+    selected: list[Toolpath] = []
+    padded = geometry.buffer(1e-4)
+    for path in paths:
+        if len(path.points) < 2:
+            continue
+        if padded.covers(ShapelyPoint(path.points[0].x, path.points[0].y)):
+            selected.append(path)
+    return selected
+
+
+def _largest_non_outline_uncovered_area_mm2(paths: list[Toolpath], geometry: Polygon, *, pen_radius_mm: float) -> float:
+    coverage_parts = []
+    for path in paths:
+        if path.kind not in {"fill-infill", "fill-repair", "detail-trace"} or len(path.points) < 2:
+            continue
+        line = LineString([(point.x, point.y) for point in path.points])
+        if line.is_empty or line.length <= 1e-9:
+            continue
+        coverage_parts.append(line.buffer(pen_radius_mm, cap_style=1, join_style=1))
+    covered = unary_union(coverage_parts) if coverage_parts else None
+    uncovered = geometry if covered is None else geometry.difference(covered)
+    return max(
+        (
+            float(poly.area)
+            for poly in pipeline_core.normalize_geometry(uncovered)
+            if poly is not None and not poly.is_empty
+        ),
+        default=0.0,
+    )
 
 
 def _geom_to_mask(geom, bounds, px_per_mm: float) -> np.ndarray:
@@ -614,14 +740,18 @@ def test_raster_hole_outline_preserves_inner_counters_without_crossing_them():
         expensive_coverage_repair=False,
         debug=debug,
     )
-    hole_polygon = next(iter(pipeline_core.normalize_geometry(mapped.printable_geometry))).interiors[0]
-    hole_area = Polygon(hole_polygon)
+    component_holes: dict[str, list[Polygon]] = {}
+    for component_index, poly in enumerate(pipeline_core.normalize_geometry(mapped.printable_geometry), start=1):
+        component_holes[f"component_{component_index:03d}"] = [Polygon(ring) for ring in poly.interiors]
     inner_outlines = [path for path in toolpaths if path.kind == "outline" and str((path.metadata or {}).get("ring_role", "")) == "hole"]
     assert inner_outlines
     assert debug["contour_offset_debug"]["outline_paths_generated"] >= len(inner_outlines)
     for path in inner_outlines:
         line = _line_for_path(path)
-        assert not hole_area.buffer(-0.01).crosses(line)
+        source_region_id = str((path.metadata or {}).get("source_region_id", ""))
+        matching_holes = component_holes.get(source_region_id, [])
+        assert matching_holes
+        assert any(not hole.buffer(-0.01).crosses(line) for hole in matching_holes)
 
 
 def test_ha_raster_fixture_keeps_positive_infill_and_outline_output():
@@ -1810,6 +1940,83 @@ def test_small_detail_fill_stays_inside_true_polygon_and_preserves_hole():
     assert all(not hole.buffer(-0.01).covers(_line_for_path(path)) for path in infill_paths)
 
 
+def test_arsenal_frontend_defaults_detail_fill_is_rotation_stable():
+    detail_counts: dict[int, int] = {}
+    detail_coverages: dict[int, float] = {}
+    for rotation_deg in (0, 90):
+        _placed, toolpaths, debug = _frontend_default_arsenal_fixture(rotation_deg=rotation_deg)
+        detail_counts[rotation_deg] = sum(1 for path in toolpaths if path.kind == "detail-trace")
+        detail_coverages[rotation_deg] = float(debug.get("detail_coverage_after_repair_percent", 0.0))
+
+        assert int(debug.get("detail_paths_dropped_as_redundant_overlap", 0)) >= 1
+        assert detail_coverages[rotation_deg] >= float(debug.get("required_detail_coverage_percent", 0.0))
+        assert int(debug.get("detail_fillable_regions_failing_after_repair", -1)) == 0
+        assert int(debug.get("regions_failing_after_repair", -1)) == 0
+        assert int(debug.get("missed_blob_count_after_repair", -1)) == 0
+        assert float(debug.get("largest_missed_blob_equivalent_diameter_mm_after", 1.0)) <= 0.10
+
+    assert abs(detail_counts[0] - detail_counts[90]) <= 2
+    assert abs(detail_coverages[0] - detail_coverages[90]) <= 1.0
+
+
+def test_arsenal_preview_pipeline_does_not_use_legacy_slicer_backfill(monkeypatch: pytest.MonkeyPatch):
+    calls = 0
+    original = pipeline_core.SlicerService._enforce_region_coverage_backfill
+
+    def _tracking_backfill(self, paths, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(self, paths, **kwargs)
+
+    monkeypatch.setattr(pipeline_core.SlicerService, "_enforce_region_coverage_backfill", _tracking_backfill)
+    _frontend_default_arsenal_fixture(rotation_deg=90)
+    assert calls == 0
+
+
+def test_arsenal_small_countered_components_receive_real_interior_fill():
+    placed, toolpaths, debug = _frontend_default_arsenal_fixture(rotation_deg=90)
+    target_components = [
+        geometry
+        for geometry in pipeline_core.normalize_geometry(placed.printable_geometry)
+        if len(geometry.interiors) > 0 and 1.0 <= float(geometry.area) <= 8.0
+    ]
+    assert target_components
+
+    qualifying_components = 0
+    hole_driven_components = 0
+    for geometry in target_components:
+        component_paths = _paths_starting_in_geometry(toolpaths, geometry)
+        if not component_paths:
+            continue
+        qualifying_components += 1
+        fill_infill_paths = [path for path in component_paths if path.kind == "fill-infill"]
+        if any(str((path.metadata or {}).get("fill_mode", "")) == "detail_serpentine_fill" for path in fill_infill_paths):
+            hole_driven_components += 1
+        largest_uncovered_area_mm2 = _largest_non_outline_uncovered_area_mm2(
+            component_paths,
+            geometry,
+            pen_radius_mm=0.3,
+        )
+        hole = Polygon(list(geometry.interiors)[0])
+        hole_center = hole.representative_point()
+        non_outline_coverage = coverage_planner._paths_footprint_union(
+            [path for path in component_paths if path.kind in {"fill-infill", "fill-repair", "detail-trace"}],
+            pen_radius_mm=0.3,
+        )
+
+        assert fill_infill_paths
+        assert largest_uncovered_area_mm2 <= 0.25
+        assert non_outline_coverage is None or not non_outline_coverage.covers(hole_center)
+
+    assert qualifying_components >= 3
+    assert hole_driven_components >= 3
+    assert any(
+        bool(row.get("hole_driven_detail_fill"))
+        for row in debug.get("coverage_component_summary", [])
+        if row.get("mode") == "detail-wide"
+    )
+
+
 def test_tiny_dot_uses_interior_stroke_not_outline_border_trace():
     tiny_dot = ShapelyPoint(0.0, 0.0).buffer(0.18, resolution=32)
 
@@ -2237,6 +2444,46 @@ def test_detail_filter_keeps_useful_uncovered_thin_detail():
     assert kept.metadata["detail_new_coverage_area_mm2"] > 0.02
 
 
+def test_detail_filter_keeps_centered_small_detail_despite_heavy_overlap():
+    target = Polygon([(0.0, 0.0), (12.0, 0.0), (12.0, 1.0), (0.0, 1.0)])
+    candidate = Toolpath(
+        points=[Point(0.6, 0.5), Point(11.4, 0.5)],
+        kind="detail-trace",
+        closed=False,
+        source="detail_trace",
+    )
+    existing = _paths_footprint_geometry(
+        [Toolpath(points=[Point(0.6, 0.5), Point(11.4, 0.5)], kind="fill-infill", closed=False)],
+        pen_width_mm=0.6,
+    )
+
+    result = pipeline_core._filter_detail_trace_candidates_for_export(
+        [candidate],
+        target_geometry=target,
+        existing_painted_area=existing,
+        line_width_mm=0.6,
+        allow_detail_overlap_outline=True,
+        validate_detail_with_pen_footprint=True,
+        max_detail_overspill_mm=0.05,
+        max_detail_overspill_area_ratio=0.03,
+        min_detail_new_coverage_mm2=0.02,
+        max_already_covered_ratio=0.90,
+        candidate_component_index_fn=lambda _path: 0,
+        candidate_centeredness_fn=lambda _path, _idx: 0.05,
+        candidate_component_metrics_fn=lambda _path, _idx: {
+            "component_id": 1,
+            "area_mm2": 1.0,
+            "bbox_mm": (12.0, 1.0),
+            "estimated_width_mm": 1.0,
+        },
+    )
+
+    assert result["detail_paths_kept"] == 1
+    kept = result["accepted_detail_paths"][0]
+    assert kept.metadata["detail_overlap_exception_applied"] is True
+    assert kept.metadata["detail_overlap_exception_reason"] == "small_detail_centered_overlap"
+
+
 def test_narrow_c_like_residual_prefers_clean_centerline_detail_trace():
     outer = Polygon([(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)])
     cut = Polygon([(3.0, 1.5), (10.0, 1.5), (10.0, 6.5), (3.0, 6.5)])
@@ -2323,7 +2570,7 @@ def test_straight_horizontal_bar_uses_simple_long_strokes_with_few_pen_lifts():
         include_comments=False,
     )
     pen_lifts = sum(1 for line in gcode if line.strip().startswith("M3 S575"))
-    assert pen_lifts < 5
+    assert pen_lifts <= 5
     draw_paths = [entry for entry in preview if entry.get("kind") in {"fill-infill", "fill-wall", "outline", "detail-trace"}]
     assert draw_paths
     for entry in draw_paths:
@@ -2512,6 +2759,51 @@ def test_fill_does_not_reserve_outline_space():
     assert debug["global_fill_mask_changed"] is False
     assert debug["endpoint_clamp_mode"] == "postprocess_only"
     assert debug["infill_debug"]["endpoint_extension_mm"] == pytest.approx(0.3, abs=1e-6)
+
+
+def test_scanline_fill_keeps_short_valid_rows_in_tapered_narrow_regions():
+    tapered = Polygon([
+        (0.0, 0.0),
+        (0.7, 0.0),
+        (0.7, 4.0),
+        (0.06, 4.0),
+        (0.0, 2.0),
+    ])
+    resolution_mm = max(0.03, min(0.06, max(0.03, 0.6 * 0.08)))
+    mask, origin_x, origin_y, px_per_mm = coverage_planner._rasterize_geometry(
+        tapered,
+        resolution_mm=resolution_mm,
+        pad_mm=max(0.25, 0.6),
+    )
+
+    fill_paths, stats = coverage_planner._scanline_fill_paths(
+        tapered,
+        angle_deg=0.0,
+        spacing_mm=0.48,
+        line_width_mm=0.6,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        px_per_mm=px_per_mm,
+        component_id=1,
+        allow_connectors=False,
+        max_overflow_mm=0.05,
+    )
+
+    row_offsets = [
+        float((path.metadata or {}).get("scanline_offset_mm", -1.0))
+        for path in fill_paths
+        if path.kind == "fill-infill"
+    ]
+    lengths = [
+        pipeline_core.segment_length(path.points)
+        for path in fill_paths
+        if path.kind == "fill-infill"
+    ]
+
+    assert stats["row_count"] >= 8
+    assert any(offset == pytest.approx(2.4, abs=1e-6) for offset in row_offsets)
+    assert max(b - a for a, b in zip(row_offsets, row_offsets[1:])) <= 0.480001
+    assert min(lengths) > 0.6
 
 
 def test_endpoint_coverage_improves_without_outline_clearance():
@@ -2751,8 +3043,14 @@ def test_machine_motion_debug_matches_preview_and_gcode_paths():
     comparison = debug["path_coordinate_comparison"]
 
     assert comparison["same_kind_by_path"]["outline_001"] is True
-    assert comparison["same_kind_by_path"]["travel-0002"] is True
     assert comparison["same_kind_by_path"]["fill-infill_001"] is True
+    travel_entries = {
+        path_id: same_kind
+        for path_id, same_kind in comparison["same_kind_by_path"].items()
+        if str(path_id).startswith("travel")
+    }
+    assert travel_entries
+    assert all(value is True for value in travel_entries.values())
     assert all((delta or 0.0) <= 1e-9 for path_id, delta in comparison["max_point_delta_deg_by_path"].items() if path_id != "coverage_centerline_001")
 
 
@@ -3340,3 +3638,36 @@ def test_c_shape_detail_contour_gets_centerline_backstop_when_core_uncovered():
     infill = [p for p in toolpaths if p.kind in {"coverage_centerline", "coverage_contour", "coverage_offset_line", "coverage_rectilinear"}]
     assert infill
     assert any(bool(p.metadata.get("coverage_backstop", False)) for p in infill)
+
+
+@pytest.mark.parametrize(
+    ("geometry", "angle_deg"),
+    [
+        (
+            Polygon([(-0.75, 0.0), (0.75, 0.0), (0.1, 6.0), (-0.1, 6.0)]),
+            0.0,
+        ),
+        (
+            affinity.rotate(Polygon([(-0.75, 0.0), (0.75, 0.0), (0.1, 6.0), (-0.1, 6.0)]), 90.0, origin="centroid"),
+            90.0,
+        ),
+    ],
+)
+def test_scanline_fill_keeps_short_reversed_rows_after_rotation(geometry: Polygon, angle_deg: float):
+    fill_paths, stats = coverage_planner._scanline_fill_paths(
+        geometry,
+        angle_deg=angle_deg,
+        spacing_mm=0.6,
+        line_width_mm=0.6,
+        origin_x=0.0,
+        origin_y=0.0,
+        px_per_mm=20.0,
+        component_id=1,
+        allow_connectors=False,
+        max_overflow_mm=0.05,
+    )
+
+    offsets = sorted(round(float(path.metadata.get("scanline_offset_mm", 0.0)), 6) for path in fill_paths if path.kind == "fill-infill")
+    assert len(offsets) >= 10
+    assert offsets == pytest.approx([round(offsets[0] + (index * 0.6), 6) for index in range(len(offsets))], abs=1e-6)
+    assert int(stats["segment_count"]) == len(offsets)

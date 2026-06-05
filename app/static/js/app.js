@@ -1015,6 +1015,8 @@ function previewStyle(kind, depth = 1) {
   if (kind === "outline") return { stroke: `rgba(245, 158, 11, ${alpha})`, width: 2.2, dash: [] };
   if (kind === "fill-wall") return { stroke: `rgba(245, 158, 11, ${alpha})`, width: 2.6, dash: [] };
   if (kind === "fill-infill") return { stroke: `rgba(45, 212, 191, ${alpha})`, width: 1.7, dash: [] };
+  if (kind === "fill-repair") return { stroke: `rgba(251, 113, 133, ${alpha})`, width: 1.9, dash: [] };
+  if (kind === "coverage_centerline" || kind === "coverage_offset_line" || kind === "coverage_rectilinear" || kind === "coverage_contour") return { stroke: `rgba(251, 113, 133, ${alpha})`, width: 1.9, dash: [] };
   if (kind === "crossed-contour-infill") return { stroke: `rgba(20, 184, 166, ${alpha})`, width: 1.6, dash: [3, 3] };
   if (kind === "repair-patch-fill") return { stroke: `rgba(251, 113, 133, ${alpha})`, width: 2.0, dash: [] };
   if (kind === "repair-patch-shape") return { stroke: `rgba(244, 63, 94, ${alpha})`, width: 1.5, dash: [6, 4] };

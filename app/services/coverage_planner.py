@@ -19,9 +19,44 @@ from . import pipeline_core
 Point = pipeline_core.Point
 Toolpath = pipeline_core.Toolpath
 
+REPAIR_PATH_KIND = "fill-repair"
+REPAIR_PATH_SOURCE = "mask_space_coverage_repair"
+
 
 def _geometry_parts(geometry: Any) -> list[Polygon]:
     return pipeline_core.normalize_geometry(geometry) if geometry is not None else []
+
+
+def _is_repair_path(path: Toolpath) -> bool:
+    metadata = path.metadata or {}
+    return (
+        path.kind == REPAIR_PATH_KIND
+        or bool(metadata.get("repair_candidate", False))
+        or bool(metadata.get("is_fill_repair", False))
+        or str(path.source) == REPAIR_PATH_SOURCE
+    )
+
+
+def _export_repair_toolpath(path: Toolpath, *, strategy_key: str | None = None, blob_id: int | None = None) -> Toolpath:
+    metadata = {
+        **(path.metadata or {}),
+        "repair_candidate": True,
+        "is_fill_repair": True,
+        "repair_export_kind": REPAIR_PATH_KIND,
+        "repair_export_source": REPAIR_PATH_SOURCE,
+    }
+    if strategy_key:
+        metadata["repair_strategy_key"] = str(strategy_key)
+    if blob_id is not None:
+        metadata["missed_blob_id"] = int(blob_id)
+    return Toolpath(
+        points=list(path.points),
+        kind=REPAIR_PATH_KIND,
+        closed=bool(path.closed),
+        source=REPAIR_PATH_SOURCE,
+        region_id=path.region_id,
+        metadata=metadata,
+    )
 
 
 def _component_mask_to_geometry(component_mask: np.ndarray, *, origin_x: float, origin_y: float, px_per_mm: float) -> Any:
@@ -267,15 +302,19 @@ def _clip_extended_segment_to_allowed_area(
 ) -> tuple[LineString | None, bool]:
     if segment.is_empty or segment.length <= 1e-9:
         return None, False
-    ux, uy = sweep_direction
+    coords = list(segment.coords)
+    start = coords[0]
+    end = coords[-1]
+    ux = float(end[0]) - float(start[0])
+    uy = float(end[1]) - float(start[1])
     direction_norm = math.hypot(ux, uy)
+    if direction_norm <= 1e-9:
+        ux, uy = sweep_direction
+        direction_norm = math.hypot(ux, uy)
     if direction_norm <= 1e-9:
         return segment, False
     ux /= direction_norm
     uy /= direction_norm
-    coords = list(segment.coords)
-    start = coords[0]
-    end = coords[-1]
     ext = max(0.0, float(endpoint_extension_mm))
     clipped = False
     radius = max(0.01, float(line_width_mm) * 0.5)
@@ -461,7 +500,10 @@ def _scanline_fill_paths(
     rotated = affinity.rotate(component_geometry, -angle_deg, origin=(centroid.x, centroid.y))
     min_x, min_y, max_x, max_y = rotated.bounds
     step = max(0.2, float(spacing_mm))
-    min_segment_length_mm = max(0.02, line_width_mm * 0.15)
+    # Keep short but valid scanline spans in narrow glyph/detail regions.
+    # The previous 0.15x pen-width floor (0.09 mm at 0.6 mm pen width)
+    # caused alternating rows to disappear in tapered shapes.
+    min_segment_length_mm = max(0.02, min(line_width_mm * 0.10, max(0.04, spacing_mm * 0.125)))
     allowed_geom = component_geometry.buffer(max_overflow_mm, join_style=1) if max_overflow_mm > 0 else component_geometry
     endpoint_extension_mm = max(0.0, line_width_mm * 0.5)
 
@@ -609,6 +651,228 @@ def _skeleton_paths_for_component(
     return paths, {"skeleton_segment_count": len(segments)}
 
 
+def _thin_detail_fill_paths_for_component(
+    component_mask: np.ndarray,
+    *,
+    component_geometry: Any,
+    component_endpoint_limit: Any,
+    origin_x: float,
+    origin_y: float,
+    px_per_mm: float,
+    component_id: int,
+    line_width_mm: float,
+    simplify_tolerance_mm: float,
+    detail_fill_spacing_mm: float,
+    angle_deg: float,
+    small_detail_fill_style: str,
+) -> tuple[list[Toolpath], dict[str, Any]]:
+    base_paths, base_stats = _skeleton_paths_for_component(
+        component_mask,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        px_per_mm=px_per_mm,
+        component_id=component_id,
+        line_width_mm=line_width_mm,
+        small_detail_fill_style=small_detail_fill_style,
+    )
+    if component_geometry is None or getattr(component_geometry, "is_empty", True):
+        return base_paths, dict(base_stats)
+
+    region_mask = (component_mask > 0).astype(np.uint8)
+    current_to_source = (
+        float(px_per_mm),
+        0.0,
+        0.0,
+        float(px_per_mm),
+        -float(origin_x) * float(px_per_mm),
+        -float(origin_y) * float(px_per_mm),
+    )
+    pen_radius_px = max(1, int(round(line_width_mm * px_per_mm / 2.0)))
+    pen_radius_mm = line_width_mm * 0.5
+
+    def _coverage_stats(paths: list[Toolpath]) -> tuple[np.ndarray, dict[str, float], list[dict[str, Any]], dict[str, float | int]]:
+        painted = _path_points_to_mask(
+            paths,
+            shape=region_mask.shape,
+            current_to_source_matrix=current_to_source,
+            pen_radius_px=pen_radius_px,
+        )
+        metrics = _painted_metrics(
+            target_mask=region_mask,
+            painted_mask=painted,
+            allowed_mask=region_mask,
+            px_per_mm=px_per_mm,
+        )
+        blobs = _connected_mask_blob_rows(
+            ((region_mask > 0) & ~(painted > 0)).astype(np.uint8),
+            px_per_mm=px_per_mm,
+            min_blob_area_mm2=0.01,
+        )
+        return painted, metrics, blobs, _blob_summary(blobs)
+
+    current_paths = list(base_paths)
+    _painted, metrics_before, blobs_before, summary_before = _coverage_stats(current_paths)
+    coverage_target_percent = 98.0
+    largest_allowed_blob_mm = 0.10
+    has_holes = any(len(polygon.interiors) > 0 for polygon in _geometry_parts(component_geometry))
+
+    supplemental_paths_added = 0
+    repair_paths_added = 0
+    repair_iterations = 0
+
+    if (
+        has_holes
+        or float(metrics_before["coverage_percent"]) < coverage_target_percent
+        or float(summary_before["largest_missed_blob_equivalent_diameter_mm"]) > largest_allowed_blob_mm
+    ):
+        supplemental_paths, supplemental_stats = _scanline_fill_paths(
+            component_geometry,
+            angle_deg=angle_deg,
+            spacing_mm=detail_fill_spacing_mm,
+            line_width_mm=line_width_mm,
+            origin_x=origin_x,
+            origin_y=origin_y,
+            px_per_mm=px_per_mm,
+            component_id=component_id,
+            allow_connectors=False,
+            max_overflow_mm=0.05,
+            fill_mode_label="thin_detail_serpentine_fill",
+        )
+        supplemental_paths, _endpoint_clamp_stats = _clamp_infill_endpoints_to_outline_limit(
+            supplemental_paths,
+            allowed_geom=component_endpoint_limit,
+            pen_radius_mm=pen_radius_mm,
+            max_retract_mm=pen_radius_mm,
+            precision_mm=0.02,
+        )
+        for path in supplemental_paths:
+            path.source = "thin_detail_serpentine_fill"
+            path.kind = "fill-infill"
+            path.metadata = {
+                **(path.metadata or {}),
+                "fill_mode": "thin_detail_serpentine_fill",
+                "fill_strategy": "DETAIL_SERPENTINE_FILL",
+                "small_detail_fill_style": "scanline_backfill",
+                "detail_region_component_id": int(component_id),
+                "detail_region_classification": "thin",
+            }
+        current_paths.extend(supplemental_paths)
+        supplemental_paths_added = len(supplemental_paths)
+        base_stats["thin_detail_supplement_segments"] = int(supplemental_stats.get("segment_count", 0))
+
+    current_painted, metrics_after_supplement, current_blob_rows, current_blob_summary = _coverage_stats(current_paths)
+    max_repair_iterations = 8
+    while (
+        repair_iterations < max_repair_iterations
+        and current_blob_rows
+        and (
+            float(metrics_after_supplement["coverage_percent"]) < coverage_target_percent
+            or float(current_blob_summary["largest_missed_blob_equivalent_diameter_mm"]) > largest_allowed_blob_mm
+        )
+    ):
+        best_choice: dict[str, Any] | None = None
+        for blob_row in current_blob_rows:
+            blob_mask = np.asarray(blob_row["mask"], dtype=np.uint8)
+            blob_geometry = _component_mask_to_geometry(
+                blob_mask * 255,
+                origin_x=origin_x,
+                origin_y=origin_y,
+                px_per_mm=px_per_mm,
+            )
+            candidate_groups = defaultdict(list)
+            for strategy_key, candidate in _detail_repair_candidates_for_blob(
+                blob_mask,
+                blob_geometry=blob_geometry,
+                origin_x=origin_x,
+                origin_y=origin_y,
+                px_per_mm=px_per_mm,
+                line_width_mm=line_width_mm,
+                simplify_tolerance_mm=simplify_tolerance_mm,
+                detail_fill_spacing_mm=detail_fill_spacing_mm,
+                region_component_id=component_id,
+                region_area_mm2=float(component_geometry.area),
+                region_max_width_mm=0.0,
+                region_equivalent_diameter_mm=_equivalent_diameter_mm(float(component_geometry.area)),
+                main_angle_deg=angle_deg,
+            ):
+                candidate_groups[strategy_key].append(candidate)
+
+            for strategy_key in [
+                "serpentine",
+                "contour_offset",
+                "parallel_stroke",
+                "perpendicular_stroke",
+                "centerline_fallback",
+            ]:
+                for candidate in candidate_groups.get(strategy_key, []):
+                    candidate_mask = _path_points_to_mask(
+                        [candidate],
+                        shape=region_mask.shape,
+                        current_to_source_matrix=current_to_source,
+                        pen_radius_px=pen_radius_px,
+                    )
+                    trial_painted = np.maximum(current_painted, candidate_mask)
+                    trial_metrics = _painted_metrics(
+                        target_mask=region_mask,
+                        painted_mask=trial_painted,
+                        allowed_mask=region_mask,
+                        px_per_mm=px_per_mm,
+                    )
+                    candidate_footprint = _paths_footprint_union([candidate], pen_radius_mm=pen_radius_mm)
+                    newly_covered_target_area_mm2 = max(
+                        0.0,
+                        float(trial_metrics["painted_inside_area_mm2"]) - float(metrics_after_supplement["painted_inside_area_mm2"]),
+                    )
+                    outside_region_overflow_mm2 = (
+                        float(candidate_footprint.difference(component_endpoint_limit).area)
+                        if candidate_footprint is not None and not getattr(candidate_footprint, "is_empty", True)
+                        else 0.0
+                    )
+                    if newly_covered_target_area_mm2 <= 0.003 or outside_region_overflow_mm2 > 0.005:
+                        continue
+                    score = float(newly_covered_target_area_mm2) - (outside_region_overflow_mm2 * 0.5)
+                    if best_choice is None or score > float(best_choice["score"]):
+                        best_choice = {
+                            "candidate": candidate,
+                            "score": float(score),
+                            "trial_painted": trial_painted,
+                            "trial_metrics": trial_metrics,
+                        }
+                if best_choice is not None:
+                    break
+            if best_choice is not None:
+                break
+
+        if best_choice is None:
+            break
+
+        current_paths.append(best_choice["candidate"])
+        repair_paths_added += 1
+        repair_iterations += 1
+        current_painted = best_choice["trial_painted"]
+        metrics_after_supplement = best_choice["trial_metrics"]
+        current_blob_rows = _connected_mask_blob_rows(
+            ((region_mask > 0) & ~(current_painted > 0)).astype(np.uint8),
+            px_per_mm=px_per_mm,
+            min_blob_area_mm2=0.01,
+        )
+        current_blob_summary = _blob_summary(current_blob_rows)
+
+    _painted, metrics_after, blobs_after, summary_after = _coverage_stats(current_paths)
+    return current_paths, {
+        **dict(base_stats),
+        "thin_detail_initial_coverage_percent": float(metrics_before["coverage_percent"]),
+        "thin_detail_initial_largest_missed_blob_mm": float(summary_before["largest_missed_blob_equivalent_diameter_mm"]),
+        "thin_detail_final_coverage_percent": float(metrics_after["coverage_percent"]),
+        "thin_detail_final_largest_missed_blob_mm": float(summary_after["largest_missed_blob_equivalent_diameter_mm"]),
+        "thin_detail_supplemental_paths_added": int(supplemental_paths_added),
+        "thin_detail_repair_paths_added": int(repair_paths_added),
+        "thin_detail_repair_iterations": int(repair_iterations),
+        "thin_detail_has_holes": bool(has_holes),
+        "thin_detail_missed_blob_count_after": int(len(blobs_after)),
+    }
+
+
 def _boundary_paths_for_component(
     component_geometry: Any,
     *,
@@ -621,6 +885,76 @@ def _boundary_paths_for_component(
     boundary_paths: list[Toolpath] = []
     simplify_mm = max(0.0, min(max(simplify_tolerance_mm, 0.02), max(0.08, line_width_mm * 0.35)))
     for polygon in _geometry_parts(component_geometry):
+        exterior = pipeline_core.simplify_segment_points(
+            [Point(float(x), float(y)) for x, y in polygon.exterior.coords],
+            simplify_mm,
+            True,
+        )
+        if len(exterior) >= 4:
+            boundary_paths.append(
+                Toolpath(
+                    points=exterior,
+                    kind="outline",
+                    closed=True,
+                    source="coverage_boundary",
+                    region_id=int(component_id),
+                    metadata={
+                        "boundary_kind": "exterior",
+                        "ring_role": "outer",
+                        "component_id": int(component_id),
+                        "source_region_id": f"component_{int(component_id):03d}",
+                        "path_role": "FINAL_OUTER_OUTLINE",
+                        "generated_from": "final_fill_clip_polygon",
+                        "outline_generation_source": "final_target_mask",
+                        "source_polygon_matches_infill_clip_polygon": True,
+                        "outline_uses_infill_clip_polygon": True,
+                        "outline_offset_mm": 0.0,
+                        "simplify_tolerance_mm": float(simplify_mm),
+                    },
+                )
+            )
+        for ring in polygon.interiors:
+            inner = pipeline_core.simplify_segment_points(
+                [Point(float(x), float(y)) for x, y in ring.coords],
+                simplify_mm,
+                True,
+            )
+            if len(inner) >= 4:
+                boundary_paths.append(
+                    Toolpath(
+                        points=inner,
+                        kind="outline",
+                        closed=True,
+                        source="coverage_boundary",
+                        region_id=int(component_id),
+                        metadata={
+                            "boundary_kind": "hole",
+                            "ring_role": "hole",
+                            "component_id": int(component_id),
+                            "source_region_id": f"component_{int(component_id):03d}",
+                            "path_role": "FINAL_INNER_OUTLINE",
+                            "generated_from": "final_fill_clip_polygon",
+                            "outline_generation_source": "final_target_mask",
+                            "source_polygon_matches_infill_clip_polygon": True,
+                            "outline_uses_infill_clip_polygon": True,
+                            "outline_offset_mm": 0.0,
+                            "simplify_tolerance_mm": float(simplify_mm),
+                            "is_hole": True,
+                        },
+                    )
+                )
+    return boundary_paths
+
+
+def _boundary_paths_for_geometry(
+    geometry: Any,
+    *,
+    simplify_tolerance_mm: float,
+    line_width_mm: float,
+) -> list[Toolpath]:
+    boundary_paths: list[Toolpath] = []
+    simplify_mm = max(0.0, min(float(simplify_tolerance_mm), max(0.08, line_width_mm * 0.35)))
+    for component_id, polygon in enumerate(_geometry_parts(geometry), start=1):
         exterior = pipeline_core.simplify_segment_points(
             [Point(float(x), float(y)) for x, y in polygon.exterior.coords],
             simplify_mm,
@@ -831,6 +1165,355 @@ def _painted_metrics(
     }
 
 
+def _equivalent_diameter_mm(area_mm2: float) -> float:
+    if area_mm2 <= 1e-9:
+        return 0.0
+    return float(2.0 * math.sqrt(max(0.0, area_mm2) / math.pi))
+
+
+def _detail_coverage_paths(paths: Iterable[Toolpath]) -> list[Toolpath]:
+    allowed_kinds = {
+        "fill-infill",
+        REPAIR_PATH_KIND,
+        "detail-trace",
+        "coverage_centerline",
+        "coverage_offset_line",
+        "coverage_rectilinear",
+        "coverage_contour",
+        "coverage_connector",
+        "coverage_tiny_mark",
+    }
+    return [path for path in paths if path.kind in allowed_kinds and len(path.points) >= 2]
+
+
+def _connected_mask_blob_rows(
+    component_mask: np.ndarray,
+    *,
+    px_per_mm: float,
+    min_blob_area_mm2: float,
+) -> list[dict[str, Any]]:
+    if component_mask is None or component_mask.size == 0 or not np.any(component_mask > 0):
+        return []
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats((component_mask > 0).astype(np.uint8), connectivity=8)
+    blob_rows: list[dict[str, Any]] = []
+    px_to_mm2 = 1.0 / max(1e-9, px_per_mm * px_per_mm)
+    for blob_id in range(1, int(component_count)):
+        area_px = int(stats[blob_id, cv2.CC_STAT_AREA])
+        area_mm2 = float(area_px) * px_to_mm2
+        if area_mm2 < min_blob_area_mm2:
+            continue
+        blob_rows.append({
+            "blob_id": int(blob_id),
+            "mask": (labels == blob_id).astype(np.uint8),
+            "area_px": int(area_px),
+            "area_mm2": float(area_mm2),
+            "left_px": int(stats[blob_id, cv2.CC_STAT_LEFT]),
+            "top_px": int(stats[blob_id, cv2.CC_STAT_TOP]),
+            "width_px": int(stats[blob_id, cv2.CC_STAT_WIDTH]),
+            "height_px": int(stats[blob_id, cv2.CC_STAT_HEIGHT]),
+        })
+    blob_rows.sort(key=lambda row: float(row["area_mm2"]), reverse=True)
+    return blob_rows
+
+
+def _blob_summary(blob_rows: list[dict[str, Any]]) -> dict[str, float | int]:
+    if not blob_rows:
+        return {
+            "missed_blob_count": 0,
+            "largest_missed_blob_area_mm2": 0.0,
+            "largest_missed_blob_equivalent_diameter_mm": 0.0,
+        }
+    largest_area_mm2 = float(max(float(row.get("area_mm2", 0.0)) for row in blob_rows))
+    return {
+        "missed_blob_count": int(len(blob_rows)),
+        "largest_missed_blob_area_mm2": float(largest_area_mm2),
+        "largest_missed_blob_equivalent_diameter_mm": float(_equivalent_diameter_mm(largest_area_mm2)),
+    }
+
+
+def _bbox_mm_from_blob_row(blob_row: dict[str, Any], *, px_per_mm: float, origin_x: float, origin_y: float) -> dict[str, float]:
+    left_px = int(blob_row.get("left_px", 0))
+    top_px = int(blob_row.get("top_px", 0))
+    width_px = int(blob_row.get("width_px", 0))
+    height_px = int(blob_row.get("height_px", 0))
+    return {
+        "min_x": float(origin_x + (left_px / max(px_per_mm, 1e-9))),
+        "min_y": float(origin_y + (top_px / max(px_per_mm, 1e-9))),
+        "max_x": float(origin_x + ((left_px + width_px) / max(px_per_mm, 1e-9))),
+        "max_y": float(origin_y + ((top_px + height_px) / max(px_per_mm, 1e-9))),
+    }
+
+
+def _centroid_from_mask(mask: np.ndarray, *, px_per_mm: float, origin_x: float, origin_y: float) -> tuple[dict[str, float], dict[str, float]]:
+    ys, xs = np.nonzero(mask > 0)
+    if xs.size == 0:
+        return {"x": 0.0, "y": 0.0}, {"x": float(origin_x), "y": float(origin_y)}
+    cx_px = float(np.mean(xs))
+    cy_px = float(np.mean(ys))
+    return (
+        {"x": float(cx_px), "y": float(cy_px)},
+        {"x": float(origin_x + (cx_px / max(px_per_mm, 1e-9))), "y": float(origin_y + (cy_px / max(px_per_mm, 1e-9)))},
+    )
+
+
+def _nearest_path_debug_row(paths: list[Toolpath], centroid_mm: dict[str, float]) -> dict[str, Any]:
+    query = ShapelyPoint(float(centroid_mm["x"]), float(centroid_mm["y"]))
+    nearest: dict[str, Any] = {
+        "nearest_existing_path_id": "",
+        "nearest_existing_path_kind": "",
+        "nearest_existing_path_distance_mm": 0.0,
+    }
+    best_distance = float("inf")
+    for path in paths:
+        if len(path.points) < 2 or path.kind == "fill-infill-travel":
+            continue
+        line = LineString([(point.x, point.y) for point in path.points])
+        if line.is_empty:
+            continue
+        distance = float(query.distance(line))
+        if distance < best_distance:
+            best_distance = distance
+            nearest = {
+                "nearest_existing_path_id": str(path.path_id or ""),
+                "nearest_existing_path_kind": str(path.kind),
+                "nearest_existing_path_distance_mm": float(distance),
+            }
+    return nearest
+
+
+def _render_labeled_blob_overlay(mask: np.ndarray, blob_rows: list[dict[str, Any]]) -> np.ndarray:
+    canvas = cv2.cvtColor((mask > 0).astype(np.uint8) * 255, cv2.COLOR_GRAY2BGR)
+    for index, blob_row in enumerate(blob_rows, start=1):
+        left = int(blob_row.get("left_px", 0))
+        top = int(blob_row.get("top_px", 0))
+        width = int(blob_row.get("width_px", 0))
+        height = int(blob_row.get("height_px", 0))
+        cv2.rectangle(canvas, (left, top), (left + width, top + height), (0, 0, 255), 1)
+        cv2.putText(canvas, str(index), (left, max(10, top + 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 0), 1, cv2.LINE_AA)
+    return canvas
+
+
+def _longest_mask_centerline_candidate(
+    component_mask: np.ndarray,
+    *,
+    origin_x: float,
+    origin_y: float,
+    px_per_mm: float,
+    component_id: int,
+) -> Toolpath | None:
+    skeleton = _skeletonize_mask(component_mask)
+    segments = _skeleton_to_segments(skeleton)
+    if not segments:
+        return None
+    longest = max(segments, key=lambda item: len(item))
+    points_px = [(float(x), float(y)) for y, x in longest]
+    return _pixel_path_to_toolpath(
+        points_px,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        px_per_mm=px_per_mm,
+        kind="fill-infill",
+        source="detail_repair_fill",
+        component_id=component_id,
+        metadata={
+            "repair_candidate": True,
+            "repair_candidate_type": "centerline_fallback",
+        },
+        closed=False,
+    )
+
+
+def _convert_candidate_to_detail_repair_fill(
+    candidate: Toolpath,
+    *,
+    component_id: int,
+    region_component_id: int,
+    strategy_key: str,
+    strategy_label: str,
+    region_area_mm2: float,
+    region_max_width_mm: float,
+    region_equivalent_diameter_mm: float,
+) -> Toolpath:
+    metadata = {
+        **(candidate.metadata or {}),
+        "repair_candidate": True,
+        "fill_mode": f"detail_repair_{strategy_key}",
+        "fill_strategy": strategy_label,
+        "source_region_id": f"detail_region_{int(region_component_id):03d}",
+        "detail_region_component_id": int(region_component_id),
+        "detail_repair_component_id": int(component_id),
+        "detail_region_area_mm2": float(region_area_mm2),
+        "detail_region_max_width_mm": float(region_max_width_mm),
+        "detail_region_equivalent_diameter_mm": float(region_equivalent_diameter_mm),
+        "detail_repair_strategy": strategy_key,
+    }
+    return Toolpath(
+        points=list(candidate.points),
+        kind=REPAIR_PATH_KIND,
+        closed=bool(candidate.closed),
+        source=REPAIR_PATH_SOURCE,
+        region_id=region_component_id,
+        metadata=metadata,
+    )
+
+
+def _detail_repair_candidates_for_blob(
+    blob_mask: np.ndarray,
+    *,
+    blob_geometry: Any | None,
+    origin_x: float,
+    origin_y: float,
+    px_per_mm: float,
+    line_width_mm: float,
+    simplify_tolerance_mm: float,
+    detail_fill_spacing_mm: float,
+    region_component_id: int,
+    region_area_mm2: float,
+    region_max_width_mm: float,
+    region_equivalent_diameter_mm: float,
+    main_angle_deg: float,
+) -> list[tuple[str, Toolpath]]:
+    erosion_px = max(1, int(round(px_per_mm * max(0.08, line_width_mm * 0.22))))
+    safe_mask = cv2.erode(
+        (blob_mask > 0).astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erosion_px * 2 + 1, erosion_px * 2 + 1)),
+        iterations=1,
+    )
+    working_mask = safe_mask if np.any(safe_mask > 0) else (blob_mask > 0).astype(np.uint8)
+    working_geometry = blob_geometry
+    if np.any(safe_mask > 0):
+        safe_geometry = _component_mask_to_geometry(
+            (safe_mask > 0).astype(np.uint8) * 255,
+            origin_x=origin_x,
+            origin_y=origin_y,
+            px_per_mm=px_per_mm,
+        )
+        if safe_geometry is not None and not getattr(safe_geometry, "is_empty", True):
+            working_geometry = safe_geometry
+
+    ys, xs = np.nonzero(working_mask > 0)
+    if xs.size == 0:
+        return []
+
+    ordered_candidates: list[tuple[str, Toolpath]] = []
+    raw_candidates = _candidate_paths_for_missed_component(
+        working_mask,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        px_per_mm=px_per_mm,
+        line_width_mm=line_width_mm,
+        component_id=region_component_id,
+        main_angle_deg=main_angle_deg,
+        component_geometry=working_geometry,
+    )
+    preferred_parallel_angle = _normalize_angle(main_angle_deg)
+    preferred_perpendicular_angle = _normalize_angle(main_angle_deg + 90.0)
+
+    if working_geometry is not None and not getattr(working_geometry, "is_empty", True):
+        serpentine, _stats = _scanline_fill_paths(
+            working_geometry,
+            angle_deg=preferred_parallel_angle,
+            spacing_mm=detail_fill_spacing_mm,
+            line_width_mm=line_width_mm,
+            origin_x=origin_x,
+            origin_y=origin_y,
+            px_per_mm=px_per_mm,
+            component_id=region_component_id,
+            allow_connectors=False,
+            max_overflow_mm=0.05,
+            fill_mode_label="detail_repair_serpentine",
+        )
+        for candidate in serpentine[:4]:
+            ordered_candidates.append((
+                "serpentine",
+                _convert_candidate_to_detail_repair_fill(
+                    candidate,
+                    component_id=region_component_id,
+                    region_component_id=region_component_id,
+                    strategy_key="serpentine",
+                    strategy_label="DETAIL_REPAIR_SERPENTINE",
+                    region_area_mm2=region_area_mm2,
+                    region_max_width_mm=region_max_width_mm,
+                    region_equivalent_diameter_mm=region_equivalent_diameter_mm,
+                ),
+            ))
+
+        contour_paths = _boundary_paths_for_geometry(
+            working_geometry,
+            simplify_tolerance_mm=max(0.0, simplify_tolerance_mm),
+            line_width_mm=line_width_mm,
+        )
+        for candidate in contour_paths[:2]:
+            ordered_candidates.append((
+                "contour_offset",
+                _convert_candidate_to_detail_repair_fill(
+                    candidate,
+                    component_id=region_component_id,
+                    region_component_id=region_component_id,
+                    strategy_key="contour_offset",
+                    strategy_label="DETAIL_REPAIR_CONTOUR_OFFSET",
+                    region_area_mm2=region_area_mm2,
+                    region_max_width_mm=region_max_width_mm,
+                    region_equivalent_diameter_mm=region_equivalent_diameter_mm,
+                ),
+            ))
+
+    for candidate in raw_candidates:
+        angle_deg = float((candidate.metadata or {}).get("repair_candidate_angle_deg", preferred_parallel_angle))
+        normalized_angle = _normalize_angle(angle_deg)
+        if abs(normalized_angle - preferred_parallel_angle) < 1e-6:
+            ordered_candidates.append((
+                "parallel_stroke",
+                _convert_candidate_to_detail_repair_fill(
+                    candidate,
+                    component_id=region_component_id,
+                    region_component_id=region_component_id,
+                    strategy_key="parallel_stroke",
+                    strategy_label="DETAIL_REPAIR_PARALLEL_STROKE",
+                    region_area_mm2=region_area_mm2,
+                    region_max_width_mm=region_max_width_mm,
+                    region_equivalent_diameter_mm=region_equivalent_diameter_mm,
+                ),
+            ))
+        elif abs(normalized_angle - preferred_perpendicular_angle) < 1e-6:
+            ordered_candidates.append((
+                "perpendicular_stroke",
+                _convert_candidate_to_detail_repair_fill(
+                    candidate,
+                    component_id=region_component_id,
+                    region_component_id=region_component_id,
+                    strategy_key="perpendicular_stroke",
+                    strategy_label="DETAIL_REPAIR_PERPENDICULAR_STROKE",
+                    region_area_mm2=region_area_mm2,
+                    region_max_width_mm=region_max_width_mm,
+                    region_equivalent_diameter_mm=region_equivalent_diameter_mm,
+                ),
+            ))
+
+    centerline = _longest_mask_centerline_candidate(
+        working_mask,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        px_per_mm=px_per_mm,
+        component_id=region_component_id,
+    )
+    if centerline is not None:
+        ordered_candidates.append((
+            "centerline_fallback",
+            _convert_candidate_to_detail_repair_fill(
+                centerline,
+                component_id=region_component_id,
+                region_component_id=region_component_id,
+                strategy_key="centerline_fallback",
+                strategy_label="DETAIL_REPAIR_CENTERLINE_FALLBACK",
+                region_area_mm2=region_area_mm2,
+                region_max_width_mm=region_max_width_mm,
+                region_equivalent_diameter_mm=region_equivalent_diameter_mm,
+            ),
+        ))
+    return ordered_candidates
+
+
 def _line_from_candidate(
     component_mask: np.ndarray,
     *,
@@ -996,6 +1679,7 @@ def _score_candidate(
         pen_radius_mm=pen_radius_mm,
         sample_step_mm=sample_step_mm,
         include_kinds={
+            REPAIR_PATH_KIND,
             "coverage_centerline",
             "coverage_offset_line",
             "coverage_rectilinear",
@@ -1014,6 +1698,7 @@ def _score_candidate(
         pen_radius_mm=pen_radius_mm,
         sample_step_mm=sample_step_mm,
         include_kinds={
+            REPAIR_PATH_KIND,
             "coverage_centerline",
             "coverage_offset_line",
             "coverage_rectilinear",
@@ -1068,6 +1753,8 @@ def _generate_debug_artifacts(
 ) -> None:
     debug = debug or {}
     output_dir.mkdir(parents=True, exist_ok=True)
+    origin_x = -float(current_to_source_matrix[4]) / max(1e-9, float(current_to_source_matrix[0]))
+    origin_y = -float(current_to_source_matrix[5]) / max(1e-9, float(current_to_source_matrix[3]))
     cv2.imwrite(str(output_dir / "01_target_mask.png"), (target_mask > 0).astype(np.uint8) * 255)
     cv2.imwrite(str(output_dir / "02_components.png"), components_mask)
     cv2.imwrite(str(output_dir / "03_width_analysis.png"), _mask_to_overlay(np.maximum(components_mask, target_mask), (120, 180, 255)))
@@ -1090,6 +1777,95 @@ def _generate_debug_artifacts(
     final_check[missed > 0] = (0, 0, 200)
     final_check[(painted > 0) & (target_mask > 0)] = (50, 180, 50)
     cv2.imwrite(str(output_dir / "13_final_coverage_check.png"), final_check)
+
+    accepted_ids = {id(path) for path in accepted_repair_paths}
+    before_repair_paths = [path for path in final_paths if id(path) not in accepted_ids]
+    before_repair_painted = _path_points_to_mask(before_repair_paths, shape=shape, current_to_source_matrix=current_to_source_matrix, pen_radius_px=pen_radius_px)
+    outline_only = [path for path in final_paths if path.kind == "outline"]
+    outline_painted = _path_points_to_mask(outline_only, shape=shape, current_to_source_matrix=current_to_source_matrix, pen_radius_px=pen_radius_px)
+    combined_after = painted
+    missed_before = ((target_mask > 0) & ~(before_repair_painted > 0)).astype(np.uint8) * 255
+    missed_after = ((target_mask > 0) & ~(combined_after > 0)).astype(np.uint8) * 255
+    cv2.imwrite(str(output_dir / "target_mask.png"), (target_mask > 0).astype(np.uint8) * 255)
+    cv2.imwrite(str(output_dir / "selected_color_mask.png"), (target_mask > 0).astype(np.uint8) * 255)
+    cv2.imwrite(str(output_dir / "fill_coverage_before_repair.png"), _mask_to_overlay(before_repair_painted, (80, 120, 220)))
+    cv2.imwrite(str(output_dir / "outline_coverage.png"), _mask_to_overlay(outline_painted, (0, 180, 0)))
+    cv2.imwrite(str(output_dir / "combined_coverage_after_repair.png"), _mask_to_overlay(combined_after, (60, 160, 80)))
+    cv2.imwrite(str(output_dir / "missed_blobs_before_repair.png"), _mask_to_overlay(missed_before, (0, 0, 255)))
+    cv2.imwrite(str(output_dir / "missed_blobs_after_repair.png"), _mask_to_overlay(missed_after, (0, 0, 255)))
+    cv2.imwrite(str(output_dir / "repair_strokes.png"), _render_paths_overlay(shape, accepted_repair_paths, current_to_source_matrix=current_to_source_matrix, colors={"fill-infill": (220, 0, 0), "coverage_centerline": (220, 0, 0), "outline": (220, 0, 0), "detail-trace": (220, 0, 0)}))
+    cv2.imwrite(str(output_dir / "overflow_pixels.png"), _mask_to_overlay(overflow, (255, 0, 0)))
+    cv2.imwrite(str(output_dir / "swept_coverage.png"), _mask_to_overlay(combined_after, (60, 160, 80)))
+    cv2.imwrite(str(output_dir / "missed_blobs.png"), _mask_to_overlay(missed_after, (0, 0, 255)))
+    final_blob_rows = _connected_mask_blob_rows((missed_after > 0).astype(np.uint8), px_per_mm=px_per_mm, min_blob_area_mm2=0.01)
+    cv2.imwrite(str(output_dir / "missed_blobs_labeled.png"), _render_labeled_blob_overlay((missed_after > 0).astype(np.uint8), final_blob_rows))
+    cv2.imwrite(str(output_dir / "repair_candidates.png"), _render_paths_overlay(shape, candidate_paths, current_to_source_matrix=current_to_source_matrix, colors={"fill-infill": (255, 220, 0), REPAIR_PATH_KIND: (255, 220, 0), "coverage_centerline": (255, 160, 0)}))
+    rejected_candidate_paths = [item["candidate"] for item in repair_candidates if isinstance(item, dict) and item.get("candidate") is not None and not bool(item.get("accepted", False))]
+    cv2.imwrite(str(output_dir / "rejected_repair_candidates.png"), _render_paths_overlay(shape, rejected_candidate_paths, current_to_source_matrix=current_to_source_matrix, colors={"fill-infill": (255, 80, 80), REPAIR_PATH_KIND: (255, 80, 80), "coverage_centerline": (255, 80, 80)}))
+    cv2.imwrite(str(output_dir / "exported_repair_paths.png"), _render_paths_overlay(shape, accepted_repair_paths, current_to_source_matrix=current_to_source_matrix, colors={REPAIR_PATH_KIND: (220, 0, 0), "fill-infill": (220, 0, 0), "coverage_centerline": (220, 0, 0)}))
+
+    final_blob_diagnostics: list[dict[str, Any]] = []
+    repair_row_lookup = {
+        int(row.get("component_id", -1)): row
+        for row in list(debug.get("detail_region_repair_rows", []))
+        if isinstance(row, dict) and row.get("component_id") is not None
+    }
+    for blob_row in final_blob_rows:
+        centroid_px, centroid_mm = _centroid_from_mask(np.asarray(blob_row["mask"], dtype=np.uint8), px_per_mm=px_per_mm, origin_x=origin_x, origin_y=origin_y)
+        nearest_path = _nearest_path_debug_row(final_paths, centroid_mm)
+        nearest_region_row = None
+        nearest_region_id = ""
+        if nearest_path["nearest_existing_path_kind"]:
+            for path in final_paths:
+                if str(path.path_id or "") == str(nearest_path["nearest_existing_path_id"]):
+                    nearest_region_id = str(path.region_id or (path.metadata or {}).get("source_region_id", ""))
+                    component_id = (path.metadata or {}).get("detail_region_component_id") or path.region_id
+                    try:
+                        nearest_region_row = repair_row_lookup.get(int(component_id))
+                    except Exception:
+                        nearest_region_row = None
+                    break
+        bbox_mm = _bbox_mm_from_blob_row(blob_row, px_per_mm=px_per_mm, origin_x=origin_x, origin_y=origin_y)
+        rejection_reason = str((nearest_region_row or {}).get("failure_reason_if_still_below_90", "") or "")
+        if rejection_reason:
+            root_cause_category = "E"
+        elif not bool(debug.get("preview_and_gcode_share_same_projected_paths", True)):
+            root_cause_category = "G"
+        else:
+            root_cause_category = "B"
+        final_blob_diagnostics.append({
+            "missed_blob_id": int(blob_row.get("blob_id", 0)),
+            "area_mm2": float(blob_row.get("area_mm2", 0.0)),
+            "equivalent_diameter_mm": float(_equivalent_diameter_mm(float(blob_row.get("area_mm2", 0.0)))),
+            "bbox_px": {
+                "left": int(blob_row.get("left_px", 0)),
+                "top": int(blob_row.get("top_px", 0)),
+                "width": int(blob_row.get("width_px", 0)),
+                "height": int(blob_row.get("height_px", 0)),
+            },
+            "bbox_mm": bbox_mm,
+            "centroid_px": centroid_px,
+            "centroid_mm": centroid_mm,
+            **nearest_path,
+            "nearest_region_id": str(nearest_region_id),
+            "region_classification": str((nearest_region_row or {}).get("classification", (nearest_region_row or {}).get("region_classification", "wide"))),
+            "region_strategy_used": list((nearest_region_row or {}).get("strategy_used", [])),
+            "was_inside_selected_color_mask": True,
+            "was_inside_outline_area": True,
+            "was_inside_inset_outline_area": True,
+            "was_excluded_by_noise_filter": False,
+            "was_excluded_by_detail_filter": False,
+            "was_excluded_by_outline_clip": rejection_reason == "outside_selected_mask_overflow",
+            "was_excluded_by_hole_detection": False,
+            "was_excluded_by_projection_bounds": False,
+            "repair_candidate_generated": bool((nearest_region_row or {}).get("detail_repair_iterations", 0) > 0),
+            "repair_candidate_rejected": bool(rejection_reason),
+            "repair_rejection_reason": rejection_reason,
+            "repair_exported": False,
+            "root_cause_category": root_cause_category,
+        })
+    with open(output_dir / "missed_blob_diagnostics.json", "w", encoding="utf-8") as handle:
+        json.dump(final_blob_diagnostics, handle, indent=2)
 
     coverage_report = {"pen_radius_px": int(pen_radius_px), **_painted_metrics(target_mask=target_mask, painted_mask=painted, allowed_mask=allowed_mask, px_per_mm=px_per_mm)}
     coverage_report.update({
@@ -1131,6 +1907,23 @@ def _generate_debug_artifacts(
     coverage_report["infill_beyond_outline_after_mm2"] = float(debug.get("infill_beyond_outline_after_mm2", 0.0))
     coverage_report["coverage_before_endpoint_clamp_percent"] = float(debug.get("coverage_report", {}).get("coverage_before_endpoint_clamp_percent", 0.0))
     coverage_report["coverage_after_endpoint_clamp_percent"] = float(debug.get("coverage_report", {}).get("coverage_after_endpoint_clamp_percent", 0.0))
+    coverage_report["missed_blob_debug_enabled"] = bool(debug.get("missed_blob_debug_enabled", True))
+    coverage_report["coverage_target"] = str(debug.get("coverage_validation_target", "selected_color_mask"))
+    coverage_report["repair_clipping"] = str(debug.get("repair_clipped_against", "selected_color_mask"))
+    coverage_report["fill_allowed_to_overlap_outline"] = bool(debug.get("fill_allowed_to_overlap_outline", True))
+    coverage_report["missed_blob_count_before_repair"] = int(debug.get("missed_blob_count_before_repair", 0))
+    coverage_report["missed_blob_count_after_repair"] = int(debug.get("missed_blob_count_after_repair", 0))
+    coverage_report["largest_missed_blob_area_mm2_before"] = float(debug.get("largest_missed_blob_area_mm2_before", 0.0))
+    coverage_report["largest_missed_blob_area_mm2_after"] = float(debug.get("largest_missed_blob_area_mm2_after", 0.0))
+    coverage_report["largest_missed_blob_equivalent_diameter_mm_before"] = float(debug.get("largest_missed_blob_equivalent_diameter_mm_before", 0.0))
+    coverage_report["largest_missed_blob_equivalent_diameter_mm_after"] = float(debug.get("largest_missed_blob_equivalent_diameter_mm_after", 0.0))
+    coverage_report["repair_candidates_generated"] = int(debug.get("repair_candidates_generated", 0))
+    coverage_report["repair_candidates_accepted"] = int(debug.get("repair_candidates_accepted", 0))
+    coverage_report["repair_candidates_rejected"] = int(debug.get("repair_candidates_rejected", 0))
+    coverage_report["top_repair_rejection_reasons"] = dict(debug.get("top_repair_rejection_reasons", {}))
+    coverage_report["repair_paths_exported"] = bool(debug.get("repair_paths_exported", False))
+    coverage_report["coverage_preview_gcode_consistent"] = bool(debug.get("coverage_preview_gcode_consistent", True))
+    coverage_report["root_cause_category"] = str(debug.get("root_cause_category", ""))
     with open(output_dir / "coverage_report.json", "w", encoding="utf-8") as handle:
         json.dump(coverage_report, handle, indent=2)
     with open(output_dir / "repair_candidates.json", "w", encoding="utf-8") as handle:
@@ -1172,6 +1965,23 @@ def _generate_debug_artifacts(
             "coverage_before_endpoint_clamp_percent": float(debug.get("coverage_report", {}).get("coverage_before_endpoint_clamp_percent", 0.0)),
             "coverage_after_endpoint_clamp_percent": float(debug.get("coverage_report", {}).get("coverage_after_endpoint_clamp_percent", 0.0)),
             "coverage_after_outline_percent": float(debug.get("coverage_after_outline_percent", coverage_report.get("coverage_percent", 0.0))),
+            "missed_blob_debug_enabled": bool(debug.get("missed_blob_debug_enabled", True)),
+            "coverage_target": str(debug.get("coverage_validation_target", "selected_color_mask")),
+            "repair_clipping": str(debug.get("repair_clipped_against", "selected_color_mask")),
+            "fill_allowed_to_overlap_outline": bool(debug.get("fill_allowed_to_overlap_outline", True)),
+            "missed_blob_count_before_repair": int(debug.get("missed_blob_count_before_repair", 0)),
+            "missed_blob_count_after_repair": int(debug.get("missed_blob_count_after_repair", 0)),
+            "largest_missed_blob_area_mm2_before": float(debug.get("largest_missed_blob_area_mm2_before", 0.0)),
+            "largest_missed_blob_area_mm2_after": float(debug.get("largest_missed_blob_area_mm2_after", 0.0)),
+            "largest_missed_blob_equivalent_diameter_mm_before": float(debug.get("largest_missed_blob_equivalent_diameter_mm_before", 0.0)),
+            "largest_missed_blob_equivalent_diameter_mm_after": float(debug.get("largest_missed_blob_equivalent_diameter_mm_after", 0.0)),
+            "repair_candidates_generated": int(debug.get("repair_candidates_generated", 0)),
+            "repair_candidates_accepted": int(debug.get("repair_candidates_accepted", 0)),
+            "repair_candidates_rejected": int(debug.get("repair_candidates_rejected", 0)),
+            "top_repair_rejection_reasons": dict(debug.get("top_repair_rejection_reasons", {})),
+            "repair_paths_exported": bool(debug.get("repair_paths_exported", False)),
+            "coverage_preview_gcode_consistent": bool(debug.get("coverage_preview_gcode_consistent", True)),
+            "root_cause_category": str(debug.get("root_cause_category", "")),
             "accepted_connectors": int(sum(1 for path in final_paths if path.kind == "fill-infill-travel")),
             "travel_optimization_mode": str(debug.get("travel_optimization_mode", "")),
             "optimizer_runs_on_final_export_paths": bool(debug.get("optimizer_runs_on_final_export_paths", False)),
@@ -1257,6 +2067,7 @@ def plan_coverage_first_toolpaths(
     target_mask, origin_x, origin_y, px_per_mm = _rasterize_geometry(printable_geometry, resolution_mm=resolution_mm, pad_mm=pad_mm)
     current_to_source = (px_per_mm, 0.0, 0.0, px_per_mm, -origin_x * px_per_mm, -origin_y * px_per_mm)
     allowed_mask = cv2.dilate(target_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(1, int(round((0.2 * px_per_mm) * 2)) + 1), max(1, int(round((0.2 * px_per_mm) * 2)) + 1))), iterations=1)
+    connector_validation = dict((getattr(bundle, "metadata", {}) or {}).get("connector_validation", {}) or {})
 
     component_count, labels, stats, _centroids = cv2.connectedComponentsWithStats((target_mask > 0).astype(np.uint8), connectivity=8)
     component_ids = [index for index in range(1, int(component_count)) if int(stats[index, cv2.CC_STAT_AREA]) > 0]
@@ -1275,6 +2086,60 @@ def plan_coverage_first_toolpaths(
     fill_uses_outline_clearance = False
     outline_overlap_allowed = True
     pen_radius_mm = float(line_width_mm) * 0.5
+    source_outline_paths = _boundary_paths_for_geometry(
+        printable_geometry,
+        simplify_tolerance_mm=simplify_tolerance_mm,
+        line_width_mm=line_width_mm,
+    )
+    source_printable_parts = _geometry_parts(printable_geometry)
+    detail_region_count = 0
+    detail_regions_classified_wide = 0
+    detail_regions_classified_thin = 0
+    detail_regions_serpentine_filled = 0
+    detail_regions_centerline_traced = 0
+    detail_classification_threshold_width_mm = max(1.0, line_width_mm * 1.65)
+    detail_classification_threshold_area_mm2 = 0.5
+    arsenal_detail_serpentine_paths_generated = 0
+    detail_region_total_area_mm2 = 0.0
+    detail_region_covered_area_mm2 = 0.0
+    classified_thin_component_ids: set[int] = set()
+    detail_region_rows: list[dict[str, Any]] = []
+    detail_repair_pass_enabled = False
+    required_detail_coverage_percent = 98.0
+    largest_allowed_missed_blob_equivalent_diameter_mm = 0.10
+    min_repair_blob_area_mm2 = 0.01
+    outside_region_overflow_tolerance_mm2 = 0.005
+    max_detail_repair_iterations_per_region = 30
+    detail_coverage_before_repair_percent = 0.0
+    detail_coverage_after_repair_percent = 0.0
+    detail_fillable_regions_total = 0
+    detail_fillable_regions_failing_before_repair = 0
+    detail_fillable_regions_failing_after_repair = 0
+    detail_repair_regions_processed = 0
+    detail_repair_strokes_added = 0
+    detail_repair_iterations_total = 0
+    detail_repair_new_coverage_mm2 = 0.0
+    detail_repair_remaining_missed_area_mm2 = 0.0
+    detail_repair_outside_overflow_mm2 = 0.0
+    detail_regions_still_below_90: list[dict[str, Any]] = []
+    detail_region_infos: list[dict[str, Any]] = []
+    local_coverage_validation_enabled = False
+    coverage_validation_target = "selected_color_mask"
+    repair_clipped_against = "selected_color_mask"
+    fill_allowed_to_overlap_outline = True
+    regions_total = 0
+    region_coverage_min_percent = 0.0
+    missed_blob_count_before_repair = 0
+    missed_blob_count_after_repair = 0
+    largest_missed_blob_area_mm2_before = 0.0
+    largest_missed_blob_area_mm2_after = 0.0
+    largest_missed_blob_equivalent_diameter_mm_after = 0.0
+    missed_blob_diagnostic_rows: list[dict[str, Any]] = []
+    repair_rejection_reason_counts: Counter[str] = Counter()
+    repair_candidates_generated = 0
+    repair_candidates_accepted = 0
+    repair_candidates_rejected = 0
+    legacy_preview_only_repair_kind_detected = False
 
     for component_id in component_ids:
         component_mask = (labels == component_id).astype(np.uint8)
@@ -1301,13 +2166,20 @@ def plan_coverage_first_toolpaths(
         component_endpoint_limit = component_geometry.union(component_outline_footprint) if component_geometry is not None and not getattr(component_geometry, "is_empty", True) else component_outline_footprint
         if thin_region and thin_detail_mode:
             detail_style = "single_stroke_detail" if width_mm <= line_width_mm * 1.35 else "contour_following"
-            thin_paths, thin_stats = _skeleton_paths_for_component(
+            fallback_spacing = max(0.0, line_width_mm * (1.0 - float(infill_overlap_percent) / 100.0))
+            detail_fill_spacing_mm = min(max(0.25, infill_spacing_mm if infill_spacing_mm > 0 else fallback_spacing), max(0.35, line_width_mm))
+            thin_paths, thin_stats = _thin_detail_fill_paths_for_component(
                 component_mask,
+                component_geometry=component_geometry,
+                component_endpoint_limit=component_endpoint_limit,
                 origin_x=origin_x,
                 origin_y=origin_y,
                 px_per_mm=px_per_mm,
                 component_id=component_id,
                 line_width_mm=line_width_mm,
+                simplify_tolerance_mm=simplify_tolerance_mm,
+                detail_fill_spacing_mm=detail_fill_spacing_mm,
+                angle_deg=angle_deg if math.isfinite(angle_deg) else infill_angle_deg,
                 small_detail_fill_style=detail_style,
             )
             skeleton_paths.extend(thin_paths)
@@ -1320,6 +2192,14 @@ def plan_coverage_first_toolpaths(
                 "estimated_width_mm": float(width_mm),
                 "skeleton_segment_count": int(thin_stats.get("skeleton_segment_count", 0)),
                 "path_count": len(thin_paths),
+                "thin_detail_initial_coverage_percent": float(thin_stats.get("thin_detail_initial_coverage_percent", 0.0)),
+                "thin_detail_final_coverage_percent": float(thin_stats.get("thin_detail_final_coverage_percent", 0.0)),
+                "thin_detail_initial_largest_missed_blob_mm": float(thin_stats.get("thin_detail_initial_largest_missed_blob_mm", 0.0)),
+                "thin_detail_final_largest_missed_blob_mm": float(thin_stats.get("thin_detail_final_largest_missed_blob_mm", 0.0)),
+                "thin_detail_supplemental_paths_added": int(thin_stats.get("thin_detail_supplemental_paths_added", 0)),
+                "thin_detail_repair_paths_added": int(thin_stats.get("thin_detail_repair_paths_added", 0)),
+                "thin_detail_repair_iterations": int(thin_stats.get("thin_detail_repair_iterations", 0)),
+                "thin_detail_has_holes": bool(thin_stats.get("thin_detail_has_holes", False)),
             })
         else:
             fill_geometry = component_geometry
@@ -1384,6 +2264,612 @@ def plan_coverage_first_toolpaths(
             all_paths = boundary + all_paths
             pre_endpoint_clamp_paths = [_clone_toolpath(path) for path in boundary] + pre_endpoint_clamp_paths
 
+    use_source_geometry_outlines = len(component_ids) < len(source_printable_parts)
+    if use_source_geometry_outlines:
+        existing_fill_area = _paths_footprint_union(
+            [path for path in all_paths if path.kind == "fill-infill"],
+            pen_radius_mm=pen_radius_mm,
+        )
+        fallback_spacing = max(0.0, line_width_mm * (1.0 - float(infill_overlap_percent) / 100.0))
+        detail_fill_spacing_mm = min(max(0.25, infill_spacing_mm if infill_spacing_mm > 0 else fallback_spacing), max(0.35, line_width_mm))
+        for component_id, component_geometry in enumerate(source_printable_parts, start=1):
+            if component_geometry is None or getattr(component_geometry, "is_empty", True):
+                continue
+            component_area_mm2 = float(component_geometry.area)
+            if component_area_mm2 <= 1e-9:
+                continue
+            detail_region_count += 1
+            detail_region_total_area_mm2 += component_area_mm2
+            component_mask, comp_origin_x, comp_origin_y, comp_px_per_mm = _rasterize_geometry(
+                component_geometry,
+                resolution_mm=resolution_mm,
+                pad_mm=max(0.25, line_width_mm),
+            )
+            dt = cv2.distanceTransform((component_mask > 0).astype(np.uint8), cv2.DIST_L2, 3)
+            dt_positive = dt[dt > 0]
+            max_width_mm = float(np.max(dt_positive) * 2.0 / max(1e-9, comp_px_per_mm)) if dt_positive.size else 0.0
+            median_width_mm = float(np.median(dt_positive) * 2.0 / max(1e-9, comp_px_per_mm)) if dt_positive.size else 0.0
+            equivalent_diameter_mm = _equivalent_diameter_mm(component_area_mm2)
+            region_angle_deg = _component_fill_angle(component_mask)
+            has_holes = bool(any(len(poly.interiors) > 0 for poly in _geometry_parts(component_geometry)))
+            hole_driven_detail_fill = bool(
+                has_holes
+                and component_area_mm2 >= max(line_width_mm * line_width_mm * 4.0, 1.0)
+                and (
+                    max_width_mm >= (line_width_mm * 1.45)
+                    or median_width_mm >= (line_width_mm * 0.55)
+                    or equivalent_diameter_mm >= (line_width_mm * 3.5)
+                )
+            )
+            detail_region_infos.append({
+                "component_id": int(component_id),
+                "geometry": component_geometry,
+                "mask": component_mask,
+                "origin_x": float(comp_origin_x),
+                "origin_y": float(comp_origin_y),
+                "px_per_mm": float(comp_px_per_mm),
+                "area_mm2": float(component_area_mm2),
+                "max_width_mm": float(max_width_mm),
+                "median_width_mm": float(median_width_mm),
+                "equivalent_diameter_mm": float(equivalent_diameter_mm),
+                "angle_deg": float(region_angle_deg),
+                "has_holes": bool(has_holes),
+                "hole_driven_detail_fill": bool(hole_driven_detail_fill),
+            })
+            is_wide_detail_region = bool(
+                max_width_mm >= (line_width_mm * 2.0)
+                or median_width_mm >= (line_width_mm * 1.4)
+                or (max_width_mm >= detail_classification_threshold_width_mm and component_area_mm2 >= detail_classification_threshold_area_mm2)
+                or hole_driven_detail_fill
+            )
+
+            covered_area_before_mm2 = 0.0
+            if existing_fill_area is not None and not getattr(existing_fill_area, "is_empty", True):
+                try:
+                    covered_area_before_mm2 = float(component_geometry.intersection(existing_fill_area).area)
+                except Exception:
+                    covered_area_before_mm2 = float(component_geometry.buffer(0).intersection(existing_fill_area.buffer(0)).area)
+            coverage_ratio_before = covered_area_before_mm2 / max(component_area_mm2, 1e-9)
+
+            if not is_wide_detail_region:
+                detail_regions_classified_thin += 1
+                classified_thin_component_ids.add(component_id)
+                continue
+
+            detail_regions_classified_wide += 1
+            if coverage_ratio_before >= 0.90:
+                detail_region_covered_area_mm2 += covered_area_before_mm2
+                continue
+
+            fill_paths, fill_stats = _scanline_fill_paths(
+                component_geometry,
+                angle_deg=region_angle_deg if math.isfinite(region_angle_deg) else infill_angle_deg,
+                spacing_mm=detail_fill_spacing_mm,
+                line_width_mm=line_width_mm,
+                origin_x=comp_origin_x,
+                origin_y=comp_origin_y,
+                px_per_mm=comp_px_per_mm,
+                component_id=component_id,
+                allow_connectors=allow_pen_down_infill_connectors,
+                max_overflow_mm=0.05,
+                fill_mode_label="detail_serpentine_fill",
+            )
+            component_boundary_paths = _boundary_paths_for_geometry(
+                component_geometry,
+                simplify_tolerance_mm=simplify_tolerance_mm,
+                line_width_mm=line_width_mm,
+            )
+            component_outline_footprint = _paths_footprint_union(component_boundary_paths, pen_radius_mm=pen_radius_mm)
+            component_endpoint_limit = component_geometry.union(component_outline_footprint) if component_outline_footprint is not None and not getattr(component_outline_footprint, "is_empty", True) else component_geometry
+            unclamped_fill_paths = [_clone_toolpath(path) for path in fill_paths]
+            fill_paths, endpoint_clamp_stats = _clamp_infill_endpoints_to_outline_limit(
+                fill_paths,
+                allowed_geom=component_endpoint_limit,
+                pen_radius_mm=pen_radius_mm,
+                max_retract_mm=pen_radius_mm,
+                precision_mm=0.02,
+            )
+            if not fill_paths:
+                detail_regions_classified_thin += 1
+                classified_thin_component_ids.add(component_id)
+                detail_regions_classified_wide = max(0, detail_regions_classified_wide - 1)
+                continue
+            for path in fill_paths:
+                path.source = "detail_serpentine_fill"
+                path.kind = "fill-infill"
+                path.metadata = {
+                    **(path.metadata or {}),
+                    "fill_mode": "detail_serpentine_fill",
+                    "fill_strategy": "DETAIL_SERPENTINE_FILL",
+                    "source_region_id": f"detail_region_{component_id:03d}",
+                    "detail_region_component_id": int(component_id),
+                    "detail_region_classification": "wide",
+                    "detail_region_max_width_mm": float(max_width_mm),
+                    "detail_region_median_width_mm": float(median_width_mm),
+                    "detail_region_area_mm2": float(component_area_mm2),
+                    "detail_region_has_holes": bool(has_holes),
+                    "detail_region_hole_driven_fill": bool(hole_driven_detail_fill),
+                }
+            all_paths.extend(fill_paths)
+            pre_endpoint_clamp_paths.extend(unclamped_fill_paths)
+            detail_regions_serpentine_filled += 1
+            arsenal_detail_serpentine_paths_generated += len(fill_paths)
+            component_debug.append({
+                "component_id": int(component_id),
+                "mode": "detail-wide",
+                "area_px": int(np.count_nonzero(component_mask > 0)),
+                "estimated_width_mm": float(max_width_mm),
+                "median_width_mm": float(median_width_mm),
+                "segment_count": int(fill_stats.get("segment_count", 0)),
+                "row_count": int(fill_stats.get("row_count", 0)),
+                "path_count": len(fill_paths),
+                "endpoint_extension_mm": float(fill_stats.get("endpoint_extension_mm", line_width_mm * 0.5)),
+                "endpoint_extensions_added": int(fill_stats.get("endpoint_extensions_added", 0)),
+                "endpoint_extensions_clipped": int(fill_stats.get("endpoint_extensions_clipped", 0)),
+                "endpoint_clamp_mode": str(endpoint_clamp_stats.get("endpoint_clamp_mode", "postprocess_only")),
+                "endpoints_checked": int(endpoint_clamp_stats.get("endpoints_checked", 0)),
+                "endpoints_clamped": int(endpoint_clamp_stats.get("endpoints_clamped", 0)),
+                "max_endpoint_retract_mm": float(endpoint_clamp_stats.get("max_endpoint_retract_mm", 0.0)),
+                "infill_beyond_outline_before_mm2": float(_infill_beyond_outline_area_mm2(unclamped_fill_paths, allowed_geom=component_endpoint_limit, pen_radius_mm=pen_radius_mm)),
+                "infill_beyond_outline_after_mm2": float(_infill_beyond_outline_area_mm2(fill_paths, allowed_geom=component_endpoint_limit, pen_radius_mm=pen_radius_mm)),
+                "detail_region_augmented": True,
+                "has_holes": bool(has_holes),
+                "hole_driven_detail_fill": bool(hole_driven_detail_fill),
+            })
+            existing_fill_area = _paths_footprint_union(
+                [path for path in all_paths if path.kind == "fill-infill"],
+                pen_radius_mm=pen_radius_mm,
+            )
+            covered_area_after_mm2 = 0.0
+            if existing_fill_area is not None and not getattr(existing_fill_area, "is_empty", True):
+                try:
+                    covered_area_after_mm2 = float(component_geometry.intersection(existing_fill_area).area)
+                except Exception:
+                    covered_area_after_mm2 = float(component_geometry.buffer(0).intersection(existing_fill_area.buffer(0)).area)
+            detail_region_covered_area_mm2 += max(covered_area_before_mm2, covered_area_after_mm2)
+
+        detail_repair_pass_enabled = bool(detail_region_infos)
+        if detail_repair_pass_enabled:
+            local_coverage_validation_enabled = True
+            total_fillable_area_mm2 = 0.0
+            total_covered_before_mm2 = 0.0
+            total_covered_after_mm2 = 0.0
+            pen_radius_px_by_region: dict[int, int] = {}
+
+            for info in detail_region_infos:
+                region_component_id = int(info["component_id"])
+                region_mask = np.asarray(info["mask"]) > 0
+                region_px_per_mm = float(info["px_per_mm"])
+                region_pen_radius_px = max(1, int(round(pen_radius_mm * region_px_per_mm)))
+                pen_radius_px_by_region[region_component_id] = region_pen_radius_px
+                region_geometry = info["geometry"]
+                region_outline_paths = _boundary_paths_for_geometry(
+                    region_geometry,
+                    simplify_tolerance_mm=simplify_tolerance_mm,
+                    line_width_mm=line_width_mm,
+                )
+                region_current_to_source = (
+                    region_px_per_mm,
+                    0.0,
+                    0.0,
+                    region_px_per_mm,
+                    -float(info["origin_x"]) * region_px_per_mm,
+                    -float(info["origin_y"]) * region_px_per_mm,
+                )
+                painted_before = _path_points_to_mask(
+                    [*_detail_coverage_paths(all_paths), *region_outline_paths],
+                    shape=region_mask.shape,
+                    current_to_source_matrix=region_current_to_source,
+                    pen_radius_px=region_pen_radius_px,
+                )
+                metrics_before_region = _painted_metrics(
+                    target_mask=region_mask,
+                    painted_mask=painted_before,
+                    allowed_mask=region_mask,
+                    px_per_mm=region_px_per_mm,
+                )
+                blob_rows_before = _connected_mask_blob_rows(
+                    ((region_mask > 0) & ~(painted_before > 0)).astype(np.uint8),
+                    px_per_mm=region_px_per_mm,
+                    min_blob_area_mm2=min_repair_blob_area_mm2,
+                )
+                blob_summary_before = _blob_summary(blob_rows_before)
+                visible_blob_count_before = sum(
+                    1 for blob in blob_rows_before
+                    if _equivalent_diameter_mm(float(blob.get("area_mm2", 0.0))) > largest_allowed_missed_blob_equivalent_diameter_mm
+                )
+                coverage_before_percent = float(metrics_before_region["coverage_percent"])
+                area_mm2 = float(info["area_mm2"])
+                max_width_mm = float(info["max_width_mm"])
+                equivalent_diameter_mm = float(info["equivalent_diameter_mm"])
+                fillable_region = bool(
+                    max_width_mm >= line_width_mm
+                    or equivalent_diameter_mm >= line_width_mm
+                )
+                row: dict[str, Any] = {
+                    "region_id": f"detail_region_{region_component_id:03d}",
+                    "component_id": int(region_component_id),
+                    "area_mm2": float(area_mm2),
+                    "max_width_mm": float(max_width_mm),
+                    "median_width_mm": float(info["median_width_mm"]),
+                    "equivalent_diameter_mm": float(equivalent_diameter_mm),
+                    "strategy_used": [],
+                    "coverage_before_percent": float(coverage_before_percent),
+                    "coverage_after_percent": float(coverage_before_percent),
+                    "coverage_percent": float(coverage_before_percent),
+                    "missed_area_before_mm2": float(metrics_before_region["missed_area_mm2"]),
+                    "missed_area_after_mm2": float(metrics_before_region["missed_area_mm2"]),
+                    "missed_area_mm2": float(metrics_before_region["missed_area_mm2"]),
+                    "missed_blob_count": int(visible_blob_count_before),
+                    "missed_blob_count_before_repair": int(visible_blob_count_before),
+                    "missed_blob_count_after_repair": int(visible_blob_count_before),
+                    "largest_missed_blob_mm2": float(blob_summary_before["largest_missed_blob_area_mm2"]),
+                    "largest_missed_blob_area_mm2_before": float(blob_summary_before["largest_missed_blob_area_mm2"]),
+                    "largest_missed_blob_area_mm2_after": float(blob_summary_before["largest_missed_blob_area_mm2"]),
+                    "largest_missed_blob_diameter_before_mm": float(blob_summary_before["largest_missed_blob_equivalent_diameter_mm"]),
+                    "largest_missed_blob_diameter_after_mm": float(blob_summary_before["largest_missed_blob_equivalent_diameter_mm"]),
+                    "fillable": bool(fillable_region),
+                    "failure_reason_if_still_below_90": "",
+                    "repair_strokes_added": 0,
+                    "detail_repair_iterations": 0,
+                }
+                detail_region_rows.append(row)
+                regions_total += 1
+                missed_blob_count_before_repair += int(visible_blob_count_before)
+                largest_missed_blob_area_mm2_before = max(largest_missed_blob_area_mm2_before, float(blob_summary_before["largest_missed_blob_area_mm2"]))
+                if not fillable_region:
+                    row["failure_reason_if_still_below_90"] = "non_fillable_below_pen_diameter"
+                    continue
+                detail_fillable_regions_total += 1
+                total_fillable_area_mm2 += area_mm2
+                total_covered_before_mm2 += float(metrics_before_region["painted_inside_area_mm2"])
+                total_covered_after_mm2 += float(metrics_before_region["painted_inside_area_mm2"])
+                if (
+                    coverage_before_percent < required_detail_coverage_percent
+                    or float(blob_summary_before["largest_missed_blob_equivalent_diameter_mm"]) > largest_allowed_missed_blob_equivalent_diameter_mm
+                ):
+                    detail_fillable_regions_failing_before_repair += 1
+
+            if total_fillable_area_mm2 > 0.0:
+                detail_coverage_before_repair_percent = 100.0 * total_covered_before_mm2 / total_fillable_area_mm2
+                detail_coverage_after_repair_percent = detail_coverage_before_repair_percent
+
+            for info, row in zip(detail_region_infos, detail_region_rows):
+                if not row.get("fillable", False):
+                    continue
+                region_component_id = int(info["component_id"])
+                region_mask = np.asarray(info["mask"]) > 0
+                region_px_per_mm = float(info["px_per_mm"])
+                region_geometry = info["geometry"]
+                region_outline_paths = _boundary_paths_for_geometry(
+                    region_geometry,
+                    simplify_tolerance_mm=simplify_tolerance_mm,
+                    line_width_mm=line_width_mm,
+                )
+                region_outline_footprint = _paths_footprint_union(region_outline_paths, pen_radius_mm=pen_radius_mm)
+                region_allowed_geom = (
+                    region_geometry.union(region_outline_footprint)
+                    if region_outline_footprint is not None and not getattr(region_outline_footprint, "is_empty", True)
+                    else region_geometry
+                )
+                region_pen_radius_px = pen_radius_px_by_region[region_component_id]
+                region_current_to_source = (
+                    region_px_per_mm,
+                    0.0,
+                    0.0,
+                    region_px_per_mm,
+                    -float(info["origin_x"]) * region_px_per_mm,
+                    -float(info["origin_y"]) * region_px_per_mm,
+                )
+                current_detail_paths = [*_detail_coverage_paths(all_paths), *region_outline_paths]
+                current_painted = _path_points_to_mask(
+                    current_detail_paths,
+                    shape=region_mask.shape,
+                    current_to_source_matrix=region_current_to_source,
+                    pen_radius_px=region_pen_radius_px,
+                )
+                current_metrics = _painted_metrics(
+                    target_mask=region_mask,
+                    painted_mask=current_painted,
+                    allowed_mask=region_mask,
+                    px_per_mm=region_px_per_mm,
+                )
+                current_blob_rows = _connected_mask_blob_rows(
+                    ((region_mask > 0) & ~(current_painted > 0)).astype(np.uint8),
+                    px_per_mm=region_px_per_mm,
+                    min_blob_area_mm2=min_repair_blob_area_mm2,
+                )
+                current_blob_summary = _blob_summary(current_blob_rows)
+                if (
+                    float(current_metrics["coverage_percent"]) >= required_detail_coverage_percent
+                    and float(current_blob_summary["largest_missed_blob_equivalent_diameter_mm"]) <= largest_allowed_missed_blob_equivalent_diameter_mm
+                ):
+                    row["coverage_after_percent"] = float(current_metrics["coverage_percent"])
+                    row["coverage_percent"] = float(current_metrics["coverage_percent"])
+                    row["missed_area_after_mm2"] = float(current_metrics["missed_area_mm2"])
+                    row["missed_area_mm2"] = float(current_metrics["missed_area_mm2"])
+                    row["missed_blob_count_after_repair"] = int(sum(
+                        1 for blob in current_blob_rows
+                        if _equivalent_diameter_mm(float(blob.get("area_mm2", 0.0))) > largest_allowed_missed_blob_equivalent_diameter_mm
+                    ))
+                    row["largest_missed_blob_area_mm2_after"] = float(current_blob_summary["largest_missed_blob_area_mm2"])
+                    row["largest_missed_blob_diameter_after_mm"] = float(current_blob_summary["largest_missed_blob_equivalent_diameter_mm"])
+                    continue
+
+                detail_repair_regions_processed += 1
+                region_strategy_used: list[str] = []
+                no_improvement_reason = "no_valid_repair_candidate"
+                previous_covered_mm2 = float(current_metrics["painted_inside_area_mm2"])
+
+                for _iteration in range(max_detail_repair_iterations_per_region):
+                    detail_repair_iterations_total += 1
+                    row["detail_repair_iterations"] = int(row.get("detail_repair_iterations", 0)) + 1
+                    missed_mask_region = ((region_mask > 0) & ~(current_painted > 0)).astype(np.uint8)
+                    blob_rows = _connected_mask_blob_rows(
+                        missed_mask_region,
+                        px_per_mm=region_px_per_mm,
+                        min_blob_area_mm2=min_repair_blob_area_mm2,
+                    )
+                    if not blob_rows:
+                        no_improvement_reason = "only_subminimum_missed_blobs_remain"
+                        break
+
+                    best_choice: dict[str, Any] | None = None
+                    for blob_row in blob_rows:
+                        blob_id = int(blob_row.get("blob_id", 0))
+                        blob_mask = np.asarray(blob_row["mask"], dtype=np.uint8)
+                        blob_geometry = _component_mask_to_geometry(
+                            blob_mask * 255,
+                            origin_x=float(info["origin_x"]),
+                            origin_y=float(info["origin_y"]),
+                            px_per_mm=region_px_per_mm,
+                        )
+                        candidate_groups = defaultdict(list)
+                        for strategy_key, candidate in _detail_repair_candidates_for_blob(
+                            blob_mask,
+                            blob_geometry=blob_geometry,
+                            origin_x=float(info["origin_x"]),
+                            origin_y=float(info["origin_y"]),
+                            px_per_mm=region_px_per_mm,
+                            line_width_mm=line_width_mm,
+                            simplify_tolerance_mm=simplify_tolerance_mm,
+                            detail_fill_spacing_mm=detail_fill_spacing_mm,
+                            region_component_id=region_component_id,
+                            region_area_mm2=float(info["area_mm2"]),
+                            region_max_width_mm=float(info["max_width_mm"]),
+                            region_equivalent_diameter_mm=float(info["equivalent_diameter_mm"]),
+                            main_angle_deg=float(info["angle_deg"]),
+                        ):
+                            repair_candidates_generated += 1
+                            candidate_groups[strategy_key].append(candidate)
+
+                        for strategy_key in [
+                            "serpentine",
+                            "contour_offset",
+                            "parallel_stroke",
+                            "perpendicular_stroke",
+                            "centerline_fallback",
+                        ]:
+                            strategy_candidates = candidate_groups.get(strategy_key, [])
+                            if not strategy_candidates:
+                                continue
+                            valid_rows: list[dict[str, Any]] = []
+                            for candidate in strategy_candidates:
+                                candidate_mask = _path_points_to_mask(
+                                    [candidate],
+                                    shape=region_mask.shape,
+                                    current_to_source_matrix=region_current_to_source,
+                                    pen_radius_px=region_pen_radius_px,
+                                )
+                                trial_painted = np.maximum(current_painted, candidate_mask)
+                                trial_metrics = _painted_metrics(
+                                    target_mask=region_mask,
+                                    painted_mask=trial_painted,
+                                    allowed_mask=region_mask,
+                                    px_per_mm=region_px_per_mm,
+                                )
+                                candidate_footprint = _paths_footprint_union([candidate], pen_radius_mm=pen_radius_mm)
+                                newly_covered_target_area_mm2 = max(
+                                    0.0,
+                                    float(trial_metrics["painted_inside_area_mm2"]) - float(current_metrics["painted_inside_area_mm2"]),
+                                )
+                                outside_region_overflow_mm2 = (
+                                    float(candidate_footprint.difference(region_allowed_geom).area)
+                                    if candidate_footprint is not None and not getattr(candidate_footprint, "is_empty", True)
+                                    else 0.0
+                                )
+                                candidate_inside_px = int(np.count_nonzero((candidate_mask > 0) & region_mask))
+                                already_covered_px = int(np.count_nonzero((candidate_mask > 0) & (current_painted > 0) & region_mask))
+                                already_covered_ratio = float(already_covered_px / max(1, candidate_inside_px))
+                                rejection_reason = ""
+                                if newly_covered_target_area_mm2 <= 0.005:
+                                    rejection_reason = "new_coverage_below_threshold"
+                                    repair_candidates_rejected += 1
+                                    repair_rejection_reason_counts[rejection_reason] += 1
+                                    continue
+                                if outside_region_overflow_mm2 > outside_region_overflow_tolerance_mm2:
+                                    rejection_reason = "outside_selected_mask_overflow"
+                                    repair_candidates_rejected += 1
+                                    repair_rejection_reason_counts[rejection_reason] += 1
+                                    continue
+                                if already_covered_ratio > 0.95 and newly_covered_target_area_mm2 < 0.01:
+                                    rejection_reason = "already_covered_ratio_too_high"
+                                    repair_candidates_rejected += 1
+                                    repair_rejection_reason_counts[rejection_reason] += 1
+                                    continue
+                                valid_rows.append({
+                                    "blob_id": int(blob_id),
+                                    "strategy_key": strategy_key,
+                                    "candidate": candidate,
+                                    "newly_covered_target_area_mm2": float(newly_covered_target_area_mm2),
+                                    "outside_region_overflow_mm2": float(outside_region_overflow_mm2),
+                                    "already_covered_ratio": float(already_covered_ratio),
+                                    "trial_painted": trial_painted,
+                                    "trial_metrics": trial_metrics,
+                                    "candidate_length_mm": float(pipeline_core.segment_length(candidate.points)),
+                                })
+                            if valid_rows:
+                                valid_rows.sort(
+                                    key=lambda item: (
+                                        float(item["newly_covered_target_area_mm2"]),
+                                        -float(item["outside_region_overflow_mm2"]),
+                                        -float(item["candidate_length_mm"]),
+                                    ),
+                                    reverse=True,
+                                )
+                                top_row = valid_rows[0]
+                                if best_choice is None or float(top_row["newly_covered_target_area_mm2"]) > float(best_choice["newly_covered_target_area_mm2"]):
+                                    best_choice = top_row
+                                break
+
+                    if best_choice is None:
+                        no_improvement_reason = "no_valid_repair_candidate"
+                        break
+
+                    legacy_preview_only_repair_kind_detected = legacy_preview_only_repair_kind_detected or str(best_choice["candidate"].kind) in {"coverage_centerline", "coverage_offset_line", "coverage_rectilinear", "coverage_contour"}
+                    best_candidate = _export_repair_toolpath(
+                        best_choice["candidate"],
+                        strategy_key=str(best_choice["strategy_key"]),
+                        blob_id=int(best_choice.get("blob_id", 0)) or None,
+                    )
+                    all_paths.append(best_candidate)
+                    pre_endpoint_clamp_paths.append(_clone_toolpath(best_candidate))
+                    accepted_repairs.append(best_candidate)
+                    repair_candidates_accepted += 1
+                    detail_repair_strokes_added += 1
+                    row["repair_strokes_added"] = int(row.get("repair_strokes_added", 0)) + 1
+                    region_strategy_used.append(str(best_choice["strategy_key"]))
+                    current_painted = np.asarray(best_choice["trial_painted"])
+                    current_metrics = dict(best_choice["trial_metrics"])
+                    detail_repair_new_coverage_mm2 += float(best_choice["newly_covered_target_area_mm2"])
+                    detail_repair_outside_overflow_mm2 = max(
+                        float(detail_repair_outside_overflow_mm2),
+                        float(best_choice["outside_region_overflow_mm2"]),
+                    )
+                    current_blob_rows = _connected_mask_blob_rows(
+                        ((region_mask > 0) & ~(current_painted > 0)).astype(np.uint8),
+                        px_per_mm=region_px_per_mm,
+                        min_blob_area_mm2=min_repair_blob_area_mm2,
+                    )
+                    current_blob_summary = _blob_summary(current_blob_rows)
+                    if (
+                        float(current_metrics["coverage_percent"]) >= required_detail_coverage_percent
+                        and float(current_blob_summary["largest_missed_blob_equivalent_diameter_mm"]) <= largest_allowed_missed_blob_equivalent_diameter_mm
+                    ):
+                        no_improvement_reason = ""
+                        break
+                    if float(current_metrics["painted_inside_area_mm2"]) <= previous_covered_mm2 + 1e-9:
+                        no_improvement_reason = "no_improvement_from_repair_candidates"
+                        break
+                    previous_covered_mm2 = float(current_metrics["painted_inside_area_mm2"])
+
+                row["strategy_used"] = region_strategy_used
+                row["coverage_after_percent"] = float(current_metrics["coverage_percent"])
+                row["coverage_percent"] = float(current_metrics["coverage_percent"])
+                row["missed_area_after_mm2"] = float(current_metrics["missed_area_mm2"])
+                row["missed_area_mm2"] = float(current_metrics["missed_area_mm2"])
+                blob_rows_after = _connected_mask_blob_rows(
+                    ((region_mask > 0) & ~(current_painted > 0)).astype(np.uint8),
+                    px_per_mm=region_px_per_mm,
+                    min_blob_area_mm2=min_repair_blob_area_mm2,
+                )
+                blob_summary_after = _blob_summary(blob_rows_after)
+                visible_blob_count_after = sum(
+                    1 for blob in blob_rows_after
+                    if _equivalent_diameter_mm(float(blob.get("area_mm2", 0.0))) > largest_allowed_missed_blob_equivalent_diameter_mm
+                )
+                row["missed_blob_count"] = int(visible_blob_count_after)
+                row["missed_blob_count_after_repair"] = int(visible_blob_count_after)
+                row["largest_missed_blob_mm2"] = float(blob_summary_after["largest_missed_blob_area_mm2"])
+                row["largest_missed_blob_area_mm2_after"] = float(blob_summary_after["largest_missed_blob_area_mm2"])
+                row["largest_missed_blob_diameter_after_mm"] = float(blob_summary_after["largest_missed_blob_equivalent_diameter_mm"])
+                if (
+                    float(current_metrics["coverage_percent"]) < required_detail_coverage_percent
+                    or float(blob_summary_after["largest_missed_blob_equivalent_diameter_mm"]) > largest_allowed_missed_blob_equivalent_diameter_mm
+                ):
+                    if row["detail_repair_iterations"] >= max_detail_repair_iterations_per_region and not no_improvement_reason:
+                        no_improvement_reason = "max_iterations_reached"
+                    row["failure_reason_if_still_below_90"] = no_improvement_reason or "coverage_below_threshold_after_repair"
+
+            total_covered_after_mm2 = 0.0
+            detail_fillable_regions_failing_after_repair = 0
+            detail_repair_remaining_missed_area_mm2 = 0.0
+            detail_regions_still_below_90 = []
+            missed_blob_count_after_repair = 0
+            largest_missed_blob_area_mm2_after = 0.0
+            largest_missed_blob_equivalent_diameter_mm_after = 0.0
+            for info, row in zip(detail_region_infos, detail_region_rows):
+                if not row.get("fillable", False):
+                    continue
+                region_component_id = int(info["component_id"])
+                region_mask = np.asarray(info["mask"]) > 0
+                region_px_per_mm = float(info["px_per_mm"])
+                region_geometry = info["geometry"]
+                region_outline_paths = _boundary_paths_for_geometry(
+                    region_geometry,
+                    simplify_tolerance_mm=simplify_tolerance_mm,
+                    line_width_mm=line_width_mm,
+                )
+                region_current_to_source = (
+                    region_px_per_mm,
+                    0.0,
+                    0.0,
+                    region_px_per_mm,
+                    -float(info["origin_x"]) * region_px_per_mm,
+                    -float(info["origin_y"]) * region_px_per_mm,
+                )
+                final_painted = _path_points_to_mask(
+                    [*_detail_coverage_paths(all_paths), *region_outline_paths],
+                    shape=region_mask.shape,
+                    current_to_source_matrix=region_current_to_source,
+                    pen_radius_px=pen_radius_px_by_region[region_component_id],
+                )
+                final_metrics = _painted_metrics(
+                    target_mask=region_mask,
+                    painted_mask=final_painted,
+                    allowed_mask=region_mask,
+                    px_per_mm=region_px_per_mm,
+                )
+                row["coverage_after_percent"] = float(final_metrics["coverage_percent"])
+                row["coverage_percent"] = float(final_metrics["coverage_percent"])
+                row["missed_area_after_mm2"] = float(final_metrics["missed_area_mm2"])
+                row["missed_area_mm2"] = float(final_metrics["missed_area_mm2"])
+                final_blob_rows = _connected_mask_blob_rows(
+                    ((region_mask > 0) & ~(final_painted > 0)).astype(np.uint8),
+                    px_per_mm=region_px_per_mm,
+                    min_blob_area_mm2=min_repair_blob_area_mm2,
+                )
+                final_blob_summary = _blob_summary(final_blob_rows)
+                row["missed_blob_count_after_repair"] = int(final_blob_summary["missed_blob_count"])
+                row["largest_missed_blob_area_mm2_after"] = float(final_blob_summary["largest_missed_blob_area_mm2"])
+                row["largest_missed_blob_diameter_after_mm"] = float(final_blob_summary["largest_missed_blob_equivalent_diameter_mm"])
+                total_covered_after_mm2 += float(final_metrics["painted_inside_area_mm2"])
+                detail_repair_remaining_missed_area_mm2 += float(final_metrics["missed_area_mm2"])
+                missed_blob_count_after_repair += int(sum(
+                    1 for blob in final_blob_rows
+                    if _equivalent_diameter_mm(float(blob.get("area_mm2", 0.0))) > largest_allowed_missed_blob_equivalent_diameter_mm
+                ))
+                largest_missed_blob_area_mm2_after = max(largest_missed_blob_area_mm2_after, float(final_blob_summary["largest_missed_blob_area_mm2"]))
+                largest_missed_blob_equivalent_diameter_mm_after = max(largest_missed_blob_equivalent_diameter_mm_after, float(final_blob_summary["largest_missed_blob_equivalent_diameter_mm"]))
+                if (
+                    float(final_metrics["coverage_percent"]) < required_detail_coverage_percent
+                    or float(final_blob_summary["largest_missed_blob_equivalent_diameter_mm"]) > largest_allowed_missed_blob_equivalent_diameter_mm
+                ):
+                    detail_fillable_regions_failing_after_repair += 1
+                    detail_regions_still_below_90.append({
+                        "region_id": row["region_id"],
+                        "coverage_after_percent": float(final_metrics["coverage_percent"]),
+                        "missed_area_after_mm2": float(final_metrics["missed_area_mm2"]),
+                        "largest_missed_blob_equivalent_diameter_mm": float(final_blob_summary["largest_missed_blob_equivalent_diameter_mm"]),
+                        "failure_reason": row.get("failure_reason_if_still_below_90", "") or "coverage_below_threshold_after_repair",
+                    })
+
+            if total_fillable_area_mm2 > 0.0:
+                detail_coverage_after_repair_percent = 100.0 * total_covered_after_mm2 / total_fillable_area_mm2
+                detail_region_total_area_mm2 = total_fillable_area_mm2
+                detail_region_covered_area_mm2 = total_covered_after_mm2
+                region_coverage_min_percent = min((float(row.get("coverage_after_percent", 100.0)) for row in detail_region_rows if bool(row.get("fillable", False))), default=100.0)
+
     detail_clip_region = None
     if enable_fill and printable_geometry is not None and not getattr(printable_geometry, "is_empty", True):
         detail_clip_region = printable_geometry.buffer(-(line_width_mm * 0.5), join_style=1)
@@ -1436,11 +2922,88 @@ def plan_coverage_first_toolpaths(
         "outline_geometry_changed": False,
         "detail_dropped_path_records": [],
     }
+    printable_components: list[Any] = []
+    use_source_geometry_outlines = len(component_ids) < len(source_printable_parts)
     if detail_paths:
+        outline_paths_for_detail = source_outline_paths if use_source_geometry_outlines else [path for path in all_paths if path.kind == "outline"]
         existing_painted_area = _paths_footprint_union(
-            [path for path in all_paths if path.kind in {"fill-infill", "outline", "fill-infill-travel"}],
+            [*([path for path in all_paths if path.kind in {"fill-infill", "fill-infill-travel"}]), *outline_paths_for_detail],
             pen_radius_mm=pen_radius_mm,
         )
+        residual_target = printable_geometry
+        if existing_painted_area is not None and not getattr(existing_painted_area, "is_empty", True):
+            try:
+                residual_target = printable_geometry.difference(existing_painted_area)
+            except Exception:
+                residual_target = printable_geometry.buffer(0).difference(existing_painted_area.buffer(0))
+        if residual_target is not None and not getattr(residual_target, "is_empty", True):
+            try:
+                residual_target = residual_target.buffer(0)
+            except Exception:
+                pass
+        printable_components = []
+        if residual_target is not None and not getattr(residual_target, "is_empty", True):
+            for geom in _geometry_parts(residual_target):
+                if geom is None or getattr(geom, "is_empty", True):
+                    continue
+                min_x, min_y, max_x, max_y = geom.bounds
+                local_width = min(float(max_x - min_x), float(max_y - min_y))
+                if local_width > (line_width_mm * 1.6):
+                    continue
+                printable_components.append(geom)
+        printable_component_boundaries = [component.boundary for component in printable_components]
+
+        def _candidate_component_index(path: Toolpath) -> int | None:
+            if len(path.points) < 2:
+                return None
+            shp = LineString([(point.x, point.y) for point in path.points])
+            if shp.is_empty:
+                return None
+            best_idx: int | None = None
+            best_overlap = 0.0
+            for idx, component in enumerate(printable_components):
+                try:
+                    overlap = float(shp.intersection(component).length)
+                except Exception:
+                    overlap = 0.0
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_idx = idx
+            return best_idx
+
+        def _candidate_centeredness(path: Toolpath, component_idx: int | None) -> float:
+            if component_idx is None or component_idx < 0 or component_idx >= len(printable_component_boundaries):
+                return 0.0
+            boundary = printable_component_boundaries[component_idx]
+            if boundary is None or boundary.is_empty or len(path.points) < 2:
+                return 0.0
+            samples = path.points
+            if len(samples) > 16:
+                step = max(1, int(len(samples) / 16))
+                samples = [samples[index] for index in range(0, len(samples), step)]
+            distances: list[float] = []
+            for pt in samples:
+                try:
+                    distances.append(float(ShapelyPoint(pt.x, pt.y).distance(boundary)))
+                except Exception:
+                    continue
+            if not distances:
+                return 0.0
+            return float(sum(distances) / max(1, len(distances)))
+
+        def _candidate_component_metrics(path: Toolpath, component_idx: int | None) -> dict[str, Any]:
+            if component_idx is None or component_idx < 0 or component_idx >= len(printable_components):
+                return {}
+            component = printable_components[component_idx]
+            if component is None or component.is_empty:
+                return {}
+            min_x, min_y, max_x, max_y = component.bounds
+            return {
+                "component_id": component_idx + 1,
+                "area_mm2": float(component.area),
+                "bbox_mm": (float(max_x - min_x), float(max_y - min_y)),
+                "estimated_width_mm": float(min(max_x - min_x, max_y - min_y)),
+            }
         detail_filter_stats = pipeline_core._filter_detail_trace_candidates_for_export(
             detail_paths,
             target_geometry=printable_geometry,
@@ -1452,15 +3015,138 @@ def plan_coverage_first_toolpaths(
             max_detail_overspill_area_ratio=max(0.0, float(os.getenv("MAX_DETAIL_OVERSPILL_AREA_RATIO", "0.03"))),
             min_detail_new_coverage_mm2=max(0.0, float(os.getenv("MIN_DETAIL_NEW_COVERAGE_MM2", "0.02"))),
             max_already_covered_ratio=max(0.0, min(1.0, float(os.getenv("MAX_ALREADY_COVERED_RATIO", "0.90")))),
-            candidate_component_index_fn=lambda _path: None,
-            candidate_centeredness_fn=lambda _path, _idx: 0.0,
+            candidate_component_index_fn=_candidate_component_index,
+            candidate_centeredness_fn=_candidate_centeredness,
+            candidate_component_metrics_fn=_candidate_component_metrics,
         )
         kept_detail_paths = list(detail_filter_stats["accepted_detail_paths"])
         all_paths.extend(kept_detail_paths)
         pre_endpoint_clamp_paths.extend(_clone_toolpath(path) for path in kept_detail_paths)
 
     if debug is not None:
+        debug["_coverage_target_mask"] = target_mask.copy()
+        debug["_coverage_allowed_mask"] = allowed_mask.copy()
+        debug["_coverage_current_to_source_matrix"] = tuple(float(value) for value in current_to_source)
+        if isinstance(connector_validation.get("mask"), np.ndarray):
+            debug["_coverage_preview_source_mask"] = np.asarray(connector_validation.get("mask")).copy()
+        if isinstance(connector_validation.get("source_to_current_matrix"), (tuple, list)) and len(connector_validation.get("source_to_current_matrix")) == 6:
+            debug["_coverage_preview_source_to_surface_matrix"] = tuple(float(value) for value in connector_validation.get("source_to_current_matrix"))
         debug.update(detail_filter_stats)
+        accepted_detail_paths = list(detail_filter_stats.get("accepted_detail_paths", []))
+        detail_regions_centerline_traced = 0
+        arsenal_detail_centerline_paths_generated = 0
+        for path in accepted_detail_paths:
+            component_id = (path.metadata or {}).get("detail_component_id")
+            if component_id is None:
+                continue
+            try:
+                parsed_component_id = int(component_id)
+            except Exception:
+                continue
+            if parsed_component_id in classified_thin_component_ids:
+                detail_regions_centerline_traced += 1
+                arsenal_detail_centerline_paths_generated += 1
+        dropped_records = list(detail_filter_stats.get("detail_dropped_path_records", []))
+        accepted_component_ids = {
+            int(path.metadata.get("detail_component_id"))
+            for path in accepted_detail_paths
+            if path.metadata.get("detail_component_id") is not None
+        }
+        dropped_component_ids = {
+            int(record["component_id"])
+            for record in dropped_records
+            if record.get("component_id") is not None
+        }
+        small_detail_drop_reasons: dict[str, int] = {}
+        for record in dropped_records:
+            component_id = record.get("component_id")
+            if component_id is None:
+                continue
+            reason = str(record.get("drop_reason", "unknown"))
+            small_detail_drop_reasons[reason] = int(small_detail_drop_reasons.get(reason, 0)) + 1
+        overlap_preserved_count = sum(
+            1 for path in accepted_detail_paths if bool(path.metadata.get("detail_overlap_exception_applied", False))
+        )
+        overlap_rejected_count = sum(
+            1
+            for record in dropped_records
+            if str(record.get("drop_reason", "")) in {"redundant_overlap", "redundant_centerline_overlap", "noisy_loop"}
+            and (bool(record.get("was_self_overlapping", False)) or record.get("component_id") is not None)
+        )
+        debug.update({
+            "small_detail_outline_mode_enabled": True,
+            "small_detail_components_detected": int(len(printable_components)),
+            "small_detail_components_outlined": int(len(accepted_component_ids)),
+            "small_detail_components_dropped": int(len(dropped_component_ids - accepted_component_ids)),
+            "small_detail_drop_reasons": small_detail_drop_reasons,
+            "self_overlapping_detail_paths_allowed": int(overlap_preserved_count),
+            "self_overlapping_detail_paths_rejected": int(overlap_rejected_count),
+            "detail_paths_kept_despite_overlap": int(overlap_preserved_count),
+            "detail_simplification_tolerance_mm": float(detail_tolerance_mm),
+            "arsenal_detail_outline_paths_generated": int(detail_filter_stats.get("detail_paths_generated_raw", 0)),
+            "arsenal_detail_outline_paths_dropped": int(detail_filter_stats.get("detail_paths_dropped", 0)),
+            "detail_region_count": int(detail_region_count),
+            "detail_regions_classified_wide": int(detail_regions_classified_wide),
+            "detail_regions_classified_thin": int(detail_regions_classified_thin),
+            "detail_regions_serpentine_filled": int(detail_regions_serpentine_filled),
+            "detail_regions_centerline_traced": int(detail_regions_centerline_traced),
+            "detail_fill_coverage_percent": float((100.0 * detail_region_covered_area_mm2 / max(1e-9, detail_region_total_area_mm2)) if detail_region_total_area_mm2 > 0 else 0.0),
+            "detail_missed_area_mm2": float(max(0.0, detail_region_total_area_mm2 - detail_region_covered_area_mm2)),
+            "detail_classification_threshold_width_mm": float(detail_classification_threshold_width_mm),
+            "detail_classification_threshold_area_mm2": float(detail_classification_threshold_area_mm2),
+            "arsenal_detail_serpentine_paths_generated": int(arsenal_detail_serpentine_paths_generated),
+            "arsenal_detail_centerline_paths_generated": int(arsenal_detail_centerline_paths_generated),
+            "detail_repair_pass_enabled": bool(detail_repair_pass_enabled),
+            "required_detail_coverage_percent": float(required_detail_coverage_percent),
+            "detail_coverage_before_repair_percent": float(detail_coverage_before_repair_percent),
+            "detail_coverage_after_repair_percent": float(detail_coverage_after_repair_percent),
+            "detail_fillable_regions_total": int(detail_fillable_regions_total),
+            "detail_fillable_regions_failing_before_repair": int(detail_fillable_regions_failing_before_repair),
+            "detail_fillable_regions_failing_after_repair": int(detail_fillable_regions_failing_after_repair),
+            "detail_repair_regions_processed": int(detail_repair_regions_processed),
+            "detail_repair_strokes_added": int(detail_repair_strokes_added),
+            "repair_strokes_added": int(detail_repair_strokes_added),
+            "detail_repair_iterations_total": int(detail_repair_iterations_total),
+            "detail_repair_new_coverage_mm2": float(detail_repair_new_coverage_mm2),
+            "detail_repair_remaining_missed_area_mm2": float(detail_repair_remaining_missed_area_mm2),
+            "detail_repair_outside_overflow_mm2": float(detail_repair_outside_overflow_mm2),
+            "outside_region_overflow_tolerance_mm2": float(outside_region_overflow_tolerance_mm2),
+            "detail_regions_still_below_90": detail_regions_still_below_90,
+            "detail_region_repair_rows": detail_region_rows,
+            "coverage_validation_target": str(coverage_validation_target),
+            "fill_allowed_to_overlap_outline": bool(fill_allowed_to_overlap_outline),
+            "repair_clipped_against": str(repair_clipped_against),
+            "local_coverage_validation_enabled": bool(local_coverage_validation_enabled),
+            "global_coverage_percent": float(detail_coverage_after_repair_percent),
+            "region_coverage_min_percent": float(region_coverage_min_percent),
+            "regions_total": int(regions_total),
+            "regions_failing_before_repair": int(detail_fillable_regions_failing_before_repair),
+            "regions_failing_after_repair": int(detail_fillable_regions_failing_after_repair),
+            "missed_blob_count_before_repair": int(missed_blob_count_before_repair),
+            "missed_blob_count_after_repair": int(missed_blob_count_after_repair),
+            "largest_missed_blob_area_mm2_before": float(largest_missed_blob_area_mm2_before),
+            "largest_missed_blob_area_mm2_after": float(largest_missed_blob_area_mm2_after),
+            "largest_missed_blob_equivalent_diameter_mm_before": float(max((float(row.get("largest_missed_blob_diameter_before_mm", 0.0)) for row in detail_region_rows), default=0.0)),
+            "largest_missed_blob_equivalent_diameter_mm_after": float(largest_missed_blob_equivalent_diameter_mm_after),
+            "largest_allowed_missed_blob_equivalent_diameter_mm": float(largest_allowed_missed_blob_equivalent_diameter_mm),
+            "missed_blob_debug_enabled": True,
+            "repair_candidates_generated": int(repair_candidates_generated),
+            "repair_candidates_accepted": int(repair_candidates_accepted),
+            "repair_candidates_rejected": int(repair_candidates_rejected),
+            "top_repair_rejection_reasons": dict(repair_rejection_reason_counts.most_common(10)),
+            "repair_paths_exported": bool(any(_is_repair_path(path) for path in accepted_repairs)),
+            "coverage_preview_gcode_consistent": bool(debug.get("preview_and_gcode_share_same_projected_paths", True)),
+            "legacy_preview_only_repair_kind_detected": bool(legacy_preview_only_repair_kind_detected),
+            "root_cause_category": (
+                "I"
+                if (
+                    int(missed_blob_count_after_repair) == 0
+                    and bool(any(_is_repair_path(path) for path in accepted_repairs))
+                    and bool(debug.get("coverage_preview_gcode_consistent", True))
+                )
+                else ("E" if int(missed_blob_count_after_repair) > 0 and int(repair_candidates_generated) > 0 and int(repair_candidates_accepted) == 0 else "")
+            ),
+        })
         hole_count = sum(len(poly.interiors) for poly in _geometry_parts(printable_geometry))
         cell_count = max(1, len(component_debug) + hole_count)
         debug["local_cell_count"] = int(cell_count)
@@ -1588,6 +3274,7 @@ def plan_coverage_first_toolpaths(
                 best_score = -1e18
                 best_stats: dict[str, float] | None = None
                 for candidate in candidates:
+                    repair_candidates_generated += 1
                     score, stats_row = _score_candidate(
                         current_paths=all_paths,
                         candidate=candidate,
@@ -1603,6 +3290,7 @@ def plan_coverage_first_toolpaths(
                         "angle_deg": float(candidate.metadata.get("repair_candidate_angle_deg", angle_deg)),
                         "score": float(score),
                         "stats": stats_row,
+                        "accepted": False,
                         "candidate": candidate,
                     })
                     if score > best_score:
@@ -1610,26 +3298,33 @@ def plan_coverage_first_toolpaths(
                         best_candidate = candidate
                         best_stats = stats_row
                 if best_candidate is not None and best_stats is not None and best_score > -1e9:
-                    trial_paths = all_paths + [best_candidate]
+                    legacy_preview_only_repair_kind_detected = legacy_preview_only_repair_kind_detected or str(best_candidate.kind) in {"coverage_centerline", "coverage_offset_line", "coverage_rectilinear", "coverage_contour"}
+                    exported_best_candidate = _export_repair_toolpath(best_candidate)
+                    trial_paths = all_paths + [exported_best_candidate]
                     trial_painted = _path_points_to_mask(trial_paths, shape=target_mask.shape, current_to_source_matrix=current_to_source, pen_radius_px=max(1, int(round(line_width_mm * px_per_mm / 2.0))))
                     trial_missed = np.count_nonzero((target_mask > 0) & ~(trial_painted > 0))
                     trial_overflow = np.count_nonzero((trial_painted > 0) & ~(allowed > 0))
                     if trial_missed < np.count_nonzero((target_mask > 0) & ~(current_painted > 0)) or (trial_missed == 0 and trial_overflow <= np.count_nonzero((current_painted > 0) & ~(allowed > 0))):
                         all_paths = trial_paths
-                        pre_endpoint_clamp_paths = pre_endpoint_clamp_paths + [_clone_toolpath(best_candidate)]
+                        pre_endpoint_clamp_paths = pre_endpoint_clamp_paths + [_clone_toolpath(exported_best_candidate)]
                         current_painted = trial_painted
-                        accepted_repairs.append(best_candidate)
+                        accepted_repairs.append(exported_best_candidate)
+                        repair_candidates_accepted += 1
                         if trial_missed == 0:
                             break
+                    else:
+                        repair_candidates_rejected += 1
+                        repair_rejection_reason_counts["global_repair_not_improving"] += 1
 
+    outline_paths_for_output = source_outline_paths if use_source_geometry_outlines else [path for path in all_paths if path.kind == "outline"]
     ordered_fill = pipeline_core.optimize_toolpath_order([path for path in all_paths if path.kind != "outline"], strategy=travel_optimization)
     pre_clamp_ordered_fill = pipeline_core.optimize_toolpath_order([path for path in pre_endpoint_clamp_paths if path.kind != "outline"], strategy=travel_optimization)
     if outline_after_fill:
-        final_paths = ordered_fill + [path for path in all_paths if path.kind == "outline"]
-        pre_endpoint_clamp_final_paths = pre_clamp_ordered_fill + [path for path in pre_endpoint_clamp_paths if path.kind == "outline"]
+        final_paths = ordered_fill + list(outline_paths_for_output)
+        pre_endpoint_clamp_final_paths = pre_clamp_ordered_fill + [_clone_toolpath(path) for path in outline_paths_for_output]
     else:
-        final_paths = [path for path in all_paths if path.kind == "outline"] + ordered_fill
-        pre_endpoint_clamp_final_paths = [path for path in pre_endpoint_clamp_paths if path.kind == "outline"] + pre_clamp_ordered_fill
+        final_paths = list(outline_paths_for_output) + ordered_fill
+        pre_endpoint_clamp_final_paths = [_clone_toolpath(path) for path in outline_paths_for_output] + pre_clamp_ordered_fill
 
     final_paths = pipeline_core.merge_connected_toolpaths(final_paths)
     final_paths = pipeline_core.assign_stable_path_ids(final_paths)
@@ -1644,19 +3339,34 @@ def plan_coverage_first_toolpaths(
             if path.kind == "outline" and str((path.metadata or {}).get("source_region_id", ""))
         }
         outline_total_length_mm = float(sum(pipeline_core.segment_length(path.points) for path in final_paths if path.kind == "outline" and len(path.points) >= 2))
-        thin_components_outlined = int(sum(
-            1
-            for item in component_debug
-            if item.get("mode") == "thin" and any(str((path.metadata or {}).get("source_region_id", "")) == f"component_{int(item['component_id']):03d}" for path in final_paths if path.kind == "outline")
-        ))
-        small_components_outlined = int(sum(
-            1
-            for item in component_debug
-            if int(item.get("area_px", 0)) <= 4 and any(str((path.metadata or {}).get("source_region_id", "")) == f"component_{int(item['component_id']):03d}" for path in final_paths if path.kind == "outline")
-        ))
+        printable_parts = source_printable_parts if use_source_geometry_outlines else _geometry_parts(printable_geometry)
+        thin_threshold_mm = line_width_mm * 1.05
+        small_area_threshold_mm2 = max(1e-6, line_width_mm * line_width_mm * 0.35)
+        if use_source_geometry_outlines:
+            thin_components_outlined = 0
+            small_components_outlined = 0
+            for poly in printable_parts:
+                min_x, min_y, max_x, max_y = poly.bounds
+                min_dim_mm = max(0.0, min(float(max_x - min_x), float(max_y - min_y)))
+                area_mm2 = float(poly.area)
+                if min_dim_mm > 0.0 and min_dim_mm <= thin_threshold_mm:
+                    thin_components_outlined += 1
+                if area_mm2 > 0.0 and area_mm2 <= small_area_threshold_mm2:
+                    small_components_outlined += 1
+        else:
+            thin_components_outlined = int(sum(
+                1
+                for item in component_debug
+                if item.get("mode") == "thin" and any(str((path.metadata or {}).get("source_region_id", "")) == f"component_{int(item['component_id']):03d}" for path in final_paths if path.kind == "outline")
+            ))
+            small_components_outlined = int(sum(
+                1
+                for item in component_debug
+                if int(item.get("area_px", 0)) <= 4 and any(str((path.metadata or {}).get("source_region_id", "")) == f"component_{int(item['component_id']):03d}" for path in final_paths if path.kind == "outline")
+            ))
         debug["contour_offset_debug"] = {
             "outline_generation_source": "final_target_mask",
-            "outline_component_count_input": int(len(component_ids)),
+            "outline_component_count_input": int(len(printable_parts)) if use_source_geometry_outlines else int(len(component_ids)),
             "outline_component_count_output": int(len(outline_component_labels)),
             "outline_paths_generated": int(outline_paths_generated),
             "outline_paths_dropped": 0,
@@ -1782,4 +3492,15 @@ def plan_coverage_first_toolpaths(
                 allowed_mask=allowed_mask,
                 debug=debug,
             )
+            debug["debug_artifacts_generated"] = [
+                "selected_color_mask.png",
+                "swept_coverage.png",
+                "missed_blobs.png",
+                "missed_blobs_labeled.png",
+                "repair_candidates.png",
+                "rejected_repair_candidates.png",
+                "exported_repair_paths.png",
+                "overflow_pixels.png",
+                "missed_blob_diagnostics.json",
+            ]
     return final_paths
