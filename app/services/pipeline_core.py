@@ -4251,10 +4251,18 @@ def _filter_detail_trace_candidates_for_export(
             and (candidate_length_mm / max(estimated_width_mm, 1e-6)) >= 4.0
             and long_axis_mm >= (line_width_mm * 3.0)
         )
+        geometric_narrow_detail = (
+            estimated_width_mm > max(1e-6, line_width_mm * 0.20)
+            and estimated_width_mm <= (line_width_mm * 1.75)
+            and candidate_length_mm >= (line_width_mm * 2.0)
+            and long_axis_mm >= (line_width_mm * 2.0)
+        )
         is_small_detail_component = component_idx is not None and (
             (estimated_width_mm > 0.0 and estimated_width_mm <= (line_width_mm * 1.75))
             or (component_area_mm2 > 0.0 and component_area_mm2 <= max(line_width_mm * line_width_mm * 10.0, 2.0))
         )
+        if not is_small_detail_component and geometric_narrow_detail:
+            is_small_detail_component = True
         if not is_small_detail_component and elongated_narrow_path:
             is_small_detail_component = True
         was_self_overlapping = bool(not line.is_simple) if not line.is_empty else False
@@ -12176,6 +12184,18 @@ class SlicerService:
                     tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
                     kind="fill-infill",
                 )
+            if fill_paths:
+                fill_paths = self._enforce_region_coverage_backfill(
+                    fill_paths,
+                    region=metrics_region,
+                    line_width_mm=line_width_mm,
+                    angle_deg=angle_deg,
+                    min_segment_length_mm=max(min_segment_length_mm, line_width_mm * 0.15),
+                    tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                    max_backfills=24 if region_metrics.holeCount > 0 else 8,
+                    connector_validation=connector_validation,
+                    debug=debug,
+                )
             if hybrid_config.optimizePathOrder and len(fill_paths) > 1:
                 fill_paths = self._order_paths_by_nearest_neighbor(fill_paths, start_point=fill_paths[0].points[0] if fill_paths[0].points else None)
             return fill_paths, region_debug, region_metrics, strategy
@@ -12319,6 +12339,17 @@ class SlicerService:
                                 "fill_mode": "forced_contour_centerline_infill",
                             },
                         ))
+            fill_paths = self._enforce_region_coverage_backfill(
+                fill_paths,
+                region=metrics_region,
+                line_width_mm=line_width_mm,
+                angle_deg=angle_deg,
+                min_segment_length_mm=max(min_segment_length_mm, line_width_mm * 0.15),
+                tolerance_mm=max(tolerance_mm, detail_tolerance_mm),
+                max_backfills=24 if region_metrics.holeCount > 0 else 12,
+                connector_validation=connector_validation,
+                debug=debug,
+            )
             return fill_paths, region_debug, region_metrics, strategy
 
         fill_paths = self._generate_scanline_infill(
@@ -12561,57 +12592,18 @@ class SlicerService:
         min_segment_length_mm: float,
         tolerance_mm: float,
         max_backfills: int = 120,
+        precovered_geometry: Any = None,
         connector_validation: dict[str, Any] | None = None,
         debug: Optional[dict[str, Any]] = None,
     ) -> list[Toolpath]:
         if region is None or region.is_empty or max_backfills <= 0:
             return paths
-        drawables = [p for p in paths if p.kind in {"fill-infill", "detail-trace"} and len(p.points) >= 2]
-        if not drawables:
+        if not any(p.kind in {"fill-infill", "detail-trace"} and len(p.points) >= 2 for p in paths):
             return paths
 
         pen_radius = max(0.01, line_width_mm * 0.5 * 0.85)
-        covered_buffers = []
-        for path in drawables:
-            line = LineString([(point.x, point.y) for point in path.points])
-            if line.is_empty or line.length <= 1e-9:
-                continue
-            covered_buffers.append(line.buffer(pen_radius, cap_style=1, join_style=1))
-        if not covered_buffers:
-            return paths
-
-        covered = unary_union(covered_buffers)
-        if covered is None or covered.is_empty:
-            uncovered = region
-        else:
-            uncovered = region.difference(covered)
-        if uncovered is None or uncovered.is_empty:
-            return paths
-
         region_area = max(1e-9, float(region.area))
-        uncovered_area_total = float(uncovered.area)
-        uncovered_ratio_total = uncovered_area_total / region_area
         min_component_area = max(1e-7, line_width_mm * line_width_mm * 0.01)
-        components: list[Any] = []
-        for poly in normalize_geometry(uncovered):
-            area = float(poly.area)
-            if area < min_component_area:
-                # Keep narrow-but-important pockets if they are elongated.
-                try:
-                    min_x, min_y, max_x, max_y = poly.bounds
-                    span_x = max_x - min_x
-                    span_y = max_y - min_y
-                    span_max = max(span_x, span_y)
-                    span_min = max(1e-9, min(span_x, span_y))
-                    aspect = span_max / span_min
-                except Exception:
-                    aspect = 0.0
-                if not (area >= min_component_area * 0.35 and aspect >= 3.0):
-                    continue
-            components.append(poly)
-        if not components:
-            return paths
-
         augmented = list(paths)
         coverage_mask = connector_validation.get("mask") if isinstance(connector_validation, dict) else None
         coverage_matrix = connector_validation.get("current_to_source_matrix") if isinstance(connector_validation, dict) else None
@@ -12634,101 +12626,178 @@ class SlicerService:
 
         baseline_metrics = _coverage_metrics_for(augmented)
         added = 0
-        for component in sorted(components, key=lambda g: float(g.area), reverse=True):
-            if added >= max_backfills:
+        iteration_count = 0
+        last_uncovered_ratio = 0.0
+        last_component_count = 0
+        last_max_component_area = 0.0
+
+        def _eligible_uncovered_components(current_uncovered: Any) -> list[Any]:
+            components: list[Any] = []
+            for poly in normalize_geometry(current_uncovered):
+                area = float(poly.area)
+                if area < min_component_area:
+                    # Keep narrow-but-important pockets if they are elongated.
+                    try:
+                        min_x, min_y, max_x, max_y = poly.bounds
+                        span_x = max_x - min_x
+                        span_y = max_y - min_y
+                        span_max = max(span_x, span_y)
+                        span_min = max(1e-9, min(span_x, span_y))
+                        aspect = span_max / span_min
+                    except Exception:
+                        aspect = 0.0
+                    if not (area >= min_component_area * 0.35 and aspect >= 3.0):
+                        continue
+                components.append(poly)
+            return sorted(components, key=lambda g: float(g.area), reverse=True)
+
+        def _current_uncovered_geometry() -> Any:
+            drawables = [p for p in augmented if p.kind in {"fill-infill", "detail-trace"} and len(p.points) >= 2]
+            covered_buffers = []
+            for path in drawables:
+                line = LineString([(point.x, point.y) for point in path.points])
+                if line.is_empty or line.length <= 1e-9:
+                    continue
+                covered_buffers.append(line.buffer(pen_radius, cap_style=1, join_style=1))
+            if not covered_buffers:
+                return region
+            covered = unary_union(covered_buffers)
+            if precovered_geometry is not None and not precovered_geometry.is_empty:
+                try:
+                    covered = covered.union(precovered_geometry)
+                except Exception:
+                    covered = covered.buffer(0).union(precovered_geometry.buffer(0))
+            if covered is None or covered.is_empty:
+                return region
+            return region.difference(covered)
+
+        while added < max_backfills:
+            uncovered = _current_uncovered_geometry()
+            if uncovered is None or uncovered.is_empty:
+                last_uncovered_ratio = 0.0
+                last_component_count = 0
+                last_max_component_area = 0.0
                 break
-            pocket_scan = self._generate_scanline_infill(
-                component,
-                spacing_mm=max(line_width_mm * 0.80, 0.05),
-                line_width_mm=line_width_mm,
-                angle_deg=angle_deg,
-                min_segment_length_mm=max(min_segment_length_mm, line_width_mm * 0.15),
-                tolerance_mm=tolerance_mm,
-                kind="fill-infill",
-                allow_pen_down_infill_connectors=False,
-                infill_path_mode="rectilinear",
-                connector_validation=None,
-                adaptive_detail_cells=True,
-                debug=None,
-            )
-            pocket_scan = self._clip_toolpaths_to_region(
-                pocket_scan,
-                region=component,
-                tolerance_mm=tolerance_mm,
-                kind="fill-infill",
-            )
-            emitted_for_component = 0
-            for candidate_path in pocket_scan:
-                if added >= max_backfills:
+
+            uncovered_area_total = float(uncovered.area)
+            last_uncovered_ratio = uncovered_area_total / region_area
+            components = _eligible_uncovered_components(uncovered)
+            last_component_count = len(components)
+            last_max_component_area = max((float(component.area) for component in components), default=0.0)
+            if not components:
+                break
+
+            iteration_count += 1
+            progress_this_iteration = 0
+            remaining_budget = max_backfills - added
+
+            for component in components:
+                if remaining_budget <= 0:
                     break
-                if len(candidate_path.points) < 2:
-                    continue
-                if segment_length(candidate_path.points) < max(0.04, line_width_mm * 0.10):
-                    continue
-                stroke = clone_toolpath(
-                    candidate_path,
-                    metadata={
-                        **candidate_path.metadata,
-                        "coverage_backstop": True,
-                        "coverage_backfill_global": True,
-                        "small_detail_fill_style": "scanline_backfill",
-                        "fill_mode": "global_uncovered_backfill",
-                    },
-                )
-                accepted = True
-                if baseline_metrics is not None:
-                    trial_metrics = _coverage_metrics_for([*augmented, stroke])
-                    accepted = bool(
-                        trial_metrics is not None
-                        and trial_metrics.penalized_coverage_percent > (baseline_metrics.penalized_coverage_percent + 1e-9)
-                    )
-                    if accepted and trial_metrics is not None:
-                        baseline_metrics = trial_metrics
-                if accepted:
-                    augmented.append(stroke)
-                    added += 1
-                    emitted_for_component += 1
-            if emitted_for_component == 0:
-                centerline = self._generate_centerline_fallback(
+                pocket_scan = self._generate_scanline_infill(
                     component,
+                    spacing_mm=max(line_width_mm * 0.80, 0.05),
+                    line_width_mm=line_width_mm,
                     angle_deg=angle_deg,
-                    min_segment_length_mm=max(min_segment_length_mm, line_width_mm * 0.35),
+                    min_segment_length_mm=max(min_segment_length_mm, line_width_mm * 0.15),
+                    tolerance_mm=tolerance_mm,
+                    kind="fill-infill",
+                    allow_pen_down_infill_connectors=False,
+                    infill_path_mode="rectilinear",
+                    connector_validation=None,
+                    adaptive_detail_cells=True,
+                    debug=None,
+                )
+                pocket_scan = self._clip_toolpaths_to_region(
+                    pocket_scan,
+                    region=component,
                     tolerance_mm=tolerance_mm,
                     kind="fill-infill",
                 )
-                if centerline and added < max_backfills:
-                    longest = max(centerline, key=lambda p: segment_length(p.points) if len(p.points) >= 2 else 0.0)
-                    clipped = self._clip_toolpaths_to_region([longest], region=component, tolerance_mm=tolerance_mm, kind="fill-infill")
-                    if clipped and len(clipped[0].points) >= 2:
-                        centerline_stroke = clone_toolpath(
-                            clipped[0],
-                            metadata={
-                                **clipped[0].metadata,
-                                "coverage_backstop": True,
-                                "coverage_backfill_global": True,
-                                "small_detail_fill_style": "centerline_backfill",
-                                "fill_mode": "global_uncovered_backfill",
-                            },
+                emitted_for_component = 0
+                for candidate_path in pocket_scan:
+                    if remaining_budget <= 0:
+                        break
+                    if len(candidate_path.points) < 2:
+                        continue
+                    if segment_length(candidate_path.points) < max(0.04, line_width_mm * 0.10):
+                        continue
+                    stroke = clone_toolpath(
+                        candidate_path,
+                        metadata={
+                            **candidate_path.metadata,
+                            "coverage_backstop": True,
+                            "coverage_backfill_global": True,
+                            "small_detail_fill_style": "scanline_backfill",
+                            "fill_mode": "global_uncovered_backfill",
+                            "coverage_backfill_iteration": iteration_count,
+                        },
+                    )
+                    accepted = True
+                    if baseline_metrics is not None:
+                        trial_metrics = _coverage_metrics_for([*augmented, stroke])
+                        accepted = bool(
+                            trial_metrics is not None
+                            and trial_metrics.penalized_coverage_percent > (baseline_metrics.penalized_coverage_percent + 1e-9)
                         )
-                        augmented.append(centerline_stroke)
-                        accepted = True
-                        if baseline_metrics is not None:
-                            trial_metrics = _coverage_metrics_for(augmented)
-                            accepted = bool(
-                                trial_metrics is not None
-                                and trial_metrics.penalized_coverage_percent > (baseline_metrics.penalized_coverage_percent + 1e-9)
+                        if accepted and trial_metrics is not None:
+                            baseline_metrics = trial_metrics
+                    if accepted:
+                        augmented.append(stroke)
+                        added += 1
+                        progress_this_iteration += 1
+                        emitted_for_component += 1
+                        remaining_budget -= 1
+                if emitted_for_component == 0 and remaining_budget > 0:
+                    centerline = self._generate_centerline_fallback(
+                        component,
+                        angle_deg=angle_deg,
+                        min_segment_length_mm=max(min_segment_length_mm, line_width_mm * 0.35),
+                        tolerance_mm=tolerance_mm,
+                        kind="fill-infill",
+                    )
+                    if centerline:
+                        longest = max(centerline, key=lambda p: segment_length(p.points) if len(p.points) >= 2 else 0.0)
+                        clipped = self._clip_toolpaths_to_region([longest], region=component, tolerance_mm=tolerance_mm, kind="fill-infill")
+                        if clipped and len(clipped[0].points) >= 2:
+                            centerline_stroke = clone_toolpath(
+                                clipped[0],
+                                metadata={
+                                    **clipped[0].metadata,
+                                    "coverage_backstop": True,
+                                    "coverage_backfill_global": True,
+                                    "small_detail_fill_style": "centerline_backfill",
+                                    "fill_mode": "global_uncovered_backfill",
+                                    "coverage_backfill_iteration": iteration_count,
+                                },
                             )
-                            if accepted and trial_metrics is not None:
-                                baseline_metrics = trial_metrics
-                        if not accepted:
-                            augmented.pop()
-                        else:
-                            added += 1
+                            augmented.append(centerline_stroke)
+                            accepted = True
+                            if baseline_metrics is not None:
+                                trial_metrics = _coverage_metrics_for(augmented)
+                                accepted = bool(
+                                    trial_metrics is not None
+                                    and trial_metrics.penalized_coverage_percent > (baseline_metrics.penalized_coverage_percent + 1e-9)
+                                )
+                                if accepted and trial_metrics is not None:
+                                    baseline_metrics = trial_metrics
+                            if not accepted:
+                                augmented.pop()
+                            else:
+                                added += 1
+                                progress_this_iteration += 1
+                                remaining_budget -= 1
+
+            if progress_this_iteration <= 0:
+                break
 
         if debug is not None and added > 0:
             debug["global_uncovered_backfill_count"] = int(debug.get("global_uncovered_backfill_count", 0)) + int(added)
         if debug is not None:
-            debug["global_uncovered_area_ratio_last_region"] = float(uncovered_ratio_total)
+            debug["global_uncovered_backfill_iterations"] = int(debug.get("global_uncovered_backfill_iterations", 0)) + int(iteration_count)
+            debug["global_uncovered_component_count_last_region"] = int(last_component_count)
+            debug["global_uncovered_max_component_area_mm2_last_region"] = float(last_max_component_area)
+            debug["global_uncovered_area_ratio_last_region"] = float(last_uncovered_ratio)
         return augmented
 
     def _enforce_non_outline_like_fill(
@@ -15681,6 +15750,34 @@ def generate_toolpaths(
             debug_append_geometry(debug, "detail_overspill_warning_regions", unary_union(overspill_warning_regions), "detail-overspill-warning")
         if accepted_detail_footprints:
             debug_append_geometry(debug, "detail_pen_footprints", unary_union(accepted_detail_footprints), "detail-pen-footprint")
+
+        detail_repair_seed = [*interior_paths, *accepted_detail_paths]
+        precovered_geometry = None
+        precovered_parts = [
+            geom
+            for geom in (outline_covered_geom, connector_covered_geom)
+            if geom is not None and not geom.is_empty
+        ]
+        if precovered_parts:
+            precovered_geometry = unary_union(precovered_parts)
+        detail_repaired_paths = self._enforce_region_coverage_backfill(
+            detail_repair_seed,
+            region=bundle.printable_geometry,
+            line_width_mm=line_width_mm,
+            angle_deg=infill_angle_deg,
+            min_segment_length_mm=min_segment_length_mm,
+            tolerance_mm=detail_tolerance_mm,
+            precovered_geometry=precovered_geometry,
+            debug=debug,
+        )
+        if len(detail_repaired_paths) > len(detail_repair_seed):
+            repair_backfills = [
+                path
+                for path in detail_repaired_paths[len(detail_repair_seed):]
+                if path.kind == "fill-infill"
+            ]
+            if repair_backfills:
+                interior_paths.extend(repair_backfills)
 
         allow_detail_pen_down_continuation = os.getenv("ALLOW_DETAIL_PEN_DOWN_CONTINUATION", "1") == "1"
         max_detail_continuation_length_mm = max(
