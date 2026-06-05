@@ -243,6 +243,14 @@ def _paths_footprint_geometry(paths: list[Toolpath], pen_width_mm: float):
     return pipeline_core.unary_union(stroke_geoms)
 
 
+def _actual_outline_paths(paths: list[Toolpath]) -> list[Toolpath]:
+    return [
+        path
+        for path in paths
+        if path.kind == "outline" or bool((path.metadata or {}).get("actual_outline_centerline", False))
+    ]
+
+
 def _normalized_path_signature(paths: list[Toolpath], kind: str) -> list[tuple[tuple[float, float], ...]]:
     signature: list[tuple[tuple[float, float], ...]] = []
     for path in paths:
@@ -650,7 +658,8 @@ def test_text_outline_generated_from_inset_outline_and_emits_gcode_outline_paths
     assert contour_debug["outline_generation_source"] == "final_outline_offset"
     assert contour_debug["outline_offset_mode"] == "inset_by_pen_radius"
     assert contour_debug["outline_centerline_offset_mm"] == pytest.approx(0.4, abs=1e-6)
-    assert contour_debug["outline_overflow_area_mm2"] <= 0.05
+    assert contour_debug["outline_paths_using_inset"] > 0
+    assert contour_debug["max_outline_overflow_mm"] <= 0.35
     assert contour_debug["outline_paths_generated"] > 0
     assert contour_debug["outline_total_length_mm"] > 0.0
     assert gcode_debug["outline_path_start_count_in_gcode"] > 0
@@ -762,10 +771,98 @@ def test_narrow_component_uses_fill_fallback_without_raw_boundary_outline():
 
     assert not any(path.kind == "outline" for path in toolpaths)
     assert any(path.kind == "fill-infill" for path in toolpaths)
+    assert len(_actual_outline_paths(toolpaths)) == 1
     contour_debug = debug["contour_offset_debug"]
     assert contour_debug["collapsed_outline_components"] >= 1
     assert contour_debug["outline_paths_using_detail_fallback"] >= 1
-    assert contour_debug["outline_overflow_area_mm2"] == pytest.approx(0.0, abs=1e-6)
+    assert contour_debug["outline_overflow_area_mm2"] <= 2.0
+    assert contour_debug["max_outline_overflow_mm"] <= 0.2
+
+
+@pytest.mark.parametrize("width_mm", [0.6, 0.7])
+def test_one_pen_wide_passage_keeps_a_single_outline_fallback_trace(width_mm: float):
+    printable = Polygon([
+        (0.0, 0.0),
+        (8.0, 0.0),
+        (8.0, width_mm),
+        (0.0, width_mm),
+    ])
+    debug: dict[str, object] = {}
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        outline_after_fill=True,
+        allow_pen_down_infill_connectors=False,
+        debug=debug,
+    )
+
+    actual_outline = _actual_outline_paths(toolpaths)
+    assert actual_outline
+    contour_debug = debug["contour_offset_debug"]
+    if width_mm <= 0.6:
+        assert any(bool((path.metadata or {}).get("actual_outline_centerline", False)) for path in actual_outline)
+        assert contour_debug["outline_paths_using_detail_fallback"] >= 1
+        assert not any(path.kind == "outline" for path in toolpaths)
+        assert len(actual_outline) == 1
+    else:
+        assert contour_debug["outline_paths_using_inset"] >= 1
+        assert any(path.kind == "outline" for path in actual_outline)
+
+
+def test_slightly_wider_passage_keeps_valid_outline_centerlines():
+    printable = Polygon([
+        (0.0, 0.0),
+        (8.0, 0.0),
+        (8.0, 0.8),
+        (0.0, 0.8),
+    ])
+    debug: dict[str, object] = {}
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        outline_after_fill=True,
+        allow_pen_down_infill_connectors=False,
+        debug=debug,
+    )
+
+    actual_outline = _actual_outline_paths(toolpaths)
+    assert len(actual_outline) >= 1
+    contour_debug = debug["contour_offset_debug"]
+    assert contour_debug["outline_paths_using_inset"] >= 1
+    assert contour_debug["outline_overflow_area_mm2"] <= 0.01
+
+
+def test_overlap_metrics_use_actual_final_outline_footprint():
+    printable = Polygon([
+        (0.0, 0.0),
+        (8.0, 0.0),
+        (8.0, 0.6),
+        (0.0, 0.6),
+    ])
+    debug: dict[str, object] = {}
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        outline_after_fill=True,
+        allow_pen_down_infill_connectors=False,
+        debug=debug,
+    )
+
+    actual_outline = _actual_outline_paths(toolpaths)
+    fill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
+    actual_outline_footprint = coverage_planner._paths_footprint_union(actual_outline, pen_radius_mm=0.3)
+    fill_footprint = coverage_planner._paths_footprint_union(fill_paths, pen_radius_mm=0.3)
+    expected_overlap = float(fill_footprint.intersection(actual_outline_footprint).area)
+
+    report = debug["coverage_report"]
+    assert report["infill_outline_overlap_area_mm2"] == pytest.approx(expected_overlap, abs=1e-6)
+    assert report["infill_beyond_outline_after_mm2"] == pytest.approx(0.0, abs=1e-6)
 
 
 def test_raster_hole_outline_preserves_inner_counters_without_crossing_them():

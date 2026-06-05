@@ -641,6 +641,7 @@ def _skeleton_paths_for_component(
                 "fill_mode": "single_stroke_detail",
                 "fill_strategy": "SINGLE_STROKE_DETAIL",
                 "component_id": int(component_id),
+                "source_region_id": f"component_{int(component_id):03d}",
                 "skeleton_segment_index": int(index),
                 "small_detail_fill_style": str(small_detail_fill_style),
                 "force_minimum_printable_stroke": True,
@@ -656,6 +657,7 @@ def _thin_detail_fill_paths_for_component(
     *,
     component_geometry: Any,
     component_endpoint_limit: Any,
+    mark_outline_fallback: bool,
     origin_x: float,
     origin_y: float,
     px_per_mm: float,
@@ -689,6 +691,8 @@ def _thin_detail_fill_paths_for_component(
     )
     pen_radius_px = max(1, int(round(line_width_mm * px_per_mm / 2.0)))
     pen_radius_mm = line_width_mm * 0.5
+    dt = cv2.distanceTransform(region_mask, cv2.DIST_L2, 3)
+    width_mm = float(np.max(dt) * 2.0 / max(1e-9, px_per_mm)) if np.any(dt > 0) else 0.0
 
     def _coverage_stats(paths: list[Toolpath]) -> tuple[np.ndarray, dict[str, float], list[dict[str, Any]], dict[str, float | int]]:
         painted = _path_points_to_mask(
@@ -719,11 +723,24 @@ def _thin_detail_fill_paths_for_component(
     supplemental_paths_added = 0
     repair_paths_added = 0
     repair_iterations = 0
+    prefer_single_centerline = bool(not has_holes and width_mm <= (line_width_mm * 1.35))
+    if mark_outline_fallback:
+        for path in base_paths:
+            path.metadata = {
+                **(path.metadata or {}),
+                "actual_outline_centerline": True,
+                "path_role": "FINAL_OUTLINE_FALLBACK",
+                "outline_generation_source": "detail_centerline_fallback",
+                "outline_fallback_mode": "centerline_detail",
+            }
 
     if (
+        not prefer_single_centerline
+        and (
         has_holes
         or float(metrics_before["coverage_percent"]) < coverage_target_percent
         or float(summary_before["largest_missed_blob_equivalent_diameter_mm"]) > largest_allowed_blob_mm
+        )
     ):
         supplemental_paths, supplemental_stats = _scanline_fill_paths(
             component_geometry,
@@ -763,6 +780,8 @@ def _thin_detail_fill_paths_for_component(
     current_painted, metrics_after_supplement, current_blob_rows, current_blob_summary = _coverage_stats(current_paths)
     max_repair_iterations = 8
     while (
+        not prefer_single_centerline
+        and
         repair_iterations < max_repair_iterations
         and current_blob_rows
         and (
@@ -870,6 +889,8 @@ def _thin_detail_fill_paths_for_component(
         "thin_detail_repair_iterations": int(repair_iterations),
         "thin_detail_has_holes": bool(has_holes),
         "thin_detail_missed_blob_count_after": int(len(blobs_after)),
+        "thin_detail_prefer_single_centerline": bool(prefer_single_centerline),
+        "thin_detail_estimated_width_mm": float(width_mm),
     }
 
 
@@ -1082,6 +1103,19 @@ def _paths_footprint_union(paths: Iterable[Toolpath], *, pen_radius_mm: float) -
     if not geometries:
         return Polygon()
     return unary_union(geometries)
+
+
+def _is_actual_outline_centerline_path(path: Toolpath) -> bool:
+    metadata = path.metadata or {}
+    if path.kind == "outline":
+        return True
+    if bool(metadata.get("actual_outline_centerline", False)):
+        return True
+    return str(metadata.get("path_role", "")) == "FINAL_OUTLINE_FALLBACK"
+
+
+def _actual_outline_centerline_paths(paths: Iterable[Toolpath]) -> list[Toolpath]:
+    return [path for path in paths if _is_actual_outline_centerline_path(path)]
 
 
 def _infill_beyond_outline_area_mm2(
@@ -2205,6 +2239,7 @@ def plan_coverage_first_toolpaths(
                 component_mask,
                 component_geometry=component_geometry,
                 component_endpoint_limit=component_endpoint_limit,
+                mark_outline_fallback=not bool(component_boundary_paths),
                 origin_x=origin_x,
                 origin_y=origin_y,
                 px_per_mm=px_per_mm,
@@ -2963,7 +2998,9 @@ def plan_coverage_first_toolpaths(
     printable_components: list[Any] = []
     use_source_geometry_outlines = len(component_ids) < len(source_printable_parts)
     if detail_paths:
-        outline_paths_for_detail = source_outline_paths if use_source_geometry_outlines else [path for path in all_paths if path.kind == "outline"]
+        outline_paths_for_detail = _actual_outline_centerline_paths(
+            source_outline_paths if use_source_geometry_outlines else all_paths
+        )
         existing_painted_area = _paths_footprint_union(
             [*([path for path in all_paths if path.kind in {"fill-infill", "fill-infill-travel"}]), *outline_paths_for_detail],
             pen_radius_mm=pen_radius_mm,
@@ -3370,16 +3407,22 @@ def plan_coverage_first_toolpaths(
     pre_endpoint_clamp_final_paths = pipeline_core.assign_stable_path_ids(pre_endpoint_clamp_final_paths)
 
     if debug is not None:
-        outline_paths_generated = int(sum(1 for path in final_paths if path.kind == "outline"))
-        outline_component_labels = {
+        actual_outline_paths = _actual_outline_centerline_paths(final_paths)
+        explicit_outline_paths = [path for path in final_paths if path.kind == "outline"]
+        outline_paths_generated = int(len(explicit_outline_paths))
+        actual_outline_component_labels = {
             str((path.metadata or {}).get("source_region_id", ""))
-            for path in final_paths
-            if path.kind == "outline" and str((path.metadata or {}).get("source_region_id", ""))
+            for path in actual_outline_paths
+            if str((path.metadata or {}).get("source_region_id", ""))
         }
-        outline_total_length_mm = float(sum(pipeline_core.segment_length(path.points) for path in final_paths if path.kind == "outline" and len(path.points) >= 2))
-        outline_paths = [path for path in final_paths if path.kind == "outline"]
+        inset_outline_component_labels = {
+            str((path.metadata or {}).get("source_region_id", ""))
+            for path in explicit_outline_paths
+            if str((path.metadata or {}).get("source_region_id", ""))
+        }
+        outline_total_length_mm = float(sum(pipeline_core.segment_length(path.points) for path in actual_outline_paths if len(path.points) >= 2))
         printable_parts = source_printable_parts if use_source_geometry_outlines else _geometry_parts(printable_geometry)
-        collapsed_outline_components = max(0, int(len(printable_parts)) - int(len(outline_component_labels)))
+        collapsed_outline_components = max(0, int(len(printable_parts)) - int(len(inset_outline_component_labels)))
         thin_threshold_mm = line_width_mm * 1.05
         small_area_threshold_mm2 = max(1e-6, line_width_mm * line_width_mm * 0.35)
         if use_source_geometry_outlines:
@@ -3404,7 +3447,7 @@ def plan_coverage_first_toolpaths(
                 for item in component_debug
                 if int(item.get("area_px", 0)) <= 4 and any(str((path.metadata or {}).get("source_region_id", "")) == f"component_{int(item['component_id']):03d}" for path in final_paths if path.kind == "outline")
             ))
-        outline_footprint = _paths_footprint_union(outline_paths, pen_radius_mm=pen_radius_mm)
+        outline_footprint = _paths_footprint_union(actual_outline_paths, pen_radius_mm=pen_radius_mm)
         outline_overflow_geom = (
             outline_footprint.difference(printable_geometry)
             if printable_geometry is not None and not getattr(printable_geometry, "is_empty", True) and outline_footprint is not None and not getattr(outline_footprint, "is_empty", True)
@@ -3424,15 +3467,15 @@ def plan_coverage_first_toolpaths(
             "outline_centerline_offset_mm": float(pen_radius_mm),
             "pen_radius_mm": float(pen_radius_mm),
             "outline_component_count_input": int(len(printable_parts)) if use_source_geometry_outlines else int(len(component_ids)),
-            "outline_component_count_output": int(len(outline_component_labels)),
+            "outline_component_count_output": int(len(actual_outline_component_labels)),
             "outline_paths_generated": int(outline_paths_generated),
             "outline_paths_dropped": 0,
             "outline_drop_reasons": {},
             "thin_components_outlined": int(thin_components_outlined),
             "small_components_outlined": int(small_components_outlined),
             "outline_total_length_mm": float(outline_total_length_mm),
-            "outline_paths_using_inset": int(outline_paths_generated),
-            "outline_paths_using_detail_fallback": int(collapsed_outline_components),
+            "outline_paths_using_inset": int(len(explicit_outline_paths)),
+            "outline_paths_using_detail_fallback": int(sum(1 for path in actual_outline_paths if path.kind != "outline")),
             "collapsed_outline_components": int(collapsed_outline_components),
             "outline_overflow_area_mm2": float(outline_overflow_area_mm2),
             "max_outline_overflow_mm": float(max_outline_overflow_mm),
@@ -3496,10 +3539,10 @@ def plan_coverage_first_toolpaths(
         }
         infill_footprint = _paths_footprint_union((path for path in final_paths if path.kind == "fill-infill"), pen_radius_mm=pen_radius_mm)
         pre_clamp_infill_footprint = _paths_footprint_union((path for path in pre_endpoint_clamp_final_paths if path.kind == "fill-infill"), pen_radius_mm=pen_radius_mm)
-        outline_cleanup_area = printable_geometry.boundary.buffer(pen_radius_mm, cap_style=1, join_style=1) if printable_geometry is not None and not getattr(printable_geometry, "is_empty", True) else Polygon()
+        actual_outline_paths = _actual_outline_centerline_paths(final_paths)
+        outline_cleanup_area = _paths_footprint_union(actual_outline_paths, pen_radius_mm=pen_radius_mm)
         coverage_report["infill_outline_overlap_area_mm2"] = float(infill_footprint.intersection(outline_cleanup_area).area) if not infill_footprint.is_empty and not outline_cleanup_area.is_empty else 0.0
-        outline_paths = [path for path in final_paths if path.kind == "outline"]
-        outline_footprint = _paths_footprint_union(outline_paths, pen_radius_mm=pen_radius_mm)
+        outline_footprint = _paths_footprint_union(actual_outline_paths, pen_radius_mm=pen_radius_mm)
         outline_limit_area = printable_geometry.union(outline_footprint) if printable_geometry is not None and not getattr(printable_geometry, "is_empty", True) else outline_footprint
         coverage_report["infill_beyond_outline_before_mm2"] = _infill_beyond_outline_area_mm2(pre_endpoint_clamp_final_paths, allowed_geom=outline_limit_area, pen_radius_mm=pen_radius_mm)
         coverage_report["infill_beyond_outline_after_mm2"] = _infill_beyond_outline_area_mm2(final_paths, allowed_geom=outline_limit_area, pen_radius_mm=pen_radius_mm)
