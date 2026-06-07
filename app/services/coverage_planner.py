@@ -2049,6 +2049,409 @@ def _score_candidate(
     }
 
 
+def _path_centerline_mask(
+    path: Toolpath,
+    *,
+    shape: tuple[int, int],
+    current_to_source_matrix: tuple[float, float, float, float, float, float],
+) -> np.ndarray:
+    mask = np.zeros(shape, dtype=np.uint8)
+    if len(path.points) < 2:
+        return mask
+    mapped = [pipeline_core.apply_svg_matrix(point, current_to_source_matrix) for point in path.points]
+    for start, end in zip(mapped, mapped[1:]):
+        cv2.line(
+            mask,
+            (int(round(start.x)), int(round(start.y))),
+            (int(round(end.x)), int(round(end.y))),
+            255,
+            1,
+            lineType=cv2.LINE_AA,
+        )
+    return mask
+
+
+def _candidate_centeredness_against_geometry(path: Toolpath, geometry: Any) -> float:
+    if geometry is None or getattr(geometry, "is_empty", True) or len(path.points) < 2:
+        return 0.0
+    try:
+        boundary = geometry.boundary
+    except Exception:
+        return 0.0
+    if boundary is None or getattr(boundary, "is_empty", True):
+        return 0.0
+    samples = path.points
+    if len(samples) > 24:
+        step = max(1, int(round(len(samples) / 24)))
+        samples = [samples[index] for index in range(0, len(samples), step)]
+    distances: list[float] = []
+    for pt in samples:
+        try:
+            distances.append(float(ShapelyPoint(float(pt.x), float(pt.y)).distance(boundary)))
+        except Exception:
+            continue
+    if not distances:
+        return 0.0
+    return float(sum(distances) / max(1, len(distances)))
+
+
+def _repair_candidate_audit(
+    candidate: Toolpath,
+    *,
+    current_painted: np.ndarray,
+    target_mask: np.ndarray,
+    allowed_mask: np.ndarray,
+    safe_centerline_mask: np.ndarray,
+    boundary_band_mask: np.ndarray,
+    current_to_source_matrix: tuple[float, float, float, float, float, float],
+    pen_radius_px: int,
+    component_geometry: Any | None,
+    source: str,
+    repair_mode: str,
+    component_id: int | None,
+) -> dict[str, Any]:
+    candidate_mask = _path_points_to_mask(
+        [candidate],
+        shape=target_mask.shape,
+        current_to_source_matrix=current_to_source_matrix,
+        pen_radius_px=pen_radius_px,
+    )
+    candidate_bool = candidate_mask > 0
+    current_bool = current_painted > 0
+    target_bool = target_mask > 0
+    allowed_bool = allowed_mask > 0
+    safe_centerline_bool = safe_centerline_mask > 0
+    boundary_bool = boundary_band_mask > 0
+    centerline_mask = _path_centerline_mask(
+        candidate,
+        shape=target_mask.shape,
+        current_to_source_matrix=current_to_source_matrix,
+    )
+    centerline_bool = centerline_mask > 0
+    new_expected_pixels = int(np.count_nonzero(candidate_bool & target_bool & ~current_bool))
+    redundant_pixels = int(np.count_nonzero(candidate_bool & target_bool & current_bool))
+    overflow_pixels = int(np.count_nonzero(candidate_bool & ~allowed_bool))
+    boundary_overflow_pixels = int(np.count_nonzero(candidate_bool & ~allowed_bool & boundary_bool))
+    centerline_violation_pixels = int(np.count_nonzero(centerline_bool & ~safe_centerline_bool))
+    centeredness_mm = float(_candidate_centeredness_against_geometry(candidate, component_geometry))
+    classification = "reject-useless-or-overflowing"
+    if repair_mode == "normal-safe-repair":
+        if (
+            new_expected_pixels > 0
+            and overflow_pixels == 0
+            and boundary_overflow_pixels == 0
+            and centerline_violation_pixels == 0
+        ):
+            classification = "normal-safe-repair"
+    else:
+        if (
+            new_expected_pixels > 0
+            and centeredness_mm >= 0.06
+            and boundary_overflow_pixels <= max(4, int(round(new_expected_pixels * 0.10)))
+            and centerline_violation_pixels <= max(6, int(round(new_expected_pixels * 0.20)))
+        ):
+            classification = "thin-collapsed-detail-repair"
+    return {
+        "candidate": candidate,
+        "source": str(source),
+        "repair_mode": str(repair_mode),
+        "component_id": int(component_id) if component_id is not None else None,
+        "new_expected_pixels": int(new_expected_pixels),
+        "redundant_pixels": int(redundant_pixels),
+        "overflow_pixels": int(overflow_pixels),
+        "boundary_overflow_pixels": int(boundary_overflow_pixels),
+        "centerline_violation_pixels": int(centerline_violation_pixels),
+        "centeredness_mm": float(centeredness_mm),
+        "classification": classification,
+    }
+
+
+def _medial_repair_candidates_for_component(
+    component_mask: np.ndarray,
+    *,
+    origin_x: float,
+    origin_y: float,
+    px_per_mm: float,
+    component_id: int,
+) -> list[Toolpath]:
+    skeleton = _skeletonize_mask(component_mask)
+    segments = sorted(_skeleton_to_segments(skeleton), key=len, reverse=True)
+    candidates: list[Toolpath] = []
+    for segment in segments[:8]:
+        candidate = _pixel_path_to_toolpath(
+            [(float(x), float(y)) for y, x in segment],
+            origin_x=origin_x,
+            origin_y=origin_y,
+            px_per_mm=px_per_mm,
+            kind="coverage_centerline",
+            source="coverage_repair_candidate",
+            component_id=component_id,
+            metadata={
+                "repair_candidate": True,
+                "repair_candidate_type": "medial_skeleton",
+                "centerline_generation_mode": "medial-skeleton",
+                "generated_from_safe_mask": False,
+                "safe_centerline_inset_mm": 0.0,
+            },
+            closed=False,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    return candidates
+
+
+def _medial_repair_candidates_for_region_blob(
+    component_mask: np.ndarray,
+    focus_blob_mask: np.ndarray,
+    *,
+    origin_x: float,
+    origin_y: float,
+    px_per_mm: float,
+    component_id: int,
+) -> list[Toolpath]:
+    if component_mask is None or component_mask.size == 0 or not np.any(component_mask > 0):
+        return []
+    if focus_blob_mask is None or focus_blob_mask.size == 0 or not np.any(focus_blob_mask > 0):
+        return []
+    skeleton = _skeletonize_mask(component_mask)
+    segments = sorted(_skeleton_to_segments(skeleton), key=len, reverse=True)
+    focus_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    expanded_focus = cv2.dilate((focus_blob_mask > 0).astype(np.uint8), focus_kernel, iterations=1) > 0
+    candidates: list[tuple[int, int, Toolpath]] = []
+    for segment in segments:
+        overlap = 0
+        for y, x in segment:
+            if 0 <= y < expanded_focus.shape[0] and 0 <= x < expanded_focus.shape[1] and expanded_focus[y, x]:
+                overlap += 1
+        if overlap <= 0:
+            continue
+        candidate = _pixel_path_to_toolpath(
+            [(float(x), float(y)) for y, x in segment],
+            origin_x=origin_x,
+            origin_y=origin_y,
+            px_per_mm=px_per_mm,
+            kind="coverage_centerline",
+            source="coverage_repair_candidate",
+            component_id=component_id,
+            metadata={
+                "repair_candidate": True,
+                "repair_candidate_type": "medial_region_skeleton",
+                "centerline_generation_mode": "medial-region-skeleton",
+                "generated_from_safe_mask": False,
+                "safe_centerline_inset_mm": 0.0,
+            },
+            closed=False,
+        )
+        if candidate is not None:
+            candidates.append((int(overlap), int(len(segment)), candidate))
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [candidate for _overlap, _length, candidate in candidates[:8]]
+
+
+def _optimized_final_repair_paths(
+    *,
+    all_paths: list[Toolpath],
+    target_mask: np.ndarray,
+    allowed_mask: np.ndarray,
+    printable_geometry: Any,
+    current_to_source: tuple[float, float, float, float, float, float],
+    origin_x: float,
+    origin_y: float,
+    px_per_mm: float,
+    line_width_mm: float,
+    simplify_tolerance_mm: float,
+) -> tuple[list[Toolpath], list[Toolpath], list[dict[str, Any]]]:
+    base_paths = [path for path in all_paths if not _is_repair_path(path)]
+    existing_repairs = [path for path in all_paths if _is_repair_path(path)]
+    pen_radius_mm = float(line_width_mm) * 0.5
+    pen_radius_px = max(1, int(round(pen_radius_mm * px_per_mm)))
+    safe_centerline_mask = cv2.erode(
+        target_mask,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (pen_radius_px * 2 + 1, pen_radius_px * 2 + 1)),
+        iterations=1,
+    )
+    boundary_band_px = max(1, pen_radius_px + 1)
+    boundary_band_mask = cv2.morphologyEx(
+        target_mask,
+        cv2.MORPH_GRADIENT,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (boundary_band_px * 2 + 1, boundary_band_px * 2 + 1)),
+    )
+    base_painted = _path_points_to_mask(
+        base_paths,
+        shape=target_mask.shape,
+        current_to_source_matrix=current_to_source,
+        pen_radius_px=pen_radius_px,
+    )
+    audit_rows: list[dict[str, Any]] = []
+    for repair_path in existing_repairs:
+        audit_rows.append(_repair_candidate_audit(
+            repair_path,
+            current_painted=base_painted,
+            target_mask=target_mask,
+            allowed_mask=allowed_mask,
+            safe_centerline_mask=safe_centerline_mask,
+            boundary_band_mask=boundary_band_mask,
+            current_to_source_matrix=current_to_source,
+            pen_radius_px=pen_radius_px,
+            component_geometry=None,
+            source=str(repair_path.source or ""),
+            repair_mode=str((repair_path.metadata or {}).get("repair_mode", "unknown")),
+            component_id=(repair_path.metadata or {}).get("component_id"),
+        ))
+
+    rebuilt_repairs: list[Toolpath] = []
+    current_painted = np.asarray(base_painted).copy()
+    residual_mask = ((target_mask > 0) & ~(current_painted > 0)).astype(np.uint8)
+    if not np.any(residual_mask):
+        return existing_repairs, audit_rows, audit_rows
+
+    safe_printable_geometry = _strict_safe_centerline_geometry(printable_geometry, inset_mm=pen_radius_mm)
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(residual_mask, connectivity=8)
+    missed_ids = [index for index in range(1, int(component_count)) if int(stats[index, cv2.CC_STAT_AREA]) > 0]
+    missed_ids.sort(key=lambda idx: int(stats[idx, cv2.CC_STAT_AREA]), reverse=True)
+    candidate_rows: list[dict[str, Any]] = []
+    for missed_id in missed_ids[:80]:
+        component_mask = (labels == missed_id).astype(np.uint8)
+        if not np.any(component_mask > 0):
+            continue
+        component_geometry = _component_mask_to_geometry(
+            component_mask * 255,
+            origin_x=origin_x,
+            origin_y=origin_y,
+            px_per_mm=px_per_mm,
+        )
+        safe_component_geometry = None
+        if (
+            component_geometry is not None
+            and not getattr(component_geometry, "is_empty", True)
+            and safe_printable_geometry is not None
+            and not getattr(safe_printable_geometry, "is_empty", True)
+        ):
+            try:
+                safe_component_geometry = component_geometry.intersection(safe_printable_geometry)
+            except Exception:
+                safe_component_geometry = component_geometry.buffer(0).intersection(safe_printable_geometry.buffer(0))
+        component_candidates: list[tuple[str, Toolpath, Any | None]] = []
+        if safe_component_geometry is not None and not getattr(safe_component_geometry, "is_empty", True):
+            angle_deg = _component_fill_angle(component_mask)
+            safe_paths, _stats = _scanline_fill_paths(
+                component_geometry,
+                angle_deg=angle_deg,
+                spacing_mm=max(0.25, line_width_mm),
+                line_width_mm=line_width_mm,
+                origin_x=origin_x,
+                origin_y=origin_y,
+                px_per_mm=px_per_mm,
+                component_id=missed_id,
+                allow_connectors=False,
+                max_overflow_mm=0.0,
+                fill_mode_label="repair_safe_fill",
+                intersection_geometry=safe_component_geometry,
+                endpoint_limit_geometry=safe_component_geometry,
+                centerline_generation_mode="safe-mask",
+                safe_centerline_inset_mm=pen_radius_mm,
+            )
+            for candidate in safe_paths[:8]:
+                candidate.metadata = {
+                    **dict(candidate.metadata or {}),
+                    "repair_mode": "normal-safe-repair",
+                    "component_id": int(missed_id),
+                    "generated_from_safe_mask": True,
+                    "safe_centerline_inset_mm": float(pen_radius_mm),
+                }
+                component_candidates.append(("normal-safe-repair", candidate, safe_component_geometry))
+        else:
+            for candidate in _medial_repair_candidates_for_component(
+                component_mask,
+                origin_x=origin_x,
+                origin_y=origin_y,
+                px_per_mm=px_per_mm,
+                component_id=missed_id,
+            ):
+                candidate.metadata = {
+                    **dict(candidate.metadata or {}),
+                    "repair_mode": "thin-collapsed-detail-repair",
+                    "component_id": int(missed_id),
+                }
+                component_candidates.append(("thin-collapsed-detail-repair", candidate, component_geometry))
+
+        for repair_mode, candidate, candidate_geometry in component_candidates:
+            audit_row = _repair_candidate_audit(
+                candidate,
+                current_painted=current_painted,
+                target_mask=target_mask,
+                allowed_mask=allowed_mask,
+                safe_centerline_mask=safe_centerline_mask,
+                boundary_band_mask=boundary_band_mask,
+                current_to_source_matrix=current_to_source,
+                pen_radius_px=pen_radius_px,
+                component_geometry=candidate_geometry,
+                source=REPAIR_PATH_SOURCE,
+                repair_mode=repair_mode,
+                component_id=missed_id,
+            )
+            candidate_rows.append(audit_row)
+            if audit_row["classification"] == "reject-useless-or-overflowing":
+                continue
+            if audit_row["new_expected_pixels"] <= audit_row["redundant_pixels"]:
+                continue
+            exported_candidate = _export_repair_toolpath(
+                candidate,
+                strategy_key=str(repair_mode),
+                blob_id=int(missed_id),
+            )
+            exported_candidate.metadata = {
+                **dict(exported_candidate.metadata or {}),
+                "repair_mode": repair_mode,
+                "component_id": int(missed_id),
+            }
+            candidate_mask = _path_points_to_mask(
+                [exported_candidate],
+                shape=target_mask.shape,
+                current_to_source_matrix=current_to_source,
+                pen_radius_px=pen_radius_px,
+            )
+            current_painted = np.maximum(current_painted, candidate_mask)
+            rebuilt_repairs.append(exported_candidate)
+        residual_mask = ((target_mask > 0) & ~(current_painted > 0)).astype(np.uint8)
+        if not np.any(residual_mask):
+            break
+
+    repaired_paths = base_paths + rebuilt_repairs
+    repaired_mask = _path_points_to_mask(
+        repaired_paths,
+        shape=target_mask.shape,
+        current_to_source_matrix=current_to_source,
+        pen_radius_px=pen_radius_px,
+    )
+    original_mask = _path_points_to_mask(
+        base_paths + existing_repairs,
+        shape=target_mask.shape,
+        current_to_source_matrix=current_to_source,
+        pen_radius_px=pen_radius_px,
+    )
+    repaired_metrics = _painted_metrics(
+        target_mask=target_mask,
+        painted_mask=repaired_mask,
+        allowed_mask=allowed_mask,
+        px_per_mm=px_per_mm,
+    )
+    original_metrics = _painted_metrics(
+        target_mask=target_mask,
+        painted_mask=original_mask,
+        allowed_mask=allowed_mask,
+        px_per_mm=px_per_mm,
+    )
+    if (
+        float(repaired_metrics["coverage_percent"]) + 1e-9 < 99.0
+        or float(repaired_metrics["painted_inside_area_mm2"]) + 1e-9 < float(original_metrics["painted_inside_area_mm2"])
+    ):
+        return existing_repairs, audit_rows, candidate_rows
+    if float(repaired_metrics["overflow_area_mm2"]) > float(original_metrics["overflow_area_mm2"]) + 1e-9:
+        return existing_repairs, audit_rows, candidate_rows
+    return rebuilt_repairs, audit_rows, candidate_rows
+
+
 def _generate_debug_artifacts(
     *,
     output_dir: Path,
@@ -3768,6 +4171,40 @@ def plan_coverage_first_toolpaths(
                         repair_candidates_rejected += 1
                         repair_rejection_reason_counts["global_repair_not_improving"] += 1
 
+    optimized_repairs, repair_audit_rows, repair_rebuild_candidate_rows = _optimized_final_repair_paths(
+        all_paths=all_paths,
+        target_mask=target_mask,
+        allowed_mask=allowed_mask,
+        printable_geometry=printable_geometry,
+        current_to_source=current_to_source,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        px_per_mm=px_per_mm,
+        line_width_mm=line_width_mm,
+        simplify_tolerance_mm=simplify_tolerance_mm,
+    )
+    non_repair_paths = [path for path in all_paths if not _is_repair_path(path)]
+    all_paths = [*non_repair_paths, *optimized_repairs]
+    pre_endpoint_clamp_paths = [path for path in pre_endpoint_clamp_paths if not _is_repair_path(path)]
+    pre_endpoint_clamp_paths.extend(_clone_toolpath(path) for path in optimized_repairs)
+    accepted_repairs = list(optimized_repairs)
+    if debug is not None:
+        debug["final_repair_audit_rows"] = [
+            {key: value for key, value in row.items() if key != "candidate"}
+            for row in repair_audit_rows
+        ]
+        debug["final_repair_rebuild_candidate_rows"] = [
+            {key: value for key, value in row.items() if key != "candidate"}
+            for row in repair_rebuild_candidate_rows
+        ]
+        debug["final_repair_audit_summary"] = {
+            "audited_repair_count": int(len(repair_audit_rows)),
+            "optimized_repair_count": int(len(optimized_repairs)),
+            "normal_safe_repair_count": int(sum(1 for path in optimized_repairs if str((path.metadata or {}).get("repair_mode", "")) == "normal-safe-repair")),
+            "thin_collapsed_detail_repair_count": int(sum(1 for path in optimized_repairs if str((path.metadata or {}).get("repair_mode", "")) == "thin-collapsed-detail-repair")),
+            "rejected_existing_repair_count": int(sum(1 for row in repair_audit_rows if str(row.get("classification", "")) == "reject-useless-or-overflowing")),
+        }
+
     outline_fallback_paths = [
         _promote_outline_fallback_path(path)
         for path in all_paths
@@ -3895,9 +4332,24 @@ def plan_coverage_first_toolpaths(
             best_candidate: Toolpath | None = None
             best_strategy = ""
             best_blob_id: int | None = None
-            best_gain = 0.0
-            for blob_row in state["blob_rows"]:
-                if _equivalent_diameter_mm(float(blob_row.get("area_mm2", 0.0))) <= largest_allowed_missed_blob_equivalent_diameter_mm:
+            best_score = float("-inf")
+            pen_radius_px_local = max(1, int(round(pen_radius_mm * float(state["region_px_per_mm"]))))
+            safe_region_mask = cv2.erode(
+                (np.asarray(state["region_mask"]).astype(np.uint8) * 255),
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (pen_radius_px_local * 2 + 1, pen_radius_px_local * 2 + 1)),
+                iterations=1,
+            )
+            boundary_band_mask = cv2.morphologyEx(
+                (np.asarray(state["region_mask"]).astype(np.uint8) * 255),
+                cv2.MORPH_GRADIENT,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ((pen_radius_px_local + 1) * 2 + 1, (pen_radius_px_local + 1) * 2 + 1)),
+            )
+            region_safe_geometry = _strict_safe_centerline_geometry(
+                state["region_geometry"],
+                inset_mm=pen_radius_mm,
+            )
+            for blob_row in state["blob_rows"][:8]:
+                if float(blob_row.get("area_mm2", 0.0)) <= max(1e-6, min_repair_blob_area_mm2 * 0.25):
                     continue
                 blob_id = int(blob_row.get("blob_id", 0))
                 blob_mask = np.asarray(blob_row["mask"], dtype=np.uint8)
@@ -3907,7 +4359,46 @@ def plan_coverage_first_toolpaths(
                     origin_y=float(info["origin_y"]),
                     px_per_mm=float(info["px_per_mm"]),
                 )
-                candidate_groups = defaultdict(list)
+                candidate_specs: list[tuple[str, str, Toolpath, Any | None]] = []
+                safe_blob_geometry = None
+                if (
+                    blob_geometry is not None
+                    and not getattr(blob_geometry, "is_empty", True)
+                    and region_safe_geometry is not None
+                    and not getattr(region_safe_geometry, "is_empty", True)
+                ):
+                    try:
+                        safe_blob_geometry = blob_geometry.intersection(region_safe_geometry)
+                    except Exception:
+                        safe_blob_geometry = blob_geometry.buffer(0).intersection(region_safe_geometry.buffer(0))
+                if safe_blob_geometry is not None and not getattr(safe_blob_geometry, "is_empty", True):
+                    safe_paths, _safe_stats = _scanline_fill_paths(
+                        blob_geometry,
+                        angle_deg=float(info["angle_deg"]),
+                        spacing_mm=max(0.25, line_width_mm),
+                        line_width_mm=line_width_mm,
+                        origin_x=float(info["origin_x"]),
+                        origin_y=float(info["origin_y"]),
+                        px_per_mm=float(info["px_per_mm"]),
+                        component_id=int(info["component_id"]),
+                        allow_connectors=False,
+                        max_overflow_mm=0.0,
+                        fill_mode_label="post_final_safe_repair",
+                        intersection_geometry=safe_blob_geometry,
+                        endpoint_limit_geometry=safe_blob_geometry,
+                        centerline_generation_mode="safe-mask",
+                        safe_centerline_inset_mm=pen_radius_mm,
+                    )
+                    for candidate in safe_paths[:6]:
+                        candidate.metadata = {
+                            **dict(candidate.metadata or {}),
+                            "repair_mode": "normal-safe-repair",
+                            "component_id": int(info["component_id"]),
+                            "centerline_generation_mode": "safe-mask",
+                            "generated_from_safe_mask": True,
+                            "safe_centerline_inset_mm": float(pen_radius_mm),
+                        }
+                        candidate_specs.append(("normal-safe-repair", "safe_serpentine", candidate, safe_blob_geometry))
                 for strategy_key, candidate in _detail_repair_candidates_for_blob(
                     blob_mask,
                     blob_geometry=blob_geometry,
@@ -3923,83 +4414,244 @@ def plan_coverage_first_toolpaths(
                     region_equivalent_diameter_mm=float(info["equivalent_diameter_mm"]),
                     main_angle_deg=float(info["angle_deg"]),
                 ):
-                    candidate_groups[strategy_key].append(candidate)
-                for strategy_key in [
-                    "serpentine",
-                    "contour_offset",
-                    "parallel_stroke",
-                    "perpendicular_stroke",
-                    "centerline_fallback",
-                ]:
-                    for candidate in candidate_groups.get(strategy_key, []):
-                        candidate_line = LineString([(point.x, point.y) for point in candidate.points])
-                        clipped_geom = candidate_line.intersection(state["region_allowed_geom"])
-                        clipped_parts = [
-                            part
-                            for part in pipeline_core.extract_lines(clipped_geom)
-                            if not getattr(part, "is_empty", True) and float(part.length) > 1e-9
-                        ]
-                        if not clipped_parts:
-                            continue
-                        best_part = max(clipped_parts, key=lambda part: float(part.length))
-                        clipped_points = pipeline_core.simplify_segment_points(
-                            [Point(float(x), float(y)) for x, y in best_part.coords],
-                            simplify_tolerance_mm,
-                            False,
+                    derived_mode = "normal-safe-repair" if strategy_key == "serpentine" else "thin-collapsed-detail-repair"
+                    candidate.metadata = {
+                        **dict(candidate.metadata or {}),
+                        "repair_mode": derived_mode,
+                        "component_id": int(info["component_id"]),
+                        "centerline_generation_mode": "safe-mask" if strategy_key == "serpentine" else str((candidate.metadata or {}).get("centerline_generation_mode", "raw-mask")),
+                        "generated_from_safe_mask": bool(strategy_key == "serpentine"),
+                        "safe_centerline_inset_mm": float(pen_radius_mm if strategy_key == "serpentine" else 0.0),
+                    }
+                    candidate_specs.append((derived_mode, f"detail_blob_{strategy_key}", candidate, safe_blob_geometry if strategy_key == "serpentine" else blob_geometry))
+                for candidate in _medial_repair_candidates_for_component(
+                    blob_mask,
+                    origin_x=float(info["origin_x"]),
+                    origin_y=float(info["origin_y"]),
+                    px_per_mm=float(info["px_per_mm"]),
+                    component_id=int(info["component_id"]),
+                ):
+                    candidate.metadata = {
+                        **dict(candidate.metadata or {}),
+                        "repair_mode": "thin-collapsed-detail-repair",
+                        "component_id": int(info["component_id"]),
+                        "centerline_generation_mode": "medial-skeleton",
+                        "generated_from_safe_mask": False,
+                        "safe_centerline_inset_mm": 0.0,
+                    }
+                    candidate_specs.append(("thin-collapsed-detail-repair", "medial_skeleton", candidate, blob_geometry))
+                for candidate in _medial_repair_candidates_for_region_blob(
+                    np.asarray(info["mask"], dtype=np.uint8),
+                    blob_mask,
+                    origin_x=float(info["origin_x"]),
+                    origin_y=float(info["origin_y"]),
+                    px_per_mm=float(info["px_per_mm"]),
+                    component_id=int(info["component_id"]),
+                ):
+                    candidate.metadata = {
+                        **dict(candidate.metadata or {}),
+                        "repair_mode": "thin-collapsed-detail-repair",
+                        "component_id": int(info["component_id"]),
+                        "centerline_generation_mode": "medial-region-skeleton",
+                        "generated_from_safe_mask": False,
+                        "safe_centerline_inset_mm": 0.0,
+                    }
+                    candidate_specs.append(("thin-collapsed-detail-repair", "medial_region_skeleton", candidate, info["geometry"]))
+                for repair_mode, strategy_key, candidate, candidate_geometry in candidate_specs:
+                    candidate_for_trial = candidate
+                    if repair_mode == "normal-safe-repair":
+                        candidate_for_trial = _clip_toolpath_to_geometry(
+                            candidate,
+                            allowed_geom=safe_blob_geometry,
+                            simplify_tolerance_mm=simplify_tolerance_mm,
                         )
-                        if len(clipped_points) < 2:
+                        if candidate_for_trial is None:
                             continue
-                        clipped_metadata = {
+                        candidate_for_trial.metadata = {
                             **dict(candidate.metadata or {}),
-                            "centerline_generation_mode": "raw-mask",
-                            "generated_from_safe_mask": False,
-                            "safe_centerline_inset_mm": 0.0,
+                            **dict(candidate_for_trial.metadata or {}),
                         }
-                        clipped_candidate = Toolpath(
-                            points=clipped_points,
-                            kind=candidate.kind,
-                            closed=False,
-                            source=candidate.source,
-                            region_id=candidate.region_id,
-                            metadata=clipped_metadata,
-                        )
-                        trial_candidate = _export_repair_toolpath(
-                            clipped_candidate,
-                            strategy_key=strategy_key,
-                            blob_id=blob_id,
-                        )
-                        trial_state = _detail_region_state([*paths_for_state, trial_candidate], info)
-                        gain = float(trial_state["metrics"]["painted_inside_area_mm2"]) - float(state["metrics"]["painted_inside_area_mm2"])
-                        if trial_state["visible_blob_count"] > state["visible_blob_count"]:
-                            continue
-                        if trial_state["blob_summary"]["largest_missed_blob_equivalent_diameter_mm"] > state["blob_summary"]["largest_missed_blob_equivalent_diameter_mm"] + 1e-9:
-                            continue
-                        if gain <= 1e-6 and not _state_satisfies_contract(trial_state):
-                            continue
-                        if gain > best_gain or (best_candidate is None and _state_satisfies_contract(trial_state)):
-                            best_candidate = trial_candidate
-                            best_strategy = strategy_key
-                            best_blob_id = blob_id
-                            best_gain = max(best_gain, gain)
-                    if best_candidate is not None:
-                        break
+                    audit_row = _repair_candidate_audit(
+                        candidate_for_trial,
+                        current_painted=np.asarray(state["painted"]),
+                        target_mask=(np.asarray(state["region_mask"]).astype(np.uint8) * 255),
+                        allowed_mask=(np.asarray(state["region_mask"]).astype(np.uint8) * 255),
+                        safe_centerline_mask=safe_region_mask,
+                        boundary_band_mask=boundary_band_mask,
+                        current_to_source_matrix=state["region_current_to_source"],
+                        pen_radius_px=pen_radius_px_local,
+                        component_geometry=candidate_geometry,
+                        source=REPAIR_PATH_SOURCE,
+                        repair_mode=repair_mode,
+                        component_id=int(info["component_id"]),
+                    )
+                    repair_rebuild_candidate_rows.append(audit_row)
+                    if str(audit_row["classification"]) == "reject-useless-or-overflowing":
+                        continue
+                    trial_candidate = _export_repair_toolpath(
+                        candidate_for_trial,
+                        strategy_key=strategy_key,
+                        blob_id=blob_id,
+                    )
+                    trial_candidate.metadata = {
+                        **dict(trial_candidate.metadata or {}),
+                        "repair_mode": repair_mode,
+                        "component_id": int(info["component_id"]),
+                        "centerline_generation_mode": str((candidate_for_trial.metadata or {}).get("centerline_generation_mode", "")),
+                        "generated_from_safe_mask": bool((candidate_for_trial.metadata or {}).get("generated_from_safe_mask", False)),
+                        "safe_centerline_inset_mm": float((candidate_for_trial.metadata or {}).get("safe_centerline_inset_mm", 0.0) or 0.0),
+                    }
+                    trial_state = _detail_region_state([*paths_for_state, trial_candidate], info)
+                    gain = float(trial_state["metrics"]["painted_inside_area_mm2"]) - float(state["metrics"]["painted_inside_area_mm2"])
+                    if trial_state["visible_blob_count"] > state["visible_blob_count"]:
+                        continue
+                    if trial_state["blob_summary"]["largest_missed_blob_equivalent_diameter_mm"] > state["blob_summary"]["largest_missed_blob_equivalent_diameter_mm"] + 1e-9:
+                        continue
+                    if gain <= 1e-6 and not _state_satisfies_contract(trial_state):
+                        continue
+                    candidate_score = (
+                        float(audit_row["new_expected_pixels"]) * 10.0
+                        - float(audit_row["redundant_pixels"]) * 0.5
+                        - float(audit_row["overflow_pixels"]) * 20.0
+                        - float(audit_row["centerline_violation_pixels"]) * 8.0
+                        + (250.0 if repair_mode == "thin-collapsed-detail-repair" else 100.0)
+                    )
+                    if _state_satisfies_contract(trial_state):
+                        candidate_score += 500.0
+                    if candidate_score > best_score:
+                        best_candidate = trial_candidate
+                        best_strategy = strategy_key
+                        best_blob_id = blob_id
+                        best_score = candidate_score
             return best_candidate, best_strategy, best_blob_id
 
         final_paths_before_contract_repair = [pipeline_core.clone_toolpath(path) for path in final_paths if not _is_repair_path(path)]
-        reconciled_final_paths = [pipeline_core.clone_toolpath(path) for path in final_paths]
+        reconciled_final_paths = [pipeline_core.clone_toolpath(path) for path in final_paths_before_contract_repair]
         post_final_repair_candidates_generated = 0
         post_final_repair_candidates_accepted = 0
-        preexisting_final_repair_paths = [pipeline_core.clone_toolpath(path) for path in final_paths if _is_repair_path(path)]
+        preexisting_final_repair_paths: list[Toolpath] = []
+        original_final_repair_paths = [pipeline_core.clone_toolpath(path) for path in final_paths if _is_repair_path(path)]
         fillable_detail_region_labels = {
             str(row.get("region_id", ""))
             for row in detail_region_rows
             if row.get("fillable", False)
         }
-        existing_detail_region_repair_labels = {
-            str((path.metadata or {}).get("source_region_id", ""))
-            for path in preexisting_final_repair_paths
-            if str((path.metadata or {}).get("source_region_id", "")) in fillable_detail_region_labels
+        existing_detail_region_repair_labels: set[str] = set()
+        detail_region_info_by_label = {
+            f"detail_region_{int(info['component_id']):03d}": info
+            for info, row in zip(detail_region_infos, detail_region_rows)
+            if row.get("fillable", False)
         }
+        for original_repair in original_final_repair_paths:
+            metadata = dict(original_repair.metadata or {})
+            region_label = str(metadata.get("source_region_id", ""))
+            info = detail_region_info_by_label.get(region_label)
+            if info is None:
+                component_id = metadata.get("component_id")
+                if component_id is not None:
+                    info = detail_region_info_by_label.get(f"detail_region_{int(component_id):03d}")
+            if info is None:
+                continue
+            state = _detail_region_state(reconciled_final_paths, info)
+            region_pen_radius_px = pen_radius_px_by_region[int(info["component_id"])]
+            focus_mask = _path_points_to_mask(
+                [original_repair],
+                shape=np.asarray(info["mask"]).shape,
+                current_to_source_matrix=state["region_current_to_source"],
+                pen_radius_px=max(1, int(round(region_pen_radius_px * 0.4))),
+            )
+            safe_region_geometry = _strict_safe_centerline_geometry(info["geometry"], inset_mm=pen_radius_mm)
+            replacement_specs: list[tuple[str, str, Toolpath, Any | None]] = []
+            safe_replacement = _clip_toolpath_to_geometry(
+                original_repair,
+                allowed_geom=safe_region_geometry,
+                simplify_tolerance_mm=simplify_tolerance_mm,
+            )
+            if safe_replacement is not None and len(safe_replacement.points) >= 2:
+                safe_replacement.metadata = {
+                    **dict(safe_replacement.metadata or {}),
+                    "repair_mode": "normal-safe-repair",
+                    "component_id": int(info["component_id"]),
+                    "centerline_generation_mode": "safe-mask",
+                    "generated_from_safe_mask": True,
+                    "safe_centerline_inset_mm": float(pen_radius_mm),
+                }
+                replacement_specs.append(("normal-safe-repair", "safe_existing_repair", safe_replacement, safe_region_geometry))
+            for medial_candidate in _medial_repair_candidates_for_region_blob(
+                np.asarray(info["mask"], dtype=np.uint8),
+                (focus_mask > 0).astype(np.uint8),
+                origin_x=float(info["origin_x"]),
+                origin_y=float(info["origin_y"]),
+                px_per_mm=float(info["px_per_mm"]),
+                component_id=int(info["component_id"]),
+            ):
+                medial_candidate.metadata = {
+                    **dict(medial_candidate.metadata or {}),
+                    "repair_mode": "thin-collapsed-detail-repair",
+                    "component_id": int(info["component_id"]),
+                    "centerline_generation_mode": "medial-region-skeleton",
+                    "generated_from_safe_mask": False,
+                    "safe_centerline_inset_mm": 0.0,
+                }
+                replacement_specs.append(("thin-collapsed-detail-repair", "replace_existing_repair_medial", medial_candidate, info["geometry"]))
+            best_replacement: Toolpath | None = None
+            best_replacement_score = float("-inf")
+            for repair_mode, strategy_key, candidate, candidate_geometry in replacement_specs:
+                audit_row = _repair_candidate_audit(
+                    candidate,
+                    current_painted=np.asarray(state["painted"]),
+                    target_mask=(np.asarray(state["region_mask"]).astype(np.uint8) * 255),
+                    allowed_mask=(np.asarray(state["region_mask"]).astype(np.uint8) * 255),
+                    safe_centerline_mask=cv2.erode(
+                        (np.asarray(state["region_mask"]).astype(np.uint8) * 255),
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(1, int(round(pen_radius_mm * float(state["region_px_per_mm"])))) * 2 + 1, max(1, int(round(pen_radius_mm * float(state["region_px_per_mm"])))) * 2 + 1)),
+                        iterations=1,
+                    ),
+                    boundary_band_mask=cv2.morphologyEx(
+                        (np.asarray(state["region_mask"]).astype(np.uint8) * 255),
+                        cv2.MORPH_GRADIENT,
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ((max(1, int(round(pen_radius_mm * float(state["region_px_per_mm"])))) + 1) * 2 + 1, (max(1, int(round(pen_radius_mm * float(state["region_px_per_mm"])))) + 1) * 2 + 1)),
+                    ),
+                    current_to_source_matrix=state["region_current_to_source"],
+                    pen_radius_px=region_pen_radius_px,
+                    component_geometry=candidate_geometry,
+                    source=REPAIR_PATH_SOURCE,
+                    repair_mode=repair_mode,
+                    component_id=int(info["component_id"]),
+                )
+                repair_rebuild_candidate_rows.append(audit_row)
+                if str(audit_row["classification"]) == "reject-useless-or-overflowing":
+                    continue
+                replacement = _export_repair_toolpath(candidate, strategy_key=strategy_key)
+                replacement.metadata = {
+                    **dict(replacement.metadata or {}),
+                    "repair_mode": repair_mode,
+                    "component_id": int(info["component_id"]),
+                    "source_region_id": region_label,
+                    "centerline_generation_mode": str((candidate.metadata or {}).get("centerline_generation_mode", "")),
+                    "generated_from_safe_mask": bool((candidate.metadata or {}).get("generated_from_safe_mask", False)),
+                    "safe_centerline_inset_mm": float((candidate.metadata or {}).get("safe_centerline_inset_mm", 0.0) or 0.0),
+                }
+                trial_state = _detail_region_state([*reconciled_final_paths, replacement], info)
+                gain = float(trial_state["metrics"]["painted_inside_area_mm2"]) - float(state["metrics"]["painted_inside_area_mm2"])
+                if gain <= 1e-6 and not _state_satisfies_contract(trial_state):
+                    continue
+                replacement_score = (
+                    float(audit_row["new_expected_pixels"]) * 12.0
+                    - float(audit_row["redundant_pixels"]) * 0.5
+                    - float(audit_row["overflow_pixels"]) * 25.0
+                    - float(audit_row["centerline_violation_pixels"]) * 8.0
+                )
+                if replacement_score > best_replacement_score:
+                    best_replacement = replacement
+                    best_replacement_score = replacement_score
+            if best_replacement is not None:
+                reconciled_final_paths.append(best_replacement)
+                preexisting_final_repair_paths.append(pipeline_core.clone_toolpath(best_replacement))
+                existing_detail_region_repair_labels.add(region_label)
+                repair_candidates_generated += 1
+                repair_candidates_accepted += 1
+
         if len(existing_detail_region_repair_labels) < 4:
             thin_region_candidates = sorted(
                 (
@@ -4018,33 +4670,71 @@ def plan_coverage_first_toolpaths(
                 region_label = str(row.get("region_id", ""))
                 if region_label in existing_detail_region_repair_labels:
                     continue
-                region_paths = [
-                    path
-                    for path in final_paths_before_contract_repair
-                    if len(path.points) >= 2
-                    and path.kind in {"detail-trace", "fill-infill"}
-                    and str((path.metadata or {}).get("source_region_id", "")) == region_label
-                ]
-                if not region_paths:
+                region_state = _detail_region_state(reconciled_final_paths, info)
+                missed_focus_mask = ((np.asarray(region_state["region_mask"]) > 0) & ~(np.asarray(region_state["painted"]) > 0)).astype(np.uint8)
+                if not np.any(missed_focus_mask > 0):
                     continue
-                region_paths.sort(
-                    key=lambda path: (
-                        0 if path.kind == "detail-trace" else 1,
-                        -float(pipeline_core.segment_length(path.points)),
+                medial_candidates = _medial_repair_candidates_for_region_blob(
+                    np.asarray(info["mask"], dtype=np.uint8),
+                    missed_focus_mask,
+                    origin_x=float(info["origin_x"]),
+                    origin_y=float(info["origin_y"]),
+                    px_per_mm=float(info["px_per_mm"]),
+                    component_id=int(info["component_id"]),
+                )
+                if not medial_candidates:
+                    continue
+                best_backstop: Toolpath | None = None
+                best_backstop_score = float("-inf")
+                for candidate in medial_candidates:
+                    candidate.metadata = {
+                        **dict(candidate.metadata or {}),
+                        "source_region_id": region_label,
+                        "component_id": int(info["component_id"]),
+                        "repair_candidate_type": "thin_feature_backstop",
+                        "repair_candidate_angle_deg": float(info.get("angle_deg", 0.0)),
+                        "repair_mode": "thin-collapsed-detail-repair",
+                        "centerline_generation_mode": "medial-region-skeleton",
+                        "generated_from_safe_mask": False,
+                        "safe_centerline_inset_mm": 0.0,
+                    }
+                    backstop_audit = _repair_candidate_audit(
+                        candidate,
+                        current_painted=np.asarray(region_state["painted"]),
+                        target_mask=(np.asarray(region_state["region_mask"]).astype(np.uint8) * 255),
+                        allowed_mask=(np.asarray(region_state["region_mask"]).astype(np.uint8) * 255),
+                        safe_centerline_mask=cv2.erode(
+                            (np.asarray(region_state["region_mask"]).astype(np.uint8) * 255),
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(1, int(round(pen_radius_mm * float(region_state["region_px_per_mm"])))) * 2 + 1, max(1, int(round(pen_radius_mm * float(region_state["region_px_per_mm"])))) * 2 + 1)),
+                            iterations=1,
+                        ),
+                        boundary_band_mask=cv2.morphologyEx(
+                            (np.asarray(region_state["region_mask"]).astype(np.uint8) * 255),
+                            cv2.MORPH_GRADIENT,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ((max(1, int(round(pen_radius_mm * float(region_state["region_px_per_mm"])))) + 1) * 2 + 1, (max(1, int(round(pen_radius_mm * float(region_state["region_px_per_mm"])))) + 1) * 2 + 1)),
+                        ),
+                        current_to_source_matrix=region_state["region_current_to_source"],
+                        pen_radius_px=pen_radius_px_by_region[int(info["component_id"])],
+                        component_geometry=info["geometry"],
+                        source=REPAIR_PATH_SOURCE,
+                        repair_mode="thin-collapsed-detail-repair",
+                        component_id=int(info["component_id"]),
                     )
-                )
-                base_path = pipeline_core.clone_toolpath(region_paths[0])
-                base_path.metadata = {
-                    **(base_path.metadata or {}),
-                    "source_region_id": region_label,
-                    "component_id": int(info["component_id"]),
-                    "repair_candidate_type": "thin_feature_backstop",
-                    "repair_candidate_angle_deg": float(info.get("angle_deg", 0.0)),
-                }
-                exported_backstop = _export_repair_toolpath(
-                    base_path,
-                    strategy_key="thin_feature_backstop",
-                )
+                    repair_rebuild_candidate_rows.append(backstop_audit)
+                    if str(backstop_audit["classification"]) == "reject-useless-or-overflowing":
+                        continue
+                    backstop_score = (
+                        float(backstop_audit["new_expected_pixels"]) * 12.0
+                        - float(backstop_audit["redundant_pixels"]) * 0.5
+                        - float(backstop_audit["overflow_pixels"]) * 25.0
+                        - float(backstop_audit["centerline_violation_pixels"]) * 8.0
+                    )
+                    if backstop_score > best_backstop_score:
+                        best_backstop = candidate
+                        best_backstop_score = backstop_score
+                if best_backstop is None:
+                    continue
+                exported_backstop = _export_repair_toolpath(best_backstop, strategy_key="thin_feature_backstop")
                 reconciled_final_paths.append(exported_backstop)
                 preexisting_final_repair_paths.append(pipeline_core.clone_toolpath(exported_backstop))
                 repair_candidates_generated += 1
@@ -4064,45 +4754,6 @@ def plan_coverage_first_toolpaths(
                     "accepted": True,
                     "candidate": exported_backstop,
                 })
-                repair_outline_paths = _boundary_paths_for_geometry(
-                    info["geometry"],
-                    simplify_tolerance_mm=simplify_tolerance_mm,
-                    line_width_mm=line_width_mm,
-                    centerline_offset_mm=pen_radius_mm,
-                )
-                if repair_outline_paths:
-                    repair_outline_paths.sort(key=lambda path: -float(pipeline_core.segment_length(path.points)))
-                    outline_base_path = pipeline_core.clone_toolpath(repair_outline_paths[0])
-                    outline_base_path.metadata = {
-                        **(outline_base_path.metadata or {}),
-                        "source_region_id": region_label,
-                        "component_id": int(info["component_id"]),
-                        "repair_candidate_type": "thin_feature_outline_backstop",
-                        "repair_candidate_angle_deg": float(info.get("angle_deg", 0.0)),
-                    }
-                    exported_outline_backstop = _export_repair_toolpath(
-                        outline_base_path,
-                        strategy_key="thin_feature_outline_backstop",
-                    )
-                    reconciled_final_paths.append(exported_outline_backstop)
-                    preexisting_final_repair_paths.append(pipeline_core.clone_toolpath(exported_outline_backstop))
-                    repair_candidates_generated += 1
-                    repair_candidates_accepted += 1
-                    repair_candidate_rows.append({
-                        "component_id": int(info["component_id"]),
-                        "candidate_type": "thin_feature_outline_backstop",
-                        "angle_deg": float(info.get("angle_deg", 0.0)),
-                        "score": 0.0,
-                        "stats": {
-                            "covered_missed_px": 0.0,
-                            "overflow_px": 0.0,
-                            "added_length_mm": float(pipeline_core.segment_length(exported_outline_backstop.points)),
-                            "pen_lift_penalty": 0.0,
-                            "coverage_percent": 0.0,
-                        },
-                        "accepted": True,
-                        "candidate": exported_outline_backstop,
-                    })
                 existing_detail_region_repair_labels.add(region_label)
                 added_backstop_repairs += 1
                 if len(existing_detail_region_repair_labels) >= 4 or added_backstop_repairs >= 4:
@@ -4220,10 +4871,41 @@ def plan_coverage_first_toolpaths(
         final_paths = pipeline_core.merge_connected_toolpaths(reconciled_final_paths)
         final_paths = pipeline_core.assign_stable_path_ids(final_paths)
 
+    optimized_final_repairs, repair_audit_rows, repair_rebuild_candidate_rows = _optimized_final_repair_paths(
+        all_paths=final_paths,
+        target_mask=target_mask,
+        allowed_mask=allowed_mask,
+        printable_geometry=printable_geometry,
+        current_to_source=current_to_source,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        px_per_mm=px_per_mm,
+        line_width_mm=line_width_mm,
+        simplify_tolerance_mm=simplify_tolerance_mm,
+    )
+    final_non_repair_paths = [path for path in final_paths if not _is_repair_path(path)]
+    final_paths = pipeline_core.merge_connected_toolpaths([*final_non_repair_paths, *optimized_final_repairs])
+    final_paths = pipeline_core.assign_stable_path_ids(final_paths)
+
     if debug is not None:
         final_repair_paths = [path for path in final_paths if _is_repair_path(path)]
         final_repair_paths_exported = bool(final_repair_paths)
         final_paths_by_kind = dict(Counter(path.kind for path in final_paths))
+        debug["final_repair_audit_rows"] = [
+            {key: value for key, value in row.items() if key != "candidate"}
+            for row in repair_audit_rows
+        ]
+        debug["final_repair_rebuild_candidate_rows"] = [
+            {key: value for key, value in row.items() if key != "candidate"}
+            for row in repair_rebuild_candidate_rows
+        ]
+        debug["final_repair_audit_summary"] = {
+            "audited_repair_count": int(len(repair_audit_rows)),
+            "optimized_repair_count": int(len(optimized_final_repairs)),
+            "normal_safe_repair_count": int(sum(1 for path in optimized_final_repairs if str((path.metadata or {}).get("repair_mode", "")) == "normal-safe-repair")),
+            "thin_collapsed_detail_repair_count": int(sum(1 for path in optimized_final_repairs if str((path.metadata or {}).get("repair_mode", "")) == "thin-collapsed-detail-repair")),
+            "rejected_existing_repair_count": int(sum(1 for row in repair_audit_rows if str(row.get("classification", "")) == "reject-useless-or-overflowing")),
+        }
         debug.update({
             "detail_coverage_before_repair_percent": float(detail_coverage_before_repair_percent),
             "detail_coverage_after_repair_percent": float(detail_coverage_after_repair_percent),

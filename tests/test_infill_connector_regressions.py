@@ -760,6 +760,35 @@ def test_arsenal_final_output_overflow_and_centerline_safety_90ccw_0p6mm(tmp_pat
     )
 
 
+def test_arsenal_final_repair_audit_replaces_boundary_hugging_repairs():
+    result = _run_frontend_arsenal_fixture(rotation_deg=90.0)
+    debug, _current_to_source, final_surface_paths = _arsenal_final_surface_paths(result)
+
+    audit_summary = dict(debug.get("final_repair_audit_summary", {}))
+    audit_rows = list(debug.get("final_repair_audit_rows", []))
+    rebuild_rows = list(debug.get("final_repair_rebuild_candidate_rows", []))
+    fill_repairs = [path for path in final_surface_paths if path.kind == "fill-repair"]
+
+    assert int(audit_summary.get("audited_repair_count", 0)) > 0
+    assert int(audit_summary.get("rejected_existing_repair_count", 0)) > 0
+    assert int(audit_summary.get("optimized_repair_count", 0)) == len(fill_repairs)
+    assert any(
+        str((path.metadata or {}).get("repair_mode", "")) == "thin-collapsed-detail-repair"
+        for path in fill_repairs
+    )
+    assert any(
+        str((row or {}).get("repair_mode", "")) == "thin-collapsed-detail-repair"
+        and str((row or {}).get("classification", "")) == "thin-collapsed-detail-repair"
+        for row in rebuild_rows
+    )
+    assert not any(
+        str((path.metadata or {}).get("repair_mode", "")) == "normal-safe-repair"
+        and float((path.metadata or {}).get("safe_centerline_inset_mm", 0.0) or 0.0) < 0.3 - 1e-9
+        for path in fill_repairs
+    )
+    assert any(str((row or {}).get("classification", "")) == "reject-useless-or-overflowing" for row in audit_rows)
+
+
 def test_ring_shape_is_split_into_local_cells_before_routing():
     outer = Polygon([(0.0, 0.0), (120.0, 0.0), (120.0, 80.0), (0.0, 80.0)])
     inner = Polygon([(35.0, 18.0), (85.0, 18.0), (85.0, 62.0), (35.0, 62.0)])
