@@ -251,6 +251,16 @@ def _actual_outline_paths(paths: list[Toolpath]) -> list[Toolpath]:
     ]
 
 
+def _nearest_path_point_distance(paths: list[Toolpath], target: tuple[float, float], *, kinds: set[str] | None = None) -> float:
+    best = float("inf")
+    for path in paths:
+        if kinds is not None and path.kind not in kinds:
+            continue
+        for point in path.points:
+            best = min(best, math.hypot(point.x - float(target[0]), point.y - float(target[1])))
+    return best
+
+
 def _normalized_path_signature(paths: list[Toolpath], kind: str) -> list[tuple[tuple[float, float], ...]]:
     signature: list[tuple[tuple[float, float], ...]] = []
     for path in paths:
@@ -780,8 +790,9 @@ def test_narrow_component_uses_fill_fallback_without_raw_boundary_outline():
         debug=debug,
     )
 
-    assert not any(path.kind == "outline" for path in toolpaths)
-    assert any(path.kind == "fill-infill" for path in toolpaths)
+    outline_paths = [path for path in toolpaths if path.kind == "outline"]
+    assert outline_paths
+    assert any(path.kind == "fill-infill" for path in toolpaths) is False
     assert len(_actual_outline_paths(toolpaths)) == 1
     contour_debug = debug["contour_offset_debug"]
     assert contour_debug["collapsed_outline_components"] >= 1
@@ -814,7 +825,7 @@ def test_one_pen_wide_passage_keeps_a_single_outline_fallback_trace(width_mm: fl
     contour_debug = debug["contour_offset_debug"]
     assert any(bool((path.metadata or {}).get("actual_outline_centerline", False)) for path in actual_outline)
     assert contour_debug["outline_paths_using_detail_fallback"] >= 1
-    assert not any(path.kind == "outline" for path in toolpaths)
+    assert any(path.kind == "outline" for path in toolpaths)
     assert len(actual_outline) == 1
     assert pipeline_core.segment_length(actual_outline[0].points) >= 7.0
     assert not any(path.kind == "fill-repair" for path in toolpaths)
@@ -897,6 +908,87 @@ def test_long_connected_narrow_corridor_prefers_one_continuous_fallback_path():
     assert actual_outline[0].metadata["path_role"] == "FINAL_OUTLINE_FALLBACK"
     assert pipeline_core.segment_length(actual_outline[0].points) >= 18.0
     assert not any(path.kind == "fill-repair" for path in toolpaths)
+
+
+def test_final_output_emits_outline_class_fallback_for_thin_component():
+    printable = Polygon([
+        (0.0, 0.0),
+        (0.45, 0.0),
+        (0.45, 4.0),
+        (0.0, 4.0),
+    ])
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        outline_after_fill=True,
+        allow_pen_down_infill_connectors=False,
+    )
+
+    outline_paths = [path for path in toolpaths if path.kind == "outline"]
+    assert outline_paths
+    assert any(not path.closed for path in outline_paths)
+
+
+def test_final_output_preserves_acute_triangle_tip_with_outline_fallback():
+    printable = Polygon([
+        (0.0, 0.0),
+        (8.0, 0.0),
+        (0.2, 0.2),
+    ])
+    tip = (0.2, 0.2)
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        outline_after_fill=True,
+        allow_pen_down_infill_connectors=False,
+    )
+
+    outline_paths = [path for path in toolpaths if path.kind == "outline"]
+    assert outline_paths
+    assert _nearest_path_point_distance(outline_paths, tip, kinds={"outline"}) <= 0.18
+
+
+def test_final_output_preserves_narrow_ring_hole_with_outline_or_centerline_fallback():
+    printable = ShapelyPoint(0.0, 0.0).buffer(4.0, resolution=64).difference(
+        ShapelyPoint(0.0, 0.0).buffer(3.7, resolution=64)
+    )
+    probe = (3.85, 0.0)
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        outline_after_fill=True,
+        allow_pen_down_infill_connectors=False,
+    )
+
+    outline_paths = [path for path in toolpaths if path.kind == "outline"]
+    assert outline_paths
+    assert _nearest_path_point_distance(outline_paths, probe, kinds={"outline"}) <= 0.25
+
+
+def test_final_output_preserves_thin_spoke_tip_with_outline_fallback():
+    printable = unary_union([
+        Polygon([(4.0, 4.0), (8.0, 4.0), (8.0, 8.0), (4.0, 8.0)]),
+        Polygon([(5.0, 8.0), (5.3, 8.0), (5.3, 14.0), (5.0, 14.0)]),
+    ])
+    tip = (5.15, 14.0)
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        outline_after_fill=True,
+        allow_pen_down_infill_connectors=False,
+    )
+
+    outline_paths = [path for path in toolpaths if path.kind == "outline"]
+    assert outline_paths
+    assert _nearest_path_point_distance(outline_paths, tip, kinds={"outline"}) <= 0.35
 
 
 def test_raster_hole_outline_preserves_inner_counters_without_crossing_them():
@@ -1361,10 +1453,11 @@ def test_regions_without_outline_clearance_fall_back_to_detail_fill():
         travel_optimization="nearest-neighbor",
     )
 
-    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
-    assert infill_paths
-    assert all(path.metadata.get("small_detail_fill_style") == "single_stroke_detail" for path in infill_paths)
-    assert all(len(path.points) >= 2 for path in infill_paths)
+    outline_paths = [path for path in toolpaths if path.kind == "outline"]
+    assert outline_paths
+    assert all(bool(path.metadata.get("actual_outline_centerline", False)) for path in outline_paths)
+    assert all(path.metadata.get("small_detail_fill_style") == "single_stroke_detail" for path in outline_paths)
+    assert all(len(path.points) >= 2 for path in outline_paths)
     assert not any(path.kind == "fill-wall" for path in toolpaths)
 
 
@@ -1380,9 +1473,8 @@ def test_tiny_blob_smaller_than_pen_uses_single_stroke_fallback():
         simplify_tolerance_mm=0.0,
     )
 
-    fill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
     outline_paths = [path for path in toolpaths if path.kind == "outline"]
-    assert len(fill_paths) + len(outline_paths) <= 1
+    assert len(outline_paths) <= 1
     assert not any(path.kind == "fill-wall" for path in toolpaths)
 
 
@@ -1398,11 +1490,11 @@ def test_thin_band_uses_single_stroke_without_hatch_rows():
         simplify_tolerance_mm=0.0,
     )
 
-    fill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
-    assert fill_paths
-    assert any(path.metadata.get("small_detail_fill_style") == "single_stroke_detail" for path in fill_paths)
+    outline_paths = [path for path in toolpaths if path.kind == "outline"]
+    assert outline_paths
+    assert any(path.metadata.get("small_detail_fill_style") == "single_stroke_detail" for path in outline_paths)
     assert not any(path.kind == "fill-wall" for path in toolpaths)
-    assert all(len(path.points) >= 2 for path in fill_paths)
+    assert all(len(path.points) >= 2 for path in outline_paths)
 
 
 def test_mixed_logo_routes_large_regions_and_tiny_regions_differently():
@@ -2251,7 +2343,7 @@ def test_thin_script_like_stroke_is_not_dropped():
     )
     drawing_paths = [path for path in toolpaths if path.kind in {"fill-infill", "detail-trace", "outline", "fill-wall"}]
     assert drawing_paths
-    assert any(path.kind == "fill-infill" for path in drawing_paths)
+    assert any(path.kind == "outline" for path in drawing_paths)
 
 
 def test_region_narrower_than_two_pen_width_forces_minimum_stroke_fallback():
@@ -2276,12 +2368,12 @@ def test_region_narrower_than_two_pen_width_forces_minimum_stroke_fallback():
         min_segment_length_mm=0.5,
         debug=debug,
     )
-    infill_paths = [path for path in toolpaths if path.kind == "fill-infill"]
-    assert infill_paths
+    outline_paths = [path for path in toolpaths if path.kind == "outline"]
+    assert outline_paths
     assert any(
         bool(path.metadata.get("force_minimum_printable_stroke", False))
         or str(path.metadata.get("fill_mode", "")) in {"single_stroke_fallback_region", "single_stroke_cell", "single_stroke_detail"}
-        for path in infill_paths
+        for path in outline_paths
     )
     diagnostics = (debug.get("infill_debug") or {}).get("diagnostics") or {}
     assert diagnostics.get("narrower_than_2x_pen_regions", 0) >= 1
@@ -3807,7 +3899,7 @@ def test_tiny_dot_uses_internal_mark_not_outline_trace():
     toolpaths = _generate_fill_toolpaths(printable, line_width_mm=0.6, infill_spacing_mm=0.6)
     marks = [p for p in toolpaths if p.kind in {"coverage_centerline", "coverage_offset_line", "coverage_rectilinear"}]
     outlines = [p for p in toolpaths if p.kind == "outline_cleanup"]
-    detail_fills = [p for p in toolpaths if p.kind == "fill-infill"]
+    detail_fills = [p for p in toolpaths if p.kind == "outline"]
     assert len(marks) <= 1
     assert len(outlines) <= 1
     assert detail_fills

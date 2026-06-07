@@ -12,13 +12,16 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 from shapely.geometry import LineString, Polygon
+from werkzeug.datastructures import MultiDict
 
+from app import create_app
 from app.models.machine_state import MachineState
 from app.services import pipeline_core
 from app.services.gcode_service import GcodeService
 from app.services.geometry_service import GeometryService
 from app.services.raster_analysis_service import RasterAnalysisService
 from app.services.toolpath_service import ToolpathService
+from app.services.validation_service import ValidationService
 from tests.test_svg_parser import CONFIG
 
 
@@ -177,6 +180,227 @@ def _run_fixture(image_path: Path, *, infill_path_mode: str = "rectilinear") -> 
     }
     _assert_connector_paths_stay_inside_mask(toolpaths, validation)
     return result
+
+
+def _run_frontend_arsenal_fixture(*, rotation_deg: float) -> dict[str, object]:
+    app = create_app()
+    config = app.config
+    fixture_bytes = ARSENAL_FIXTURE.read_bytes()
+    raster = RasterAnalysisService(config, MachineState(default_pen_up_s=575))
+    geometry = GeometryService()
+    toolpaths_service = ToolpathService()
+    validation = ValidationService()
+    gcode_service = GcodeService()
+
+    analysis = raster.analyze_image(fixture_bytes, max_colors=config["DEFAULT_RASTER_MAX_COLORS"])
+    selected = next(
+        (color.id for color in analysis.colors if color.hex == "#000000"),
+        analysis.colors[0].id if analysis.colors else None,
+    )
+    assert selected is not None
+
+    options = validation.parse_generate_raster_form(
+        MultiDict({
+            "selected_colors": f"[\"{selected}\"]",
+            "line_thickness_mm": "0.6",
+            "rotation_deg": str(rotation_deg),
+        }),
+        config,
+    )
+    mask = raster.build_mask(
+        fixture_bytes,
+        options["selected_colors"],
+        simplify_colors=options["simplify_colors"],
+        max_colors=options["max_colors"],
+        tolerance=options["color_tolerance"],
+        min_component_area_px=options["min_component_area_px"],
+        open_radius_px=options["mask_open_radius_px"],
+        close_radius_px=options["mask_close_radius_px"],
+    )
+    regions = raster.extract_regions(
+        mask,
+        min_region_area_px=0.0 if options["thin_detail_mode"] else options["min_region_area_px"],
+        simplify_tolerance_px=options["region_simplify_px"],
+    )
+    mapped = geometry.map_bundle_to_surface_mm(
+        regions.bundle,
+        regions.bounds,
+        options["fit_mode"],
+        options["invert_y"],
+        options["margin_percent"],
+    )
+    artwork_scaled = geometry.apply_surface_artwork_scale(mapped, options["artwork_scale_percent"])
+    transformed = geometry.apply_surface_placement_transform(
+        artwork_scaled,
+        options["placement_scale"],
+        options["rotation_deg"],
+    )
+    placed = geometry.apply_origin_anchor_placement(
+        transformed,
+        origin_anchor=options["origin_anchor"],
+        origin_offset_x_mm=options["origin_offset_x_mm"],
+        origin_offset_y_mm=options["origin_offset_y_mm"],
+    )
+
+    debug: dict[str, object] = {}
+    surface_toolpaths = toolpaths_service.generate_from_regions(
+        placed,
+        pen_width_mm=options["line_thickness_mm"],
+        wall_count=options["wall_count"],
+        infill_pattern=options["infill_pattern"],
+        infill_spacing_mm=options["effective_infill_spacing_mm"],
+        infill_density=options["infill_density"],
+        infill_angle_deg=options["infill_angle_deg"],
+        fill_strategy=options["fill_strategy"],
+        alternate_fill_angle_deg=options["alternate_fill_angle_deg"],
+        outline_after_fill=options["outline_after_fill"],
+        min_region_area=options["min_fill_area_mm2"],
+        min_fill_width_mm=options["min_fill_width_mm"],
+        simplify_tolerance_mm=options["simplify_tolerance_mm"],
+        remove_duplicate_paths=options["remove_duplicate_paths"],
+        small_shape_mode=options["small_shape_mode"],
+        thin_detail_mode=options["thin_detail_mode"],
+        thin_detail_min_area_mm2=options["thin_detail_min_area_mm2"],
+        thin_detail_simplify_mm=options["thin_detail_simplify_mm"],
+        thin_detail_overlap=options["thin_detail_overlap"],
+        min_segment_length_mm=options["min_segment_length_mm"],
+        travel_optimization=options["travel_optimization"],
+        allow_pen_down_infill_connectors=options["allow_pen_down_infill_connectors"],
+        infill_path_mode=options["infill_path_mode"],
+        expensive_coverage_repair=False,
+        debug=debug,
+    )
+    projected = pipeline_core.assign_stable_path_ids(
+        pipeline_core.project_toolpaths_to_ball_angles(
+            pipeline_core.prepare_toolpaths_for_projection(surface_toolpaths, default_pen_width_mm=0.6),
+            center_lon_deg=0.0,
+            center_lat_deg=0.0,
+        )
+    )
+    gcode, preview = gcode_service.generate_from_toolpaths(
+        toolpaths=projected,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=True,
+        debug=debug,
+    )
+    return {
+        "mask": mask,
+        "placed": placed,
+        "surface_toolpaths": surface_toolpaths,
+        "projected_toolpaths": projected,
+        "gcode": gcode,
+        "preview": preview,
+        "debug": debug,
+    }
+
+
+def _arsenal_final_surface_paths(result: dict[str, object]) -> tuple[dict[str, object], tuple[float, float, float, float, float, float], list[pipeline_core.Toolpath]]:
+    debug = result["debug"]
+    validation = result["placed"].metadata.get("connector_validation", {})
+    assert isinstance(validation, dict)
+    current_to_source = tuple(float(value) for value in validation["current_to_source_matrix"])
+    final_surface_paths = [
+        path
+        for path in result["surface_toolpaths"]
+        if path.kind != "travel" and len(path.points) >= 1
+    ]
+    assert final_surface_paths, "No final emitted drawable paths were captured from the G-code emission stage"
+    return debug, current_to_source, final_surface_paths
+
+
+def _rasterize_surface_centerlines(
+    toolpaths: list[pipeline_core.Toolpath],
+    *,
+    shape: tuple[int, int],
+    current_to_source_matrix: tuple[float, float, float, float, float, float],
+    include_kinds: set[str],
+    max_segment_mm: float = 0.15,
+) -> np.ndarray:
+    canvas = np.zeros(shape, dtype=np.uint8)
+    for path in toolpaths:
+        if path.kind not in include_kinds or len(path.points) < 1:
+            continue
+        if len(path.points) == 1:
+            source_point = pipeline_core.apply_svg_matrix(path.points[0], current_to_source_matrix)
+            cv2.circle(canvas, (int(round(source_point.x)), int(round(source_point.y))), 1, 255, -1)
+            continue
+        sampled_points = pipeline_core.resample_segment(path.points, max_step=max(0.01, float(max_segment_mm)))
+        pts = np.asarray(
+            [(int(round(pipeline_core.apply_svg_matrix(point, current_to_source_matrix).x)), int(round(pipeline_core.apply_svg_matrix(point, current_to_source_matrix).y))) for point in sampled_points],
+            dtype=np.int32,
+        )
+        if len(pts) >= 2:
+            cv2.polylines(canvas, [pts.reshape(-1, 1, 2)], False, 255, 1, lineType=cv2.LINE_8)
+        elif len(pts) == 1:
+            cv2.circle(canvas, (int(pts[0][0]), int(pts[0][1])), 1, 255, -1)
+    return canvas
+
+
+def _surface_path_overflow_attribution(
+    toolpaths: list[pipeline_core.Toolpath],
+    *,
+    shape: tuple[int, int],
+    current_to_source_matrix: tuple[float, float, float, float, float, float],
+    pen_radius_mm: float,
+    expected_bool: np.ndarray,
+    safe_centerline_bool: np.ndarray,
+    include_kinds: set[str],
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for index, path in enumerate(toolpaths):
+        if path.kind not in include_kinds or len(path.points) < 1:
+            continue
+        metadata = dict(path.metadata or {})
+        path_mask = pipeline_core.rasterize_surface_toolpaths_mask(
+            [path],
+            shape=shape,
+            current_to_source_matrix=current_to_source_matrix,
+            pen_radius_mm=pen_radius_mm,
+            max_segment_mm=0.15,
+            include_kinds={path.kind},
+        )
+        centerline_mask = _rasterize_surface_centerlines(
+            [path],
+            shape=shape,
+            current_to_source_matrix=current_to_source_matrix,
+            include_kinds={path.kind},
+            max_segment_mm=0.15,
+        )
+        overflow_pixels = int(np.count_nonzero((path_mask > 0) & ~expected_bool))
+        centerline_violation_pixels = int(np.count_nonzero((centerline_mask > 0) & ~safe_centerline_bool))
+        rows.append({
+            "path_index": int(index),
+            "path_id": str(path.path_id or f"path_{index:04d}"),
+            "path_kind": str(path.kind),
+            "source": str(path.source),
+            "overflow_pixels": int(overflow_pixels),
+            "centerline_violation_pixels": int(centerline_violation_pixels),
+            "centerline_generation_mode": str(metadata.get("centerline_generation_mode", "unknown")),
+            "generated_from_safe_mask": bool(metadata.get("generated_from_safe_mask", False)),
+            "safe_centerline_inset_mm": float(metadata.get("safe_centerline_inset_mm", 0.0) or 0.0),
+        })
+    rows.sort(
+        key=lambda row: (
+            -int(row["overflow_pixels"]),
+            -int(row["centerline_violation_pixels"]),
+            str(row["path_kind"]),
+            str(row["source"]),
+            str(row["path_id"]),
+        )
+    )
+    return rows
 
 
 def _make_carolin_fixture_if_needed() -> None:
@@ -366,6 +590,174 @@ def test_arsenal_exported_path_coverage_audit_matches_preview_target(monkeypatch
     assert float(resampling_report["max_surface_segment_mm_after"]) <= 0.15 + 1e-9
     assert path_stats["repair_paths_exported"] is True
     assert debug.get("root_cause_category_corrected") in {"coverage_under_sampling_fixed", "false_negative_coverage_simulation", "wrong_target_mask_selection"}
+
+
+def test_arsenal_final_output_coverage_90ccw_0p6mm(tmp_path: Path):
+    result = _run_frontend_arsenal_fixture(rotation_deg=90.0)
+    debug, current_to_source, final_surface_paths = _arsenal_final_surface_paths(result)
+
+    mask_value = result["mask"]
+    expected_source_mask = np.asarray(getattr(mask_value, "mask", mask_value))
+    expected_mask = (expected_source_mask > 0).astype(np.uint8) * 255
+    actual_mask = pipeline_core.rasterize_surface_toolpaths_mask(
+        final_surface_paths,
+        shape=expected_mask.shape,
+        current_to_source_matrix=current_to_source,
+        pen_radius_mm=0.3,
+        max_segment_mm=0.15,
+        include_kinds={"fill-infill", "fill-repair", "detail-trace", "detail-continuation", "outline", "fill-wall"},
+    )
+    tolerance_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    actual_with_tolerance = cv2.dilate(actual_mask, tolerance_kernel, iterations=1)
+
+    expected_bool = expected_mask > 0
+    actual_bool = actual_mask > 0
+    tolerated_actual_bool = actual_with_tolerance > 0
+    covered_bool = expected_bool & tolerated_actual_bool
+    missed_bool = expected_bool & ~tolerated_actual_bool
+    excess_bool = actual_bool & ~expected_bool
+    coverage_ratio = float(np.count_nonzero(covered_bool) / max(1, np.count_nonzero(expected_bool)))
+
+    if coverage_ratio < 0.99:
+        cv2.imwrite(str(tmp_path / "expected_mask.png"), expected_mask)
+        cv2.imwrite(str(tmp_path / "actual_coverage.png"), actual_mask)
+        cv2.imwrite(str(tmp_path / "missed_pixels.png"), missed_bool.astype(np.uint8) * 255)
+        cv2.imwrite(str(tmp_path / "excess_pixels.png"), excess_bool.astype(np.uint8) * 255)
+        overlay = np.full((expected_mask.shape[0], expected_mask.shape[1], 3), 255, dtype=np.uint8)
+        overlay[expected_bool] = (220, 220, 220)
+        overlay[covered_bool] = (0, 180, 0)
+        overlay[missed_bool] = (0, 0, 255)
+        overlay[excess_bool] = (255, 128, 0)
+        cv2.imwrite(str(tmp_path / "overlay_expected_vs_actual.png"), overlay)
+
+    assert coverage_ratio >= 0.99, (
+        f"Arsenal final emitted coverage at 0.6 mm and 90 CCW regressed to {coverage_ratio:.5f}; "
+        f"expected_px={int(np.count_nonzero(expected_bool))} "
+        f"covered_px={int(np.count_nonzero(covered_bool))} "
+        f"missed_px={int(np.count_nonzero(missed_bool))} "
+        f"excess_px={int(np.count_nonzero(excess_bool))} "
+        f"artifacts={tmp_path}"
+    )
+
+
+def test_arsenal_final_output_overflow_and_centerline_safety_90ccw_0p6mm(tmp_path: Path):
+    result = _run_frontend_arsenal_fixture(rotation_deg=90.0)
+    _debug, current_to_source, final_surface_paths = _arsenal_final_surface_paths(result)
+
+    mask_value = result["mask"]
+    expected_source_mask = np.asarray(getattr(mask_value, "mask", mask_value))
+    expected_mask = (expected_source_mask > 0).astype(np.uint8) * 255
+    expected_bool = expected_mask > 0
+    expected_pixels = int(np.count_nonzero(expected_bool))
+    assert expected_pixels > 0
+
+    line_width_mm = 0.6
+    pen_radius_mm = line_width_mm * 0.5
+    a, b, c, d, _e, _f = current_to_source
+    px_per_mm = max(1e-6, (math.hypot(a, b) + math.hypot(c, d)) * 0.5)
+    erosion_radius_px = max(1, int(round(pen_radius_mm * px_per_mm)))
+    boundary_band_px = max(1, erosion_radius_px + 1)
+    erosion_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erosion_radius_px * 2 + 1, erosion_radius_px * 2 + 1))
+    boundary_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (boundary_band_px * 2 + 1, boundary_band_px * 2 + 1))
+
+    safe_centerline_mask = cv2.erode(expected_mask, erosion_kernel, iterations=1)
+    boundary_band_mask = cv2.morphologyEx(expected_mask, cv2.MORPH_GRADIENT, boundary_kernel)
+
+    coverage_kinds = {"fill-infill", "fill-repair", "detail-trace", "detail-continuation", "outline", "fill-wall"}
+    overflow_kinds = {"fill-infill", "fill-repair", "detail-trace", "detail-continuation", "fill-wall"}
+    centerline_kinds = {"fill-infill", "fill-repair", "detail-trace", "detail-continuation", "fill-wall"}
+    actual_coverage_all = pipeline_core.rasterize_surface_toolpaths_mask(
+        final_surface_paths,
+        shape=expected_mask.shape,
+        current_to_source_matrix=current_to_source,
+        pen_radius_mm=pen_radius_mm,
+        max_segment_mm=0.15,
+        include_kinds=coverage_kinds,
+    )
+    actual_coverage = pipeline_core.rasterize_surface_toolpaths_mask(
+        final_surface_paths,
+        shape=expected_mask.shape,
+        current_to_source_matrix=current_to_source,
+        pen_radius_mm=pen_radius_mm,
+        max_segment_mm=0.15,
+        include_kinds=overflow_kinds,
+    )
+    centerline_mask = _rasterize_surface_centerlines(
+        final_surface_paths,
+        shape=expected_mask.shape,
+        current_to_source_matrix=current_to_source,
+        include_kinds=centerline_kinds,
+        max_segment_mm=0.15,
+    )
+
+    tolerance_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    actual_with_tolerance = cv2.dilate(actual_coverage_all, tolerance_kernel, iterations=1)
+    actual_bool = actual_coverage_all > 0
+    tolerated_actual_bool = actual_with_tolerance > 0
+    overflow_bool = actual_coverage > 0
+    safe_centerline_bool = safe_centerline_mask > 0
+    centerline_bool = centerline_mask > 0
+
+    covered_expected_bool = expected_bool & tolerated_actual_bool
+    missed_bool = expected_bool & ~tolerated_actual_bool
+    excess_bool = overflow_bool & ~expected_bool
+    boundary_overflow_bool = excess_bool & (boundary_band_mask > 0)
+    centerline_violation_bool = centerline_bool & ~safe_centerline_bool
+
+    coverage_ratio = float(np.count_nonzero(covered_expected_bool) / max(1, expected_pixels))
+    overflow_ratio = float(np.count_nonzero(excess_bool) / max(1, expected_pixels))
+    boundary_overflow_ratio = float(np.count_nonzero(boundary_overflow_bool) / max(1, expected_pixels))
+    centerline_violation_pixels = int(np.count_nonzero(centerline_violation_bool))
+
+    if coverage_ratio < 0.99 or overflow_ratio > 0.005 or centerline_violation_pixels > 8:
+        per_path_rows = _surface_path_overflow_attribution(
+            final_surface_paths,
+            shape=expected_mask.shape,
+            current_to_source_matrix=current_to_source,
+            pen_radius_mm=pen_radius_mm,
+            expected_bool=expected_bool,
+            safe_centerline_bool=safe_centerline_bool,
+            include_kinds=overflow_kinds | centerline_kinds,
+        )
+        cv2.imwrite(str(tmp_path / "expected_mask.png"), expected_mask)
+        cv2.imwrite(str(tmp_path / "safe_centerline_mask.png"), safe_centerline_mask)
+        cv2.imwrite(str(tmp_path / "actual_coverage.png"), actual_coverage)
+        cv2.imwrite(str(tmp_path / "missed_pixels.png"), missed_bool.astype(np.uint8) * 255)
+        cv2.imwrite(str(tmp_path / "excess_pixels.png"), excess_bool.astype(np.uint8) * 255)
+        cv2.imwrite(str(tmp_path / "centerline_violations.png"), centerline_violation_bool.astype(np.uint8) * 255)
+        (tmp_path / "path_overflow_attribution.json").write_text(
+            json.dumps(per_path_rows, indent=2),
+            encoding="utf-8",
+        )
+
+        overlay_expected_actual_excess = np.full((expected_mask.shape[0], expected_mask.shape[1], 3), 255, dtype=np.uint8)
+        overlay_expected_actual_excess[expected_bool] = (220, 220, 220)
+        overlay_expected_actual_excess[covered_expected_bool] = (0, 180, 0)
+        overlay_expected_actual_excess[missed_bool] = (0, 0, 255)
+        overlay_expected_actual_excess[excess_bool] = (255, 140, 0)
+        cv2.imwrite(str(tmp_path / "overlay_expected_actual_excess.png"), overlay_expected_actual_excess)
+
+        overlay_paths_vs_safe_mask = np.full((expected_mask.shape[0], expected_mask.shape[1], 3), 255, dtype=np.uint8)
+        overlay_paths_vs_safe_mask[safe_centerline_bool] = (220, 255, 220)
+        overlay_paths_vs_safe_mask[centerline_bool] = (0, 90, 220)
+        overlay_paths_vs_safe_mask[centerline_violation_bool] = (0, 0, 255)
+        cv2.imwrite(str(tmp_path / "overlay_paths_vs_safe_mask.png"), overlay_paths_vs_safe_mask)
+    else:
+        per_path_rows = []
+
+    assert coverage_ratio >= 0.99, (
+        f"Arsenal final coverage fell below threshold: coverage_ratio={coverage_ratio:.5f} artifacts={tmp_path}"
+    )
+    assert overflow_ratio <= 0.005, (
+        f"Arsenal final emitted paths overflow the mask: overflow_ratio={overflow_ratio:.5f} "
+        f"boundary_overflow_ratio={boundary_overflow_ratio:.5f} "
+        f"top_offenders={per_path_rows[:5]} artifacts={tmp_path}"
+    )
+    assert centerline_violation_pixels <= 8, (
+        f"Arsenal final emitted centerlines leave the safe eroded mask: "
+        f"centerline_violation_pixels={centerline_violation_pixels} "
+        f"top_offenders={per_path_rows[:5]} artifacts={tmp_path}"
+    )
 
 
 def test_ring_shape_is_split_into_local_cells_before_routing():
