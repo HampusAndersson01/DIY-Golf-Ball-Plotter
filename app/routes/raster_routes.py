@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import json
 import math
 import time
 
@@ -28,6 +29,32 @@ def build_generate_debug_payload(*, selected_colors=None, mask_pixel_count=0):
         "selected_colors": list(selected_colors or []),
         "mask_pixel_count": int(mask_pixel_count or 0),
     }
+
+
+def _json_debug_default(value):
+    if hasattr(value, "geom_type") and hasattr(value, "bounds"):
+        bounds = getattr(value, "bounds", None)
+        return {
+            "geom_type": str(getattr(value, "geom_type", type(value).__name__)),
+            "is_empty": bool(getattr(value, "is_empty", False)),
+            "bounds": [float(item) for item in bounds] if bounds else None,
+        }
+    if type(value).__name__ == "ndarray":
+        return {
+            "ndarray_shape": list(getattr(value, "shape", ()) or ()),
+            "dtype": str(getattr(value, "dtype", "")),
+        }
+    if isinstance(value, set):
+        return sorted(value)
+    if isinstance(value, bytes):
+        return f"<bytes:{len(value)}>"
+    return repr(value)
+
+
+def build_serializable_debug_payload(debug_data):
+    if debug_data is None:
+        return None
+    return json.loads(json.dumps(debug_data, default=_json_debug_default))
 
 
 def build_setting_debug(error: Exception, config) -> dict | None:
@@ -469,6 +496,13 @@ def generate_image_gcode_route():
         effective_settings = build_effective_settings(options)
         design_bounds = geometry.bounds_from_bundle(placed)
         final_polygon_count = len(pipeline_core.normalize_geometry(placed.printable_geometry)) if placed.printable_geometry is not None and not placed.printable_geometry.is_empty else 0
+        if debug_data is not None:
+            debug_data.update({
+                "frontend_generate_request_received": True,
+                "lineWidthMm": float(options["line_thickness_mm"]),
+                "rotationDeg": float(options["rotation_deg"]),
+                "source_mask_component_count": int(mask_result.connected_component_count),
+            })
         current_app.logger.debug(
             "Received fill settings: line_width_mm=%.4f infill_spacing_mm=%.4f custom_infill_spacing=%s min_fill_width_mm=%.4f min_fill_area_mm2=%.4f min_segment_length_mm=%.4f wall_count=%d infill_angle_deg=%.4f rotation_deg=%.4f",
             options["line_thickness_mm"],
@@ -516,7 +550,6 @@ def generate_image_gcode_route():
             travel_optimization=options["travel_optimization"],
             allow_pen_down_infill_connectors=options["allow_pen_down_infill_connectors"],
             infill_path_mode=options["infill_path_mode"],
-            expensive_coverage_repair=False,
             debug=debug_data,
         )
         _mark("fill_path_generation")
@@ -532,6 +565,11 @@ def generate_image_gcode_route():
         )
         cleaned_toolpaths, projected_toolpaths, cleanup_stats, coordinate_debug, outline_pipeline_debug, region_alignment_debug, sampling_debug, outline_vs_infill_alignment_debug = project_surface_toolpaths(toolpaths, options)
         _mark("path_ordering")
+        if debug_data is not None:
+            debug_data["final_export_paths"] = pipeline_core.build_final_export_path_entries(
+                cleaned_toolpaths,
+                projected_toolpaths,
+            )
         gcode, preview = get_gcode_service().generate_from_toolpaths(
             toolpaths=projected_toolpaths,
             header_comment_settings=build_fill_header_settings(options, design_bounds),
@@ -750,7 +788,7 @@ def generate_image_gcode_route():
             infill_debug=(debug_data or {}).get("infill_debug"),
             gcode_stats=gcode_stats,
             stage_timings=stage_durations,
-            debug=debug_data,
+            debug=build_serializable_debug_payload(debug_data),
         )
     except Exception as exc:
         log_exception("Generate raster G-code failed", exc)

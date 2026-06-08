@@ -267,7 +267,6 @@ def _run_frontend_arsenal_fixture(*, rotation_deg: float) -> dict[str, object]:
         travel_optimization=options["travel_optimization"],
         allow_pen_down_infill_connectors=options["allow_pen_down_infill_connectors"],
         infill_path_mode=options["infill_path_mode"],
-        expensive_coverage_repair=False,
         debug=debug,
     )
     projected = pipeline_core.assign_stable_path_ids(
@@ -787,6 +786,24 @@ def test_arsenal_final_repair_audit_replaces_boundary_hugging_repairs():
         for path in fill_repairs
     )
     assert any(str((row or {}).get("classification", "")) == "reject-useless-or-overflowing" for row in audit_rows)
+
+
+def test_arsenal_frontend_default_runs_source_thin_centerline_pass():
+    result = _run_frontend_arsenal_fixture(rotation_deg=90.0)
+    debug, _current_to_source, final_surface_paths = _arsenal_final_surface_paths(result)
+
+    thin_paths = [
+        path for path in final_surface_paths
+        if path.kind == "detail-trace" and bool((path.metadata or {}).get("thin_source_region_centerline", False))
+    ]
+
+    assert debug.get("frontend_default_used_thin_centerline_pass") is True
+    assert int(debug.get("thin_source_region_count", 0)) > 0
+    assert int(debug.get("thin_centerline_candidate_count", 0)) > 0
+    assert int(debug.get("thin_centerline_accepted_count", 0)) > 0
+    assert float(debug.get("thin_centerline_total_length_mm", 0.0)) > 0.0
+    assert debug.get("thin_centerline_paths_exported") is True
+    assert thin_paths
 
 
 def test_ring_shape_is_split_into_local_cells_before_routing():

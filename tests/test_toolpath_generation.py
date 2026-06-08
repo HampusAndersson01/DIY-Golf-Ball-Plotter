@@ -2771,6 +2771,70 @@ def test_detail_filter_keeps_centered_small_detail_despite_heavy_overlap():
     assert kept.metadata["detail_overlap_exception_reason"] == "small_detail_centered_overlap"
 
 
+def test_detail_filter_rejects_off_center_thin_region_centerline():
+    target = Polygon([(0.0, 0.0), (12.0, 0.0), (12.0, 0.8), (0.0, 0.8)])
+    candidate = Toolpath(
+        points=[Point(0.5, 0.10), Point(11.5, 0.10)],
+        kind="detail-trace",
+        closed=False,
+        source="residual_centerline",
+    )
+
+    result = pipeline_core._filter_detail_trace_candidates_for_export(
+        [candidate],
+        target_geometry=target,
+        existing_painted_area=Polygon(),
+        line_width_mm=0.6,
+        allow_detail_overlap_outline=True,
+        validate_detail_with_pen_footprint=True,
+        max_detail_overspill_mm=0.05,
+        max_detail_overspill_area_ratio=0.03,
+        min_detail_new_coverage_mm2=0.02,
+        max_already_covered_ratio=0.90,
+        candidate_component_index_fn=lambda _path: 0,
+        candidate_centeredness_fn=lambda _path, _idx: 0.08,
+        candidate_component_metrics_fn=lambda _path, _idx: {
+            "component_id": 1,
+            "area_mm2": float(target.area),
+            "bbox_mm": (12.0, 0.8),
+            "estimated_width_mm": 0.8,
+        },
+    )
+
+    assert result["detail_paths_kept"] == 0
+    assert result["detail_paths_dropped"] == 1
+    assert result["detail_dropped_path_records"][0]["drop_reason"] in {"off_center_centerline", "overspill"}
+
+
+def test_shaped_thin_region_centerline_follows_bent_region_shape():
+    slicer = pipeline_core.SlicerService()
+    center_curve = LineString([
+        (0.0, 0.0),
+        (3.0, 0.0),
+        (5.0, 1.2),
+        (7.0, 3.2),
+        (7.0, 6.0),
+    ])
+    printable = center_curve.buffer(0.28, cap_style=1, join_style=1)
+
+    centerlines = slicer._generate_shaped_thin_region_centerline(
+        printable,
+        angle_deg=0.0,
+        line_width_mm=0.6,
+        min_segment_length_mm=0.2,
+        tolerance_mm=0.02,
+        kind="detail-trace",
+    )
+
+    assert centerlines
+    longest = max(centerlines, key=lambda path: pipeline_core.segment_length(path.points))
+    chord = math.hypot(longest.points[-1].x - longest.points[0].x, longest.points[-1].y - longest.points[0].y)
+    assert len(longest.points) > 2
+    assert pipeline_core.segment_length(longest.points) >= center_curve.length * 0.75
+    assert pipeline_core.segment_length(longest.points) > chord * 1.1
+    assert printable.buffer(1e-4).covers(_line_for_path(longest))
+
+
 def test_narrow_c_like_residual_prefers_clean_centerline_detail_trace():
     outer = Polygon([(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)])
     cut = Polygon([(3.0, 1.5), (10.0, 1.5), (10.0, 6.5), (3.0, 6.5)])
@@ -2795,6 +2859,86 @@ def test_narrow_c_like_residual_prefers_clean_centerline_detail_trace():
         assert segment_length(path.points) / chord < 3.0
     if detail_paths:
         assert any((path.metadata or {}).get("path_role") in {"PRINT_DETAIL", "PRINT_DETAIL_EDGE"} for path in detail_paths)
+
+
+def test_thin_curved_feature_emits_continuous_centerline_fill():
+    center_curve = LineString([
+        (0.0, 0.0),
+        (2.5, 0.0),
+        (4.5, 1.0),
+        (6.0, 2.5),
+        (6.0, 5.5),
+    ])
+    printable = center_curve.buffer(0.28, cap_style=1, join_style=1)
+
+    toolpaths = _generate_fill_toolpaths(
+        printable,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        infill_angle_deg=0.0,
+        fill_strategy="adaptive_angle",
+        outline_after_fill=False,
+        simplify_tolerance_mm=0.02,
+    )
+    centerline_paths = [
+        path
+        for path in toolpaths
+        if path.kind in {"fill-infill", "detail-trace", "outline"}
+        and (
+            bool((path.metadata or {}).get("actual_outline_centerline", False))
+            or str((path.metadata or {}).get("small_detail_fill_style", "")) in {"single_stroke_detail", "thin_region_centerline"}
+            or str((path.metadata or {}).get("path_role", "")) == "FINAL_OUTLINE_FALLBACK"
+        )
+    ]
+
+    assert centerline_paths
+    longest = max(centerline_paths, key=lambda path: pipeline_core.segment_length(path.points))
+    assert pipeline_core.segment_length(longest.points) >= center_curve.length * 0.75
+    assert printable.buffer(1e-4).covers(_line_for_path(longest))
+
+
+def test_source_driven_thin_region_centerline_pass_emits_continuous_path():
+    center_curve = LineString([
+        (0.0, 0.0),
+        (2.0, 0.0),
+        (4.0, 0.8),
+        (5.5, 2.2),
+        (5.5, 5.5),
+    ])
+    printable = center_curve.buffer(0.26, cap_style=1, join_style=1)
+    mask, origin_x, origin_y, px_per_mm = coverage_planner._rasterize_geometry(
+        printable,
+        resolution_mm=0.03,
+        pad_mm=0.6,
+    )
+    accepted, stats, rows = coverage_planner._source_thin_region_centerline_pass(
+        thin_region_infos=[{
+            "component_id": 1,
+            "geometry": printable,
+            "mask": mask,
+            "origin_x": float(origin_x),
+            "origin_y": float(origin_y),
+            "px_per_mm": float(px_per_mm),
+            "area_mm2": float(printable.area),
+            "max_width_mm": 0.52,
+            "median_width_mm": 0.52,
+            "equivalent_diameter_mm": coverage_planner._equivalent_diameter_mm(float(printable.area)),
+            "angle_deg": 0.0,
+            "has_holes": False,
+        }],
+        current_paths=[],
+        line_width_mm=0.6,
+        simplify_tolerance_mm=0.02,
+    )
+
+    assert stats["thin_source_region_detection_ran"] is True
+    assert stats["thin_centerline_accepted_count"] >= 1
+    assert accepted
+    longest = max(accepted, key=lambda path: pipeline_core.segment_length(path.points))
+    assert longest.source == "thin_source_region_centerline"
+    assert pipeline_core.segment_length(longest.points) >= center_curve.length * 0.75
+    assert printable.buffer(1e-4).covers(_line_for_path(longest))
+    assert any(float(row.get("length_coverage_ratio", 0.0)) >= 0.55 for row in rows)
 
 
 def test_detail_trace_footprint_validation_limits_overspill_and_allows_outline_overlap():

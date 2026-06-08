@@ -5,6 +5,7 @@ import logging
 import json
 import tempfile
 from pathlib import Path
+from collections import Counter
 
 from . import pipeline_core
 
@@ -183,6 +184,30 @@ class GcodeService:
             debug["preview_gcode_path_mismatch_count"] = 0 if debug["preview_and_gcode_share_same_projected_paths"] else 1
             _write_travel_debug_files(gcode, preview)
 
+        def _update_gcode_export_summary(gcode: list[str]) -> None:
+            if not isinstance(debug, dict):
+                return
+            path_count_by_kind: Counter[str] = Counter()
+            thin_centerline_count = 0
+            for line in gcode:
+                if not line.startswith("(PATH_START"):
+                    continue
+                parts = line.strip("()").split()
+                fields: dict[str, str] = {}
+                for part in parts[1:]:
+                    if "=" not in part:
+                        continue
+                    key, value = part.split("=", 1)
+                    fields[key] = value
+                kind = str(fields.get("kind", "unknown"))
+                source = str(fields.get("source", ""))
+                path_count_by_kind[kind] += 1
+                if source == "thin_source_region_centerline":
+                    thin_centerline_count += 1
+            debug["gcode_path_count_by_kind"] = dict(path_count_by_kind)
+            debug["gcode_contains_thin_centerline_paths"] = bool(thin_centerline_count > 0)
+            debug["thin_centerline_exported_count"] = int(thin_centerline_count)
+
         self.logger.info(
             "Generating G-code from %d toolpaths (mode=%s include_comments=%s placement=(%s,%s))",
             len(toolpaths),
@@ -270,6 +295,7 @@ class GcodeService:
             except Exception as exc:  # pragma: no cover - diagnostics only
                 self.logger.debug("Unable to build runtime estimate: %s", exc)
         _update_path_debug(gcode, preview)
+        _update_gcode_export_summary(gcode)
         if isinstance(debug, dict):
             try:
                 pipeline_core.audit_exported_path_coverage(

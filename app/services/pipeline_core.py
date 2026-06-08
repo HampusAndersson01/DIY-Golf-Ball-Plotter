@@ -3457,6 +3457,13 @@ def _path_component_label(toolpath: Toolpath) -> str:
     return f"component_{component_id:03d}" if component_id is not None else "component_unknown"
 
 
+def _path_export_source_label(toolpath: Toolpath) -> str:
+    metadata = dict(toolpath.metadata or {})
+    if bool(metadata.get("thin_source_region_centerline", False)) or str(toolpath.source or "") == "thin_source_region_centerline":
+        return "thin_source_region_centerline"
+    return str(metadata.get("source_polygon_id") or _path_component_label(toolpath))
+
+
 def _path_ring_role(toolpath: Toolpath) -> str:
     contour_id = _extract_component_id(toolpath.metadata.get("source_contour_id"))
     if contour_id == 1:
@@ -4244,6 +4251,9 @@ def _filter_detail_trace_candidates_for_export(
             bbox_mm = (float(bounds[2] - bounds[0]), float(bounds[3] - bounds[1]))
         estimated_width_mm = float(component_metrics.get("estimated_width_mm", min(bbox_mm[0], bbox_mm[1])) or 0.0)
         long_axis_mm = float(max(bbox_mm[0], bbox_mm[1]))
+        half_estimated_width_mm = max(1e-6, estimated_width_mm * 0.5)
+        centeredness_ratio = centeredness / half_estimated_width_mm if half_estimated_width_mm > 1e-9 else 0.0
+        continuity_ratio = candidate_length_mm / max(long_axis_mm, 1e-6)
         long_enough_for_detail = candidate_length_mm >= (line_width_mm * 2.0)
         elongated_narrow_path = (
             estimated_width_mm > max(1e-6, line_width_mm * 0.25)
@@ -4364,6 +4374,20 @@ def _filter_detail_trace_candidates_for_export(
                         pt = ShapelyPoint(float(coords[idx][0]), float(coords[idx][1]))
                         max_distance = max(max_distance, float(pt.distance(target_boundary)))
                 protrusion_mm = max_distance
+        overlap_area = 0.0
+        if accepted_detail_coverage is not None and not accepted_detail_coverage.is_empty:
+            overlap_area = float(stroke.intersection(accepted_detail_coverage).area)
+        overlap_ratio = overlap_area / max(1e-9, float(stroke.area))
+        is_narrow_component = component_idx is not None
+        is_residual_centerline = canonical_source == "skeleton_required_for_unfilled_thin_region"
+        is_centerline_like = canonical_source in {"thin_feature_centerline", "skeleton_required_for_unfilled_thin_region"}
+        if is_centerline_like and is_small_detail_component:
+            if is_residual_centerline and centeredness_ratio < 0.45:
+                _reject("off_center_centerline", new_coverage_area_mm2=new_coverage_area, already_covered_ratio=already_covered_ratio)
+                continue
+            if is_residual_centerline and long_axis_mm >= (line_width_mm * 2.0) and continuity_ratio < 0.6:
+                _reject("insufficient_centerline_continuity", new_coverage_area_mm2=new_coverage_area, already_covered_ratio=already_covered_ratio)
+                continue
         if validate_detail_with_pen_footprint:
             overspill_ok = overspill_ratio <= max_detail_overspill_area_ratio and protrusion_mm <= max_detail_overspill_mm
             if not overspill_ok:
@@ -4373,13 +4397,6 @@ def _filter_detail_trace_candidates_for_export(
                 if dropped_records:
                     dropped_records[-1]["outside_overflow_mm2"] = float(overspill_area)
                 continue
-
-        overlap_area = 0.0
-        if accepted_detail_coverage is not None and not accepted_detail_coverage.is_empty:
-            overlap_area = float(stroke.intersection(accepted_detail_coverage).area)
-        overlap_ratio = overlap_area / max(1e-9, float(stroke.area))
-        is_narrow_component = component_idx is not None
-        is_centerline_like = canonical_source == "skeleton_required_for_unfilled_thin_region"
         if is_narrow_component and is_centerline_like and overlap_ratio >= 0.82 and centeredness <= (line_width_mm * 0.42):
             _reject("redundant_centerline_overlap", new_coverage_area_mm2=new_coverage_area, already_covered_ratio=already_covered_ratio)
             continue
@@ -4415,6 +4432,8 @@ def _filter_detail_trace_candidates_for_export(
                 "detail_max_protrusion_mm": protrusion_mm,
                 "detail_overlap_ratio_with_accepted": overlap_ratio,
                 "detail_centeredness_mm": centeredness,
+                "detail_centeredness_ratio": float(centeredness_ratio),
+                "detail_continuity_ratio": float(continuity_ratio),
                 "detail_component_id": component_id,
                 "detail_component_area_mm2": component_area_mm2,
                 "detail_component_bbox_mm": bbox_mm,
@@ -6934,6 +6953,7 @@ def audit_exported_path_coverage(
     union_mask = (preview_target_mask > 0) | (diagnostic_target_mask > 0)
     intersection_mask = (preview_target_mask > 0) & (diagnostic_target_mask > 0)
     preview_target_vs_diagnostic_target_iou = float(np.count_nonzero(intersection_mask) / max(1, np.count_nonzero(union_mask)))
+    effective_target_mask = diagnostic_target_mask if preview_target_vs_diagnostic_target_iou < 0.995 else preview_target_mask
 
     def _entry_to_toolpath(entry: dict[str, Any]) -> Toolpath:
         surface_points = [
@@ -6995,8 +7015,8 @@ def audit_exported_path_coverage(
         max_segment_mm=max_coverage_segment_mm,
         include_kinds=None,
     )
-    visible_gaps_before = ((preview_target_mask > 0) & ~(coverage_before_mask > 0)).astype(np.uint8) * 255
-    visible_gaps_after = ((preview_target_mask > 0) & ~(coverage_after_mask > 0)).astype(np.uint8) * 255
+    visible_gaps_before = ((effective_target_mask > 0) & ~(coverage_before_mask > 0)).astype(np.uint8) * 255
+    visible_gaps_after = ((effective_target_mask > 0) & ~(coverage_after_mask > 0)).astype(np.uint8) * 255
     coverage_changed_after_resampling = bool(np.any(coverage_after_mask > 0) != np.any(coverage_before_mask > 0) or np.count_nonzero(visible_gaps_before) != np.count_nonzero(visible_gaps_after))
 
     a, b, c, d, _e, _f = current_to_source
@@ -7059,7 +7079,7 @@ def audit_exported_path_coverage(
     comparison = np.zeros((diagnostic_target_mask.shape[0], diagnostic_target_mask.shape[1], 3), dtype=np.uint8)
     comparison[coverage_before_mask > 0] = (255, 180, 80)
     comparison[coverage_after_mask > 0] = (60, 180, 80)
-    comparison[(preview_target_mask > 0) & ~(coverage_after_mask > 0)] = (0, 0, 255)
+    comparison[(effective_target_mask > 0) & ~(coverage_after_mask > 0)] = (0, 0, 255)
 
     cv2.imwrite(str(artifact_dir / "01_preview_target_mask.png"), preview_target_mask)
     cv2.imwrite(str(artifact_dir / "02_diagnostic_selected_color_mask.png"), diagnostic_target_mask)
@@ -7161,6 +7181,25 @@ def rewrite_final_export_path_stats_artifact(debug: dict[str, Any]) -> None:
     except Exception:
         current = {}
     current.update({
+        "frontend_generate_request_received": bool(debug.get("frontend_generate_request_received", False)),
+        "lineWidthMm": float(debug.get("lineWidthMm", debug.get("line_width_mm", 0.0) or 0.0)),
+        "rotationDeg": float(debug.get("rotationDeg", 0.0) or 0.0),
+        "source_mask_component_count": int(debug.get("source_mask_component_count", 0) or 0),
+        "normal_safe_infill_enabled": bool(debug.get("normal_safe_infill_enabled", True)),
+        "thin_source_region_pass_enabled": bool(debug.get("thin_source_region_pass_enabled", False)),
+        "thin_source_region_pass_ran": bool(debug.get("thin_source_region_pass_ran", False)),
+        "thin_source_region_count": int(debug.get("thin_source_region_count", 0)),
+        "thin_centerline_candidate_count": int(debug.get("thin_centerline_candidate_count", 0)),
+        "thin_centerline_accepted_count": int(debug.get("thin_centerline_accepted_count", 0)),
+        "thin_centerline_exported_count": int(debug.get("thin_centerline_exported_count", 0)),
+        "thin_skeleton_component_count": int(debug.get("thin_skeleton_component_count", 0)),
+        "useful_thin_skeleton_length_mm": float(debug.get("useful_thin_skeleton_length_mm", 0.0)),
+        "accepted_thin_centerline_length_mm": float(debug.get("accepted_thin_centerline_length_mm", 0.0)),
+        "accepted_thin_centerline_fraction": float(debug.get("accepted_thin_centerline_fraction", 0.0)),
+        "final_path_count_before_thin_centerlines": int(debug.get("final_path_count_before_thin_centerlines", 0)),
+        "final_path_count_after_thin_centerlines": int(debug.get("final_path_count_after_thin_centerlines", 0)),
+        "gcode_path_count_by_kind": dict(debug.get("gcode_path_count_by_kind", {})),
+        "gcode_contains_thin_centerline_paths": bool(debug.get("gcode_contains_thin_centerline_paths", False)),
         "travel_optimization_mode": str(debug.get("travel_optimization_mode", "")),
         "travel_bug_source": str(debug.get("travel_bug_source", "unknown")),
         "optimizer_runs_after_path_merging": bool(debug.get("optimizer_runs_after_path_merging", False)),
@@ -11514,11 +11553,437 @@ class SlicerService:
 
         return final_toolpaths
 
+    def _generate_shaped_thin_region_centerline(
+        self,
+        region: Any,
+        *,
+        angle_deg: float,
+        line_width_mm: float | None = None,
+        min_segment_length_mm: float,
+        tolerance_mm: float,
+        kind: str = "fill-infill",
+    ) -> list[Toolpath]:
+        if region is None or region.is_empty:
+            return []
+
+        from . import coverage_planner
+        effective_line_width_mm = float(
+            line_width_mm
+            if line_width_mm is not None and line_width_mm > 1e-9
+            else max(0.1, min(1.0, max(min_segment_length_mm * 2.0, tolerance_mm * 4.0)))
+        )
+
+        def _score_candidate(candidate: Toolpath, *, component_width_mm: float, long_axis_mm: float) -> tuple[float, Toolpath] | None:
+            centerline_simplify_tolerance_mm = max(0.005, min(tolerance_mm, effective_line_width_mm * 0.03, tolerance_mm * 0.35 if tolerance_mm > 0 else 0.01))
+
+            def _extend_endpoint(points_in: list[Point], *, at_start: bool) -> list[Point]:
+                if len(points_in) < 2:
+                    return points_in
+                anchor = points_in[0] if at_start else points_in[-1]
+                neighbor = points_in[1] if at_start else points_in[-2]
+                dx = float(anchor.x - neighbor.x)
+                dy = float(anchor.y - neighbor.y)
+                length = math.hypot(dx, dy)
+                if length <= 1e-9:
+                    return points_in
+                ux = dx / length
+                uy = dy / length
+                probe = LineString([
+                    (float(anchor.x), float(anchor.y)),
+                    (float(anchor.x + (ux * max(0.2, effective_line_width_mm))), float(anchor.y + (uy * max(0.2, effective_line_width_mm)))),
+                ])
+                clipped_probe = probe.intersection(region.buffer(1e-4))
+                probe_parts = [part for part in extract_lines(clipped_probe) if not part.is_empty and float(part.length) > 1e-9]
+                if not probe_parts:
+                    return points_in
+                best_part = max(probe_parts, key=lambda part: float(part.length))
+                coords = list(best_part.coords)
+                if len(coords) >= 2:
+                    cand_a = coords[0]
+                    cand_b = coords[-1]
+                    dist_a = math.hypot(float(cand_a[0]) - float(neighbor.x), float(cand_a[1]) - float(neighbor.y))
+                    dist_b = math.hypot(float(cand_b[0]) - float(neighbor.x), float(cand_b[1]) - float(neighbor.y))
+                    new_xy = cand_a if dist_a >= dist_b else cand_b
+                else:
+                    new_xy = coords[-1]
+                updated = list(points_in)
+                candidate_point = Point(float(new_xy[0]), float(new_xy[1]))
+                validation_segment = LineString([
+                    (float(candidate_point.x), float(candidate_point.y)),
+                    (float(neighbor.x), float(neighbor.y)),
+                ])
+                try:
+                    if not region.buffer(1e-4).covers(validation_segment):
+                        return points_in
+                except Exception:
+                    return points_in
+                if at_start:
+                    updated[0] = candidate_point
+                else:
+                    updated[-1] = candidate_point
+                return updated
+
+            if len(candidate.points) < 2:
+                return None
+            raw_line = LineString([(point.x, point.y) for point in candidate.points])
+            if raw_line.is_empty:
+                return None
+            parts = [
+                part
+                for part in extract_lines(raw_line.intersection(region))
+                if not part.is_empty and float(part.length) > 1e-9
+            ]
+            if not parts:
+                parts = [raw_line]
+            merged_coords: list[tuple[float, float]] = []
+            remaining_parts = sorted(parts, key=lambda part: float(part.length), reverse=True)
+            if remaining_parts:
+                merged_coords = [(float(x), float(y)) for x, y in remaining_parts.pop(0).coords]
+            max_join_gap_mm = max(effective_line_width_mm * 1.25, tolerance_mm * 6.0, 0.12)
+            while remaining_parts:
+                best_index = -1
+                best_reverse = False
+                best_distance = float("inf")
+                best_attach_to = "tail"
+                head = merged_coords[0]
+                tail = merged_coords[-1]
+                for index, part in enumerate(remaining_parts):
+                    coords = [(float(x), float(y)) for x, y in part.coords]
+                    options = [
+                        (math.hypot(tail[0] - coords[0][0], tail[1] - coords[0][1]), False, "tail"),
+                        (math.hypot(tail[0] - coords[-1][0], tail[1] - coords[-1][1]), True, "tail"),
+                        (math.hypot(head[0] - coords[-1][0], head[1] - coords[-1][1]), False, "head"),
+                        (math.hypot(head[0] - coords[0][0], head[1] - coords[0][1]), True, "head"),
+                    ]
+                    distance, reverse, attach_to = min(options, key=lambda item: item[0])
+                    if distance < best_distance:
+                        best_index = index
+                        best_reverse = reverse
+                        best_distance = distance
+                        best_attach_to = attach_to
+                if best_index < 0 or best_distance > max_join_gap_mm:
+                    break
+                next_coords = [(float(x), float(y)) for x, y in remaining_parts.pop(best_index).coords]
+                if best_reverse:
+                    next_coords.reverse()
+                if best_attach_to == "tail":
+                    if math.hypot(merged_coords[-1][0] - next_coords[0][0], merged_coords[-1][1] - next_coords[0][1]) <= max_join_gap_mm:
+                        merged_coords.extend(next_coords[1:])
+                    else:
+                        merged_coords.extend(next_coords)
+                else:
+                    if math.hypot(next_coords[-1][0] - merged_coords[0][0], next_coords[-1][1] - merged_coords[0][1]) <= max_join_gap_mm:
+                        merged_coords = next_coords[:-1] + merged_coords
+                    else:
+                        merged_coords = next_coords + merged_coords
+            merged_line = LineString(merged_coords)
+            clipped_line = merged_line.intersection(region.buffer(1e-4))
+            clipped_parts = [
+                part
+                for part in extract_lines(clipped_line)
+                if not part.is_empty and float(part.length) > 1e-9
+            ]
+            if clipped_parts:
+                clipped_parts.sort(key=lambda part: float(part.length), reverse=True)
+                merged_coords = [(float(x), float(y)) for x, y in clipped_parts[0].coords]
+            points = simplify_segment_points([Point(x, y) for x, y in merged_coords], centerline_simplify_tolerance_mm, False)
+            if len(points) < 2:
+                return None
+            simplified_line = LineString([(point.x, point.y) for point in points]).intersection(region.buffer(1e-4))
+            simplified_parts = [
+                part
+                for part in extract_lines(simplified_line)
+                if not part.is_empty and float(part.length) > 1e-9
+            ]
+            if simplified_parts:
+                simplified_parts.sort(key=lambda part: float(part.length), reverse=True)
+                merged_simplified_coords = [(float(x), float(y)) for x, y in simplified_parts.pop(0).coords]
+                max_join_gap_mm = max(effective_line_width_mm * 1.25, tolerance_mm * 6.0, 0.12)
+                while simplified_parts:
+                    best_index = -1
+                    best_reverse = False
+                    best_distance = float("inf")
+                    best_attach_to = "tail"
+                    head = merged_simplified_coords[0]
+                    tail = merged_simplified_coords[-1]
+                    for index, part in enumerate(simplified_parts):
+                        coords = [(float(x), float(y)) for x, y in part.coords]
+                        options = [
+                            (math.hypot(tail[0] - coords[0][0], tail[1] - coords[0][1]), False, "tail"),
+                            (math.hypot(tail[0] - coords[-1][0], tail[1] - coords[-1][1]), True, "tail"),
+                            (math.hypot(head[0] - coords[-1][0], head[1] - coords[-1][1]), False, "head"),
+                            (math.hypot(head[0] - coords[0][0], head[1] - coords[0][1]), True, "head"),
+                        ]
+                        distance, reverse, attach_to = min(options, key=lambda item: item[0])
+                        if distance < best_distance:
+                            best_index = index
+                            best_reverse = reverse
+                            best_distance = distance
+                            best_attach_to = attach_to
+                    if best_index < 0 or best_distance > max_join_gap_mm:
+                        break
+                    next_coords = [(float(x), float(y)) for x, y in simplified_parts.pop(best_index).coords]
+                    if best_reverse:
+                        next_coords.reverse()
+                    if best_attach_to == "tail":
+                        merged_simplified_coords.extend(next_coords[1:] if math.hypot(merged_simplified_coords[-1][0] - next_coords[0][0], merged_simplified_coords[-1][1] - next_coords[0][1]) <= max_join_gap_mm else next_coords)
+                    else:
+                        merged_simplified_coords = (next_coords[:-1] if math.hypot(next_coords[-1][0] - merged_simplified_coords[0][0], next_coords[-1][1] - merged_simplified_coords[0][1]) <= max_join_gap_mm else next_coords) + merged_simplified_coords
+                points = simplify_segment_points([Point(float(x), float(y)) for x, y in merged_simplified_coords], centerline_simplify_tolerance_mm, False)
+            if len(points) < 2:
+                return None
+            points = _extend_endpoint(points, at_start=True)
+            points = _extend_endpoint(points, at_start=False)
+            length_mm = segment_length(points)
+            if length_mm < min_segment_length_mm:
+                return None
+            chord_mm = math.hypot(points[-1].x - points[0].x, points[-1].y - points[0].y)
+            if chord_mm <= 1e-9:
+                return None
+            boundary = region.boundary
+            sample_step = max(1, int(len(points) / 16))
+            distances: list[float] = []
+            for idx in range(0, len(points), sample_step):
+                pt = points[idx]
+                distances.append(float(ShapelyPoint(float(pt.x), float(pt.y)).distance(boundary)))
+            if len(points) >= 2:
+                pt = points[-1]
+                distances.append(float(ShapelyPoint(float(pt.x), float(pt.y)).distance(boundary)))
+            centeredness_mm = float(sum(distances) / max(1, len(distances))) if distances else 0.0
+            half_width_mm = max(1e-6, component_width_mm * 0.5)
+            centeredness_ratio = centeredness_mm / half_width_mm
+            continuity_ratio = length_mm / max(long_axis_mm, 1e-6)
+            fragmentation_penalty = max(0.0, float(len(parts) - 1)) * 0.35
+            bend_penalty = max(0.0, (length_mm / max(chord_mm, 1e-6)) - 1.35) * 1.5
+            score = (
+                min(1.4, continuity_ratio) * 3.0
+                + min(1.25, centeredness_ratio) * 2.5
+                + min(1.0, chord_mm / max(long_axis_mm, 1e-6))
+                - fragmentation_penalty
+                - bend_penalty
+            )
+            return score, clone_toolpath(
+                candidate,
+                points=points,
+                kind=kind,
+                closed=False,
+                metadata={
+                    **(candidate.metadata or {}),
+                    "small_detail_fill_style": str((candidate.metadata or {}).get("small_detail_fill_style", "thin_region_centerline")),
+                    "thin_region_centerline": True,
+                    "thin_region_centerline_length_mm": float(length_mm),
+                    "thin_region_centerline_chord_mm": float(chord_mm),
+                    "thin_region_centerline_continuity_ratio": float(continuity_ratio),
+                    "thin_region_centerline_centeredness_mm": float(centeredness_mm),
+                    "thin_region_centerline_centeredness_ratio": float(centeredness_ratio),
+                    "thin_region_component_estimated_width_mm": float(component_width_mm),
+                    "thin_region_component_long_axis_mm": float(long_axis_mm),
+                    "thin_region_candidate_fragment_count": int(len(parts)),
+                },
+            )
+
+        def _merge_candidate_paths(paths: list[Toolpath]) -> Toolpath | None:
+            usable = [
+                path for path in paths
+                if path is not None and len(path.points) >= 2 and segment_length(path.points) >= min_segment_length_mm
+            ]
+            if not usable:
+                return None
+            remaining = [clone_toolpath(path) for path in usable]
+            remaining.sort(key=lambda path: segment_length(path.points), reverse=True)
+            merged_points = list(remaining.pop(0).points)
+            max_join_gap_mm = max(effective_line_width_mm * 1.25, tolerance_mm * 6.0, 0.12)
+            while remaining:
+                best_index = -1
+                best_reverse = False
+                best_distance = float("inf")
+                head = merged_points[0]
+                tail = merged_points[-1]
+                for index, path in enumerate(remaining):
+                    options = [
+                        (math.hypot(tail.x - path.points[0].x, tail.y - path.points[0].y), False, "tail"),
+                        (math.hypot(tail.x - path.points[-1].x, tail.y - path.points[-1].y), True, "tail"),
+                        (math.hypot(head.x - path.points[-1].x, head.y - path.points[-1].y), False, "head"),
+                        (math.hypot(head.x - path.points[0].x, head.y - path.points[0].y), True, "head"),
+                    ]
+                    distance, reverse, attach_to = min(options, key=lambda item: item[0])
+                    if distance < best_distance:
+                        best_distance = distance
+                        best_index = index
+                        best_reverse = reverse
+                        best_attach_to = attach_to
+                if best_index < 0 or best_distance > max_join_gap_mm:
+                    break
+                next_path = remaining.pop(best_index)
+                next_points = list(reversed(next_path.points)) if best_reverse else list(next_path.points)
+                if best_attach_to == "tail":
+                    if nearly_same_point(merged_points[-1], next_points[0], tolerance=max_join_gap_mm):
+                        merged_points.extend(next_points[1:])
+                    else:
+                        merged_points.extend(next_points)
+                else:
+                    if nearly_same_point(next_points[-1], merged_points[0], tolerance=max_join_gap_mm):
+                        merged_points = next_points[:-1] + merged_points
+                    else:
+                        merged_points = next_points + merged_points
+            merged_points = simplify_segment_points(merged_points, tolerance_mm, False)
+            if len(merged_points) < 2 or segment_length(merged_points) < min_segment_length_mm:
+                return None
+            return Toolpath(
+                points=merged_points,
+                kind=kind,
+                closed=False,
+                metadata={"small_detail_fill_style": "thin_region_centerline"},
+            )
+
+        min_x, min_y, max_x, max_y = region.bounds
+        long_axis_mm = max(0.0, float(max(max_x - min_x, max_y - min_y)))
+        component_width_mm = max(0.0, float(min(max_x - min_x, max_y - min_y)))
+        resolution_mm = max(0.02, min(0.03, max(effective_line_width_mm * 0.05, tolerance_mm * 0.4 if tolerance_mm > 0 else 0.02)))
+        pad_mm = max(effective_line_width_mm, 0.5)
+        component_mask, origin_x, origin_y, px_per_mm = coverage_planner._rasterize_geometry(
+            region,
+            resolution_mm=resolution_mm,
+            pad_mm=pad_mm,
+        )
+        if int(np.count_nonzero(component_mask)) <= 0:
+            return []
+
+        source_to_current = (
+            float(1.0 / px_per_mm),
+            0.0,
+            0.0,
+            float(1.0 / px_per_mm),
+            float(origin_x),
+            float(origin_y),
+        )
+        pen_radius_px = max(0.0, (effective_line_width_mm * 0.5) * px_per_mm)
+        ys, xs = np.nonzero(component_mask > 0)
+        horizontal = bool(xs.size >= 2 and ys.size >= 2 and (int(xs.max()) - int(xs.min())) >= (int(ys.max()) - int(ys.min())))
+
+        candidate_paths: list[Toolpath] = []
+        skeleton_paths, _ = coverage_planner._skeleton_paths_for_component(
+            component_mask,
+            origin_x=origin_x,
+            origin_y=origin_y,
+            px_per_mm=px_per_mm,
+            component_id=1,
+            line_width_mm=effective_line_width_mm,
+            small_detail_fill_style="thin_region_centerline",
+        )
+        candidate_paths.extend(skeleton_paths)
+        merged_skeleton = _merge_candidate_paths(skeleton_paths)
+        if merged_skeleton is not None:
+            candidate_paths.append(merged_skeleton)
+        candidate_paths.extend(self._build_component_run_candidates(
+            component_mask,
+            source_to_current_matrix=source_to_current,
+            line_width_mm=effective_line_width_mm,
+            pen_radius_px=pen_radius_px,
+            component_id=1,
+            horizontal=horizontal,
+            max_candidates=6,
+            thin_mode=True,
+        ))
+        medial_primary = self._build_component_medial_polyline_candidate(
+            component_mask,
+            source_to_current_matrix=source_to_current,
+            line_width_mm=effective_line_width_mm,
+            component_id=1,
+            horizontal=horizontal,
+            pen_radius_px=pen_radius_px,
+        )
+        if medial_primary is not None:
+            candidate_paths.append(medial_primary)
+        medial_alt = self._build_component_medial_polyline_candidate(
+            component_mask,
+            source_to_current_matrix=source_to_current,
+            line_width_mm=effective_line_width_mm,
+            component_id=1,
+            horizontal=not horizontal,
+            pen_radius_px=pen_radius_px,
+        )
+        if medial_alt is not None:
+            candidate_paths.append(medial_alt)
+        primary = self._build_component_centerline_candidate(
+            component_mask,
+            source_to_current_matrix=source_to_current,
+            line_width_mm=effective_line_width_mm,
+            pen_radius_px=pen_radius_px,
+            component_id=1,
+            strategy="thin_region_centerline",
+        )
+        if primary is not None:
+            candidate_paths.append(primary)
+        fullspan = self._build_component_fullspan_passage_candidate(
+            component_mask,
+            source_to_current_matrix=source_to_current,
+            line_width_mm=effective_line_width_mm,
+            component_id=1,
+        )
+        if fullspan is not None:
+            candidate_paths.append(fullspan)
+        candidate_paths.extend(self._build_component_angle_run_candidates(
+            component_mask,
+            source_to_current_matrix=source_to_current,
+            line_width_mm=effective_line_width_mm,
+            component_id=1,
+            angles_deg=[angle_deg, angle_deg + 90.0, 0.0, 90.0, 45.0, -45.0],
+        ))
+
+        scored_candidates: list[tuple[float, Toolpath]] = []
+        for candidate in candidate_paths:
+            scored = _score_candidate(candidate, component_width_mm=component_width_mm, long_axis_mm=long_axis_mm)
+            if scored is not None:
+                scored_candidates.append(scored)
+
+        if not scored_candidates:
+            origin = region.centroid.coords[0]
+            candidate_angles = [angle_deg, angle_deg + 90.0]
+            try:
+                oriented = region.minimum_rotated_rectangle
+                coords = list(oriented.exterior.coords)
+                if len(coords) >= 3:
+                    edges = []
+                    for start, end in zip(coords, coords[1:]):
+                        dx = end[0] - start[0]
+                        dy = end[1] - start[1]
+                        length = math.hypot(dx, dy)
+                        if length > 1e-6:
+                            edges.append((length, math.degrees(math.atan2(dy, dx))))
+                    if edges:
+                        edges.sort(reverse=True)
+                        candidate_angles.append(edges[0][1])
+            except Exception:
+                pass
+            for candidate_angle in candidate_angles:
+                rotated = affinity.rotate(region, -candidate_angle, origin=origin)
+                probe = LineString([(rotated.bounds[0] - 1.0, rotated.centroid.y), (rotated.bounds[2] + 1.0, rotated.centroid.y)])
+                clipped = rotated.intersection(probe)
+                lines = sorted(extract_lines(clipped), key=lambda line: line.length, reverse=True)
+                if not lines:
+                    continue
+                fallback = Toolpath(
+                    points=[Point(float(x), float(y)) for x, y in affinity.rotate(lines[0], candidate_angle, origin=origin).coords],
+                    kind=kind,
+                    closed=False,
+                    metadata={"small_detail_fill_style": "thin_region_centerline"},
+                )
+                scored = _score_candidate(fallback, component_width_mm=component_width_mm, long_axis_mm=long_axis_mm)
+                if scored is not None:
+                    scored_candidates.append(scored)
+
+        if not scored_candidates:
+            return []
+        scored_candidates.sort(key=lambda item: item[0], reverse=True)
+        return [scored_candidates[0][1]]
+
     def _generate_centerline_fallback(
         self,
         region: Any,
         *,
         angle_deg: float,
+        line_width_mm: float | None = None,
         min_segment_length_mm: float,
         tolerance_mm: float,
         kind: str = "fill-infill",
@@ -15078,6 +15543,49 @@ def generate_toolpaths(
                                     rejection_reason_counts[reason] = int(rejection_reason_counts.get(reason, 0)) + 1
                                     rejected_reason_counts[reason] = int(rejected_reason_counts.get(reason, 0)) + 1
 
+                local_width_mm = min(span_x, span_y)
+                should_try_centerline_repair = (
+                    accepted_for_component <= 0
+                    or local_width_mm <= (pen_width_mm * 1.5)
+                    or comp_area <= max(0.2, pen_width_mm * pen_width_mm * 2.5)
+                )
+                if should_try_centerline_repair:
+                    centerline_candidates = self._generate_shaped_thin_region_centerline(
+                        component,
+                        angle_deg=angle_deg,
+                        line_width_mm=pen_width_mm,
+                        min_segment_length_mm=max(0.04, pen_width_mm * 0.2),
+                        tolerance_mm=max(0.01, simplify_mm),
+                        kind="fill-infill",
+                    )
+                    for centerline in centerline_candidates:
+                        if len(centerline.points) < 2:
+                            continue
+                        pass_candidates += 1
+                        candidate = clone_toolpath(
+                            centerline,
+                            kind="fill-infill",
+                            closed=False,
+                            source="residual_centerline_section_repair",
+                            metadata={
+                                **(centerline.metadata or {}),
+                                "path_role": "CONTOUR_SECTION_INFILL",
+                                "offset_mm": 0.0,
+                                "residual_repair_pass_index": int(repair_pass_index),
+                                "residual_component_id": int(comp_id),
+                                "residual_centerline_repair": True,
+                            },
+                        )
+                        ok, reason = _accept_section(candidate, role="CONTOUR_SECTION_INFILL", corner_mode=False, continuity_preserving=True)
+                        if ok:
+                            accepted_paths.append(candidate)
+                            pass_accepted += 1
+                            accepted_for_component += 1
+                        else:
+                            rejected_sections.append((candidate, reason))
+                            rejection_reason_counts[reason] = int(rejection_reason_counts.get(reason, 0)) + 1
+                            rejected_reason_counts[reason] = int(rejected_reason_counts.get(reason, 0)) + 1
+
                 # Fallback for tiny residual slivers: inject microscopic local cross-strokes
                 # at component center, clipped to the residual component.
                 if accepted_for_component <= 0:
@@ -16110,47 +16618,29 @@ def generate_toolpaths(
         def _extract_centerline_for_residual(component: Any) -> list[Toolpath]:
             if component is None or component.is_empty:
                 return []
-            origin = component.centroid.coords[0]
-            candidate_angles: list[float] = [0.0, 90.0]
-            try:
-                oriented = component.minimum_rotated_rectangle
-                coords = list(oriented.exterior.coords)
-                edges: list[tuple[float, float]] = []
-                for start, end in zip(coords, coords[1:]):
-                    dx = float(end[0] - start[0])
-                    dy = float(end[1] - start[1])
-                    length = math.hypot(dx, dy)
-                    if length > 1e-6:
-                        edges.append((length, math.degrees(math.atan2(dy, dx))))
-                edges.sort(reverse=True)
-                candidate_angles.extend([angle for _length, angle in edges[:2]])
-            except Exception:
-                pass
-
-            best_line = None
-            best_length = 0.0
-            for candidate_angle in candidate_angles:
-                rotated = affinity.rotate(component, -candidate_angle, origin=origin)
-                min_x, _min_y, max_x, _max_y = rotated.bounds
-                center_y = rotated.centroid.y
-                probe = LineString([(min_x - 1.0, center_y), (max_x + 1.0, center_y)])
-                clipped = rotated.intersection(probe)
-                lines = sorted(extract_lines(clipped), key=lambda line: line.length, reverse=True)
-                if lines and lines[0].length > best_length:
-                    best_line = affinity.rotate(lines[0], candidate_angle, origin=origin)
-                    best_length = float(lines[0].length)
-
-            if best_line is None or best_length < max(0.06, line_width_mm * 0.2):
-                return []
-            points = simplify_segment_points([Point(float(x), float(y)) for x, y in best_line.coords], max(0.015, detail_tolerance_mm), False)
-            if len(points) < 2:
-                return []
-            return [Toolpath(
-                points=points,
+            candidate_paths = self._generate_shaped_thin_region_centerline(
+                component,
+                angle_deg=infill_angle_deg,
+                line_width_mm=line_width_mm,
+                min_segment_length_mm=max(0.06, line_width_mm * 0.2),
+                tolerance_mm=max(0.015, detail_tolerance_mm),
                 kind="detail-trace",
-                closed=False,
+            )
+            if not candidate_paths:
+                return []
+            longest = max(candidate_paths, key=lambda path: segment_length(path.points) if len(path.points) >= 2 else 0.0)
+            if len(longest.points) < 2:
+                return []
+            return [clone_toolpath(
+                longest,
+                kind="detail-trace",
                 source="residual_centerline",
-                metadata={"path_role": "PRINT_DETAIL", "detail_source": "residual_centerline"},
+                metadata={
+                    **(longest.metadata or {}),
+                    "path_role": "PRINT_DETAIL",
+                    "detail_source": "residual_centerline",
+                    "thin_region_centerline_source": str((longest.metadata or {}).get("coverage_backfill_strategy", "shaped_centerline")),
+                },
             )]
 
         allow_detail_overlap_outline = os.getenv("ALLOW_DETAIL_OVERLAP_OUTLINE", "1") == "1"
@@ -16917,10 +17407,13 @@ def generate_gcode_from_toolpaths(
             draw_end_line = None
             path_gcode_start_index = len(g)
             max_surface_segment_mm = float(toolpath.metadata.get("max_surface_segment_mm_after_resampling", 0.0))
-            source_label = toolpath.metadata.get("source_polygon_id", _path_component_label(toolpath))
+            source_label = _path_export_source_label(toolpath)
+            repair_mode = str(toolpath.metadata.get("repair_mode", "") or "")
             comment(
                 f"PATH_START id={path_id} kind={toolpath.kind} space={toolpath.coordinate_space} "
-                f"source={source_label} points={len(pts)} max_surface_segment_mm={max_surface_segment_mm:.4f}"
+                f"source={source_label}"
+                f"{f' repair_mode={repair_mode}' if repair_mode else ''} "
+                f"points={len(pts)} max_surface_segment_mm={max_surface_segment_mm:.4f}"
             )
             comment(f"{toolpath.kind} path {index}, {len(pts)} points")
             previous_point = pts[0]
@@ -17102,7 +17595,8 @@ def generate_gcode_from_toolpaths(
         draw_end_line = None
         path_gcode_start_index = len(g)
         max_surface_segment_mm = float(toolpath.metadata.get("max_surface_segment_mm_after_resampling", 0.0))
-        source_label = toolpath.metadata.get("source_polygon_id", _path_component_label(toolpath))
+        source_label = _path_export_source_label(toolpath)
+        repair_mode = str(toolpath.metadata.get("repair_mode", "") or "")
         if toolpath.kind == "fill-infill":
             if active_fill_chain_path_id is None:
                 active_fill_chain_path_id = path_id
@@ -17110,7 +17604,9 @@ def generate_gcode_from_toolpaths(
         if not continuing_fill_chain:
             comment(
                 f"PATH_START id={chain_path_id} kind={toolpath.kind} space={toolpath.coordinate_space} "
-                f"source={source_label} points={len(pts)} max_surface_segment_mm={max_surface_segment_mm:.4f}"
+                f"source={source_label}"
+                f"{f' repair_mode={repair_mode}' if repair_mode else ''} "
+                f"points={len(pts)} max_surface_segment_mm={max_surface_segment_mm:.4f}"
             )
             if toolpath.kind == "fill-infill":
                 fill_path_count_after_conversion += 1
