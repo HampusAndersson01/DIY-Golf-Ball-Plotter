@@ -56,6 +56,12 @@ body:
     attributes:
       label: Constraints or non-goals
       placeholder: Do not rewrite unrelated upload, preview, mask, or G-code pipeline logic.
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation or evidence
+      description: Describe how the new behavior should be verified.
+      placeholder: The feature should be covered by a test and visible in preview or generated output.
   - type: checkboxes
     id: scope
     attributes:
