@@ -1,0 +1,93 @@
+name: Geometry bug
+description: Report a geometry, preview, or toolpath defect that affects visible output.
+title: "[Geometry Bug]: "
+labels:
+  - bug
+  - geometry
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Problem summary
+      description: Describe the geometry issue in one or two sentences.
+      placeholder: Thin interior strokes disappear when the outline is offset for pen width.
+    validations:
+      required: true
+  - type: textarea
+    id: screenshot_evidence
+    attributes:
+      label: Screenshot evidence
+      description: Attach or link screenshots, preview images, or capture notes.
+      placeholder: Preview screenshot shows the path missing the thin bridge section.
+  - type: textarea
+    id: artwork
+    attributes:
+      label: Logo or artwork
+      description: Identify the input image, SVG, or artwork source.
+      placeholder: Arsenal logo PNG from the fixtures folder.
+    validations:
+      required: true
+  - type: textarea
+    id: rotation
+    attributes:
+      label: Rotation
+      description: Record the artwork rotation or placement settings used.
+      placeholder: Rotation set to 12 degrees with centered placement.
+  - type: textarea
+    id: settings
+    attributes:
+      label: Settings
+      description: Include the geometry, outline, infill, and preview settings that matter.
+      placeholder: Outline enabled, thin detail mode on, fill mode slicer, line thickness 0.2 mm.
+    validations:
+      required: true
+  - type: input
+    id: pen_width
+    attributes:
+      label: Pen width
+      description: Enter the physical pen width used for the run.
+      placeholder: 0.7 mm
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: State what should appear in preview, toolpath, or G-code.
+      placeholder: The centerline should stay inset by pen radius and the thin bridge should remain visible.
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: State what actually happened in preview, generated toolpaths, or emitted G-code.
+      placeholder: The bridge is removed and the preview no longer matches the visible artwork.
+    validations:
+      required: true
+  - type: textarea
+    id: affected_outputs
+    attributes:
+      label: Affected outputs
+      description: List every affected output channel.
+      placeholder: Preview, toolpath export, and generated G-code.
+    validations:
+      required: true
+  - type: checkboxes
+    id: regression_test
+    attributes:
+      label: Regression test requirement
+      options:
+        - label: I expect a regression test to cover the active pipeline change.
+          required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List concrete conditions that define the fix.
+      placeholder: |
+        - Thin visible features remain in the active pipeline
+        - Preview and G-code match the corrected geometry
+        - A regression test fails before the fix and passes after
+    validations:
+      required: true
