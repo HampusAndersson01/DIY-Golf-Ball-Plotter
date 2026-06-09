@@ -129,6 +129,11 @@ def _frontend_default_arsenal_fixture(*, rotation_deg: float):
     return placed, toolpaths, debug
 
 
+@pytest.fixture(scope="session")
+def arsenal_frontend_default_90_result():
+    return _frontend_default_arsenal_fixture(rotation_deg=90)
+
+
 def _generate_fill_toolpaths(printable_geometry, **overrides):
     params = {
         "enable_fill": True,
@@ -2225,12 +2230,15 @@ def test_small_detail_fill_stays_inside_true_polygon_and_preserves_hole():
     assert all(not hole.buffer(-0.01).covers(_line_for_path(path)) for path in infill_paths)
 
 
-def test_arsenal_frontend_defaults_detail_fill_is_rotation_stable():
+def test_arsenal_frontend_defaults_detail_fill_is_rotation_stable(arsenal_frontend_default_90_result):
     detail_counts: dict[int, int] = {}
     detail_coverages: dict[int, float] = {}
     outline_overflows: dict[int, float] = {}
     for rotation_deg in (0, 90):
-        _placed, toolpaths, debug = _frontend_default_arsenal_fixture(rotation_deg=rotation_deg)
+        if rotation_deg == 90:
+            _placed, toolpaths, debug = arsenal_frontend_default_90_result
+        else:
+            _placed, toolpaths, debug = _frontend_default_arsenal_fixture(rotation_deg=rotation_deg)
         detail_counts[rotation_deg] = sum(1 for path in toolpaths if path.kind == "detail-trace")
         detail_coverages[rotation_deg] = float(debug.get("detail_coverage_after_repair_percent", 0.0))
         outline_overflows[rotation_deg] = float((debug.get("contour_offset_debug") or {}).get("max_outline_overflow_mm", 0.0))
@@ -2260,8 +2268,8 @@ def test_arsenal_preview_pipeline_does_not_use_legacy_slicer_backfill(monkeypatc
     assert calls == 0
 
 
-def test_arsenal_small_countered_components_receive_real_interior_fill():
-    placed, toolpaths, debug = _frontend_default_arsenal_fixture(rotation_deg=90)
+def test_arsenal_small_countered_components_receive_real_interior_fill(arsenal_frontend_default_90_result):
+    placed, toolpaths, debug = arsenal_frontend_default_90_result
     target_components = [
         geometry
         for geometry in pipeline_core.normalize_geometry(placed.printable_geometry)
@@ -2344,6 +2352,49 @@ def test_thin_script_like_stroke_is_not_dropped():
     drawing_paths = [path for path in toolpaths if path.kind in {"fill-infill", "detail-trace", "outline", "fill-wall"}]
     assert drawing_paths
     assert any(path.kind == "outline" for path in drawing_paths)
+
+
+def test_thin_diagonal_w_suppresses_micro_outline_fragments_and_keeps_centerlines():
+    thin_w = LineString([
+        (0.0, 4.0),
+        (1.0, 0.0),
+        (2.0, 4.0),
+        (3.0, 0.0),
+        (4.0, 4.0),
+    ]).buffer(0.22, cap_style=2, join_style=2)
+    debug: dict[str, object] = {}
+
+    toolpaths = _generate_fill_toolpaths(
+        thin_w,
+        line_width_mm=0.6,
+        infill_spacing_mm=0.6,
+        fill_strategy="adaptive_angle",
+        outline_after_fill=True,
+        thin_detail_mode=True,
+        min_fill_area_mm2=0.0,
+        thin_detail_min_area_mm2=0.0,
+        simplify_tolerance_mm=0.0,
+        debug=debug,
+    )
+
+    substituted_centerlines = [
+        path
+        for path in toolpaths
+        if path.kind == "detail-trace" and bool((path.metadata or {}).get("thin_diagonal_centerline_substitution", False))
+    ]
+    fallback_outline_fragments = [
+        path
+        for path in toolpaths
+        if path.kind == "outline" and str((path.metadata or {}).get("path_role", "")) == "FINAL_OUTLINE_FALLBACK"
+    ]
+
+    assert debug.get("artifact_validation_ran") is True
+    assert int(debug.get("thin_diagonal_outline_fragments_checked", 0)) > 0
+    assert int(debug.get("thin_diagonal_outline_fragments_rejected", 0)) > 0
+    assert int(debug.get("thin_diagonal_features_centerline_substituted", 0)) > 0
+    assert substituted_centerlines
+    assert not fallback_outline_fragments
+    assert not any(path.kind == "outline" and len(path.points) <= 3 for path in toolpaths)
 
 
 def test_region_narrower_than_two_pen_width_forces_minimum_stroke_fallback():

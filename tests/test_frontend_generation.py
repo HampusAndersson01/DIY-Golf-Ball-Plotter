@@ -37,7 +37,7 @@ def _selected_black_color_id(app, image_bytes: bytes) -> str:
     return selected
 
 
-def _frontend_generate(client, *, disable_thin_source_pass: bool) -> dict[str, object]:
+def _frontend_generate(client, *, disable_thin_source_pass: bool, debug_pipeline: bool = True) -> dict[str, object]:
     fixture_bytes = ARSENAL_FIXTURE.read_bytes()
     selected = _selected_black_color_id(client.application, fixture_bytes)
     patcher = None
@@ -62,7 +62,7 @@ def _frontend_generate(client, *, disable_thin_source_pass: bool) -> dict[str, o
                 "selected_colors": f"[\"{selected}\"]",
                 "line_thickness_mm": "0.6",
                 "rotation_deg": "90",
-                "debug_pipeline": "1",
+                **({"debug_pipeline": "1"} if debug_pipeline else {}),
             },
             content_type="multipart/form-data",
         )
@@ -138,3 +138,26 @@ def test_arsenal_frontend_generate_exports_thin_centerlines_and_gcode_changes(cl
 
     assert any("kind=detail-trace" in line and "source=thin_source_region_centerline" in line for line in current["gcode"])
     assert not all(length < 1.0 for length in current_thin_lengths)
+
+
+def test_arsenal_frontend_generation_stays_under_budget_and_meets_quality_guard(client):
+    payload = _frontend_generate(client, disable_thin_source_pass=False, debug_pipeline=False)
+    summary = dict(payload.get("summary") or {})
+    stage_timings_ms = dict(payload.get("stage_timings_ms") or {})
+
+    total_generation_ms = float(stage_timings_ms.get("total_generation", 0.0))
+    coverage_ratio = float(summary.get("coverage_ratio", 0.0))
+    overflow_ratio = float(summary.get("overflow_ratio", 0.0))
+
+    assert total_generation_ms <= 10_000.0, (
+        f"Arsenal frontend generation exceeded the 10s budget: total_generation_ms={total_generation_ms:.2f} "
+        f"stage_timings_ms={stage_timings_ms}"
+    )
+    assert coverage_ratio >= 0.99, (
+        f"Arsenal frontend generation regressed coverage: coverage_ratio={coverage_ratio:.5f} "
+        f"summary={summary}"
+    )
+    assert overflow_ratio <= 0.005, (
+        f"Arsenal frontend generation regressed overflow: overflow_ratio={overflow_ratio:.5f} "
+        f"summary={summary}"
+    )

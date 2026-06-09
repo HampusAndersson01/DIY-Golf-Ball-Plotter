@@ -7740,6 +7740,399 @@ def optimize_detail_trace_efficiency(
     return result
 
 
+def _path_line(path: Toolpath) -> LineString | None:
+    if len(path.points) < 2:
+        return None
+    line = LineString([(float(point.x), float(point.y)) for point in path.points])
+    if line.is_empty or float(line.length) <= 1e-9:
+        return None
+    return line
+
+
+def _path_component_geometry(
+    path: Toolpath,
+    components: list[Any],
+    fallback_geometry: Any,
+) -> tuple[Any, int | None]:
+    if not components:
+        return fallback_geometry, None
+    parsed = _extract_component_id(
+        path.metadata.get("detail_component_id")
+        or path.metadata.get("source_component_id")
+        or path.metadata.get("component_id")
+        or path.metadata.get("source_region_id")
+        or path.region_id
+    )
+    if parsed is not None:
+        idx = max(0, int(parsed) - 1)
+        if 0 <= idx < len(components):
+            return components[idx], idx
+    line = _path_line(path)
+    if line is None:
+        return fallback_geometry, None
+    best_idx: int | None = None
+    best_score = -1.0
+    for idx, component in enumerate(components):
+        if component is None or component.is_empty:
+            continue
+        try:
+            score = float(line.intersection(component).length)
+        except Exception:
+            score = 0.0
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+    if best_idx is None:
+        return fallback_geometry, None
+    return components[best_idx], best_idx
+
+
+def _sample_line_outside_count(line: LineString, allowed: Any, *, step_mm: float, tolerance_mm: float) -> tuple[int, float]:
+    if allowed is None or getattr(allowed, "is_empty", True) or line.is_empty:
+        return 1, float(line.length)
+    allowed_tol = allowed.buffer(max(0.0, float(tolerance_mm)), join_style=1)
+    sample_count = max(2, int(math.ceil(float(line.length) / max(0.01, float(step_mm)))) + 1)
+    outside_count = 0
+    max_gap = 0.0
+    current_gap = 0.0
+    previous_distance = 0.0
+    for index in range(sample_count):
+        distance = (float(line.length) * index) / max(1, sample_count - 1)
+        point = line.interpolate(distance)
+        inside = bool(allowed_tol.covers(point))
+        if not inside:
+            outside_count += 1
+            current_gap += max(0.0, distance - previous_distance)
+            max_gap = max(max_gap, current_gap)
+        else:
+            current_gap = 0.0
+        previous_distance = distance
+    return outside_count, float(max_gap)
+
+
+def _clone_line_part_for_artifact_validation(
+    path: Toolpath,
+    part: LineString,
+    *,
+    kind: str,
+    metadata: dict[str, Any],
+    tolerance_mm: float,
+    split_index: int,
+) -> Toolpath | None:
+    points = simplify_segment_points([Point(float(x), float(y)) for x, y in part.coords], tolerance_mm, False)
+    if len(points) < 2:
+        return None
+    return clone_toolpath(
+        path,
+        points=points,
+        kind=kind,
+        closed=False,
+        metadata={
+            **metadata,
+            "artifact_validation_split_index": int(split_index),
+            "artifact_validated": True,
+        },
+    )
+
+
+def _validate_and_split_artifact_paths(
+    toolpaths: list[Toolpath],
+    *,
+    printable_geometry: Any,
+    line_width_mm: float,
+    debug: Optional[dict[str, Any]] = None,
+) -> list[Toolpath]:
+    if printable_geometry is None or getattr(printable_geometry, "is_empty", True) or not toolpaths:
+        if debug is not None:
+            debug["artifact_validation_ran"] = False
+        return toolpaths
+
+    pen_radius = max(0.01, float(line_width_mm) * 0.5)
+    sample_step_mm = max(0.025, min(0.10, pen_radius * 0.35))
+    tolerance_mm = max(0.01, min(0.05, pen_radius * 0.15))
+    components = normalize_geometry(printable_geometry)
+    safe_infill_geometry = _offset_geometry(printable_geometry, -pen_radius, join_style=1)
+    if safe_infill_geometry is None or getattr(safe_infill_geometry, "is_empty", True):
+        safe_infill_geometry = printable_geometry
+    artifact_kinds = {"fill-infill", "fill-repair", "detail-trace", "detail-continuation"}
+    validated_sources = {"thin_source_region_centerline", "residual_centerline", "final_outline_centerline_fallback"}
+    stats: dict[str, Any] = {
+        "artifact_validation_ran": True,
+        "paths_checked_for_artifacts": 0,
+        "artifact_paths_rejected": 0,
+        "artifact_paths_split": 0,
+        "unsupported_detail_trace_segments": 0,
+        "unsafe_infill_segments": 0,
+        "pen_down_gap_crossings_removed": 0,
+        "thin_diagonal_outline_fragments_checked": 0,
+        "thin_diagonal_outline_fragments_rejected": 0,
+        "thin_diagonal_outline_fragments_merged": 0,
+        "thin_diagonal_features_centerline_substituted": 0,
+        "artifact_removed_path_ids": [],
+    }
+
+    def _record_removed(path: Toolpath, reason: str) -> None:
+        stats["artifact_paths_rejected"] = int(stats["artifact_paths_rejected"]) + 1
+        removed = stats.setdefault("artifact_removed_path_ids", [])
+        if len(removed) < 25:
+            removed.append({
+                "path_id": path.path_id or "",
+                "kind": path.kind,
+                "source": str(path.source or ""),
+                "reason": reason,
+            })
+
+    def _component_is_thin_diagonal(component: Any) -> tuple[bool, float, float]:
+        if component is None or component.is_empty:
+            return False, 0.0, 0.0
+        try:
+            rect = component.minimum_rotated_rectangle
+            coords = list(rect.exterior.coords)
+            edges = []
+            for start, end in zip(coords, coords[1:]):
+                dx = float(end[0] - start[0])
+                dy = float(end[1] - start[1])
+                length = math.hypot(dx, dy)
+                if length > 1e-9:
+                    edges.append((length, math.degrees(math.atan2(dy, dx))))
+            edges.sort(reverse=True)
+            if len(edges) < 2:
+                return False, 0.0, 0.0
+            long_len = float(edges[0][0])
+            short_len = float(edges[-1][0])
+            angle = abs(_normalize_infill_angle_deg(edges[0][1]))
+            diagonal_score = min(abs(angle - 45.0), abs(angle + 45.0), abs(angle - 135.0)) if angle <= 90.0 else 90.0
+            is_diag = short_len <= (line_width_mm * 1.65) and long_len >= (line_width_mm * 2.0) and diagonal_score <= 22.5
+            return bool(is_diag), short_len, diagonal_score
+        except Exception:
+            return False, 0.0, 0.0
+
+    out: list[Toolpath] = []
+    for path in toolpaths:
+        line = _path_line(path)
+        if line is None:
+            out.append(path)
+            continue
+
+        if path.kind == "outline":
+            component, component_idx = _path_component_geometry(path, components, printable_geometry)
+            is_thin_diagonal, local_width, diagonal_score = _component_is_thin_diagonal(component)
+            role = str((path.metadata or {}).get("path_role", ""))
+            is_centerline_fallback = bool((path.metadata or {}).get("actual_outline_centerline", False)) or role == "FINAL_OUTLINE_FALLBACK"
+            fallback_width = float((path.metadata or {}).get("fallback_component_width_mm", 0.0) or 0.0)
+            line_bounds = line.bounds
+            line_span_x = float(line_bounds[2] - line_bounds[0])
+            line_span_y = float(line_bounds[3] - line_bounds[1])
+            line_angle = abs(math.degrees(math.atan2(path.points[-1].y - path.points[0].y, path.points[-1].x - path.points[0].x))) if len(path.points) >= 2 else 0.0
+            line_angle = line_angle % 180.0
+            if line_angle > 90.0:
+                line_angle = 180.0 - line_angle
+            line_diagonal = bool(
+                min(line_span_x, line_span_y) >= max(0.02, line_width_mm * 0.10)
+                and 18.0 <= line_angle <= 72.0
+            )
+            thin_fallback_diagonal = bool(
+                is_centerline_fallback
+                and line_diagonal
+                and (fallback_width <= 0.0 or fallback_width <= (line_width_mm * 1.75))
+            )
+            open_centerline_fallback = bool(
+                is_centerline_fallback
+                and not path.closed
+                and str(path.source or "") in {"coverage_skeleton", "final_outline_centerline_fallback"}
+            )
+            if thin_fallback_diagonal or open_centerline_fallback:
+                stats["thin_diagonal_outline_fragments_checked"] = int(stats["thin_diagonal_outline_fragments_checked"]) + 1
+                length_mm = float(line.length)
+                tiny_fragment = length_mm < max(0.18, line_width_mm * 0.35) or (len(path.points) <= 3 and length_mm < max(0.30, line_width_mm * 0.70))
+                stroke = line.buffer(pen_radius, cap_style=1, join_style=1)
+                coverage_inside = 0.0
+                if stroke is not None and not stroke.is_empty:
+                    try:
+                        coverage_inside = float(stroke.intersection(printable_geometry).area)
+                    except Exception:
+                        coverage_inside = 0.0
+                negligible_fragment_coverage = coverage_inside < max(0.012, math.pi * pen_radius * pen_radius * 0.40)
+                if tiny_fragment and negligible_fragment_coverage:
+                    stats["thin_diagonal_outline_fragments_rejected"] = int(stats["thin_diagonal_outline_fragments_rejected"]) + 1
+                    _record_removed(path, "thin_diagonal_open_outline_fragment")
+                    continue
+                stats["thin_diagonal_features_centerline_substituted"] = int(stats["thin_diagonal_features_centerline_substituted"]) + 1
+                out.append(clone_toolpath(
+                    path,
+                    kind="detail-trace",
+                    source="thin_diagonal_outline_centerline_substitution",
+                    closed=False,
+                    metadata={
+                        **dict(path.metadata or {}),
+                        "path_role": "PRINT_DETAIL",
+                        "detail_source": "thin_diagonal_outline_centerline_substitution",
+                        "outline_fragment_area": 0.0,
+                        "outline_fragment_perimeter": float(length_mm),
+                        "outline_fragment_aspect_ratio": float(max(line_span_x, line_span_y) / max(1e-9, min(line_span_x, line_span_y))),
+                        "local_stroke_width": float(fallback_width or local_width),
+                        "diagonal_alignment_score": float(min(abs(line_angle - 45.0), abs(line_angle - 135.0))),
+                        "thin_diagonal_centerline_substitution": True,
+                    },
+                ))
+                continue
+            if path.closed and is_thin_diagonal:
+                stats["thin_diagonal_outline_fragments_checked"] = int(stats["thin_diagonal_outline_fragments_checked"]) + 1
+                outline_area = 0.0
+                try:
+                    coords = [(point.x, point.y) for point in path.points]
+                    poly = Polygon(coords)
+                    outline_area = abs(float(poly.area)) if not poly.is_empty else 0.0
+                except Exception:
+                    outline_area = 0.0
+                perimeter = float(line.length)
+                stroke = line.buffer(pen_radius, cap_style=1, join_style=1)
+                coverage_inside = float(stroke.intersection(component).area) if stroke is not None and not stroke.is_empty else 0.0
+                overflow = stroke.difference(component) if stroke is not None and not stroke.is_empty else None
+                overflow_area = 0.0 if overflow is None or overflow.is_empty else float(overflow.area)
+                tiny_area = outline_area < max(0.015, math.pi * pen_radius * pen_radius * 0.20)
+                short_repeated = perimeter < max(0.25, line_width_mm * 1.35)
+                negligible = coverage_inside < max(0.01, math.pi * pen_radius * pen_radius * 0.12)
+                if tiny_area and (short_repeated or negligible) and overflow_area <= max(0.02, coverage_inside * 0.5):
+                    stats["thin_diagonal_outline_fragments_rejected"] = int(stats["thin_diagonal_outline_fragments_rejected"]) + 1
+                    stats["thin_diagonal_features_centerline_substituted"] = int(stats["thin_diagonal_features_centerline_substituted"]) + 1
+                    _record_removed(path, "thin_diagonal_micro_outline_fragment")
+                    continue
+                path.metadata = {
+                    **dict(path.metadata or {}),
+                    "outline_fragment_area": float(outline_area),
+                    "outline_fragment_perimeter": float(perimeter),
+                    "local_stroke_width": float(local_width),
+                    "diagonal_alignment_score": float(diagonal_score),
+                    "coverage_added_by_outline_fragment": float(coverage_inside),
+                    "overflow_added_by_outline_fragment": float(overflow_area),
+                    "local_component_id": None if component_idx is None else int(component_idx + 1),
+                }
+            out.append(path)
+            continue
+
+        if path.kind not in artifact_kinds:
+            out.append(path)
+            continue
+
+        stats["paths_checked_for_artifacts"] = int(stats["paths_checked_for_artifacts"]) + 1
+        metadata = dict(path.metadata or {})
+        component, component_idx = _path_component_geometry(path, components, printable_geometry)
+        source = str(path.source or metadata.get("detail_source") or "")
+        thin_exception = bool(metadata.get("thin_source_region_centerline")) or source in validated_sources
+        if path.kind == "fill-infill" and not thin_exception and "detail" not in str(metadata.get("fill_mode", "")).lower():
+            allowed = safe_infill_geometry
+        else:
+            local_buffer = line.buffer(max(pen_radius * 2.0, tolerance_mm), cap_style=1, join_style=1)
+            try:
+                allowed = component.intersection(local_buffer) if path.kind in {"detail-trace", "detail-continuation"} else component
+            except Exception:
+                allowed = component
+            if allowed is None or getattr(allowed, "is_empty", True):
+                allowed = component
+        if allowed is None or getattr(allowed, "is_empty", True):
+            _record_removed(path, "empty_allowed_region")
+            continue
+
+        try:
+            if allowed.covers(line):
+                out.append(clone_toolpath(
+                    path,
+                    metadata={
+                        **metadata,
+                        "artifact_validated": True,
+                        "unsupported_segment_count": 0,
+                        "max_gap_crossed_mm": 0.0,
+                        "inside_source_ratio": 1.0,
+                        "outside_source_ratio": 0.0,
+                        "overflow_area": 0.0,
+                        "local_component_id": None if component_idx is None else int(component_idx + 1),
+                    },
+                ))
+                continue
+        except Exception:
+            pass
+
+        unsupported_count, max_gap = _sample_line_outside_count(line, allowed, step_mm=sample_step_mm, tolerance_mm=tolerance_mm)
+        stroke = line.buffer(pen_radius, cap_style=1, join_style=1)
+        stroke_area = float(stroke.area) if stroke is not None and not stroke.is_empty else 0.0
+        inside_area = float(stroke.intersection(printable_geometry).area) if stroke_area > 0.0 else 0.0
+        overflow_area = max(0.0, stroke_area - inside_area)
+        inside_ratio = inside_area / max(1e-9, stroke_area)
+        outside_ratio = overflow_area / max(1e-9, stroke_area)
+        common_metadata = {
+            **metadata,
+            "artifact_validated": True,
+            "unsupported_segment_count": int(unsupported_count),
+            "max_gap_crossed_mm": float(max_gap),
+            "inside_source_ratio": float(inside_ratio),
+            "outside_source_ratio": float(outside_ratio),
+            "overflow_area": float(overflow_area),
+            "local_component_id": None if component_idx is None else int(component_idx + 1),
+        }
+
+        clear_gap_crossing = bool(max_gap > max(1.5, line_width_mm * 3.0))
+        severe_overflow = bool(inside_ratio < 0.50 and outside_ratio > 0.50)
+        normal_fill_infill = bool(
+            path.kind == "fill-infill"
+            and not thin_exception
+            and "detail" not in str(metadata.get("fill_mode", "")).lower()
+        )
+        if path.kind == "fill-repair":
+            out.append(clone_toolpath(path, metadata=common_metadata))
+            continue
+
+        if normal_fill_infill and unsupported_count > 0:
+            pass
+        elif (unsupported_count <= 0 or not clear_gap_crossing) or not severe_overflow:
+            out.append(clone_toolpath(path, metadata=common_metadata))
+            continue
+
+        clipped = line.intersection(allowed)
+        parts = [
+            part
+            for part in extract_lines(clipped)
+            if not part.is_empty and float(part.length) >= max(0.04, line_width_mm * 0.10)
+        ]
+        if not parts:
+            if path.kind in {"detail-trace", "detail-continuation"}:
+                stats["unsupported_detail_trace_segments"] = int(stats["unsupported_detail_trace_segments"]) + int(max(1, unsupported_count))
+            else:
+                stats["unsafe_infill_segments"] = int(stats["unsafe_infill_segments"]) + int(max(1, unsupported_count))
+            stats["pen_down_gap_crossings_removed"] = int(stats["pen_down_gap_crossings_removed"]) + int(max_gap > tolerance_mm)
+            _record_removed(path, "no_valid_local_segments")
+            continue
+
+        split_paths: list[Toolpath] = []
+        for split_index, part in enumerate(parts, start=1):
+            split_path = _clone_line_part_for_artifact_validation(
+                path,
+                part,
+                kind=path.kind,
+                metadata=common_metadata,
+                tolerance_mm=tolerance_mm,
+                split_index=split_index,
+            )
+            if split_path is not None:
+                split_paths.append(split_path)
+        if not split_paths:
+            _record_removed(path, "split_segments_too_short")
+            continue
+        if len(split_paths) != 1 or float(split_paths[0].metadata.get("max_gap_crossed_mm", 0.0) or 0.0) > tolerance_mm:
+            stats["artifact_paths_split"] = int(stats["artifact_paths_split"]) + 1
+            if path.kind in {"detail-trace", "detail-continuation"}:
+                stats["unsupported_detail_trace_segments"] = int(stats["unsupported_detail_trace_segments"]) + int(max(1, unsupported_count))
+            else:
+                stats["unsafe_infill_segments"] = int(stats["unsafe_infill_segments"]) + int(max(1, unsupported_count))
+            stats["pen_down_gap_crossings_removed"] = int(stats["pen_down_gap_crossings_removed"]) + int(max_gap > tolerance_mm)
+        out.extend(split_paths)
+
+    if debug is not None:
+        debug.update(stats)
+        debug.setdefault("artifact_validation_stats", {}).update(stats)
+    return out
+
+
 def _normalize_infill_angle_deg(angle_deg: float) -> float:
     normalized = math.fmod(angle_deg, 180.0)
     if normalized < 0.0:
@@ -16108,7 +16501,7 @@ def generate_toolpaths(
     if enable_fill and bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
         from .coverage_planner import plan_coverage_first_toolpaths
 
-        return plan_coverage_first_toolpaths(
+        planned_toolpaths = plan_coverage_first_toolpaths(
             bundle,
             enable_fill=enable_fill,
             line_width_mm=line_width_mm,
@@ -16135,6 +16528,19 @@ def generate_toolpaths(
             expensive_coverage_repair=expensive_coverage_repair,
             debug=debug,
         )
+        artifact_validation_started_at = time.perf_counter()
+        planned_toolpaths = _validate_and_split_artifact_paths(
+            planned_toolpaths,
+            printable_geometry=bundle.printable_geometry,
+            line_width_mm=line_width_mm,
+            debug=debug,
+        )
+        if debug is not None:
+            debug.setdefault("timings_ms", {})
+            debug["timings_ms"]["artifact_validation"] = float(debug["timings_ms"].get("artifact_validation", 0.0)) + ((time.perf_counter() - artifact_validation_started_at) * 1000.0)
+        non_outline = [path for path in planned_toolpaths if path.kind != "outline"]
+        outline_only = [path for path in planned_toolpaths if path.kind == "outline"]
+        return assign_stable_path_ids(merge_connected_toolpaths(non_outline + outline_only))
     if enable_fill and (bundle.printable_geometry is None or bundle.printable_geometry.is_empty):
         toolpaths: list[Toolpath] = []
         for segment in bundle.outline_segments:
@@ -16615,7 +17021,7 @@ def generate_toolpaths(
                 return None
             return unary_union(pieces)
 
-        def _extract_centerline_for_residual(component: Any) -> list[Toolpath]:
+        def _extract_centerline_for_residual(component: Any, *, detail_component_id: int | None = None) -> list[Toolpath]:
             if component is None or component.is_empty:
                 return []
             candidate_paths = self._generate_shaped_thin_region_centerline(
@@ -16639,6 +17045,7 @@ def generate_toolpaths(
                     **(longest.metadata or {}),
                     "path_role": "PRINT_DETAIL",
                     "detail_source": "residual_centerline",
+                    **({"detail_component_id": int(detail_component_id), "detail_region_component_id": int(detail_component_id)} if detail_component_id is not None else {}),
                     "thin_region_centerline_source": str((longest.metadata or {}).get("coverage_backfill_strategy", "shaped_centerline")),
                 },
             )]
@@ -16691,7 +17098,7 @@ def generate_toolpaths(
         narrow_width_limit = line_width_mm * 1.6
         residual_components_for_detail: list[Any] = []
         if residual_target is not None and not residual_target.is_empty:
-            for residual_component in normalize_geometry(residual_target):
+            for detail_component_id, residual_component in enumerate(normalize_geometry(residual_target), start=1):
                 area = float(residual_component.area)
                 if area < min_residual_area:
                     continue
@@ -16700,22 +17107,42 @@ def generate_toolpaths(
                 if local_width > narrow_width_limit:
                     continue
                 residual_components_for_detail.append(residual_component)
-                residual_detail_candidates.extend(_extract_centerline_for_residual(residual_component))
+                residual_detail_candidates.extend(_extract_centerline_for_residual(residual_component, detail_component_id=detail_component_id))
 
         # Also keep raster-derived detail candidates, but only if they add real residual coverage.
         residual_detail_candidates.extend(detail_paths)
 
         component_boundary_cache: list[Any] = [component.boundary for component in residual_components_for_detail]
+        component_bounds_cache: list[tuple[float, float, float, float] | None] = [
+            tuple(map(float, component.bounds)) if component is not None and not component.is_empty else None
+            for component in residual_components_for_detail
+        ]
+        candidate_component_index_cache: dict[int, int | None] = {}
 
         def _candidate_component_index(path: Toolpath) -> int | None:
             if len(path.points) < 2:
                 return None
+            cache_key = id(path)
+            if cache_key in candidate_component_index_cache:
+                return candidate_component_index_cache[cache_key]
             shp = LineString([(point.x, point.y) for point in path.points])
             if shp.is_empty:
+                candidate_component_index_cache[cache_key] = None
                 return None
+            bounds = shp.bounds
             best_idx: int | None = None
             best_overlap = 0.0
             for idx, component in enumerate(residual_components_for_detail):
+                component_bounds = component_bounds_cache[idx]
+                if component_bounds is not None:
+                    min_x, min_y, max_x, max_y = component_bounds
+                    if (
+                        bounds[2] < min_x
+                        or bounds[0] > max_x
+                        or bounds[3] < min_y
+                        or bounds[1] > max_y
+                    ):
+                        continue
                 try:
                     overlap = float(shp.intersection(component).length)
                 except Exception:
@@ -16723,6 +17150,7 @@ def generate_toolpaths(
                 if overlap > best_overlap:
                     best_overlap = overlap
                     best_idx = idx
+            candidate_component_index_cache[cache_key] = best_idx
             return best_idx
 
         def _candidate_centeredness(path: Toolpath, component_idx: int | None) -> float:
@@ -17120,7 +17548,18 @@ def generate_toolpaths(
     # render last, after infill/detail passes.
     non_outline = [path for path in toolpaths if path.kind != "outline"]
     outline_only = [path for path in toolpaths if path.kind == "outline"]
-    toolpaths = assign_stable_path_ids(merge_connected_toolpaths(non_outline + outline_only))
+    toolpaths = merge_connected_toolpaths(non_outline + outline_only)
+    if enable_fill and bundle.printable_geometry is not None and not bundle.printable_geometry.is_empty:
+        toolpaths = _validate_and_split_artifact_paths(
+            toolpaths,
+            printable_geometry=bundle.printable_geometry,
+            line_width_mm=line_width_mm,
+            debug=debug,
+        )
+        non_outline = [path for path in toolpaths if path.kind != "outline"]
+        outline_only = [path for path in toolpaths if path.kind == "outline"]
+        toolpaths = merge_connected_toolpaths(non_outline + outline_only)
+    toolpaths = assign_stable_path_ids(toolpaths)
 
     toolpath_counts = {
         "generated_fill_walls": sum(1 for path in toolpaths if path.kind == "fill-wall"),

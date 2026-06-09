@@ -250,6 +250,7 @@ export type GenerateResponse = {
   selected_colors: string[]
   summary: JobSummary
   stage_counts: Record<string, unknown>
+  stage_timings: Record<string, number>
   effective_settings: {
     artwork_scale_percent?: number
     line_thickness_mm: number

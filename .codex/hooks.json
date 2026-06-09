@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/nameless/Dokument/GIT/DIY-Golf-Ball-Plotter/.venv/bin/graphify hook-check"
+            "command": "/home/nameless/.local/bin/graphify hook-check"
           }
         ]
       }

@@ -438,12 +438,14 @@ def generate_image_gcode_route():
             min_component_area_px=options["min_component_area_px"],
             open_radius_px=options["mask_open_radius_px"],
             close_radius_px=options["mask_close_radius_px"],
+            debug=debug_data,
         )
         _mark("mask_extraction")
         region_result = raster.extract_regions(
             mask_result,
             min_region_area_px=0.0 if options["thin_detail_mode"] else options["min_region_area_px"],
             simplify_tolerance_px=options["region_simplify_px"],
+            debug=debug_data,
         )
         _mark("vector_extraction")
         has_area_geometry = region_result.bundle.printable_geometry is not None and not region_result.bundle.printable_geometry.is_empty
@@ -550,6 +552,7 @@ def generate_image_gcode_route():
             travel_optimization=options["travel_optimization"],
             allow_pen_down_infill_connectors=options["allow_pen_down_infill_connectors"],
             infill_path_mode=options["infill_path_mode"],
+            expensive_coverage_repair=bool(options["debug_pipeline"]),
             debug=debug_data,
         )
         _mark("fill_path_generation")
@@ -570,6 +573,30 @@ def generate_image_gcode_route():
                 cleaned_toolpaths,
                 projected_toolpaths,
             )
+        connector_validation = {}
+        if isinstance(placed.metadata, dict):
+            connector_validation = dict((placed.metadata or {}).get("connector_validation", {}) or {})
+        coverage_summary: dict[str, float] = {}
+        if isinstance(debug_data, dict):
+            coverage_report = dict(debug_data.get("coverage_report") or {})
+            if coverage_report:
+                target_area_mm2 = float(coverage_report.get("target_area_mm2", 0.0))
+                coverage_summary["coverage_ratio"] = float(coverage_report.get("coverage_percent", 0.0)) / 100.0
+                coverage_summary["overflow_ratio"] = float(coverage_report.get("overflow_area_mm2", 0.0)) / max(1e-9, target_area_mm2)
+        if not coverage_summary:
+            matrix = connector_validation.get("current_to_source_matrix")
+            if isinstance(matrix, (tuple, list)) and len(matrix) == 6:
+                coverage_metrics = pipeline_core.compute_toolpath_mask_coverage_metrics(
+                    cleaned_toolpaths,
+                    mask=mask_result.mask,
+                    current_to_source_matrix=tuple(float(value) for value in matrix),
+                    pen_radius_mm=float(options["line_thickness_mm"]) * 0.5,
+                    sample_step_mm=max(0.01, min(float(options["line_thickness_mm"]) * 0.35, 0.05)),
+                    include_kinds={"fill-wall", "fill-infill", "fill-repair", "detail-trace", "outline"},
+                )
+                if coverage_metrics is not None:
+                    coverage_summary["coverage_ratio"] = float(coverage_metrics.raw_coverage_percent) / 100.0
+                    coverage_summary["overflow_ratio"] = float(coverage_metrics.outside_overdraw_percent) / 100.0
         gcode, preview = get_gcode_service().generate_from_toolpaths(
             toolpaths=projected_toolpaths,
             header_comment_settings=build_fill_header_settings(options, design_bounds),
@@ -695,6 +722,8 @@ def generate_image_gcode_route():
             "estimated_runtime_seconds": runtime_estimate["estimatedRuntimeSeconds"],
             "estimated_runtime_breakdown": runtime_estimate,
             "pen_lift_count": runtime_estimate["penLifts"],
+            "coverage_ratio": float(coverage_summary.get("coverage_ratio", 0.0)),
+            "overflow_ratio": float(coverage_summary.get("overflow_ratio", 0.0)),
         }
         state.update(
             last_svg_name=file.filename,
@@ -743,6 +772,21 @@ def generate_image_gcode_route():
             pen_width_mm=float(options["line_thickness_mm"]),
         )
         _mark("preview_rendering")
+        stage_timings_ms = {
+            "input_loading": round(float(stage_marks.get("input_loading", 0.0)) * 1000.0, 3),
+            "mask_extraction": round(float(stage_marks.get("mask_extraction", 0.0) - stage_marks.get("input_loading", 0.0)) * 1000.0, 3),
+            "vector_extraction": round(float(stage_marks.get("vector_extraction", 0.0) - stage_marks.get("mask_extraction", 0.0)) * 1000.0, 3),
+            "polygon_cleanup": round(float(stage_marks.get("polygon_cleanup", 0.0) - stage_marks.get("vector_extraction", 0.0)) * 1000.0, 3),
+            "fill_path_generation": round(float(stage_marks.get("fill_path_generation", 0.0) - stage_marks.get("polygon_cleanup", 0.0)) * 1000.0, 3),
+            "path_ordering": round(float(stage_marks.get("path_ordering", 0.0) - stage_marks.get("fill_path_generation", 0.0)) * 1000.0, 3),
+            "gcode_writing": round(float(stage_marks.get("gcode_writing", 0.0) - stage_marks.get("path_ordering", 0.0)) * 1000.0, 3),
+            "preview_rendering": round(float(stage_marks.get("preview_rendering", 0.0) - stage_marks.get("gcode_writing", 0.0)) * 1000.0, 3),
+            "total_generation": round(float(stage_marks.get("preview_rendering", 0.0)) * 1000.0, 3),
+            "total": round(float(stage_marks.get("preview_rendering", 0.0)) * 1000.0, 3),
+        }
+        if debug_data is not None:
+            stage_timings_ms["pipeline"] = dict(debug_data.get("timings_ms", {}))
+            debug_data["stage_timings_ms"] = stage_timings_ms
 
         stage_durations = {
             "input_loading_s": round(float(stage_marks.get("input_loading", 0.0)), 4),
@@ -788,6 +832,7 @@ def generate_image_gcode_route():
             infill_debug=(debug_data or {}).get("infill_debug"),
             gcode_stats=gcode_stats,
             stage_timings=stage_durations,
+            stage_timings_ms=stage_timings_ms,
             debug=build_serializable_debug_payload(debug_data),
         )
     except Exception as exc:

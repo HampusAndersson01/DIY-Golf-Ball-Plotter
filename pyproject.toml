@@ -24,6 +24,11 @@ dev = ["pytest>=8.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "slow: expensive regression or artifact-heavy test",
+  "integration: end-to-end regression with real fixture data",
+  "coverage_quality: expensive coverage/geometry validation test",
+]
 
 [tool.setuptools]
 packages = ["app"]

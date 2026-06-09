@@ -87,6 +87,7 @@ function DashboardApp() {
   const maskProjectedPreview = useAppStore((state) => state.maskProjectedPreview)
   const gcode = useAppStore((state) => state.gcode)
   const summary = useAppStore((state) => state.summary)
+  const stageTimings = useAppStore((state) => state.stageTimings)
   const logs = useAppStore((state) => state.logs)
   const toasts = useAppStore((state) => state.toasts)
   const previewMode = useAppStore((state) => state.previewMode)
@@ -327,6 +328,7 @@ function DashboardApp() {
         maskProjectedPreview: payload.mask_projected_preview ?? [],
         gcode: payload.gcode,
         summary: payload.summary,
+        stageTimings: payload.stage_timings,
         calibrationPattern: payload.calibrationPattern ?? null,
         xAxisCalibrationPattern: payload.xAxisCalibrationPattern ?? null,
       })
@@ -372,6 +374,7 @@ function DashboardApp() {
         maskProjectedPreview: [],
         gcode: payload.gcode,
         summary: payload.summary,
+        stageTimings: payload.stage_timings,
         calibrationPattern: payload.calibrationPattern ?? null,
         xAxisCalibrationPattern: payload.xAxisCalibrationPattern ?? null,
       })
@@ -403,6 +406,7 @@ function DashboardApp() {
         maskProjectedPreview: [],
         gcode: payload.gcode,
         summary: payload.summary,
+        stageTimings: payload.stage_timings,
         calibrationPattern: payload.calibrationPattern ?? null,
         xAxisCalibrationPattern: payload.xAxisCalibrationPattern ?? null,
       })
@@ -815,7 +819,7 @@ function DashboardApp() {
 
                   <details className="details-panel inspector-details">
                     <summary>Detailed metrics</summary>
-                    <JobSummaryPanel generationDurationMs={generationDurationMs} summary={summary} />
+                    <JobSummaryPanel generationDurationMs={generationDurationMs} stageTimings={stageTimings} summary={summary} />
                   </details>
                 </div>
               ) : null}

@@ -305,6 +305,32 @@ def _run_frontend_arsenal_fixture(*, rotation_deg: float) -> dict[str, object]:
     }
 
 
+@pytest.fixture(scope="session")
+def ha_fixture_result() -> dict[str, object]:
+    return _run_fixture(HA_FIXTURE)
+
+
+@pytest.fixture(scope="session")
+def arsenal_fixture_result() -> dict[str, object]:
+    return _run_fixture(ARSENAL_FIXTURE)
+
+
+@pytest.fixture(scope="session")
+def arsenal_legacy_fixture_result() -> dict[str, object]:
+    return _run_fixture(ARSENAL_FIXTURE, infill_path_mode="legacy")
+
+
+@pytest.fixture(scope="session")
+def arsenal_frontend_90_result() -> dict[str, object]:
+    return _run_frontend_arsenal_fixture(rotation_deg=90.0)
+
+
+@pytest.fixture(scope="session")
+def carolin_fixture_result() -> dict[str, object]:
+    _make_carolin_fixture_if_needed()
+    return _run_fixture(CAROLIN_FIXTURE)
+
+
 def _arsenal_final_surface_paths(result: dict[str, object]) -> tuple[dict[str, object], tuple[float, float, float, float, float, float], list[pipeline_core.Toolpath]]:
     debug = result["debug"]
     validation = result["placed"].metadata.get("connector_validation", {})
@@ -414,8 +440,8 @@ def _make_carolin_fixture_if_needed() -> None:
     Image.fromarray(canvas, mode="RGB").save(CAROLIN_FIXTURE)
 
 
-def test_ha_fixture_remains_safe_and_stays_under_pen_lift_target():
-    result = _run_fixture(HA_FIXTURE)
+def test_ha_fixture_remains_safe_and_stays_under_pen_lift_target(ha_fixture_result):
+    result = ha_fixture_result
     diagnostics = result["diagnostics"]
 
     assert result["actual_pen_lifts"] < 120
@@ -425,8 +451,8 @@ def test_ha_fixture_remains_safe_and_stays_under_pen_lift_target():
     assert diagnostics.get("rejected_connectors", 0) >= 0
 
 
-def test_arsenal_fixture_reduces_pen_lifts_without_crossing_logo_gaps():
-    result = _run_fixture(ARSENAL_FIXTURE)
+def test_arsenal_fixture_reduces_pen_lifts_without_crossing_logo_gaps(arsenal_fixture_result):
+    result = arsenal_fixture_result
     diagnostics = result["diagnostics"]
 
     assert result["actual_pen_lifts"] < 200
@@ -435,9 +461,9 @@ def test_arsenal_fixture_reduces_pen_lifts_without_crossing_logo_gaps():
     assert diagnostics.get("rejected_outside_selected_color", 0) == 0
 
 
-def test_arsenal_cell_based_routing_is_no_worse_than_legacy_routing():
-    legacy = _run_fixture(ARSENAL_FIXTURE, infill_path_mode="legacy")
-    modern = _run_fixture(ARSENAL_FIXTURE, infill_path_mode="rectilinear")
+def test_arsenal_cell_based_routing_is_no_worse_than_legacy_routing(arsenal_legacy_fixture_result, arsenal_fixture_result):
+    legacy = arsenal_legacy_fixture_result
+    modern = arsenal_fixture_result
 
     assert modern["actual_pen_lifts"] <= legacy["actual_pen_lifts"]
     assert float(modern["estimated_runtime_seconds"] or 0.0) <= float(legacy["estimated_runtime_seconds"] or 0.0)
@@ -445,8 +471,8 @@ def test_arsenal_cell_based_routing_is_no_worse_than_legacy_routing():
     assert modern["diagnostics"].get("rejected_outside_selected_color", 0) == 0
 
 
-def test_arsenal_fixture_reports_small_detail_overlap_diagnostics():
-    result = _run_fixture(ARSENAL_FIXTURE)
+def test_arsenal_fixture_reports_small_detail_overlap_diagnostics(arsenal_fixture_result):
+    result = arsenal_fixture_result
     debug = result["debug"]
 
     assert debug.get("small_detail_outline_mode_enabled") is True
@@ -458,8 +484,8 @@ def test_arsenal_fixture_reports_small_detail_overlap_diagnostics():
     assert debug.get("arsenal_detail_outline_paths_generated", 0) >= debug.get("arsenal_detail_outline_paths_dropped", 0)
 
 
-def test_arsenal_fixture_preserves_outer_outlines_for_small_printable_components():
-    result = _run_fixture(ARSENAL_FIXTURE)
+def test_arsenal_fixture_preserves_outer_outlines_for_small_printable_components(arsenal_fixture_result):
+    result = arsenal_fixture_result
     outer_outlines = [
         path for path in result["toolpaths"]
         if path.kind == "outline" and str((path.metadata or {}).get("path_role", "")) == "FINAL_OUTER_OUTLINE"
@@ -470,8 +496,8 @@ def test_arsenal_fixture_preserves_outer_outlines_for_small_printable_components
     assert result["debug"]["contour_offset_debug"]["outer_outline_path_count"] >= 14
 
 
-def test_arsenal_fixture_uses_serpentine_fill_for_wide_detail_regions():
-    result = _run_fixture(ARSENAL_FIXTURE)
+def test_arsenal_fixture_uses_serpentine_fill_for_wide_detail_regions(arsenal_fixture_result):
+    result = arsenal_fixture_result
     debug = result["debug"]
     detail_serpentine_paths = [
         path for path in result["toolpaths"]
@@ -487,8 +513,8 @@ def test_arsenal_fixture_uses_serpentine_fill_for_wide_detail_regions():
     assert len(detail_serpentine_paths) > len(detail_centerlines)
 
 
-def test_arsenal_detail_repair_pass_reaches_required_coverage():
-    result = _run_fixture(ARSENAL_FIXTURE)
+def test_arsenal_detail_repair_pass_reaches_required_coverage(arsenal_fixture_result):
+    result = arsenal_fixture_result
     debug = result["debug"]
     region_rows = list(debug.get("detail_region_repair_rows", []))
     fillable_rows = [row for row in region_rows if bool(row.get("fillable", False))]
@@ -504,8 +530,8 @@ def test_arsenal_detail_repair_pass_reaches_required_coverage():
     assert all(float(row.get("coverage_after_percent", 0.0)) >= float(debug.get("required_detail_coverage_percent", 0.0)) for row in fillable_rows)
 
 
-def test_arsenal_detail_repair_strokes_improve_coverage_without_overflow():
-    result = _run_fixture(ARSENAL_FIXTURE)
+def test_arsenal_detail_repair_strokes_improve_coverage_without_overflow(arsenal_fixture_result):
+    result = arsenal_fixture_result
     debug = result["debug"]
     repair_paths = [
         path for path in result["toolpaths"]
@@ -521,8 +547,8 @@ def test_arsenal_detail_repair_strokes_improve_coverage_without_overflow():
     assert not any(path.kind == "outline" and path.source == "detail_repair_fill" for path in result["toolpaths"])
 
 
-def test_arsenal_local_blob_validation_blocks_global_only_passes():
-    result = _run_fixture(ARSENAL_FIXTURE)
+def test_arsenal_local_blob_validation_blocks_global_only_passes(arsenal_fixture_result):
+    result = arsenal_fixture_result
     debug = result["debug"]
 
     assert float(debug.get("detail_coverage_before_repair_percent", 0.0)) >= 90.0
@@ -532,8 +558,8 @@ def test_arsenal_local_blob_validation_blocks_global_only_passes():
     assert debug.get("local_coverage_validation_enabled") is True
 
 
-def test_arsenal_fill_may_overlap_outline_when_repairing_target_gaps():
-    result = _run_fixture(ARSENAL_FIXTURE)
+def test_arsenal_fill_may_overlap_outline_when_repairing_target_gaps(arsenal_fixture_result):
+    result = arsenal_fixture_result
     debug = result["debug"]
 
     assert debug.get("fill_allowed_to_overlap_outline") is True
@@ -543,11 +569,11 @@ def test_arsenal_fill_may_overlap_outline_when_repairing_target_gaps():
     assert float(debug["infill_debug"]["spacing_mm"]) == pytest.approx(0.6, abs=1e-9)
 
 
-def test_arsenal_missed_blob_diagnostics_and_path_stats_are_written(monkeypatch: pytest.MonkeyPatch):
+def test_arsenal_missed_blob_diagnostics_and_path_stats_are_written(monkeypatch: pytest.MonkeyPatch, arsenal_fixture_result):
     artifact_dir = Path(tempfile.gettempdir()) / "golfball_plotter_test_artifacts" / "arsenal_missed_blob_debug"
     monkeypatch.setenv("COVERAGE_DEBUG_ARTIFACT_DIR", str(artifact_dir))
     monkeypatch.setenv("WRITE_COVERAGE_DEBUG_ARTIFACTS", "1")
-    result = _run_fixture(ARSENAL_FIXTURE)
+    result = arsenal_fixture_result
     debug = result["debug"]
 
     diagnostics_path = artifact_dir / "missed_blob_diagnostics.json"
@@ -569,11 +595,11 @@ def test_arsenal_missed_blob_diagnostics_and_path_stats_are_written(monkeypatch:
     assert int(debug.get("repair_candidates_accepted", 0)) == int(path_stats["repair_candidates_accepted"])
 
 
-def test_arsenal_exported_path_coverage_audit_matches_preview_target(monkeypatch: pytest.MonkeyPatch):
+def test_arsenal_exported_path_coverage_audit_matches_preview_target(monkeypatch: pytest.MonkeyPatch, arsenal_fixture_result):
     artifact_dir = Path(tempfile.gettempdir()) / "golfball_plotter_test_artifacts" / "arsenal_export_coverage_audit"
     monkeypatch.setenv("COVERAGE_DEBUG_ARTIFACT_DIR", str(artifact_dir))
     monkeypatch.setenv("WRITE_COVERAGE_DEBUG_ARTIFACTS", "1")
-    result = _run_fixture(ARSENAL_FIXTURE)
+    result = arsenal_fixture_result
     debug = result["debug"]
 
     path_stats = json.loads((artifact_dir / "path_stats.json").read_text(encoding="utf-8"))
@@ -591,8 +617,8 @@ def test_arsenal_exported_path_coverage_audit_matches_preview_target(monkeypatch
     assert debug.get("root_cause_category_corrected") in {"coverage_under_sampling_fixed", "false_negative_coverage_simulation", "wrong_target_mask_selection"}
 
 
-def test_arsenal_final_output_coverage_90ccw_0p6mm(tmp_path: Path):
-    result = _run_frontend_arsenal_fixture(rotation_deg=90.0)
+def test_arsenal_final_output_coverage_90ccw_0p6mm(tmp_path: Path, arsenal_frontend_90_result):
+    result = arsenal_frontend_90_result
     debug, current_to_source, final_surface_paths = _arsenal_final_surface_paths(result)
 
     mask_value = result["mask"]
@@ -639,8 +665,8 @@ def test_arsenal_final_output_coverage_90ccw_0p6mm(tmp_path: Path):
     )
 
 
-def test_arsenal_final_output_overflow_and_centerline_safety_90ccw_0p6mm(tmp_path: Path):
-    result = _run_frontend_arsenal_fixture(rotation_deg=90.0)
+def test_arsenal_final_output_overflow_and_centerline_safety_90ccw_0p6mm(tmp_path: Path, arsenal_frontend_90_result):
+    result = arsenal_frontend_90_result
     _debug, current_to_source, final_surface_paths = _arsenal_final_surface_paths(result)
 
     mask_value = result["mask"]
@@ -759,8 +785,8 @@ def test_arsenal_final_output_overflow_and_centerline_safety_90ccw_0p6mm(tmp_pat
     )
 
 
-def test_arsenal_final_repair_audit_replaces_boundary_hugging_repairs():
-    result = _run_frontend_arsenal_fixture(rotation_deg=90.0)
+def test_arsenal_final_repair_audit_replaces_boundary_hugging_repairs(arsenal_frontend_90_result):
+    result = arsenal_frontend_90_result
     debug, _current_to_source, final_surface_paths = _arsenal_final_surface_paths(result)
 
     audit_summary = dict(debug.get("final_repair_audit_summary", {}))
@@ -788,8 +814,8 @@ def test_arsenal_final_repair_audit_replaces_boundary_hugging_repairs():
     assert any(str((row or {}).get("classification", "")) == "reject-useless-or-overflowing" for row in audit_rows)
 
 
-def test_arsenal_frontend_default_runs_source_thin_centerline_pass():
-    result = _run_frontend_arsenal_fixture(rotation_deg=90.0)
+def test_arsenal_frontend_default_runs_source_thin_centerline_pass(arsenal_frontend_90_result):
+    result = arsenal_frontend_90_result
     debug, _current_to_source, final_surface_paths = _arsenal_final_surface_paths(result)
 
     thin_paths = [
@@ -839,9 +865,8 @@ def test_ring_shape_is_split_into_local_cells_before_routing():
     assert len([path for path in toolpaths if path.kind == "fill-infill"]) >= 2
 
 
-def test_carolin_fixture_rejects_whitespace_crossing_connectors():
-    _make_carolin_fixture_if_needed()
-    result = _run_fixture(CAROLIN_FIXTURE)
+def test_carolin_fixture_rejects_whitespace_crossing_connectors(carolin_fixture_result):
+    result = carolin_fixture_result
     diagnostics = result["diagnostics"]
     debug = result["debug"]
 
@@ -873,9 +898,8 @@ def test_carolin_fixture_rejects_whitespace_crossing_connectors():
     assert debug.get("coverage_validation_target") == "selected_color_mask"
 
 
-def test_carolin_fixture_post_generation_ordering_reduces_travel_and_preserves_outline():
-    _make_carolin_fixture_if_needed()
-    result = _run_fixture(CAROLIN_FIXTURE)
+def test_carolin_fixture_post_generation_ordering_reduces_travel_and_preserves_outline(carolin_fixture_result):
+    result = carolin_fixture_result
     debug = result["debug"]
 
     assert debug.get("travel_optimization_mode") == "final_export_event_stream_ordering"
@@ -886,8 +910,8 @@ def test_carolin_fixture_post_generation_ordering_reduces_travel_and_preserves_o
     assert debug.get("uses_surface_mm_for_ordering") is True
 
 
-def test_ha_fixture_skips_detail_repair_augmentation():
-    result = _run_fixture(HA_FIXTURE)
+def test_ha_fixture_skips_detail_repair_augmentation(ha_fixture_result):
+    result = ha_fixture_result
     debug = result["debug"]
 
     assert int(debug.get("detail_repair_strokes_added", 0)) == 0
@@ -905,8 +929,8 @@ def test_ha_fixture_skips_detail_repair_augmentation():
     assert any(path.kind == "outline" for path in result["toolpaths"])
 
 
-def test_ha_fixture_post_generation_ordering_has_no_geometry_regression():
-    result = _run_fixture(HA_FIXTURE)
+def test_ha_fixture_post_generation_ordering_has_no_geometry_regression(ha_fixture_result):
+    result = ha_fixture_result
     debug = result["debug"]
 
     assert debug.get("travel_optimization_mode") == "final_export_event_stream_ordering"
@@ -916,9 +940,8 @@ def test_ha_fixture_post_generation_ordering_has_no_geometry_regression():
     assert float(debug.get("optimized_pen_up_travel_length_mm", 0.0)) <= float(debug.get("raw_pen_up_travel_length_mm", 0.0))
 
 
-def test_carolin_fixture_mask_coverage_is_at_least_ninety_percent():
-    _make_carolin_fixture_if_needed()
-    result = _run_fixture(CAROLIN_FIXTURE)
+def test_carolin_fixture_mask_coverage_is_at_least_ninety_percent(carolin_fixture_result):
+    result = carolin_fixture_result
     debug = result.get("debug", {}) if isinstance(result.get("debug", {}), dict) else {}
     validation = result["validation"]
     mask = validation.get("mask")

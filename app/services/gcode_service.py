@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import asdict
 import logging
 import json
+import os
 import tempfile
+import time
 from pathlib import Path
 from collections import Counter
 
@@ -171,6 +173,8 @@ class GcodeService:
                 pen_state_debug=list(debug.get("pen_state_debug", [])) if isinstance(debug.get("pen_state_debug"), list) else None,
             )
             debug.update(parity)
+            if os.getenv("WRITE_COVERAGE_DEBUG_ARTIFACTS", "0") != "1":
+                return
             artifact_dir = Path(str(debug.get("coverage_debug_artifact_dir") or (Path(tempfile.gettempdir()) / "golfball_plotter_coverage_debug")))
             artifact_dir.mkdir(parents=True, exist_ok=True)
             (artifact_dir / "preview_travel_debug.json").write_text(json.dumps(parity["preview_travel_debug"], indent=2), encoding="utf-8")
@@ -234,9 +238,12 @@ class GcodeService:
                 )
             toolpaths = projected_toolpaths
         elif "placement_offset_x" not in kwargs and "placement_offset_y" not in kwargs:
+            export_started_at = time.perf_counter()
             gcode, preview = self._generate_from_angle_toolpaths_legacy(**kwargs)
             debug = kwargs.get("debug")
             if isinstance(debug, dict):
+                timings = debug.setdefault("timings_ms", {})
+                timings["gcode_export"] = float(timings.get("gcode_export", 0.0)) + (time.perf_counter() - export_started_at) * 1000.0
                 try:
                     from .runtime_estimation_service import estimate_gcode_runtime
 
@@ -259,6 +266,7 @@ class GcodeService:
                     self.logger.debug("Unable to rewrite final export path stats: %s", exc)
             self.logger.info("Generated legacy angle G-code lines=%d preview_paths=%d", len(gcode), len(preview))
             return gcode, preview
+        export_started_at = time.perf_counter()
         gcode, preview = pipeline_core.generate_gcode_from_toolpaths(
             toolpaths,
             kwargs["draw_feed"],
@@ -280,6 +288,8 @@ class GcodeService:
         )
         debug = kwargs.get("debug")
         if isinstance(debug, dict):
+            timings = debug.setdefault("timings_ms", {})
+            timings["gcode_export"] = float(timings.get("gcode_export", 0.0)) + (time.perf_counter() - export_started_at) * 1000.0
             try:
                 from .runtime_estimation_service import estimate_gcode_runtime
 

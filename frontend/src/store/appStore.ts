@@ -125,6 +125,7 @@ type AppStore = {
   maskProjectedPreview: PreviewPath[]
   gcode: string[]
   summary: JobSummary | null
+  stageTimings: Record<string, number> | null
   calibrationPattern: CalibrationPattern | null
   calibrationMeasurements: Record<string, CalibrationMeasurement>
   xAxisCalibrationPattern: XAxisCalibrationPattern | null
@@ -146,7 +147,7 @@ type AppStore = {
   setImageFile: (file: File | null, previewUrl: string | null) => void
   setAnalysis: (analysis: ImageAnalysis | null) => void
   toggleColor: (colorId: string) => void
-  setPreviewPayload: (payload: { preview: PreviewPath[]; maskPreviewUrl: string | null; maskProjectionQuad?: MaskProjectionQuad | null; maskProjectedPreview?: PreviewPath[]; gcode: string[]; summary: JobSummary | null; calibrationPattern?: CalibrationPattern | null; xAxisCalibrationPattern?: XAxisCalibrationPattern | null }) => void
+  setPreviewPayload: (payload: { preview: PreviewPath[]; maskPreviewUrl: string | null; maskProjectionQuad?: MaskProjectionQuad | null; maskProjectedPreview?: PreviewPath[]; gcode: string[]; summary: JobSummary | null; stageTimings?: Record<string, number> | null; calibrationPattern?: CalibrationPattern | null; xAxisCalibrationPattern?: XAxisCalibrationPattern | null }) => void
   setPreviewMode: (mode: PreviewMode) => void
   setProgressFilter: (filter: ProgressFilter) => void
   setShowTravel: (show: boolean) => void
@@ -273,6 +274,7 @@ export const useAppStore = create<AppStore>((set) => ({
   maskProjectedPreview: [],
   gcode: [],
   summary: null,
+  stageTimings: null,
   calibrationPattern: null,
   calibrationMeasurements: {},
   xAxisCalibrationPattern: null,
@@ -323,6 +325,7 @@ export const useAppStore = create<AppStore>((set) => ({
     maskProjectedPreview: [],
     gcode: [],
     summary: null,
+    stageTimings: null,
     calibrationPattern: null,
     calibrationMeasurements: {},
     xAxisCalibrationPattern: null,
@@ -334,13 +337,14 @@ export const useAppStore = create<AppStore>((set) => ({
       ? state.selectedColors.filter((entry) => entry !== colorId)
       : [...state.selectedColors, colorId],
   })),
-  setPreviewPayload: ({ preview, maskPreviewUrl, maskProjectionQuad = null, maskProjectedPreview = [], gcode, summary, calibrationPattern = null, xAxisCalibrationPattern = null }) => set({
+  setPreviewPayload: ({ preview, maskPreviewUrl, maskProjectionQuad = null, maskProjectedPreview = [], gcode, summary, stageTimings = null, calibrationPattern = null, xAxisCalibrationPattern = null }) => set({
     preview,
     maskPreviewUrl,
     maskProjectionQuad,
     maskProjectedPreview,
     gcode,
     summary,
+    stageTimings,
     calibrationPattern,
     calibrationMeasurements: buildCalibrationMeasurements(calibrationPattern),
     xAxisCalibrationPattern,
