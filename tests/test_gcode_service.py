@@ -397,7 +397,7 @@ def test_preview_and_gcode_pen_up_travels_match_without_stale_preview_geometry()
     assert any(line.startswith("G1 ") for line in gcode)
 
 
-def test_travel_debug_artifacts_are_written_from_final_gcode_and_update_path_stats():
+def test_travel_debug_artifacts_are_written_from_final_gcode_and_update_path_stats(monkeypatch: pytest.MonkeyPatch):
     surface_toolpaths = [
         Toolpath(points=[Point(8.0, 0.0), Point(10.0, 0.0)], kind="fill-infill", closed=False),
         Toolpath(points=[Point(0.0, 0.0), Point(2.0, 0.0)], kind="fill-infill", closed=False),
@@ -411,6 +411,7 @@ def test_travel_debug_artifacts_are_written_from_final_gcode_and_update_path_sta
     with tempfile.TemporaryDirectory() as tmpdir:
         artifact_dir = Path(tmpdir)
         (artifact_dir / "path_stats.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("WRITE_COVERAGE_DEBUG_ARTIFACTS", "1")
         debug["coverage_debug_artifact_dir"] = str(artifact_dir)
 
         gcode, _preview = GcodeService().generate_from_toolpaths(

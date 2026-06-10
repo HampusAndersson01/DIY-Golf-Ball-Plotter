@@ -3,3 +3,6 @@ contact_links:
   - name: Project documentation
     url: https://github.com/HampusAndersson01/DIY-Golf-Ball-Plotter#readme
     about: Review the README and docs before opening a new issue.
+  - name: Issue and PR workflow guide
+    url: https://github.com/HampusAndersson01/DIY-Golf-Ball-Plotter/blob/main/docs/agent-workflows/issue-to-pr.md
+    about: Use this when you need the prompt-to-branch-to-PR workflow or the geometry/debugging guidance.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -171,7 +172,9 @@ class RasterAnalysisService:
         min_component_area_px: int = 0,
         open_radius_px: int = 0,
         close_radius_px: int = 1,
+        debug: dict[str, Any] | None = None,
     ) -> MaskResult:
+        started_at = time.perf_counter()
         if not selected_colors:
             raise ValueError("Select at least one color to print")
 
@@ -219,6 +222,9 @@ class RasterAnalysisService:
             connected_component_count = max(0, int(component_count) - 1)
         preview_rgb = np.full((image.height, image.width, 3), 255, dtype=np.uint8)
         preview_rgb[mask_uint8 > 0] = np.array([17, 24, 39], dtype=np.uint8)
+        if debug is not None:
+            timings = debug.setdefault("timings_ms", {})
+            timings["mask_color_grouping"] = float(timings.get("mask_color_grouping", 0.0)) + (time.perf_counter() - started_at) * 1000.0
 
         return MaskResult(
             width=image.width,
@@ -237,7 +243,9 @@ class RasterAnalysisService:
         *,
         min_region_area_px: float = 16.0,
         simplify_tolerance_px: float = 1.0,
+        debug: dict[str, Any] | None = None,
     ) -> RegionGeometryResult:
+        started_at = time.perf_counter()
         if isinstance(mask_result, MaskResult):
             mask = mask_result.mask
             width = mask_result.width
@@ -252,6 +260,7 @@ class RasterAnalysisService:
         trace_mask = mask.astype(np.uint8)
         trace_scale = float(trace_supersample)
         if trace_supersample > 1:
+            rasterized_started = time.perf_counter()
             trace_mask = cv2.resize(
                 trace_mask,
                 (int(width * trace_supersample), int(height * trace_supersample)),
@@ -260,6 +269,9 @@ class RasterAnalysisService:
             # Anti-alias the binary edge at high resolution before contour extraction.
             trace_mask = cv2.GaussianBlur(trace_mask, (0, 0), sigmaX=0.6 * trace_supersample, sigmaY=0.6 * trace_supersample)
             trace_mask = (trace_mask >= 127).astype(np.uint8) * 255
+            if debug is not None:
+                timings = debug.setdefault("timings_ms", {})
+                timings["source_rasterization"] = float(timings.get("source_rasterization", 0.0)) + (time.perf_counter() - rasterized_started) * 1000.0
 
         contours, hierarchy = cv2.findContours(trace_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
         if hierarchy is None or not contours:
@@ -312,6 +324,7 @@ class RasterAnalysisService:
             polygon = Polygon(shell, holes)
             local_smoothing_px = 0.0
             if contour_smoothing_px > 0:
+                smoothing_started = time.perf_counter()
                 min_x, min_y, max_x, max_y = polygon.bounds
                 min_dim = max(0.0, min(max_x - min_x, max_y - min_y))
                 local_smoothing_px = min(contour_smoothing_px, max(0.05, min_dim * 0.08))
@@ -320,11 +333,22 @@ class RasterAnalysisService:
                     polygon = polygon.buffer(local_smoothing_px, join_style=1).buffer(-local_smoothing_px, join_style=1)
                 except Exception:
                     pass
+                if debug is not None:
+                    timings = debug.setdefault("timings_ms", {})
+                    timings["polygon_cleaning"] = float(timings.get("polygon_cleaning", 0.0)) + (time.perf_counter() - smoothing_started) * 1000.0
             local_simplify = max(0.0, min(simplify_tolerance_px, curve_fit_tolerance_px if curve_fit_tolerance_px > 0 else simplify_tolerance_px))
             if local_simplify > 0:
+                simplify_started = time.perf_counter()
                 polygon = polygon.simplify(local_simplify, preserve_topology=True)
+                if debug is not None:
+                    timings = debug.setdefault("timings_ms", {})
+                    timings["polygon_simplification"] = float(timings.get("polygon_simplification", 0.0)) + (time.perf_counter() - simplify_started) * 1000.0
             if not polygon.is_valid:
+                repair_started = time.perf_counter()
                 polygon = polygon.buffer(0)
+                if debug is not None:
+                    timings = debug.setdefault("timings_ms", {})
+                    timings["polygon_repair"] = float(timings.get("polygon_repair", 0.0)) + (time.perf_counter() - repair_started) * 1000.0
             if polygon.is_empty:
                 continue
             normalized_polys = pipeline_core.normalize_geometry(polygon)
@@ -364,6 +388,7 @@ class RasterAnalysisService:
         detail_segments, detail_trace_component_count, skeleton_pixel_count = self._extract_detail_trace_segments(
             mask,
             min_component_area_px=float(min_region_area_px),
+            debug=debug,
         )
 
         preview_rgb = np.full((height, width, 3), 255, dtype=np.uint8)
@@ -421,6 +446,9 @@ class RasterAnalysisService:
         if mask.any():
             component_count, _, _, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
             selected_component_count = max(0, int(component_count) - 1)
+        if debug is not None:
+            timings = debug.setdefault("timings_ms", {})
+            timings["polygon_to_geometry"] = float(timings.get("polygon_to_geometry", 0.0)) + (time.perf_counter() - started_at) * 1000.0
         return RegionGeometryResult(
             bundle=bundle,
             bounds=pipeline_core.SvgBounds(0.0, 0.0, float(width), float(height)),
@@ -665,6 +693,7 @@ class RasterAnalysisService:
         mask: np.ndarray,
         *,
         min_component_area_px: float,
+        debug: dict[str, Any] | None = None,
     ) -> tuple[list[pipeline_core.Segment], int, int]:
         if mask is None or not np.any(mask):
             return [], 0, 0
@@ -681,12 +710,16 @@ class RasterAnalysisService:
                 continue
 
             component_mask = (labels == component_index).astype(np.uint8) * 255
+            skeleton_started = time.perf_counter()
             component_segments = self._component_detail_segments(component_mask)
             if not component_segments:
                 continue
             traced_components += 1
             segments.extend(component_segments)
             skeleton_pixel_count += int(np.count_nonzero(self._skeletonize_component(component_mask)))
+            if debug is not None:
+                timings = debug.setdefault("timings_ms", {})
+                timings["skeleton_generation"] = float(timings.get("skeleton_generation", 0.0)) + (time.perf_counter() - skeleton_started) * 1000.0
 
         return segments, traced_components, skeleton_pixel_count
 

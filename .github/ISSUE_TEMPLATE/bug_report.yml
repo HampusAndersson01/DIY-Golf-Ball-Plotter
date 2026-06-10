@@ -62,6 +62,13 @@ body:
       label: Diagnostics or evidence
       description: Include screenshots, preview notes, logs, affected test names, or suspected thresholds.
       placeholder: Logs show short detail paths rejected after overlap checks.
+  - type: checkboxes
+    id: regression
+    attributes:
+      label: Regression test requirement
+      options:
+        - label: I expect a regression test if behavior changes.
+          required: true
   - type: textarea
     id: acceptance
     attributes:

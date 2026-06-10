@@ -5,6 +5,7 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv-codex/
 venv/
 env/
 
@@ -37,6 +38,12 @@ Thumbs.db
 
 # Local generation artifacts
 artifacts/
+
+# Optional local agent or graph tooling artifacts
+.graphify/
+graphify-out/
+graphify/
+agent-context/
 
 # Local source media for README GIF generation
 docs/videos/

@@ -19,6 +19,19 @@ KNOWN_BACKEND_BUG_XFAILS = {
     "tests/test_diagnostic_calibration_routes.py::test_calibration_metadata_square_centers_follow_top_middle_bottom_labels": "Known backend bug: diagnostic route debug payload contains non-JSON-serializable ndarray.",
 }
 
+SLOW_TEST_PREFIXES = (
+    "tests/test_infill_connector_regressions.py::test_arsenal_",
+    "tests/test_infill_connector_regressions.py::test_ha_",
+    "tests/test_infill_connector_regressions.py::test_carolin_",
+    "tests/test_toolpath_generation.py::test_arsenal_",
+)
+
+COVERAGE_QUALITY_TEST_PREFIXES = SLOW_TEST_PREFIXES
+
+CANONICAL_INTEGRATION_TESTS = {
+    "tests/test_infill_connector_regressions.py::test_arsenal_final_output_overflow_and_centerline_safety_90ccw_0p6mm",
+}
+
 OBSOLETE_EXPECTATION_SKIPS = {
     "tests/test_toolpath_generation.py::test_contour_only_offsets_follow_pen_width_ladder": "Contour-offset-specific expectation is obsolete; contour offset was removed.",
     "tests/test_toolpath_generation.py::test_wide_c_shape_generates_nested_contour_infill_without_detail": "Contour-offset-specific expectation is obsolete; contour offset was removed.",
@@ -73,6 +86,9 @@ def quiet_noisy_test_loggers() -> Generator[None, None, None]:
 
 def pytest_configure(config: pytest.Config) -> None:
     config._slow_test_durations = []
+    config.addinivalue_line("markers", "slow: expensive regression or artifact-heavy test")
+    config.addinivalue_line("markers", "integration: end-to-end regression with real fixture data")
+    config.addinivalue_line("markers", "coverage_quality: expensive coverage/geometry validation test")
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -83,6 +99,14 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         skip_reason = OBSOLETE_EXPECTATION_SKIPS.get(item.nodeid)
         if skip_reason:
             item.add_marker(pytest.mark.skip(reason=skip_reason))
+        if item.nodeid in CANONICAL_INTEGRATION_TESTS:
+            item.add_marker(pytest.mark.integration)
+            item.add_marker(pytest.mark.coverage_quality)
+            continue
+        if any(item.nodeid.startswith(prefix) for prefix in SLOW_TEST_PREFIXES):
+            item.add_marker(pytest.mark.slow)
+            if any(item.nodeid.startswith(prefix) for prefix in COVERAGE_QUALITY_TEST_PREFIXES):
+                item.add_marker(pytest.mark.coverage_quality)
 
 
 @pytest.hookimpl(hookwrapper=True)

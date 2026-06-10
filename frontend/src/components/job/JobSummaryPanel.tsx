@@ -3,9 +3,10 @@ import type { JobSummary } from '../../api/types'
 type Props = {
   summary: JobSummary | null
   generationDurationMs: number | null
+  stageTimings: Record<string, number> | null
 }
 
-export function JobSummaryPanel({ summary, generationDurationMs }: Props) {
+export function JobSummaryPanel({ summary, generationDurationMs, stageTimings }: Props) {
   if (!summary) {
     return (
       <section className="inspector-card inspector-card--note">
@@ -57,6 +58,19 @@ export function JobSummaryPanel({ summary, generationDurationMs }: Props) {
           <div><span>Actual vs estimate</span><strong>{summary.actual_vs_estimated_ratio != null ? `${summary.actual_vs_estimated_ratio.toFixed(1)}x` : '--'}</strong></div>
           <div><span>Generate time</span><strong>{formatGeneration(generationDurationMs)}</strong></div>
         </div>
+        {stageTimings && Object.keys(stageTimings).length > 0 ? (
+          <div className="summary-stage-timings">
+            {Object.entries(stageTimings)
+              .filter(([, value]) => Number.isFinite(value))
+              .sort((left, right) => right[1] - left[1])
+              .map(([key, value]) => (
+                <div key={key}>
+                  <span>{formatStageLabel(key)}</span>
+                  <strong>{formatStageDuration(value)}</strong>
+                </div>
+              ))}
+          </div>
+        ) : null}
       </details>
     </section>
   )
@@ -73,4 +87,16 @@ function formatDuration(totalSeconds: number) {
 function formatGeneration(totalMs: number | null) {
   if (!totalMs) return '--'
   return `${(totalMs / 1000).toFixed(2)}s`
+}
+
+function formatStageLabel(key: string) {
+  return key
+    .replaceAll('_', ' ')
+    .replaceAll(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/ms$/i, '')
+    .trim()
+}
+
+function formatStageDuration(value: number) {
+  return `${(value / 1000).toFixed(2)}s`
 }
