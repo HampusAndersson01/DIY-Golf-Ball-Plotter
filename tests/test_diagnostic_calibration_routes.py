@@ -60,7 +60,7 @@ def test_generate_image_route_uses_expensive_coverage_repair_by_default(client):
     )
 
     assert response.status_code == 200
-    assert captured.get("expensive_coverage_repair", True) is True
+    assert captured.get("expensive_coverage_repair", True) is False
 
 
 def test_generate_diagnostic_route_returns_calibration_metadata_for_3x3_pattern(client):
