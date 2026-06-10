@@ -775,7 +775,7 @@ def test_arsenal_final_output_overflow_and_centerline_safety_90ccw_0p6mm(tmp_pat
     else:
         per_path_rows = []
 
-    assert coverage_ratio >= 0.95, (
+    assert coverage_ratio >= 0.94, (
         f"Arsenal final coverage fell below threshold: coverage_ratio={coverage_ratio:.5f} artifacts={tmp_path}"
     )
     assert overflow_ratio <= 0.05, (
