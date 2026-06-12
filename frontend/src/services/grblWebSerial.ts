@@ -55,6 +55,7 @@ const textDecoder = new TextDecoder()
 const GRBL_RX_BUFFER_SIZE = 128
 const GRBL_PLANNER_BUFFER_SIZE = 15
 const DEFAULT_STREAM_RESPONSE_TIMEOUT_MS = 20_000
+const ACK_SILENCE_STATUS_PROBE_MS = 1_500
 const STATUS_QUERY_TIMEOUT_MS = 250
 const RECENT_RESPONSE_LIMIT = 20
 
@@ -888,49 +889,61 @@ export class GrblWebSerialService {
           continue
         }
 
-        let response: GrblCommandResponse
-        try {
-          response = await this.waitForCommandResponse(responseTimeoutMs)
-        } catch {
-          const statusLine = await this.queryStatus(STATUS_QUERY_TIMEOUT_MS)
-          const parsedStatus = statusLine ? parseGrblStatus(statusLine) : null
-          const idleWithEmptyBuffers = Boolean(
-            parsedStatus?.state === 'Idle'
-              && parsedStatus.plannerBufferFree != null
-              && parsedStatus.serialRxFree != null
-              && parsedStatus.plannerBufferFree >= GRBL_PLANNER_BUFFER_SIZE
-              && parsedStatus.serialRxFree >= GRBL_RX_BUFFER_SIZE,
-          )
-          if (idleWithEmptyBuffers) {
-            for (const pending of pendingCommands) {
-              pending.acknowledgedAt = Date.now() / 1000
-              pending.response = 'ok (recovered from idle status)'
-              ackedCount += 1
-              callbacks.onProgress?.(ackedCount, streamableLines.length, pending.command)
-            }
-            pendingCommands.length = 0
-            pendingBufferChars = 0
-            recentSerializedBarrier = false
-            this.updateMachine({
-              progress_done: ackedCount,
-              current_gcode_line: ackedCount,
-              streaming: {
-                ...this.getStreamingState(),
-                current_line: ackedCount,
-                pending_buffer_chars: 0,
-                pending_commands: 0,
-                sent_count: sentCount,
-                acked_count: ackedCount,
-                ok_count: ackedCount,
-                total_lines: streamableLines.length,
-                streaming_active: true,
-                last_grbl_status: statusLine,
-                last_response_age_sec: 0,
-              },
-            })
-            continue
+        let response: GrblCommandResponse | null = null
+        const responseDeadline = Date.now() + responseTimeoutMs
+        while (!response) {
+          const remainingMs = responseDeadline - Date.now()
+          if (remainingMs <= 0) {
+            const statusLine = await this.queryStatus(STATUS_QUERY_TIMEOUT_MS)
+            throw this.buildTimeoutError(pendingCommands, ackedCount, responseTimeoutMs, statusLine)
           }
-          throw this.buildTimeoutError(pendingCommands, ackedCount, responseTimeoutMs, statusLine)
+
+          try {
+            response = await this.waitForCommandResponse(Math.min(ACK_SILENCE_STATUS_PROBE_MS, remainingMs))
+          } catch {
+            const statusLine = await this.queryStatus(STATUS_QUERY_TIMEOUT_MS)
+            const parsedStatus = statusLine ? parseGrblStatus(statusLine) : null
+            const idleWithEmptyBuffers = Boolean(
+              parsedStatus?.state === 'Idle'
+                && parsedStatus.plannerBufferFree != null
+                && parsedStatus.serialRxFree != null
+                && parsedStatus.plannerBufferFree >= GRBL_PLANNER_BUFFER_SIZE
+                && parsedStatus.serialRxFree >= GRBL_RX_BUFFER_SIZE,
+            )
+            if (idleWithEmptyBuffers) {
+              for (const pending of pendingCommands) {
+                pending.acknowledgedAt = Date.now() / 1000
+                pending.response = 'ok (recovered from idle status)'
+                ackedCount += 1
+                callbacks.onProgress?.(ackedCount, streamableLines.length, pending.command)
+              }
+              pendingCommands.length = 0
+              pendingBufferChars = 0
+              recentSerializedBarrier = false
+              this.updateMachine({
+                progress_done: ackedCount,
+                current_gcode_line: ackedCount,
+                streaming: {
+                  ...this.getStreamingState(),
+                  current_line: ackedCount,
+                  pending_buffer_chars: 0,
+                  pending_commands: 0,
+                  sent_count: sentCount,
+                  acked_count: ackedCount,
+                  ok_count: ackedCount,
+                  total_lines: streamableLines.length,
+                  streaming_active: true,
+                  last_grbl_status: statusLine,
+                  last_response_age_sec: 0,
+                },
+              })
+              break
+            }
+          }
+        }
+
+        if (!response) {
+          continue
         }
 
         if (response.kind === 'startup' || response.kind === 'message') {
