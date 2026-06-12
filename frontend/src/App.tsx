@@ -126,10 +126,11 @@ function DashboardApp() {
   const restoredPersistedPreviewRef = useRef(false)
   const lastSeenPlacementPreviewKeyRef = useRef<string | null>(null)
   const pendingPlacementPreviewKeyRef = useRef<string | null>(null)
+  const lastRunUiSyncAtRef = useRef(0)
 
   const readySettings = settings
   const progressPercent = getProgressPercent(machine)
-  const runReady = Boolean(machine?.connected && machine?.calibrated && gcode.length && !machine?.y_loop_test?.enabled && !busy.running)
+  const runReady = Boolean(machine?.connected && machine?.calibrated && gcode.length && !machine?.y_loop_test?.enabled && !machine?.running && !busy.running)
   const runLockReason = !machine?.connected
     ? 'Connect machine first'
     : !machine?.calibrated
@@ -138,12 +139,20 @@ function DashboardApp() {
         ? 'Generate a job first'
         : machine?.y_loop_test?.enabled
           ? 'Stop Y-loop test before run'
-          : busy.running
+          : machine?.running
+            ? 'Job is currently running'
+            : busy.running
             ? 'Job startup in progress'
             : null
   const currentSettings = useMemo(() => readySettings, [readySettings])
   const elapsedSeconds = getElapsedSeconds(machine)
   const remainingSeconds = getRemainingSeconds(machine, summary, progressPercent, elapsedSeconds)
+
+  const previewPathByLine = useMemo(() => {
+    return preview
+      .filter((path) => path.gcode_start_line != null && path.gcode_end_line != null)
+      .sort((a, b) => (a.gcode_start_line ?? 0) - (b.gcode_start_line ?? 0))
+  }, [preview])
 
   const onKeyboardPause = useEffectEvent(async () => {
     if (!currentSettings) return
@@ -181,12 +190,31 @@ function DashboardApp() {
     })
   }, [setPreviewPayload])
 
+  const decorateMachineState = useCallback((machineState: MachineState) => {
+    const activePath = findPreviewPathForLine(previewPathByLine, machineState.current_gcode_line || 0)
+    if (!activePath) {
+      return {
+        ...machineState,
+        current_path_id: null,
+        current_path_kind: null,
+        current_preview_point_index: 0,
+      }
+    }
+    return {
+      ...machineState,
+      current_path_id: activePath.id ?? null,
+      current_path_kind: activePath.kind ?? null,
+      current_preview_point_index: getPreviewPointIndexForLine(activePath, machineState.current_gcode_line || 0),
+    }
+  }, [previewPathByLine])
+
   const syncBrowserMachineState = useCallback(() => {
+    const nextMachine = decorateMachineState(grblSerial.getMachineState())
     startTransition(() => {
-      setMachine(grblSerial.getMachineState())
+      setMachine(nextMachine)
       setSerialPort(grblSerial.getPort())
     })
-  }, [setMachine, setSerialPort])
+  }, [decorateMachineState, setMachine, setSerialPort])
 
   useEffect(() => {
     let active = true
@@ -248,6 +276,14 @@ function DashboardApp() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [machine?.running])
+
+  useEffect(() => {
+    if (!machine?.running && !machine?.paused) return
+    const timer = window.setInterval(() => {
+      syncBrowserMachineState()
+    }, 250)
+    return () => window.clearInterval(timer)
+  }, [machine?.paused, machine?.running, syncBrowserMachineState])
 
   const placementPreviewKey = readySettings
     ? [
@@ -507,17 +543,33 @@ function DashboardApp() {
   async function handleRun() {
     if (!window.confirm('Start the generated job on the connected plotter?')) return
     setBusy('running', true)
-    try {
-      const result = await grblSerial.runGcode(gcode, {
-        onProgress: () => syncBrowserMachineState(),
+    lastRunUiSyncAtRef.current = 0
+    const runPromise = grblSerial.runGcode(gcode, {
+      onProgress: () => {
+        const now = performance.now()
+        if (now - lastRunUiSyncAtRef.current < 120) {
+          return
+        }
+        lastRunUiSyncAtRef.current = now
+        syncBrowserMachineState()
+      },
+      streamingMode: settingsState.streamingMode,
+    })
+
+    syncBrowserMachineState()
+    appendLog(`Run started: streaming ${gcode.length} G-code lines over Web Serial.`)
+    pushToast('Job started.', 'success')
+    setBusy('running', false)
+
+    void runPromise
+      .then((result) => {
+        recordMachineResult(result, 'Job complete.')
       })
-      recordMachineResult(result, 'Job started.')
-    } catch (error) {
-      pushToast(String(error), 'error')
-      appendLog(`Run failed: ${String(error)}`)
-    } finally {
-      setBusy('running', false)
-    }
+      .catch((error) => {
+        syncBrowserMachineState()
+        pushToast(String(error), 'error')
+        appendLog(`Run failed: ${String(error)}`)
+      })
   }
 
   async function handlePause() {
@@ -1056,6 +1108,24 @@ function formatClock(totalSeconds: number) {
   const minutes = Math.floor((seconds % 3600) / 60)
   const remainder = seconds % 60
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
+}
+
+function findPreviewPathForLine(paths: PreviewPath[], lineNumber: number) {
+  return paths.find((path) => {
+    const start = path.gcode_start_line
+    const end = path.gcode_end_line
+    return start != null && end != null && lineNumber >= start && lineNumber <= end
+  }) ?? null
+}
+
+function getPreviewPointIndexForLine(path: PreviewPath, lineNumber: number) {
+  const start = path.gcode_start_line
+  const end = path.gcode_end_line
+  if (start == null || end == null || end <= start || path.points.length <= 1) {
+    return 0
+  }
+  const progress = Math.min(1, Math.max(0, (lineNumber - start) / Math.max(1, end - start)))
+  return Math.min(path.points.length - 1, Math.max(0, Math.round(progress * (path.points.length - 1))))
 }
 
 export default App
