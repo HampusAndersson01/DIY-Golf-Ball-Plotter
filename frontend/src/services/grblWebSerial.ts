@@ -12,13 +12,52 @@ export const COMMON_SERIAL_FILTERS: SerialPortFilter[] = [
 
 type RunCallbacks = {
   onProgress?: (done: number, total: number, line: string) => void
+  responseTimeoutMs?: number
+  streamingMode?: 'buffered' | 'sync'
 }
 
 type BrowserMachineState = MachineState & {
   current_servo_s: number
 }
 
+type PendingCommand = {
+  lineNumber: number
+  command: string
+  bytes: number
+  sentAt: number
+  acknowledgedAt: number | null
+  response: string | null
+}
+
+type GrblCommandResponse = {
+  kind: 'ok' | 'error' | 'alarm' | 'startup' | 'message'
+  line: string
+  receivedAt: number
+}
+
+type ParsedGrblStatus = {
+  raw: string
+  state: string | null
+  plannerBufferFree: number | null
+  serialRxFree: number | null
+  x: number | null
+  y: number | null
+}
+
+type PortDiagnostics = {
+  portOpen: boolean
+  readerActive: boolean
+  writerActive: boolean
+}
+
 const textEncoder = new TextEncoder()
+const textDecoder = new TextDecoder()
+const GRBL_RX_BUFFER_SIZE = 128
+const GRBL_PLANNER_BUFFER_SIZE = 15
+const DEFAULT_STREAM_RESPONSE_TIMEOUT_MS = 20_000
+const ACK_SILENCE_STATUS_PROBE_MS = 1_500
+const STATUS_QUERY_TIMEOUT_MS = 250
+const RECENT_RESPONSE_LIMIT = 20
 
 function sleep(ms: number) {
   return new Promise((resolve) => globalThis.setTimeout(resolve, ms))
@@ -60,8 +99,12 @@ function buildDisconnectedMachineState(): BrowserMachineState {
     progress_done: 0,
     progress_total: 0,
     run_started_at: null,
+    run_finished_at: null,
+    job_started_at: null,
+    job_finished_at: null,
     pause_started_at: null,
     paused_duration_seconds: 0,
+    job_elapsed_seconds: 0,
     current_gcode_line: 0,
     current_path_id: null,
     current_preview_point_index: 0,
@@ -69,6 +112,7 @@ function buildDisconnectedMachineState(): BrowserMachineState {
     current_position_x: 0,
     current_position_y: 0,
     motor_hold_enabled: false,
+    last_timeout_debug: null,
     defaults: {
       pen_up_s: 575,
       pen_down_s: 700,
@@ -107,6 +151,35 @@ function buildDisconnectedMachineState(): BrowserMachineState {
   }
 }
 
+function parseGrblStatus(line: string): ParsedGrblStatus | null {
+  if (!line.startsWith('<') || !line.endsWith('>')) {
+    return null
+  }
+
+  const raw = line.slice(1, -1)
+  const parts = raw.split('|')
+  const coords = parts
+    .slice(1)
+    .map((part) => part.split(':', 2) as [string, string])
+    .find(([key]) => key === 'MPos' || key === 'WPos')
+
+  const [x, y] = coords?.[1]?.split(',').slice(0, 2).map((value) => Number(value)) ?? [null, null]
+  const bfField = parts
+    .slice(1)
+    .map((part) => part.split(':', 2) as [string, string])
+    .find(([key]) => key === 'Bf')?.[1]
+  const [plannerBufferFree, serialRxFree] = bfField?.split(',').map((value) => Number(value)) ?? [null, null]
+
+  return {
+    raw: line,
+    state: parts[0] ?? null,
+    plannerBufferFree: Number.isFinite(plannerBufferFree) ? plannerBufferFree : null,
+    serialRxFree: Number.isFinite(serialRxFree) ? serialRxFree : null,
+    x: Number.isFinite(x) ? x : null,
+    y: Number.isFinite(y) ? y : null,
+  }
+}
+
 function mergeMachineState(current: BrowserMachineState, patch: Partial<BrowserMachineState>): BrowserMachineState {
   return {
     ...current,
@@ -129,6 +202,15 @@ function formatAxisMove(axis: 'X' | 'Y', degrees: number, feed: number) {
   return `G1 ${axis}${degrees.toFixed(6)} F${feed.toFixed(3)}`
 }
 
+function isSerializedCommand(command: string) {
+  const upper = command.trim().toUpperCase()
+  return upper.startsWith('G4') || upper.startsWith('M3') || upper.startsWith('M4') || upper.startsWith('M5')
+}
+
+function formatPendingQueue(pendingCommands: PendingCommand[]) {
+  return pendingCommands.map((pending) => `L${pending.lineNumber}:${pending.command}`)
+}
+
 export class GrblWebSerialService {
   private activePort: SerialPort | null = null
   private isConnecting = false
@@ -136,9 +218,36 @@ export class GrblWebSerialService {
   private stopRequested = false
   private machine: BrowserMachineState = buildDisconnectedMachineState()
   private yLoopAbortController: AbortController | null = null
+  private portReader: ReadableStreamDefaultReader<Uint8Array> | null = null
+  private portWriter: WritableStreamDefaultWriter<Uint8Array> | null = null
+  private readLoopPromise: Promise<void> | null = null
+  private readLoopStopped = false
+  private commandResponseQueue: GrblCommandResponse[] = []
+  private commandWaiters: Array<{
+    resolve: (response: GrblCommandResponse) => void
+    reject: (error: Error) => void
+  }> = []
+  private statusWaiters: Array<{
+    resolve: (line: string) => void
+    reject: (error: Error) => void
+  }> = []
+  private recentGrblLines: string[] = []
+  private lastResponseAt: number | null = null
 
   getMachineState() {
-    return structuredClone(this.machine)
+    const snapshot = structuredClone(this.machine)
+    const start = snapshot.run_started_at ?? snapshot.job_started_at
+    if (start != null) {
+      const pausedDuration = snapshot.paused_duration_seconds ?? 0
+      const pauseStarted = snapshot.paused && snapshot.pause_started_at != null ? snapshot.pause_started_at : null
+      const now = Date.now() / 1000
+      const pausedExtra = pauseStarted != null ? Math.max(0, now - pauseStarted) : 0
+      snapshot.job_elapsed_seconds = Math.max(0, now - start - pausedDuration - pausedExtra)
+    }
+    if (snapshot.streaming) {
+      snapshot.streaming.last_response_age_sec = this.lastResponseAt == null ? 0 : Math.max(0, Date.now() / 1000 - this.lastResponseAt)
+    }
+    return snapshot
   }
 
   getPort() {
@@ -166,158 +275,347 @@ export class GrblWebSerialService {
   }
 
   private ensureConnectedPort() {
-    if (!this.activePort) {
+    if (!this.activePort || !this.portWriter) {
       throw new Error('Connect plotter first.')
     }
     return this.activePort
   }
 
-  private async writeRaw(payload: string) {
-    const port = this.ensureConnectedPort()
-    const writer = port.writable?.getWriter()
-    if (!writer) {
-      throw new Error('Selected serial port is not writable.')
+  private recordGrblLine(line: string) {
+    this.recentGrblLines.push(line)
+    if (this.recentGrblLines.length > RECENT_RESPONSE_LIMIT) {
+      this.recentGrblLines.shift()
     }
-    try {
-      await writer.write(textEncoder.encode(payload))
-    } finally {
-      writer.releaseLock()
-    }
+    this.lastResponseAt = Date.now() / 1000
   }
 
-  private async readUntil(predicate: (line: string, lines: string[]) => boolean, timeoutMs: number) {
-    const port = this.ensureConnectedPort()
-    const reader = port.readable?.getReader()
-    if (!reader) {
-      throw new Error('Selected serial port is not readable.')
-    }
-
-    const lines: string[] = []
-    let matched = false
-    let timedOut = false
-    const timer = globalThis.setTimeout(() => {
-      timedOut = true
-      void reader.cancel().catch(() => {})
-    }, timeoutMs)
-
-    try {
-      while (true) {
-        const { value, done } = await reader.read()
-        if (done) break
-        if (!value) continue
-        this.readBuffer += new TextDecoder().decode(value, { stream: true })
-        const extracted = extractLines(this.readBuffer)
-        this.readBuffer = extracted.remainder
-        for (const line of extracted.lines) {
-          lines.push(line)
-          if (predicate(line, lines)) {
-            matched = true
-            return { matched, timedOut, lines }
-          }
-        }
-      }
-    } finally {
-      globalThis.clearTimeout(timer)
-      reader.releaseLock()
-    }
-
-    return { matched, timedOut, lines }
-  }
-
-  private async readFor(timeoutMs: number) {
-    return this.readUntil(() => false, timeoutMs)
-  }
-
-  private async sendLineAndWait(command: string, timeoutMs = 4000) {
-    await this.writeRaw(command.endsWith('\n') ? command : `${command}\n`)
-    const result = await this.readUntil(
-      (line) => line === 'ok' || line.startsWith('error:') || line.startsWith('ALARM:'),
-      timeoutMs,
-    )
-
-    const terminal = result.lines.find((line) => line === 'ok' || line.startsWith('error:') || line.startsWith('ALARM:')) ?? ''
-    if (!terminal) {
-      throw new Error(`GRBL did not respond to "${command}".`)
-    }
-    if (terminal.startsWith('error:') || terminal.startsWith('ALARM:')) {
-      throw new Error(terminal)
-    }
+  private buildPortDiagnostics(): PortDiagnostics {
     return {
-      command,
-      response: result.lines.join('\n') || 'ok',
-      lines: result.lines,
+      portOpen: Boolean(this.activePort),
+      readerActive: Boolean(this.portReader),
+      writerActive: Boolean(this.portWriter),
     }
   }
 
-  private async queryStatus() {
-    await this.writeRaw('?')
-    const result = await this.readUntil((line) => line.startsWith('<'), 1500)
-    const statusLine = result.lines.find((line) => line.startsWith('<')) ?? null
-    if (!statusLine) {
-      return null
+  private rejectWaiters(waiters: Array<{ reject: (error: Error) => void }>, error: Error) {
+    const stale = waiters.splice(0, waiters.length)
+    for (const waiter of stale) {
+      waiter.reject(error)
     }
+  }
 
-    const statusMatch = statusLine.match(/^<([^|>]+)/)
-    const positionMatch = statusLine.match(/MPos:([-0-9.]+),([-0-9.]+)/)
+  private enqueueCommandResponse(response: GrblCommandResponse) {
+    const waiter = this.commandWaiters.shift()
+    if (waiter) {
+      waiter.resolve(response)
+      return
+    }
+    this.commandResponseQueue.push(response)
+  }
 
+  private handleIncomingStatusLine(line: string) {
+    const parsedStatus = parseGrblStatus(line)
     this.updateMachine({
-      status: statusMatch?.[1] ?? statusLine,
-      current_position_x: positionMatch ? Number(positionMatch[1]) : this.machine.current_position_x,
-      current_position_y: positionMatch ? Number(positionMatch[2]) : this.machine.current_position_y,
+      status: parsedStatus?.state ?? line,
+      current_position_x: parsedStatus?.x ?? this.machine.current_position_x,
+      current_position_y: parsedStatus?.y ?? this.machine.current_position_y,
       streaming: {
         ...this.getStreamingState(),
-        last_grbl_status: statusLine,
+        last_grbl_status: line,
         last_response_age_sec: 0,
       },
     })
 
-    return statusLine
+    const waiter = this.statusWaiters.shift()
+    if (waiter) {
+      waiter.resolve(line)
+    }
+  }
+
+  private classifyCommandResponse(line: string): GrblCommandResponse {
+    const upper = line.toUpperCase()
+    if (line === 'ok') {
+      return { kind: 'ok', line, receivedAt: Date.now() / 1000 }
+    }
+    if (upper.startsWith('ERROR:')) {
+      return { kind: 'error', line, receivedAt: Date.now() / 1000 }
+    }
+    if (upper.startsWith('ALARM:')) {
+      return { kind: 'alarm', line, receivedAt: Date.now() / 1000 }
+    }
+    if (/grbl/i.test(line)) {
+      return { kind: 'startup', line, receivedAt: Date.now() / 1000 }
+    }
+    return { kind: 'message', line, receivedAt: Date.now() / 1000 }
+  }
+
+  private handleIncomingLine(line: string) {
+    this.recordGrblLine(line)
+    if (line.startsWith('<')) {
+      this.handleIncomingStatusLine(line)
+      return
+    }
+    this.enqueueCommandResponse(this.classifyCommandResponse(line))
+  }
+
+  private async startReadLoop() {
+    if (!this.portReader) return
+    const reader = this.portReader
+    this.readLoopStopped = false
+    this.readLoopPromise = (async () => {
+      try {
+        while (!this.readLoopStopped) {
+          const { value, done } = await reader.read()
+          if (done) break
+          if (!value) continue
+          this.readBuffer += textDecoder.decode(value, { stream: true })
+          const extracted = extractLines(this.readBuffer)
+          this.readBuffer = extracted.remainder
+          for (const line of extracted.lines) {
+            this.handleIncomingLine(line)
+          }
+        }
+      } catch (error) {
+        if (!this.readLoopStopped) {
+          const message = error instanceof Error ? error.message : String(error)
+          const failure = new Error(`Serial read loop stopped unexpectedly: ${message}`)
+          this.rejectWaiters(this.commandWaiters, failure)
+          this.rejectWaiters(this.statusWaiters, failure)
+        }
+      }
+    })()
+  }
+
+  private async openSerialSession(port: SerialPort) {
+    this.portReader = port.readable?.getReader() ?? null
+    this.portWriter = port.writable?.getWriter() ?? null
+    if (!this.portReader || !this.portWriter) {
+      throw new Error('Selected serial port is not readable/writable.')
+    }
+    await this.startReadLoop()
+  }
+
+  private async stopReadLoop() {
+    this.readLoopStopped = true
+    try {
+      await this.portReader?.cancel()
+    } catch {
+      // Best-effort cancellation during cleanup.
+    }
+    try {
+      await this.readLoopPromise
+    } catch {
+      // Cleanup path; read loop failures are already surfaced elsewhere.
+    }
+  }
+
+  private resetSerialState() {
+    this.readBuffer = ''
+    this.commandResponseQueue = []
+    this.recentGrblLines = []
+    this.lastResponseAt = null
+    this.rejectWaiters(this.commandWaiters, new Error('Serial session reset.'))
+    this.rejectWaiters(this.statusWaiters, new Error('Serial session reset.'))
+  }
+
+  private async closeSerialPort() {
+    const port = this.activePort
+    await this.stopReadLoop()
+    try {
+      this.portReader?.releaseLock()
+    } catch {
+      // Best-effort cleanup.
+    }
+    try {
+      this.portWriter?.releaseLock()
+    } catch {
+      // Best-effort cleanup.
+    }
+    this.portReader = null
+    this.portWriter = null
+    this.readLoopPromise = null
+    this.readLoopStopped = false
+    if (port) {
+      try {
+        await port.close()
+      } catch {
+        // Ignore close failures during cleanup.
+      }
+    }
+    this.activePort = null
+    this.resetSerialState()
+  }
+
+  private async writeRaw(payload: string) {
+    this.ensureConnectedPort()
+    if (!this.portWriter) {
+      throw new Error('Selected serial port is not writable.')
+    }
+    await this.portWriter.write(textEncoder.encode(payload))
+  }
+
+  private async waitForCommandResponse(timeoutMs: number) {
+    const queued = this.commandResponseQueue.shift()
+    if (queued) {
+      return queued
+    }
+
+    return new Promise<GrblCommandResponse>((resolve, reject) => {
+      const timer = globalThis.setTimeout(() => {
+        const index = this.commandWaiters.findIndex((waiter) => waiter.resolve === resolve)
+        if (index >= 0) {
+          this.commandWaiters.splice(index, 1)
+        }
+        reject(new Error('Timed out waiting for GRBL command acknowledgement'))
+      }, timeoutMs)
+
+      this.commandWaiters.push({
+        resolve: (response) => {
+          globalThis.clearTimeout(timer)
+          resolve(response)
+        },
+        reject: (error) => {
+          globalThis.clearTimeout(timer)
+          reject(error)
+        },
+      })
+    })
+  }
+
+  private async waitForStatusLine(timeoutMs: number) {
+    return new Promise<string>((resolve, reject) => {
+      const timer = globalThis.setTimeout(() => {
+        const index = this.statusWaiters.findIndex((waiter) => waiter.resolve === resolve)
+        if (index >= 0) {
+          this.statusWaiters.splice(index, 1)
+        }
+        reject(new Error('Timed out waiting for GRBL status response'))
+      }, timeoutMs)
+
+      this.statusWaiters.push({
+        resolve: (line) => {
+          globalThis.clearTimeout(timer)
+          resolve(line)
+        },
+        reject: (error) => {
+          globalThis.clearTimeout(timer)
+          reject(error)
+        },
+      })
+    })
+  }
+
+  private buildTimeoutError(
+    pendingCommands: PendingCommand[],
+    currentLineNumber: number,
+    responseTimeoutMs: number,
+    statusLine: string | null,
+  ) {
+    const timedOutCommand = pendingCommands[0] ?? null
+    const lastSentCommand = pendingCommands.at(-1) ?? null
+    const timeoutDebug = {
+      timeout_ms: responseTimeoutMs,
+      last_sent_command: lastSentCommand?.command ?? null,
+      last_sent_line: lastSentCommand?.lineNumber ?? null,
+      timed_out_command: timedOutCommand?.command ?? null,
+      timed_out_line: timedOutCommand?.lineNumber ?? null,
+      current_line: currentLineNumber,
+      pending_queue_length: pendingCommands.length,
+      pending_queue: pendingCommands.map((pending) => ({
+        lineNumber: pending.lineNumber,
+        command: pending.command,
+        bytes: pending.bytes,
+        sentAt: pending.sentAt,
+      })),
+      last_20_received_grbl_lines: [...this.recentGrblLines],
+      last_grbl_response: this.recentGrblLines.at(-1) ?? null,
+      status_query_response: statusLine,
+      port_state: this.buildPortDiagnostics(),
+    }
+    this.updateMachine({ last_timeout_debug: timeoutDebug })
+
+    const portDiagnostics = this.buildPortDiagnostics()
+    const lastResponse = this.recentGrblLines.at(-1) ?? 'none'
+    const pendingQueueText = formatPendingQueue(pendingCommands).join(', ') || 'empty'
+    const statusText = statusLine ?? 'none'
+    return new Error(
+      `GRBL communication timeout at line ${timedOutCommand?.lineNumber ?? currentLineNumber} after "${timedOutCommand?.command ?? 'unknown command'}". ` +
+      `Last sent="${lastSentCommand?.command ?? 'none'}". Pending=${pendingCommands.length} [${pendingQueueText}]. ` +
+      `Last GRBL response="${lastResponse}". Status query="${statusText}". ` +
+      `Port open=${portDiagnostics.portOpen} reader=${portDiagnostics.readerActive} writer=${portDiagnostics.writerActive}.`,
+    )
+  }
+
+  private async sendLineAndWait(command: string, timeoutMs = 4000) {
+    await this.writeRaw(command.endsWith('\n') ? command : `${command}\n`)
+
+    while (true) {
+      const response = await this.waitForCommandResponse(timeoutMs)
+      if (response.kind === 'startup' || response.kind === 'message') {
+        continue
+      }
+      if (response.kind === 'error' || response.kind === 'alarm') {
+        throw new Error(response.line)
+      }
+      return {
+        command,
+        response: response.line,
+        lines: [response.line],
+      }
+    }
+  }
+
+  private async queryStatus(timeoutMs = 1500) {
+    await this.writeRaw('?')
+    try {
+      return await this.waitForStatusLine(timeoutMs)
+    } catch {
+      return null
+    }
   }
 
   private async performHandshake() {
     await this.writeRaw('\r\n\r\n')
     await sleep(250)
-    const startup = await this.readFor(1500)
-    const startupLines = startup.lines
-    if (startupLines.some((line) => /grbl/i.test(line))) {
-      this.updateMachine({ status: 'Connected to GRBL' })
-      await this.queryStatus().catch(() => null)
-      return startupLines
+
+    const startupLines: string[] = []
+    const handshakeDeadline = Date.now() + 1500
+    while (Date.now() < handshakeDeadline) {
+      const response = this.commandResponseQueue.shift()
+      if (!response) {
+        await sleep(10)
+        continue
+      }
+      startupLines.push(response.line)
+      if (/grbl/i.test(response.line)) {
+        this.updateMachine({ status: 'Connected to GRBL' })
+        await this.queryStatus().catch(() => null)
+        return startupLines
+      }
     }
 
-    await this.writeRaw('?\n')
-    const statusProbe = await this.readUntil((line) => line.startsWith('<'), 1500)
-    if (statusProbe.lines.some((line) => line.startsWith('<'))) {
+    const statusProbe = await this.queryStatus(1500)
+    if (statusProbe) {
       this.updateMachine({ status: 'Connected to GRBL' })
-      return [...startupLines, ...statusProbe.lines]
+      return [...startupLines, statusProbe]
     }
 
     throw new Error('GRBL does not respond. Select the Arduino/GRBL controller and try again.')
-  }
-
-  private async closePort(port: SerialPort | null) {
-    if (!port) return
-    try {
-      await port.close()
-    } catch {
-      // Ignore close failures during cleanup.
-    }
   }
 
   async connect() {
     if (this.isConnecting) {
       throw new Error('Connection already in progress')
     }
-    if (this.activePort) {
-      throw new Error('The selected serial port is already open.')
-    }
 
     this.ensureSerialSupport()
     this.isConnecting = true
-    let port: SerialPort | null = null
-
     try {
-      port = await navigator.serial!.requestPort({
+      if (this.activePort || this.portReader || this.portWriter) {
+        await this.closeSerialPort()
+      }
+
+      const port = await navigator.serial!.requestPort({
         filters: COMMON_SERIAL_FILTERS,
       })
 
@@ -330,6 +628,7 @@ export class GrblWebSerialService {
       })
 
       this.activePort = port
+      await this.openSerialSession(port)
       await this.performHandshake()
 
       this.stopRequested = false
@@ -341,9 +640,7 @@ export class GrblWebSerialService {
 
       return port
     } catch (error) {
-      this.activePort = null
-      this.readBuffer = ''
-      await this.closePort(port)
+      await this.closeSerialPort()
       this.updateMachine(buildDisconnectedMachineState())
       throw new Error(normalizeErrorMessage(error), { cause: error })
     } finally {
@@ -354,9 +651,7 @@ export class GrblWebSerialService {
   async disconnect() {
     this.stopRequested = true
     this.yLoopAbortController?.abort()
-    await this.closePort(this.activePort)
-    this.activePort = null
-    this.readBuffer = ''
+    await this.closeSerialPort()
     this.updateMachine(buildDisconnectedMachineState())
   }
 
@@ -490,6 +785,14 @@ export class GrblWebSerialService {
       throw new Error('Generate a job before starting the plotter.')
     }
 
+    const responseTimeoutMs = callbacks.responseTimeoutMs ?? DEFAULT_STREAM_RESPONSE_TIMEOUT_MS
+    const streamingMode = callbacks.streamingMode ?? 'buffered'
+    const pendingCommands: PendingCommand[] = []
+    let sentCount = 0
+    let ackedCount = 0
+    let pendingBufferChars = 0
+    let recentSerializedBarrier = false
+
     this.stopRequested = false
     this.updateMachine({
       running: true,
@@ -498,13 +801,24 @@ export class GrblWebSerialService {
       progress_done: 0,
       progress_total: streamableLines.length,
       run_started_at: Date.now() / 1000,
+      job_started_at: Date.now() / 1000,
+      run_finished_at: null,
+      job_finished_at: null,
       pause_started_at: null,
+      paused_duration_seconds: 0,
+      job_elapsed_seconds: 0,
+      current_gcode_line: 0,
+      last_timeout_debug: null,
       streaming: {
         ...this.getStreamingState(),
-        mode: 'sync',
+        mode: streamingMode,
         current_line: 0,
         sent_count: 0,
         acked_count: 0,
+        ok_count: 0,
+        error_count: 0,
+        pending_buffer_chars: 0,
+        pending_commands: 0,
         total_lines: streamableLines.length,
         streaming_active: true,
       },
@@ -512,29 +826,173 @@ export class GrblWebSerialService {
 
     try {
       await this.sendLineAndWait('$X')
-      for (let index = 0; index < streamableLines.length; index += 1) {
-        while (this.machine.paused && !this.stopRequested) {
-          await sleep(50)
-        }
-        if (this.stopRequested) {
-          throw new Error('Stop requested')
+      while (sentCount < streamableLines.length || pendingCommands.length > 0) {
+        while (sentCount < streamableLines.length) {
+          while (this.machine.paused && !this.stopRequested) {
+            await sleep(50)
+          }
+          if (this.stopRequested) {
+            throw new Error('Stop requested')
+          }
+
+          const command = streamableLines[sentCount]
+          const serialized = isSerializedCommand(command)
+          const bytes = textEncoder.encode(`${command}\n`).length
+          if (streamingMode === 'sync' && pendingCommands.length > 0) {
+            break
+          }
+          if (pendingCommands.length > 0 && pendingBufferChars + bytes > GRBL_RX_BUFFER_SIZE) {
+            break
+          }
+          if (recentSerializedBarrier && pendingCommands.length > 0) {
+            break
+          }
+          if (serialized && pendingCommands.length > 0) {
+            break
+          }
+
+          const pending: PendingCommand = {
+            lineNumber: sentCount + 1,
+            command,
+            bytes,
+            sentAt: Date.now() / 1000,
+            acknowledgedAt: null,
+            response: null,
+          }
+          await this.writeRaw(`${command}\n`)
+          pendingCommands.push(pending)
+          pendingBufferChars += bytes
+          sentCount += 1
+          recentSerializedBarrier = serialized
+
+          this.updateMachine({
+            current_gcode_line: ackedCount,
+            streaming: {
+              ...this.getStreamingState(),
+              mode: streamingMode,
+              current_line: ackedCount,
+              pending_buffer_chars: pendingBufferChars,
+              pending_commands: pendingCommands.length,
+              sent_count: sentCount,
+              acked_count: ackedCount,
+              total_lines: streamableLines.length,
+              streaming_active: true,
+            },
+          })
+
+          if (streamingMode === 'sync' || serialized) {
+            break
+          }
         }
 
-        const line = streamableLines[index]
-        await this.sendLineAndWait(line, 20000)
+        if (!pendingCommands.length) {
+          continue
+        }
+
+        let response: GrblCommandResponse | null = null
+        const responseDeadline = Date.now() + responseTimeoutMs
+        while (!response) {
+          const remainingMs = responseDeadline - Date.now()
+          if (remainingMs <= 0) {
+            const statusLine = await this.queryStatus(STATUS_QUERY_TIMEOUT_MS)
+            throw this.buildTimeoutError(pendingCommands, ackedCount, responseTimeoutMs, statusLine)
+          }
+
+          try {
+            response = await this.waitForCommandResponse(Math.min(ACK_SILENCE_STATUS_PROBE_MS, remainingMs))
+          } catch {
+            const statusLine = await this.queryStatus(STATUS_QUERY_TIMEOUT_MS)
+            const parsedStatus = statusLine ? parseGrblStatus(statusLine) : null
+            const idleWithEmptyBuffers = Boolean(
+              parsedStatus?.state === 'Idle'
+                && parsedStatus.plannerBufferFree != null
+                && parsedStatus.serialRxFree != null
+                && parsedStatus.plannerBufferFree >= GRBL_PLANNER_BUFFER_SIZE
+                && parsedStatus.serialRxFree >= GRBL_RX_BUFFER_SIZE,
+            )
+            if (idleWithEmptyBuffers) {
+              for (const pending of pendingCommands) {
+                pending.acknowledgedAt = Date.now() / 1000
+                pending.response = 'ok (recovered from idle status)'
+                ackedCount += 1
+                callbacks.onProgress?.(ackedCount, streamableLines.length, pending.command)
+              }
+              pendingCommands.length = 0
+              pendingBufferChars = 0
+              recentSerializedBarrier = false
+              this.updateMachine({
+                progress_done: ackedCount,
+                current_gcode_line: ackedCount,
+                streaming: {
+                  ...this.getStreamingState(),
+                  current_line: ackedCount,
+                  pending_buffer_chars: 0,
+                  pending_commands: 0,
+                  sent_count: sentCount,
+                  acked_count: ackedCount,
+                  ok_count: ackedCount,
+                  total_lines: streamableLines.length,
+                  streaming_active: true,
+                  last_grbl_status: statusLine,
+                  last_response_age_sec: 0,
+                },
+              })
+              break
+            }
+          }
+        }
+
+        if (!response) {
+          continue
+        }
+
+        if (response.kind === 'startup' || response.kind === 'message') {
+          continue
+        }
+
+        const oldestPending = pendingCommands.shift()
+        if (!oldestPending) {
+          continue
+        }
+
+        oldestPending.acknowledgedAt = response.receivedAt
+        oldestPending.response = response.line
+        pendingBufferChars = Math.max(0, pendingBufferChars - oldestPending.bytes)
+        recentSerializedBarrier = pendingCommands.some((pending) => isSerializedCommand(pending.command))
+
+        if (response.kind === 'ok') {
+          ackedCount += 1
+          this.updateMachine({
+            progress_done: ackedCount,
+            current_gcode_line: oldestPending.lineNumber,
+            streaming: {
+              ...this.getStreamingState(),
+              mode: streamingMode,
+              current_line: oldestPending.lineNumber,
+              pending_buffer_chars: pendingBufferChars,
+              pending_commands: pendingCommands.length,
+              sent_count: sentCount,
+              acked_count: ackedCount,
+              ok_count: ackedCount,
+              total_lines: streamableLines.length,
+              streaming_active: true,
+              last_response_age_sec: 0,
+            },
+          })
+          callbacks.onProgress?.(ackedCount, streamableLines.length, oldestPending.command)
+          continue
+        }
+
+        const errorCount = (this.getStreamingState().error_count ?? 0) + 1
         this.updateMachine({
-          progress_done: index + 1,
-          current_gcode_line: index + 1,
           streaming: {
             ...this.getStreamingState(),
-            current_line: index + 1,
-            sent_count: index + 1,
-            acked_count: index + 1,
-            total_lines: streamableLines.length,
-            streaming_active: true,
+            error_count: errorCount,
+            pending_buffer_chars: pendingBufferChars,
+            pending_commands: pendingCommands.length,
           },
         })
-        callbacks.onProgress?.(index + 1, streamableLines.length, line)
+        throw new Error(`GRBL ${response.kind} on line ${oldestPending.lineNumber} while executing "${oldestPending.command}": ${response.line}`)
       }
 
       await this.queryStatus().catch(() => null)
@@ -543,8 +1001,14 @@ export class GrblWebSerialService {
         paused: false,
         status: 'Job complete',
         run_finished_at: Date.now() / 1000,
+        job_finished_at: Date.now() / 1000,
+        current_gcode_line: streamableLines.length,
+        progress_done: streamableLines.length,
         streaming: {
           ...this.getStreamingState(),
+          current_line: streamableLines.length,
+          pending_buffer_chars: 0,
+          pending_commands: 0,
           streaming_active: false,
         },
       })
@@ -554,23 +1018,28 @@ export class GrblWebSerialService {
         lines: [],
       }
     } catch (error) {
+      this.stopRequested = true
       this.updateMachine({
         running: false,
         paused: false,
-        status: this.stopRequested ? 'Stop requested' : normalizeErrorMessage(error),
+        status: this.stopRequested ? normalizeErrorMessage(error) : normalizeErrorMessage(error),
+        run_finished_at: Date.now() / 1000,
+        job_finished_at: Date.now() / 1000,
         streaming: {
           ...this.getStreamingState(),
+          pending_buffer_chars: 0,
+          pending_commands: 0,
           streaming_active: false,
         },
       })
-      if (!this.stopRequested) {
-        throw error
-      }
-      return {
-        command: 'RUN GCODE',
-        response: 'Stop requested',
-        lines: [],
-      }
+      await this.closeSerialPort()
+      this.updateMachine({
+        ...this.machine,
+        connected: false,
+        running: false,
+        paused: false,
+      })
+      throw error
     }
   }
 
@@ -595,10 +1064,13 @@ export class GrblWebSerialService {
     if (!this.machine.running) {
       throw new Error('No active job is running.')
     }
+    const pausedStartedAt = this.machine.pause_started_at
+    const pausedExtra = pausedStartedAt == null ? 0 : Math.max(0, Date.now() / 1000 - pausedStartedAt)
     await this.writeRaw('~')
     this.updateMachine({
       paused: false,
       pause_started_at: null,
+      paused_duration_seconds: (this.machine.paused_duration_seconds ?? 0) + pausedExtra,
       status: 'Resumed',
     })
     return {
@@ -616,19 +1088,11 @@ export class GrblWebSerialService {
     this.yLoopAbortController?.abort()
     await this.writeRaw('\x18')
     await sleep(250)
-    await this.readFor(500).catch(() => null)
+    await this.closeSerialPort()
     this.updateMachine({
-      running: false,
-      paused: false,
-      calibrated: false,
-      machine_position_trusted: false,
+      ...buildDisconnectedMachineState(),
       emergency_stopped: true,
       status: 'Soft reset sent - calibration cleared',
-      y_loop_test: {
-        ...(this.machine.y_loop_test ?? buildDisconnectedMachineState().y_loop_test!),
-        enabled: false,
-        phase: 'idle',
-      },
     })
     return {
       command: 'CTRL-X RESET',
