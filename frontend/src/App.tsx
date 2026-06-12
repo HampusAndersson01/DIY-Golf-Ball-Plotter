@@ -1,7 +1,7 @@
 import { startTransition, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 
-import { analyzeImage, apiConfig, fetchBootstrap, fetchState, generateDiagnosticGcode, generateImageGcode, postJson } from './api/client'
+import { analyzeImage, fetchBootstrap, fetchState, generateDiagnosticGcode, generateImageGcode } from './api/client'
 import { CalibrationPatternPanel } from './components/calibration/CalibrationPatternPanel'
 import { XAxisCalibrationPanel } from './components/calibration/XAxisCalibrationPanel'
 import { StepNav } from './components/layout/StepNav'
@@ -17,6 +17,7 @@ import { RunControls } from './components/machine/RunControls'
 import { PreviewWorkspace } from './components/preview/PreviewWorkspace'
 import { getProgressPercent } from './components/preview/previewMath'
 import type { JobSummary, MachineState, PreviewPath } from './api/types'
+import { GrblWebSerialService } from './services/grblWebSerial'
 import type { SettingsState } from './store/appStore'
 import { useAppStore } from './store/appStore'
 import type { ComponentType } from 'react'
@@ -31,6 +32,8 @@ const SIDEBAR_CATEGORIES: Array<{ id: SidebarCategory; label: string; icon: Side
   { id: 'output', label: 'Output', icon: () => <MdPrint aria-hidden="true" /> },
   { id: 'advanced', label: 'Advanced', icon: () => <MdSettingsApplications aria-hidden="true" /> },
 ]
+
+const grblSerial = new GrblWebSerialService()
 
 function App() {
   const busy = useAppStore((state) => state.busy)
@@ -100,6 +103,7 @@ function DashboardApp() {
   const viewPreset = useAppStore((state) => state.viewPreset)
   const busy = useAppStore((state) => state.busy)
   const setMachine = useAppStore((state) => state.setMachine)
+  const setSerialPort = useAppStore((state) => state.setSerialPort)
   const setImageFile = useAppStore((state) => state.setImageFile)
   const setAnalysis = useAppStore((state) => state.setAnalysis)
   const toggleColor = useAppStore((state) => state.toggleColor)
@@ -177,28 +181,49 @@ function DashboardApp() {
     })
   }, [setPreviewPayload])
 
+  const syncBrowserMachineState = useCallback(() => {
+    startTransition(() => {
+      setMachine(grblSerial.getMachineState())
+      setSerialPort(grblSerial.getPort())
+    })
+  }, [setMachine, setSerialPort])
+
   useEffect(() => {
     let active = true
     const load = async () => {
       try {
         const nextState = await fetchState()
         if (!active) return
-        startTransition(() => {
-          setMachine(nextState)
-          hydrateGeneratedPreviewFromMachineOnce(nextState)
-        })
+        hydrateGeneratedPreviewFromMachineOnce(nextState)
+        syncBrowserMachineState()
       } catch (error) {
         if (!active) return
-        appendLog(`State poll failed: ${String(error)}`)
+        appendLog(`State bootstrap failed: ${String(error)}`)
       }
     }
     void load()
-    const timer = window.setInterval(load, 750)
     return () => {
       active = false
-      window.clearInterval(timer)
     }
-  }, [appendLog, hydrateGeneratedPreviewFromMachineOnce, setMachine])
+  }, [appendLog, hydrateGeneratedPreviewFromMachineOnce, syncBrowserMachineState])
+
+  useEffect(() => {
+    let active = true
+    const inspectApprovedPorts = async () => {
+      try {
+        const ports = await grblSerial.getPreviouslyApprovedPorts()
+        if (!active || !ports.length) return
+        appendLog(`Browser already has permission for ${ports.length} serial port${ports.length === 1 ? '' : 's'}. Click Connect plotter to choose one.`)
+      } catch (error) {
+        if (!active) return
+        appendLog(`Approved-port check skipped: ${String(error)}`)
+      }
+    }
+    void inspectApprovedPorts()
+    return () => {
+      active = false
+    }
+  }, [appendLog])
 
   useEffect(() => {
     const timers = toasts.map((toast) => window.setTimeout(() => dismissToast(toast.id), 2800))
@@ -265,23 +290,25 @@ function DashboardApp() {
 
   const settingsState = readySettings
 
-  async function refreshMachine() {
-    const nextState = await fetchState()
-    setMachine(nextState)
+  function refreshMachine() {
+    syncBrowserMachineState()
   }
 
-  async function callEndpoint(endpoint: string, body: unknown, successMessage?: string) {
-    const response = await postJson<Record<string, never>>(endpoint, body)
-    if (response.command) appendLog(`> ${response.command}`)
-    if (response.response) appendLog(`< ${response.response}`)
+  function recordMachineResult(result: { command?: string; response?: string } | null, successMessage?: string) {
+    if (result?.command) appendLog(`> ${result.command}`)
+    if (result?.response) appendLog(`< ${result.response}`)
     if (successMessage) pushToast(successMessage, 'success')
-    await refreshMachine()
+    refreshMachine()
   }
 
   async function handleConnect() {
     setBusy('connecting', true)
     try {
-      await callEndpoint(apiConfig.endpoints.connect, {}, 'Controller connected.')
+      const port = await grblSerial.connect()
+      setSerialPort(port)
+      syncBrowserMachineState()
+      pushToast('Plotter connected.', 'success')
+      appendLog('Connect plotter opened the browser picker and connected at 115200 baud.')
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`Connect failed: ${String(error)}`)
@@ -290,18 +317,22 @@ function DashboardApp() {
     }
   }
 
+  async function handleDisconnect() {
+    try {
+      await grblSerial.disconnect()
+      syncBrowserMachineState()
+      pushToast('Plotter disconnected.', 'success')
+      appendLog('Serial port released.')
+    } catch (error) {
+      pushToast(String(error), 'error')
+      appendLog(`Disconnect failed: ${String(error)}`)
+    }
+  }
+
   async function handleApplyConfig() {
     try {
-      await callEndpoint(
-        apiConfig.endpoints.applyConfig,
-        {
-          x_max_feed: settingsState.xMaxFeed,
-          y_max_feed: settingsState.yMaxFeed,
-          x_acceleration: settingsState.xAcceleration,
-          y_acceleration: settingsState.yAcceleration,
-        },
-        'Machine settings applied.',
-      )
+      const result = await grblSerial.applyConfig(config!, settingsState)
+      recordMachineResult(result, 'Machine settings applied.')
     } catch (error) {
       pushToast(String(error), 'error')
     }
@@ -338,7 +369,6 @@ function DashboardApp() {
         `Effective slicer settings: pen ${effectiveSettings.line_thickness_mm.toFixed(2)} mm, infill spacing ${effectiveSettings.infill_spacing_mm.toFixed(2)} mm, custom spacing ${effectiveSettings.custom_infill_spacing ? 'on' : 'off'}.`,
       )
       pushToast('G-code generated.', 'success')
-      await refreshMachine()
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`Generate failed: ${String(error)}`)
@@ -348,11 +378,13 @@ function DashboardApp() {
   }
 
   async function handlePenUp() {
-    await callEndpoint(apiConfig.endpoints.penUp, servoPayload(settingsState, settingsState.penUpS), 'Pen up.')
+    const result = await grblSerial.penUp(settingsState)
+    recordMachineResult(result, 'Pen up.')
   }
 
   async function handlePenDown() {
-    await callEndpoint(apiConfig.endpoints.penDown, servoPayload(settingsState, settingsState.penDownS), 'Pen down.')
+    const result = await grblSerial.penDown(settingsState)
+    recordMachineResult(result, 'Pen down.')
   }
 
   async function handleGenerateCalibrationPattern() {
@@ -380,7 +412,6 @@ function DashboardApp() {
       })
       appendLog(`Generated diagnostic pattern ${payload.calibrationPattern?.pattern ?? '3x3_squares'} with ${preview.length} preview paths.`)
       pushToast('Calibration test pattern generated.', 'success')
-      await refreshMachine()
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`Calibration pattern generation failed: ${String(error)}`)
@@ -412,7 +443,6 @@ function DashboardApp() {
       })
       appendLog(`Generated X rotary calibration pattern with ${preview.length} preview paths.`)
       pushToast('X rotary calibration pattern generated.', 'success')
-      await refreshMachine()
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`X rotary calibration generation failed: ${String(error)}`)
@@ -422,25 +452,21 @@ function DashboardApp() {
   }
 
   async function handleGoHome() {
-    await callEndpoint(apiConfig.endpoints.goHome, {
-      pen_up_s: settingsState.penUpS,
-      travel_feed: settingsState.travelFeed,
-      pen_up_dwell_ms: settingsState.penUpDwellMs,
-      servo_ramp_enabled: settingsState.servoRampEnabled,
-      servo_ramp_step: settingsState.servoRampStep,
-      servo_ramp_delay_ms: settingsState.servoRampDelayMs,
-    })
+    const result = await grblSerial.goHome(settingsState)
+    recordMachineResult(result, 'Returned to origin.')
   }
 
   async function handleJog(axis: 'X' | 'Y', degrees: number) {
-    await callEndpoint(apiConfig.endpoints.jog, { axis, degrees, feed: settingsState.travelFeed })
+    const result = await grblSerial.jog(axis, degrees, settingsState.travelFeed)
+    recordMachineResult(result)
   }
 
   async function handleCalibrate() {
     if (!window.confirm('Confirm the pen is physically positioned at the center of the ball.')) return
     setBusy('calibrating', true)
     try {
-      await callEndpoint(apiConfig.endpoints.zeroAndMarkCalibrated, {}, 'Origin locked.')
+      const result = await grblSerial.zeroAndMarkCalibrated()
+      recordMachineResult(result, 'Origin locked.')
     } catch (error) {
       pushToast(String(error), 'error')
     } finally {
@@ -449,7 +475,8 @@ function DashboardApp() {
   }
 
   async function handleClearCalibrated() {
-    await callEndpoint(apiConfig.endpoints.clearCalibrated, {}, 'Calibration cleared.')
+    const result = await grblSerial.clearCalibrated()
+    recordMachineResult(result, 'Calibration cleared.')
   }
 
   async function handleTestStepperHoldPolicy() {
@@ -462,7 +489,8 @@ function DashboardApp() {
         if (!window.confirm('Calibration is currently locked. Clear calibration first so the release test can actually release the motors?')) return
         await handleClearCalibrated()
       }
-      await callEndpoint(apiConfig.endpoints.applyStepperHoldPolicy, {}, 'Release policy applied.')
+      const result = await grblSerial.applyStepperHoldPolicy()
+      recordMachineResult(result, 'Release policy applied.')
       window.alert('Verify X and Y can be moved by hand.')
       if (!window.confirm('Position the pen at origin and apply calibration now?')) return
       await handleCalibrate()
@@ -480,7 +508,10 @@ function DashboardApp() {
     if (!window.confirm('Start the generated job on the connected plotter?')) return
     setBusy('running', true)
     try {
-      await callEndpoint(apiConfig.endpoints.runGcode, {}, 'Job started.')
+      const result = await grblSerial.runGcode(gcode, {
+        onProgress: () => syncBrowserMachineState(),
+      })
+      recordMachineResult(result, 'Job started.')
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`Run failed: ${String(error)}`)
@@ -490,35 +521,30 @@ function DashboardApp() {
   }
 
   async function handlePause() {
-    await callEndpoint(apiConfig.endpoints.pause, {}, 'Pause requested.')
+    const result = await grblSerial.pause()
+    recordMachineResult(result, 'Pause requested.')
   }
 
   async function handleResume() {
-    await callEndpoint(apiConfig.endpoints.resume, {}, 'Resume requested.')
+    const result = await grblSerial.resume()
+    recordMachineResult(result, 'Resume requested.')
   }
 
   async function handleStop() {
-    await callEndpoint(apiConfig.endpoints.stop, {}, 'Stop requested.')
+    const result = await grblSerial.stop()
+    recordMachineResult(result, 'Stop requested.')
   }
 
   async function handleToggleYLoop() {
     try {
       const enabled = Boolean(machine?.y_loop_test?.enabled)
       if (enabled) {
-        await callEndpoint(apiConfig.endpoints.yLoopStop, {}, 'Y loop test stopped.')
+        const result = await grblSerial.stopYLoop()
+        recordMachineResult(result, 'Y loop test stopped.')
         return
       }
-      await callEndpoint(
-        apiConfig.endpoints.yLoopStart,
-        {
-          distance: settingsState.yLoopDistance,
-          feedrate: settingsState.yLoopFeedrate,
-          dwell_sec: settingsState.yLoopDwellSec,
-          pen_up_s: settingsState.penUpS,
-          pen_up_dwell_ms: settingsState.penUpDwellMs,
-        },
-        'Y loop test started.',
-      )
+      const result = await grblSerial.startYLoop(settingsState)
+      recordMachineResult(result, 'Y loop test started.')
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`Y loop test failed: ${String(error)}`)
@@ -590,7 +616,7 @@ function DashboardApp() {
         </div>
       </section>
 
-      <MachineCard onApplyConfig={handleApplyConfig} onConnect={handleConnect} />
+      <MachineCard onApplyConfig={handleApplyConfig} onConnect={handleConnect} onDisconnect={handleDisconnect} />
       <CalibrationCard machine={machine} onCalibrate={handleCalibrate} onClear={handleClearCalibrated} />
       <ManualControlCard
         machine={machine}
@@ -849,17 +875,6 @@ function BootMessage({ title, detail }: { title: string; detail: string }) {
       </div>
     </div>
   )
-}
-
-function servoPayload(settings: SettingsState, sValue: number) {
-  return {
-    s: sValue,
-    servo_ramp_enabled: settings.servoRampEnabled,
-    servo_ramp_step: settings.servoRampStep,
-    servo_ramp_delay_ms: settings.servoRampDelayMs,
-    pen_up_dwell_ms: settings.penUpDwellMs,
-    pen_down_dwell_ms: settings.penDownDwellMs,
-  }
 }
 
 function buildGenerateFormData(file: File, settings: SettingsState, selectedColors: string[]) {

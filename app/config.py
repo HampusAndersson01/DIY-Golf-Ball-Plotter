@@ -32,7 +32,7 @@ class Config:
     FLASK_PORT = _env_int("FLASK_PORT", 5000)
     FLASK_DEBUG = _env_bool("FLASK_DEBUG", False)
 
-    SERIAL_PORT = os.getenv("SERIAL_PORT", "COM12")
+    SERIAL_PORT = os.getenv("SERIAL_PORT")
     BAUD_RATE = _env_int("BAUD_RATE", 115200)
 
     MOTOR_FULL_STEPS_PER_REV = _env_int("MOTOR_FULL_STEPS_PER_REV", 200)

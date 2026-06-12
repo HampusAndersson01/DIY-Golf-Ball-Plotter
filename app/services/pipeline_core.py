@@ -146,7 +146,7 @@ logger = logging.getLogger(__name__)
 # Machine / serial setup
 # ============================================================
 
-SERIAL_PORT = "COM12"
+SERIAL_PORT = os.getenv("SERIAL_PORT")
 BAUD_RATE = 115200
 
 MOTOR_FULL_STEPS_PER_REV = 200
@@ -1142,6 +1142,12 @@ def connect_grbl() -> serial.Serial:
         logger.debug("Reusing existing GRBL serial connection on %s", SERIAL_PORT)
         state["connected"] = True
         return grbl
+
+    if not SERIAL_PORT:
+        raise RuntimeError(
+            "Backend serial fallback requires an explicit SERIAL_PORT environment variable. "
+            "The browser dashboard should use Web Serial instead."
+        )
 
     logger.info("Opening GRBL serial connection on %s at %s baud", SERIAL_PORT, BAUD_RATE)
     grbl = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=3)
