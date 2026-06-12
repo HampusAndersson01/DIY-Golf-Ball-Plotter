@@ -1,17 +1,16 @@
-import { apiConfig } from '../../api/client'
 import { useAppStore } from '../../store/appStore'
 
 type Props = {
   onConnect: () => void
+  onDisconnect: () => void
   onApplyConfig: () => void
 }
 
-export function MachineCard({ onConnect, onApplyConfig }: Props) {
+export function MachineCard({ onConnect, onDisconnect, onApplyConfig }: Props) {
   const machine = useAppStore((state) => state.machine)
   const settings = useAppStore((state) => state.settings)!
   const updateSetting = useAppStore((state) => state.updateSetting)
   const busy = useAppStore((state) => state.busy.connecting)
-  const appendLog = useAppStore((state) => state.appendLog)
 
   return (
     <section className="panel">
@@ -25,8 +24,16 @@ export function MachineCard({ onConnect, onApplyConfig }: Props) {
 
       <div className="stack-row">
         <button className="button primary" disabled={busy} onClick={onConnect} type="button">
-          {busy ? 'Connecting...' : 'Connect'}
+          {busy ? 'Connecting...' : 'Connect plotter'}
         </button>
+        <button className="button" disabled={!machine?.connected || busy} onClick={onDisconnect} type="button">
+          Disconnect
+        </button>
+      </div>
+
+      <div className="stack-col">
+        <p>Select the Arduino/GRBL serial port from the browser popup.</p>
+        <p>Usually named Arduino Uno, USB-SERIAL CH340, CH340, or USB Serial Device.</p>
       </div>
 
       <details className="details-panel">
@@ -54,9 +61,6 @@ export function MachineCard({ onConnect, onApplyConfig }: Props) {
           <div className="stack-row">
             <button className="button" disabled={!machine?.connected} onClick={onApplyConfig} type="button">
               Apply Settings
-            </button>
-            <button className="text-button" onClick={() => appendLog(`Endpoint map loaded from ${apiConfig.endpoints.connect}`)} type="button">
-              API map
             </button>
           </div>
         </div>
