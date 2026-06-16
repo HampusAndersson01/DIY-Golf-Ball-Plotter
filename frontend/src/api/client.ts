@@ -22,6 +22,7 @@ const ENDPOINTS = {
   generateImageGcode: '/generate-image-gcode',
   generateDiagnosticGcode: '/generate-diagnostic-gcode',
   analyzeImageColors: '/analyze-image-colors',
+  browserSerialDiagnostics: '/api/browser-serial-diagnostics',
 } as const
 
 async function parseJson<T>(response: Response): Promise<T> {
@@ -88,4 +89,8 @@ export async function generateImageGcode(body: FormData) {
 
 export async function generateDiagnosticGcode(body: FormData) {
   return postForm<GenerateResponse>(ENDPOINTS.generateDiagnosticGcode, body)
+}
+
+export async function reportBrowserSerialDiagnostics(body: Record<string, unknown>) {
+  return postJson<Record<string, never>>(ENDPOINTS.browserSerialDiagnostics, body)
 }

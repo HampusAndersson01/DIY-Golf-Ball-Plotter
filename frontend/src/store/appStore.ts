@@ -255,7 +255,7 @@ function buildSettings(defaults: AppDefaults): SettingsState {
     servoRampEnabled: defaults.servoRampEnabled,
     servoRampStep: defaults.servoRampStep,
     servoRampDelayMs: defaults.servoRampDelayMs,
-    streamingMode: defaults.streamingMode ?? 'buffered',
+    streamingMode: 'sync',
     yLoopDistance: defaults.yLoopDistance ?? 10,
     yLoopFeedrate: defaults.yLoopFeedrate ?? defaults.drawFeed,
     yLoopDwellSec: defaults.yLoopDwellSec ?? 0.25,

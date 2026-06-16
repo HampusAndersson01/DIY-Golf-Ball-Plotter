@@ -119,3 +119,34 @@ def test_generate_diagnostic_route_returns_x_axis_rotation_calibration_pattern(c
     assert pattern["ticks"][4]["emittedMachineXDeg"] == pytest.approx(0.0)
     assert pattern["expectedQuadrantArcMm"] == pytest.approx(pattern["ballCircumferenceMm"] / 4.0, abs=1e-9)
     assert all(tick["gcodeMatchesMachineDegreeBbox"] is True for tick in pattern["ticks"])
+
+
+def test_diagnostic_gcode_uses_explicit_g1_motion_lines(client):
+    response = client.post("/generate-diagnostic-gcode", data={"pattern": "x_axis_rotation_ticks"})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    motion_lines = [
+        line.strip()
+        for line in payload["gcode"]
+        if "X" in line and "Y" in line and not line.lstrip().startswith("(")
+    ]
+    assert motion_lines
+    assert all(line.startswith("G1 ") for line in motion_lines)
+
+
+def test_browser_serial_diagnostics_endpoint_accepts_json_payload(client):
+    response = client.post(
+        "/api/browser-serial-diagnostics",
+        json={
+            "event": "run_failed",
+            "timed_out_line": 5058,
+            "timed_out_command": "X11.1907 Y-36.5368",
+            "streaming": {"mode": "sync"},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["command"] == "BROWSER SERIAL DIAGNOSTICS"

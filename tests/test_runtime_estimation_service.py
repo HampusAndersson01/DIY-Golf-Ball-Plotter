@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.services.runtime_estimation_service import (
     build_runtime_snapshot,
     compute_elapsed_seconds,
@@ -170,3 +172,30 @@ def test_estimate_gcode_runtime_includes_motion_dwell_pen_and_streaming_breakdow
         + estimate["estimatedPenSeconds"]
         + estimate["estimatedDwellSeconds"]
     )
+
+
+def test_estimate_gcode_runtime_treats_modal_axis_lines_as_motion():
+    gcode = [
+        "G21",
+        "G90",
+        "M3 S700",
+        "G4 P0.060",
+        "G1 X1.0000 Y0.0000 F1200.000",
+        "X2.0000 Y0.0000",
+        "X3.0000 Y0.0000",
+    ]
+
+    estimate = estimate_gcode_runtime(
+        gcode,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        serial_ack_overhead_seconds_per_line=0.02,
+        short_segment_threshold=0.2,
+        short_segment_overhead_seconds=0.01,
+        finalization_overhead_seconds=0.0,
+    ).as_dict()
+
+    assert estimate["streamableGcodeLines"] == len(gcode)
+    assert estimate["estimatedMotionSeconds"] == pytest.approx(0.15, abs=1e-9)

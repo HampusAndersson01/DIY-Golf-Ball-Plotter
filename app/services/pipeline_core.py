@@ -246,6 +246,7 @@ DEFAULT_MAX_DETAIL_CONTINUATION_TURN_DEG = 120.0
 DEFAULT_STREAMING_MODE = "buffered"
 DEFAULT_OUTLINE_PLACEMENT_MODE = "inside_edge_default"
 DEFAULT_PROJECTION_SAMPLING_MAX_SEGMENT_MM = 0.15
+DEFAULT_PROJECTION_SAMPLING_PEN_WIDTH_RATIO = 1.0 / 3.0
 ORIGIN_ANCHORS = {
     "center",
     "min-x",
@@ -3577,7 +3578,10 @@ def _max_point_delta(points_a: list[Point], points_b: list[Point]) -> float:
 
 def _resolve_projection_sampling_mm(toolpath: Toolpath, *, default_pen_width_mm: float = DEFAULT_LINE_THICKNESS_MM) -> float:
     pen_width_mm = float(toolpath.metadata.get("pen_width_mm", toolpath.metadata.get("line_width_mm", default_pen_width_mm)))
-    return min(DEFAULT_PROJECTION_SAMPLING_MAX_SEGMENT_MM, max(0.01, pen_width_mm * 0.25))
+    return min(
+        DEFAULT_PROJECTION_SAMPLING_MAX_SEGMENT_MM,
+        max(0.01, pen_width_mm * DEFAULT_PROJECTION_SAMPLING_PEN_WIDTH_RATIO),
+    )
 
 
 def validate_closed_path(toolpath: Toolpath) -> dict[str, Any]:
@@ -5978,6 +5982,7 @@ def parse_gcode_machine_motion_paths(
     current_pen_down = False
     current_position = Point(0.0, 0.0)
     current_feed: float | None = None
+    current_motion_command: str | None = None
 
     def flush_current() -> None:
         nonlocal current_points, current_kind, current_path_id
@@ -5996,6 +6001,7 @@ def parse_gcode_machine_motion_paths(
 
     for raw_line in gcode:
         line = raw_line.strip()
+        upper_line = line.upper()
         if not line:
             continue
         if line.startswith("(PATH_START"):
@@ -6027,17 +6033,24 @@ def parse_gcode_machine_motion_paths(
                 flush_current()
                 current_kind = "travel"
             continue
-        if not line.startswith("G1 "):
+        explicit_motion_command: str | None = None
+        if upper_line.startswith("G0"):
+            explicit_motion_command = "G0"
+        elif upper_line.startswith("G1"):
+            explicit_motion_command = "G1"
+        if explicit_motion_command is not None:
+            current_motion_command = explicit_motion_command
+        elif current_motion_command not in {"G0", "G1"} or ("X" not in upper_line and "Y" not in upper_line):
             continue
-        x_match = re.search(r"X(-?\d+(?:\.\d+)?)", line)
-        y_match = re.search(r"Y(-?\d+(?:\.\d+)?)", line)
-        f_match = re.search(r"F(-?\d+(?:\.\d+)?)", line)
+        x_match = re.search(r"X(-?\d+(?:\.\d+)?)", upper_line)
+        y_match = re.search(r"Y(-?\d+(?:\.\d+)?)", upper_line)
+        f_match = re.search(r"F(-?\d+(?:\.\d+)?)", upper_line)
         if x_match is None or y_match is None:
             continue
         point = Point(float(x_match.group(1)), float(y_match.group(1)))
         if f_match is not None:
             current_feed = float(f_match.group(1))
-        segment_kind = current_path_kind if current_pen_down else "travel"
+        segment_kind = current_path_kind if current_pen_down and current_motion_command == "G1" else "travel"
         if current_points and current_kind != segment_kind:
             flush_current()
         current_kind = segment_kind
@@ -6067,11 +6080,13 @@ def parse_gcode_pen_up_travel_debug(
     current_draw_kind: str | None = None
     last_completed_draw_path_id: str | None = None
     last_completed_draw_kind: str | None = None
+    current_motion_command: str | None = None
     stream_line_number = 0
     pending_target_index: int | None = None
 
     for raw_line in gcode:
         line = raw_line.strip()
+        upper_line = line.upper()
         if is_streamable_gcode_line(line):
             stream_line_number += 1
         if not line:
@@ -6102,10 +6117,17 @@ def parse_gcode_pen_up_travel_debug(
             elif servo == pen_up_s:
                 current_pen_down = False
             continue
-        if not line.startswith("G1 "):
+        explicit_motion_command: str | None = None
+        if upper_line.startswith("G0"):
+            explicit_motion_command = "G0"
+        elif upper_line.startswith("G1"):
+            explicit_motion_command = "G1"
+        if explicit_motion_command is not None:
+            current_motion_command = explicit_motion_command
+        elif current_motion_command not in {"G0", "G1"} or ("X" not in upper_line and "Y" not in upper_line):
             continue
-        x_match = re.search(r"X(-?\d+(?:\.\d+)?)", line)
-        y_match = re.search(r"Y(-?\d+(?:\.\d+)?)", line)
+        x_match = re.search(r"X(-?\d+(?:\.\d+)?)", upper_line)
+        y_match = re.search(r"Y(-?\d+(?:\.\d+)?)", upper_line)
         if x_match is None or y_match is None:
             continue
         next_position = Point(float(x_match.group(1)), float(y_match.group(1)))
@@ -17625,6 +17647,7 @@ def generate_gcode_from_toolpaths(
     include_comments: bool,
     header_comment_settings: Optional[dict[str, Any]] = None,
     debug: Optional[dict[str, Any]] = None,
+    force_explicit_motion: bool = False,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     if gcode_mode != "simple":
         raise ValueError("Invalid G-code mode")
@@ -17650,11 +17673,12 @@ def generate_gcode_from_toolpaths(
 
     g: list[str] = []
     preview: list[dict[str, Any]] = []
-    current_servo = pen_up_s
+    current_servo: int | None = None
     current_position = Point(0.0, 0.0)
     current_pen_down = False
     stream_line_number = 0
     current_motion_feed: float | None = None
+    current_motion_command: str | None = None
     pen_state_debug: list[dict[str, Any]] = []
     travel_moves_with_pen_down = 0
     drawing_moves_with_pen_up = 0
@@ -17696,13 +17720,39 @@ def generate_gcode_from_toolpaths(
             return stream_line_number
         return None
 
+    def append_pen_state(target_s: int, dwell_ms: float, *, force: bool = False) -> bool:
+        nonlocal current_servo, current_pen_down
+        if not force and current_servo == target_s:
+            return False
+        for command in build_pen_position_commands(
+            current_servo if current_servo is not None else target_s,
+            target_s,
+            ramp_enabled=servo_ramp_enabled,
+            ramp_step=servo_ramp_step,
+            ramp_delay_ms=servo_ramp_delay_ms,
+            dwell_ms=dwell_ms,
+        ):
+            append_gcode(command)
+        current_servo = target_s
+        if target_s == pen_down_s:
+            current_pen_down = True
+        elif target_s == pen_up_s:
+            current_pen_down = False
+        return True
+
     def append_motion(command: str, point: Point, feed: float) -> int | None:
-        nonlocal current_motion_feed
-        if current_motion_feed is None or abs(current_motion_feed - feed) > 1e-9:
+        nonlocal current_motion_feed, current_motion_command
+        include_command = force_explicit_motion or current_motion_command != command
+        if include_command and (current_motion_feed is None or abs(current_motion_feed - feed) > 1e-9):
             line = f"{command} X{point.x:.4f} Y{point.y:.4f} F{feed:.3f}"
-            current_motion_feed = feed
-        else:
+        elif include_command:
             line = f"{command} X{point.x:.4f} Y{point.y:.4f}"
+        elif current_motion_feed is None or abs(current_motion_feed - feed) > 1e-9:
+            line = f"X{point.x:.4f} Y{point.y:.4f} F{feed:.3f}"
+        else:
+            line = f"X{point.x:.4f} Y{point.y:.4f}"
+        current_motion_feed = feed
+        current_motion_command = command
         return append_gcode(line)
 
     header_comment("Generated for golf ball plotter")
@@ -17722,15 +17772,7 @@ def generate_gcode_from_toolpaths(
                 header_comment(f"{key}: {header_comment_settings[key]}")
     for command in ["G21", "G90"]:
         append_gcode(command)
-    for command in build_pen_position_commands(
-        pen_up_s,
-        pen_up_s,
-        ramp_enabled=False,
-        ramp_step=servo_ramp_step,
-        ramp_delay_ms=servo_ramp_delay_ms,
-        dwell_ms=pen_up_dwell_ms,
-    ):
-        append_gcode(command)
+    append_pen_state(pen_up_s, pen_up_dwell_ms, force=True)
 
     printable_kinds = {
         "outline",
@@ -17793,17 +17835,7 @@ def generate_gcode_from_toolpaths(
 
         if path_type in {"TRAVEL", "DEBUG_ONLY"}:
             if current_pen_down:
-                for command in build_pen_position_commands(
-                    current_servo,
-                    pen_up_s,
-                    ramp_enabled=servo_ramp_enabled,
-                    ramp_step=servo_ramp_step,
-                    ramp_delay_ms=servo_ramp_delay_ms,
-                    dwell_ms=pen_up_dwell_ms,
-                ):
-                    append_gcode(command)
-                current_servo = pen_up_s
-                current_pen_down = False
+                append_pen_state(pen_up_s, pen_up_dwell_ms)
 
             travel_id = toolpath.path_id or f"travel-{index:04d}"
             travel_start_line = None
@@ -17835,17 +17867,7 @@ def generate_gcode_from_toolpaths(
 
         if is_pen_down_travel:
             if not current_pen_down:
-                for command in build_pen_position_commands(
-                    current_servo,
-                    pen_down_s,
-                    ramp_enabled=servo_ramp_enabled,
-                    ramp_step=servo_ramp_step,
-                    ramp_delay_ms=servo_ramp_delay_ms,
-                    dwell_ms=pen_down_dwell_ms,
-                ):
-                    append_gcode(command)
-                current_servo = pen_down_s
-                current_pen_down = True
+                append_pen_state(pen_down_s, pen_down_dwell_ms)
 
             path_id = toolpath.path_id or f"path-{index:04d}"
             draw_start_line = None
@@ -17930,17 +17952,7 @@ def generate_gcode_from_toolpaths(
             if previous_printed_toolpath is not None and previous_printed_toolpath.kind == "fill-infill" and toolpath.kind == "fill-infill":
                 infill_to_infill_travels_checked += 1
             if current_pen_down and not converted_existing_travel:
-                for command in build_pen_position_commands(
-                    current_servo,
-                    pen_up_s,
-                    ramp_enabled=servo_ramp_enabled,
-                    ramp_step=servo_ramp_step,
-                    ramp_delay_ms=servo_ramp_delay_ms,
-                    dwell_ms=pen_up_dwell_ms,
-                ):
-                    append_gcode(command)
-                current_servo = pen_up_s
-                current_pen_down = False
+                append_pen_state(pen_up_s, pen_up_dwell_ms)
                 unexpected_pen_down_travel = True
             travel_feed_to_use = draw_feed if converted_existing_travel else travel_feed
             if converted_existing_travel:
@@ -18022,17 +18034,7 @@ def generate_gcode_from_toolpaths(
             pending_converted_travel_length_mm = 0.0
 
         if not current_pen_down:
-            for command in build_pen_position_commands(
-                current_servo,
-                pen_down_s,
-                ramp_enabled=servo_ramp_enabled,
-                ramp_step=servo_ramp_step,
-                ramp_delay_ms=servo_ramp_delay_ms,
-                dwell_ms=pen_down_dwell_ms,
-            ):
-                append_gcode(command)
-            current_servo = pen_down_s
-            current_pen_down = True
+            append_pen_state(pen_down_s, pen_down_dwell_ms)
 
         path_id = toolpath.path_id or f"path-{index:04d}"
         chain_path_id = active_fill_chain_path_id if continuing_fill_chain else path_id
@@ -18135,17 +18137,7 @@ def generate_gcode_from_toolpaths(
             if not keep_down_for_converted_travel:
                 comment(f"PATH_END id={chain_path_id} (keeping pen down for connector/continuation)")
         else:
-            for command in build_pen_position_commands(
-                current_servo,
-                pen_up_s,
-                ramp_enabled=servo_ramp_enabled,
-                ramp_step=servo_ramp_step,
-                ramp_delay_ms=servo_ramp_delay_ms,
-                dwell_ms=pen_up_dwell_ms,
-            ):
-                append_gcode(command)
-            current_servo = pen_up_s
-            current_pen_down = False
+            append_pen_state(pen_up_s, pen_up_dwell_ms)
             comment(f"PATH_END id={chain_path_id}")
             pending_converted_travel_index = None
             pending_converted_travel_length_mm = 0.0
@@ -18189,15 +18181,7 @@ def generate_gcode_from_toolpaths(
             "gcode_start_line": return_home_line,
             "gcode_end_line": return_home_line,
         })
-    for command in build_pen_position_commands(
-        current_servo,
-        pen_up_s,
-        ramp_enabled=False,
-        ramp_step=servo_ramp_step,
-        ramp_delay_ms=servo_ramp_delay_ms,
-        dwell_ms=pen_up_dwell_ms,
-    ):
-        append_gcode(command)
+    append_pen_state(pen_up_s, pen_up_dwell_ms)
 
     if debug is not None:
         actual_pen_lift_count = sum(1 for line in g if line.strip().startswith(f"M3 S{int(pen_up_s)}"))

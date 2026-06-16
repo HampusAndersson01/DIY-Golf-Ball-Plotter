@@ -14,6 +14,23 @@ type RunCallbacks = {
   onProgress?: (done: number, total: number, line: string) => void
   responseTimeoutMs?: number
   streamingMode?: 'buffered' | 'sync'
+  ackDelayMs?: number
+}
+
+export type StrictAckStressScenario = 'simple_ack' | 'pen_toggle' | 'zero_motion' | 'status_free'
+
+export type StrictAckStressResult = {
+  scenario: StrictAckStressScenario
+  repetitions: number
+  commandsSent: number
+  okCount: number
+  errorCount: number
+  partialChunkCount: number
+  partialOCount: number
+  timeouts: number
+  maxAckLatencyMs: number
+  averageAckLatencyMs: number
+  statusPollingDisabled: boolean
 }
 
 type BrowserMachineState = MachineState & {
@@ -21,12 +38,20 @@ type BrowserMachineState = MachineState & {
 }
 
 type PendingCommand = {
+  transactionId: number | null
   lineNumber: number
   command: string
+  normalizedCommand: string
   bytes: number
-  sentAt: number
+  sentAt: number | null
   acknowledgedAt: number | null
   response: string | null
+  expectedStateChange: {
+    kind: 'spindle' | 'none'
+    spindleSpeed: number | null
+  }
+  desyncStatusMatches: number
+  holdObserved: boolean
 }
 
 type GrblCommandResponse = {
@@ -40,6 +65,7 @@ type ParsedGrblStatus = {
   state: string | null
   plannerBufferFree: number | null
   serialRxFree: number | null
+  spindleSpeed: number | null
   x: number | null
   y: number | null
 }
@@ -50,14 +76,91 @@ type PortDiagnostics = {
   writerActive: boolean
 }
 
+type StreamDebugEvent = {
+  at: number
+  event: string
+  detail: string
+}
+
+type SentCommandEvent = {
+  at: number
+  lineNumber: number
+  command: string
+}
+
+type TxTraceEntry = {
+  at: number
+  lineNumber: number | null
+  exact: string
+  byteLength: number
+  escaped: string
+}
+
+type RxChunkTraceEntry = {
+  at: number
+  readLoopId: number
+  byteLength: number
+  bytesHex: string
+  raw: string
+  escaped: string
+  decoderMode: 'stream'
+  bufferBefore: string
+  bufferAfter: string
+  parsedLines: string[]
+  remainingPartial: string
+}
+
+type RxLineTraceEntry = {
+  at: number
+  readLoopId: number
+  line: string
+  produced: 'ok' | 'error' | 'status' | 'other'
+  activeTransactionId: number | null
+  activeTransactionCommand: string | null
+  unexpectedAck: boolean
+}
+
+type TransactionLifecycleEvent = {
+  at: number
+  event: string
+  transactionId: number | null
+  lineNumber: number | null
+  command: string | null
+  detail?: string
+}
+
+type StrictAckTransaction = {
+  id: number
+  lineNumber: number
+  command: string
+  normalizedCommand: string
+  txText: string
+  byteLength: number
+  sentAt: number | null
+  createdAt: number
+  resolved: boolean
+  timeoutId: ReturnType<typeof globalThis.setTimeout> | null
+  resolve: (result: StrictAckTransactionResult) => void
+  reject: (error: Error) => void
+}
+
+type StrictAckTransactionResult = {
+  command: string
+  response: string
+  bytes: number
+  receivedAt: number
+  transactionId: number
+}
+
 const textEncoder = new TextEncoder()
-const textDecoder = new TextDecoder()
 const GRBL_RX_BUFFER_SIZE = 128
-const GRBL_PLANNER_BUFFER_SIZE = 15
 const DEFAULT_STREAM_RESPONSE_TIMEOUT_MS = 20_000
 const ACK_SILENCE_STATUS_PROBE_MS = 1_500
 const STATUS_QUERY_TIMEOUT_MS = 250
-const RECENT_RESPONSE_LIMIT = 20
+const RECENT_TRACE_LIMIT = 100
+const DEFAULT_COMMAND_RESPONSE_TIMEOUT_MS = 4_000
+const STREAM_DEBUG_EVENT_LIMIT = 40
+const POST_TIMEOUT_OBSERVATION_MS = 2_000
 
 function sleep(ms: number) {
   return new Promise((resolve) => globalThis.setTimeout(resolve, ms))
@@ -79,8 +182,21 @@ function normalizeErrorMessage(error: unknown): string {
   return String(error)
 }
 
-function extractLines(buffer: string) {
-  const parts = buffer.split(/\r?\n/)
+function escapeSerialPayload(payload: string) {
+  return payload.replace(/\r/g, '\\r').replace(/\n/g, '\\n')
+}
+
+function bytesToHex(value: Uint8Array) {
+  return Array.from(value, (byte) => byte.toString(16).toUpperCase().padStart(2, '0')).join(' ')
+}
+
+function nowSeconds() {
+  return Date.now() / 1000
+}
+
+export function parseGrblSerialChunk(buffer: string, chunk: string) {
+  const combined = buffer + chunk
+  const parts = combined.split(/\r?\n/)
   return {
     lines: parts.slice(0, -1).map((line) => line.trim()).filter(Boolean),
     remainder: parts.at(-1) ?? '',
@@ -169,12 +285,18 @@ function parseGrblStatus(line: string): ParsedGrblStatus | null {
     .map((part) => part.split(':', 2) as [string, string])
     .find(([key]) => key === 'Bf')?.[1]
   const [plannerBufferFree, serialRxFree] = bfField?.split(',').map((value) => Number(value)) ?? [null, null]
+  const fsField = parts
+    .slice(1)
+    .map((part) => part.split(':', 2) as [string, string])
+    .find(([key]) => key === 'FS')?.[1]
+  const [, spindleSpeed] = fsField?.split(',').map((value) => Number(value)) ?? [null, null]
 
   return {
     raw: line,
     state: parts[0] ?? null,
     plannerBufferFree: Number.isFinite(plannerBufferFree) ? plannerBufferFree : null,
     serialRxFree: Number.isFinite(serialRxFree) ? serialRxFree : null,
+    spindleSpeed: Number.isFinite(spindleSpeed) ? spindleSpeed : null,
     x: Number.isFinite(x) ? x : null,
     y: Number.isFinite(y) ? y : null,
   }
@@ -207,6 +329,33 @@ function isSerializedCommand(command: string) {
   return upper.startsWith('G4') || upper.startsWith('M3') || upper.startsWith('M4') || upper.startsWith('M5')
 }
 
+function normalizeCommand(command: string) {
+  return command.trim().replace(/\s+/g, ' ').toUpperCase()
+}
+
+function parseSpindleCommand(command: string) {
+  const match = normalizeCommand(command).match(/^M[345]\s+S(-?\d+(?:\.\d+)?)$/)
+  if (!match) {
+    return null
+  }
+  const speed = Number(match[1])
+  return Number.isFinite(speed) ? speed : null
+}
+
+function buildExpectedStateChange(command: string): PendingCommand['expectedStateChange'] {
+  const spindleSpeed = parseSpindleCommand(command)
+  if (spindleSpeed != null) {
+    return {
+      kind: 'spindle',
+      spindleSpeed,
+    }
+  }
+  return {
+    kind: 'none',
+    spindleSpeed: null,
+  }
+}
+
 function formatPendingQueue(pendingCommands: PendingCommand[]) {
   return pendingCommands.map((pending) => `L${pending.lineNumber}:${pending.command}`)
 }
@@ -222,6 +371,11 @@ export class GrblWebSerialService {
   private portWriter: WritableStreamDefaultWriter<Uint8Array> | null = null
   private readLoopPromise: Promise<void> | null = null
   private readLoopStopped = false
+  private nextReadLoopId = 1
+  private activeReadLoopId: number | null = null
+  private strictAckStreaming = false
+  private nextTransactionId = 1
+  private activeTransaction: StrictAckTransaction | null = null
   private commandResponseQueue: GrblCommandResponse[] = []
   private commandWaiters: Array<{
     resolve: (response: GrblCommandResponse) => void
@@ -231,8 +385,29 @@ export class GrblWebSerialService {
     resolve: (line: string) => void
     reject: (error: Error) => void
   }> = []
+  private streamPendingCommands: PendingCommand[] = []
   private recentGrblLines: string[] = []
+  private recentSentCommands: SentCommandEvent[] = []
+  private txTrace: TxTraceEntry[] = []
+  private rxChunkTrace: RxChunkTraceEntry[] = []
+  private rxLineTrace: RxLineTraceEntry[] = []
+  private transactionLifecycleEvents: TransactionLifecycleEvent[] = []
+  private unexpectedOkCount = 0
+  private unexpectedErrorCount = 0
+  private streamDebugEvents: StreamDebugEvent[] = []
   private lastResponseAt: number | null = null
+  private lastOkAt: number | null = null
+  private lastStatusAt: number | null = null
+  private lastRawSerialChunk = ''
+  private lastRawSerialChunkAt: number | null = null
+  private lastCompleteParsedLine: string | null = null
+  private lastCompleteParsedLineAt: number | null = null
+  private lastParsedAckLine: string | null = null
+  private lastParsedAckLineAt: number | null = null
+  private lastParsedStatusLine: string | null = null
+  private lastParsedStatusLineAt: number | null = null
+  private partialLineBufferUpdatedAt: number | null = null
+  private postTimeoutObservationUntil = 0
 
   getMachineState() {
     const snapshot = structuredClone(this.machine)
@@ -254,6 +429,40 @@ export class GrblWebSerialService {
     return this.activePort
   }
 
+  getStreamDiagnostics() {
+    return {
+      machine: this.getMachineState(),
+      recent_grbl_lines: [...this.recentGrblLines],
+      recent_sent_commands: [...this.recentSentCommands],
+      tx_trace: [...this.txTrace],
+      rx_chunks: [...this.rxChunkTrace],
+      rx_lines: [...this.rxLineTrace],
+      transaction_lifecycle_events: [...this.transactionLifecycleEvents],
+      active_transaction: this.activeTransactionSnapshot(),
+      unexpected_ok_count: this.unexpectedOkCount,
+      unexpected_error_count: this.unexpectedErrorCount,
+      stream_debug_events: [...this.streamDebugEvents],
+      last_raw_serial_chunk: this.lastRawSerialChunk || null,
+      last_raw_serial_chunk_at: this.lastRawSerialChunkAt,
+      current_partial_line_buffer: this.readBuffer || null,
+      partial_line_buffer_updated_at: this.partialLineBufferUpdatedAt,
+      last_complete_parsed_line: this.lastCompleteParsedLine,
+      last_complete_parsed_line_at: this.lastCompleteParsedLineAt,
+      last_parsed_ack_line: this.lastParsedAckLine,
+      last_parsed_ack_line_at: this.lastParsedAckLineAt,
+      last_parsed_status_line: this.lastParsedStatusLine,
+      last_parsed_status_line_at: this.lastParsedStatusLineAt,
+      last_ok_at: this.lastOkAt,
+      last_status_at: this.lastStatusAt,
+      port_state: this.buildPortDiagnostics(),
+      read_loop_id: this.activeReadLoopId,
+      status_polling_state: {
+        disabled_for_strict_ack: this.strictAckStreaming,
+        waiters: this.statusWaiters.length,
+      },
+    }
+  }
+
   async getPreviouslyApprovedPorts() {
     if (!navigator.serial) return []
     return navigator.serial.getPorts()
@@ -262,6 +471,146 @@ export class GrblWebSerialService {
   private updateMachine(patch: Partial<BrowserMachineState>) {
     this.machine = mergeMachineState(this.machine, patch)
     return this.getMachineState()
+  }
+
+  private pushStreamDebugEvent(event: string, detail: string) {
+    this.streamDebugEvents.push({
+      at: Date.now() / 1000,
+      event,
+      detail,
+    })
+    if (this.streamDebugEvents.length > STREAM_DEBUG_EVENT_LIMIT) {
+      this.streamDebugEvents.shift()
+    }
+  }
+
+  private appendPostTimeoutObservation(key: 'rx_chunks' | 'rx_lines', entry: RxChunkTraceEntry | RxLineTraceEntry) {
+    if (Date.now() > this.postTimeoutObservationUntil) {
+      return
+    }
+    const debug = this.machine.last_timeout_debug
+    if (!debug || typeof debug !== 'object') {
+      return
+    }
+    const observation = {
+      ...(debug.post_timeout_observation && typeof debug.post_timeout_observation === 'object'
+        ? debug.post_timeout_observation as Record<string, unknown>
+        : {}),
+    }
+    const entries = Array.isArray(observation[key]) ? observation[key] as Array<RxChunkTraceEntry | RxLineTraceEntry> : []
+    observation[key] = [...entries, entry].slice(-50)
+    observation.last_observed_at = nowSeconds()
+    this.updateMachine({
+      last_timeout_debug: {
+        ...debug,
+        post_timeout_observation: observation,
+      },
+    })
+  }
+
+  private recordSentCommand(lineNumber: number, command: string) {
+    this.recentSentCommands.push({
+      at: Date.now() / 1000,
+      lineNumber,
+      command,
+    })
+    if (this.recentSentCommands.length > RECENT_TRACE_LIMIT) {
+      this.recentSentCommands.shift()
+    }
+  }
+
+  private recordTxTrace(payload: string, lineNumber: number | null, byteLength: number) {
+    this.txTrace.push({
+      at: Date.now() / 1000,
+      lineNumber,
+      exact: payload,
+      byteLength,
+      escaped: escapeSerialPayload(payload),
+    })
+    if (this.txTrace.length > RECENT_TRACE_LIMIT) {
+      this.txTrace.shift()
+    }
+  }
+
+  private recordRxChunkTrace(
+    value: Uint8Array,
+    raw: string,
+    readLoopId: number,
+    bufferBefore: string,
+    bufferAfter: string,
+    parsedLines: string[],
+  ) {
+    const entry: RxChunkTraceEntry = {
+      at: Date.now() / 1000,
+      readLoopId,
+      byteLength: value.byteLength,
+      bytesHex: bytesToHex(value),
+      raw,
+      escaped: escapeSerialPayload(raw),
+      decoderMode: 'stream',
+      bufferBefore,
+      bufferAfter,
+      parsedLines,
+      remainingPartial: bufferAfter,
+    }
+    this.rxChunkTrace.push(entry)
+    if (this.rxChunkTrace.length > RECENT_TRACE_LIMIT) {
+      this.rxChunkTrace.shift()
+    }
+    this.appendPostTimeoutObservation('rx_chunks', entry)
+  }
+
+  private recordRxLineTrace(line: string, readLoopId: number, produced: RxLineTraceEntry['produced']) {
+    const activeTransaction = this.activeTransaction
+    const entry: RxLineTraceEntry = {
+      at: Date.now() / 1000,
+      readLoopId,
+      line,
+      produced,
+      activeTransactionId: activeTransaction?.id ?? null,
+      activeTransactionCommand: activeTransaction?.command ?? null,
+      unexpectedAck: (produced === 'ok' || produced === 'error') && !activeTransaction,
+    }
+    this.rxLineTrace.push(entry)
+    if (this.rxLineTrace.length > RECENT_TRACE_LIMIT) {
+      this.rxLineTrace.shift()
+    }
+    this.appendPostTimeoutObservation('rx_lines', entry)
+  }
+
+  private recordTransactionLifecycle(
+    event: string,
+    transaction: Pick<StrictAckTransaction, 'id' | 'lineNumber' | 'command'> | null,
+    detail?: string,
+  ) {
+    this.transactionLifecycleEvents.push({
+      at: Date.now() / 1000,
+      event,
+      transactionId: transaction?.id ?? null,
+      lineNumber: transaction?.lineNumber ?? null,
+      command: transaction?.command ?? null,
+      detail,
+    })
+    if (this.transactionLifecycleEvents.length > 200) {
+      this.transactionLifecycleEvents.shift()
+    }
+    this.pushStreamDebugEvent(event, `${transaction ? `T${transaction.id} L${transaction.lineNumber} ${transaction.command}` : 'no active transaction'}${detail ? ` ${detail}` : ''}`)
+  }
+
+  private activeTransactionSnapshot() {
+    const tx = this.activeTransaction
+    if (!tx) {
+      return null
+    }
+    return {
+      id: tx.id,
+      lineNumber: tx.lineNumber,
+      command: tx.command,
+      sentAt: tx.sentAt,
+      createdAt: tx.createdAt,
+      resolved: tx.resolved,
+      byteLength: tx.byteLength,
+    }
   }
 
   private getStreamingState() {
@@ -283,10 +632,21 @@ export class GrblWebSerialService {
 
   private recordGrblLine(line: string) {
     this.recentGrblLines.push(line)
-    if (this.recentGrblLines.length > RECENT_RESPONSE_LIMIT) {
+    if (this.recentGrblLines.length > RECENT_TRACE_LIMIT) {
       this.recentGrblLines.shift()
     }
-    this.lastResponseAt = Date.now() / 1000
+    const receivedAt = nowSeconds()
+    this.lastResponseAt = receivedAt
+    this.lastCompleteParsedLine = line
+    this.lastCompleteParsedLineAt = receivedAt
+    if (line === 'ok' || line.toUpperCase().startsWith('ERROR:') || line.toUpperCase().startsWith('ALARM:')) {
+      this.lastParsedAckLine = line
+      this.lastParsedAckLineAt = receivedAt
+    }
+    if (line.startsWith('<')) {
+      this.lastParsedStatusLine = line
+      this.lastParsedStatusLineAt = receivedAt
+    }
   }
 
   private buildPortDiagnostics(): PortDiagnostics {
@@ -315,8 +675,25 @@ export class GrblWebSerialService {
 
   private handleIncomingStatusLine(line: string) {
     const parsedStatus = parseGrblStatus(line)
+    this.lastStatusAt = Date.now() / 1000
+    this.pushStreamDebugEvent('status', line)
+    const state = parsedStatus?.state ?? line
+    const isHoldState = typeof parsedStatus?.state === 'string' && parsedStatus.state.startsWith('Hold')
+    const isRunState = parsedStatus?.state === 'Run'
+    const pauseStartedAt = isHoldState && !this.machine.paused
+      ? Date.now() / 1000
+      : this.machine.pause_started_at
     this.updateMachine({
-      status: parsedStatus?.state ?? line,
+      status: state,
+      paused: isHoldState ? true : isRunState ? false : this.machine.paused,
+      job_state: this.machine.running
+        ? isHoldState
+          ? 'paused'
+          : isRunState
+            ? 'running'
+            : this.machine.job_state
+        : this.machine.job_state,
+      pause_started_at: pauseStartedAt,
       current_position_x: parsedStatus?.x ?? this.machine.current_position_x,
       current_position_y: parsedStatus?.y ?? this.machine.current_position_y,
       streaming: {
@@ -349,30 +726,136 @@ export class GrblWebSerialService {
     return { kind: 'message', line, receivedAt: Date.now() / 1000 }
   }
 
-  private handleIncomingLine(line: string) {
+  private clearActiveTransaction(transaction: StrictAckTransaction, event: string) {
+    if (this.activeTransaction?.id !== transaction.id) {
+      this.recordTransactionLifecycle('TX_CLEAR_MISMATCH', transaction, `active=${this.activeTransaction?.id ?? 'none'}`)
+      return false
+    }
+    if (transaction.timeoutId) {
+      globalThis.clearTimeout(transaction.timeoutId)
+      transaction.timeoutId = null
+    }
+    this.activeTransaction = null
+    this.recordTransactionLifecycle(event, transaction)
+    return true
+  }
+
+  private clearPendingForTransaction(transaction: StrictAckTransaction, response: string) {
+    const pendingIndex = this.streamPendingCommands.findIndex((pending) => pending.transactionId === transaction.id)
+    if (pendingIndex < 0) {
+      this.recordTransactionLifecycle('TX_PENDING_MISSING', transaction)
+      return
+    }
+    const pending = this.streamPendingCommands[pendingIndex]
+    pending.acknowledgedAt = Date.now() / 1000
+    pending.response = response
+    this.streamPendingCommands.splice(pendingIndex, 1)
+    this.updatePendingQueueState()
+  }
+
+  private completeActiveTransactionWithOk(line: string, readLoopId: number) {
+    const transaction = this.activeTransaction
+    if (!transaction) {
+      this.unexpectedOkCount += 1
+      this.recordTransactionLifecycle('UNEXPECTED_OK', null, `readLoopId=${readLoopId}`)
+      if (!this.strictAckStreaming || this.commandWaiters.length > 0) {
+        this.enqueueCommandResponse(this.classifyCommandResponse(line))
+      }
+      return true
+    }
+
+    transaction.resolved = true
+    this.recordTransactionLifecycle('RX_OK_FOR_TX', transaction, `readLoopId=${readLoopId}`)
+    this.clearPendingForTransaction(transaction, line)
+    this.clearActiveTransaction(transaction, 'TX_CLEAR')
+    this.recordTransactionLifecycle('TX_RESOLVE', transaction, 'ok')
+    transaction.resolve({
+      command: transaction.command,
+      response: line,
+      bytes: transaction.byteLength,
+      receivedAt: Date.now() / 1000,
+      transactionId: transaction.id,
+    })
+    return true
+  }
+
+  private completeActiveTransactionWithError(line: string, readLoopId: number) {
+    const transaction = this.activeTransaction
+    if (!transaction) {
+      this.unexpectedErrorCount += 1
+      this.recordTransactionLifecycle('UNEXPECTED_ERROR', null, `${line} readLoopId=${readLoopId}`)
+      if (!this.strictAckStreaming || this.commandWaiters.length > 0) {
+        this.enqueueCommandResponse(this.classifyCommandResponse(line))
+      }
+      return true
+    }
+
+    transaction.resolved = true
+    this.recordTransactionLifecycle('RX_ERROR_FOR_TX', transaction, `${line} readLoopId=${readLoopId}`)
+    this.clearPendingForTransaction(transaction, line)
+    this.clearActiveTransaction(transaction, 'TX_CLEAR')
+    this.recordTransactionLifecycle('TX_REJECT', transaction, line)
+    transaction.reject(new Error(`GRBL error for line ${transaction.lineNumber}: ${transaction.command}: ${line}`))
+    return true
+  }
+
+  private handleIncomingLine(line: string, readLoopId = this.activeReadLoopId ?? 0) {
     this.recordGrblLine(line)
+    this.recordTransactionLifecycle('RX_LINE', this.activeTransaction, `${line} readLoopId=${readLoopId}`)
     if (line.startsWith('<')) {
+      this.recordRxLineTrace(line, readLoopId, 'status')
       this.handleIncomingStatusLine(line)
       return
     }
+    if (line === 'ok') {
+      this.lastOkAt = Date.now() / 1000
+      this.recordRxLineTrace(line, readLoopId, 'ok')
+      this.completeActiveTransactionWithOk(line, readLoopId)
+      return
+    } else if (line.toUpperCase().startsWith('ERROR:') || line.toUpperCase().startsWith('ALARM:')) {
+      this.recordRxLineTrace(line, readLoopId, 'error')
+      this.completeActiveTransactionWithError(line, readLoopId)
+      return
+    } else {
+      this.recordRxLineTrace(line, readLoopId, 'other')
+    }
+    this.pushStreamDebugEvent('response', line)
     this.enqueueCommandResponse(this.classifyCommandResponse(line))
   }
 
   private async startReadLoop() {
     if (!this.portReader) return
+    if (this.activeReadLoopId != null || (this.readLoopPromise && !this.readLoopStopped)) {
+      throw new Error(`Serial read loop invariant violated: second read loop requested while readLoopId=${this.activeReadLoopId ?? 'unknown'} is active.`)
+    }
     const reader = this.portReader
+    const readLoopId = this.nextReadLoopId
+    this.nextReadLoopId += 1
+    this.activeReadLoopId = readLoopId
     this.readLoopStopped = false
+    const decoder = new TextDecoder()
     this.readLoopPromise = (async () => {
       try {
         while (!this.readLoopStopped) {
           const { value, done } = await reader.read()
           if (done) break
           if (!value) continue
-          this.readBuffer += textDecoder.decode(value, { stream: true })
-          const extracted = extractLines(this.readBuffer)
+          const bufferBefore = this.readBuffer
+          const decoded = decoder.decode(value, { stream: true })
+          this.lastRawSerialChunk = decoded
+          this.lastRawSerialChunkAt = nowSeconds()
+          this.pushStreamDebugEvent('RX_CHUNK', `R${readLoopId} bytes=[${bytesToHex(value)}] text="${escapeSerialPayload(decoded)}" bufferBefore="${escapeSerialPayload(bufferBefore)}"`)
+          const extracted = parseGrblSerialChunk(bufferBefore, decoded)
           this.readBuffer = extracted.remainder
+          this.partialLineBufferUpdatedAt = this.readBuffer ? nowSeconds() : null
+          this.recordRxChunkTrace(value, decoded, readLoopId, bufferBefore, this.readBuffer, extracted.lines)
+          this.recordTransactionLifecycle(
+            'RX_CHUNK',
+            this.activeTransaction,
+            `readLoopId=${readLoopId} bytes=[${bytesToHex(value)}] text="${escapeSerialPayload(decoded)}" bufferBefore="${escapeSerialPayload(bufferBefore)}" bufferAfter="${escapeSerialPayload(this.readBuffer)}" parsed=${JSON.stringify(extracted.lines)}`,
+          )
           for (const line of extracted.lines) {
-            this.handleIncomingLine(line)
+            this.handleIncomingLine(line, readLoopId)
           }
         }
       } catch (error) {
@@ -381,6 +864,10 @@ export class GrblWebSerialService {
           const failure = new Error(`Serial read loop stopped unexpectedly: ${message}`)
           this.rejectWaiters(this.commandWaiters, failure)
           this.rejectWaiters(this.statusWaiters, failure)
+        }
+      } finally {
+        if (this.activeReadLoopId === readLoopId) {
+          this.activeReadLoopId = null
         }
       }
     })()
@@ -412,8 +899,38 @@ export class GrblWebSerialService {
   private resetSerialState() {
     this.readBuffer = ''
     this.commandResponseQueue = []
+    if (this.activeTransaction && !this.activeTransaction.resolved) {
+      const tx = this.activeTransaction
+      tx.resolved = true
+      if (tx.timeoutId) {
+        globalThis.clearTimeout(tx.timeoutId)
+      }
+      tx.reject(new Error('Serial session reset.'))
+    }
+    this.activeTransaction = null
+    this.streamPendingCommands = []
     this.recentGrblLines = []
+    this.recentSentCommands = []
+    this.txTrace = []
+    this.rxChunkTrace = []
+    this.rxLineTrace = []
+    this.transactionLifecycleEvents = []
+    this.unexpectedOkCount = 0
+    this.unexpectedErrorCount = 0
+    this.streamDebugEvents = []
     this.lastResponseAt = null
+    this.lastOkAt = null
+    this.lastStatusAt = null
+    this.lastRawSerialChunk = ''
+    this.lastRawSerialChunkAt = null
+    this.lastCompleteParsedLine = null
+    this.lastCompleteParsedLineAt = null
+    this.lastParsedAckLine = null
+    this.lastParsedAckLineAt = null
+    this.lastParsedStatusLine = null
+    this.lastParsedStatusLineAt = null
+    this.partialLineBufferUpdatedAt = null
+    this.postTimeoutObservationUntil = 0
     this.rejectWaiters(this.commandWaiters, new Error('Serial session reset.'))
     this.rejectWaiters(this.statusWaiters, new Error('Serial session reset.'))
   }
@@ -421,6 +938,13 @@ export class GrblWebSerialService {
   private async closeSerialPort() {
     const port = this.activePort
     await this.stopReadLoop()
+    try {
+      if (this.portWriter && 'close' in this.portWriter && typeof this.portWriter.close === 'function') {
+        await this.portWriter.close()
+      }
+    } catch {
+      // Best-effort cleanup.
+    }
     try {
       this.portReader?.releaseLock()
     } catch {
@@ -435,6 +959,7 @@ export class GrblWebSerialService {
     this.portWriter = null
     this.readLoopPromise = null
     this.readLoopStopped = false
+    this.activeReadLoopId = null
     if (port) {
       try {
         await port.close()
@@ -446,12 +971,30 @@ export class GrblWebSerialService {
     this.resetSerialState()
   }
 
-  private async writeRaw(payload: string) {
+  private async writeRaw(payload: string, lineNumber: number | null = null) {
     this.ensureConnectedPort()
     if (!this.portWriter) {
       throw new Error('Selected serial port is not writable.')
     }
-    await this.portWriter.write(textEncoder.encode(payload))
+    const encoded = textEncoder.encode(payload)
+    await this.portWriter.write(encoded)
+    this.recordTxTrace(payload, lineNumber, encoded.byteLength)
+  }
+
+  private normalizeStrictCommandLine(command: string) {
+    const trimmed = command.trim()
+    if (!trimmed) {
+      throw new Error('Refusing to send an empty GRBL command in Strict Ack mode.')
+    }
+    if (trimmed.includes('\n') || trimmed.includes('\r')) {
+      throw new Error(`Refusing to send command with embedded line break: ${JSON.stringify(command)}`)
+    }
+    const payload = `${trimmed}\n`
+    const encoded = textEncoder.encode(payload)
+    if (encoded.byteLength !== payload.length) {
+      throw new Error(`Encoded byte count mismatch for "${trimmed}": encoded=${encoded.byteLength} expected=${payload.length}`)
+    }
+    return { command: trimmed, payload, encoded, byteLength: encoded.byteLength }
   }
 
   private async waitForCommandResponse(timeoutMs: number) {
@@ -505,67 +1048,262 @@ export class GrblWebSerialService {
     })
   }
 
+  private updatePendingQueueState() {
+    this.updateMachine({
+      streaming: {
+        ...this.getStreamingState(),
+        pending_commands: this.streamPendingCommands.length,
+        pending_buffer_chars: this.streamPendingCommands.reduce((total, pending) => total + pending.bytes, 0),
+      },
+    })
+  }
+
+  private resolveCommandTimeoutMs(command: string, timeoutMs: number) {
+    void command
+    return timeoutMs
+  }
+
+  private classifyTimeout(desyncDetails: Record<string, unknown> | null = null) {
+    if (desyncDetails?.failure_class && typeof desyncDetails.failure_class === 'string') {
+      return desyncDetails.failure_class
+    }
+    const port = this.buildPortDiagnostics()
+    if (!port.portOpen || !port.readerActive || !port.writerActive) {
+      return 'TIMEOUT_PORT_CLOSED'
+    }
+    const lastLine = this.lastCompleteParsedLine ?? ''
+    if (/^Grbl\b/i.test(lastLine)) {
+      return 'TIMEOUT_CONTROLLER_RESET'
+    }
+    if (this.readBuffer) {
+      return 'TIMEOUT_PARTIAL_LINE'
+    }
+    if (this.lastParsedAckLine === 'ok' && [...this.rxLineTrace].reverse().find((entry) => entry.line === 'ok')?.activeTransactionId != null) {
+      return 'TIMEOUT_AFTER_COMPLETE_OK_BUT_NOT_RESOLVED'
+    }
+    if (this.lastCompleteParsedLine?.startsWith('<')) {
+      return 'TIMEOUT_AFTER_COMPLETE_STATUS'
+    }
+    if (!this.lastRawSerialChunk) {
+      return 'TIMEOUT_NO_RX'
+    }
+    if (this.lastRawSerialChunk && !this.lastCompleteParsedLine) {
+      return 'TIMEOUT_SERIAL_GARBAGE'
+    }
+    if (this.readLoopPromise && !this.readLoopStopped) {
+      return 'TIMEOUT_READER_STALLED'
+    }
+    return 'TIMEOUT_NO_RX'
+  }
+
   private buildTimeoutError(
     pendingCommands: PendingCommand[],
     currentLineNumber: number,
     responseTimeoutMs: number,
     statusLine: string | null,
+    desyncDetails: Record<string, unknown> | null = null,
   ) {
     const timedOutCommand = pendingCommands[0] ?? null
     const lastSentCommand = pendingCommands.at(-1) ?? null
+    const now = nowSeconds()
+    const failureClass = this.classifyTimeout(desyncDetails)
     const timeoutDebug = {
       timeout_ms: responseTimeoutMs,
       last_sent_command: lastSentCommand?.command ?? null,
       last_sent_line: lastSentCommand?.lineNumber ?? null,
       timed_out_command: timedOutCommand?.command ?? null,
       timed_out_line: timedOutCommand?.lineNumber ?? null,
+      timed_out_command_age_ms: timedOutCommand?.sentAt != null ? Math.max(0, Math.round((Date.now() / 1000 - timedOutCommand.sentAt) * 1000)) : null,
       current_line: currentLineNumber,
       pending_queue_length: pendingCommands.length,
+      bytes_in_flight: pendingCommands.reduce((total, pending) => total + pending.bytes, 0),
       pending_queue: pendingCommands.map((pending) => ({
+        transactionId: pending.transactionId,
         lineNumber: pending.lineNumber,
         command: pending.command,
+        normalizedCommand: pending.normalizedCommand,
         bytes: pending.bytes,
         sentAt: pending.sentAt,
+        ackedAt: pending.acknowledgedAt,
+        response: pending.response,
+        expectedStateChange: pending.expectedStateChange,
       })),
-      last_20_received_grbl_lines: [...this.recentGrblLines],
-      last_grbl_response: this.recentGrblLines.at(-1) ?? null,
+      active_transaction: this.activeTransactionSnapshot(),
+      active_transaction_id: this.activeTransaction?.id ?? null,
+      active_transaction_existed_at_last_ok: [...this.rxLineTrace].reverse().find((entry) => entry.produced === 'ok')?.activeTransactionId != null,
+      last_ok_was_unexpected: [...this.rxLineTrace].reverse().find((entry) => entry.produced === 'ok')?.unexpectedAck ?? null,
+      last_raw_fragment: this.lastRawSerialChunk || null,
+      last_raw_fragment_at: this.lastRawSerialChunkAt,
+      current_partial_line_buffer: this.readBuffer || null,
+      partial_line_buffer_updated_at: this.partialLineBufferUpdatedAt,
+      last_complete_parsed_line: this.lastCompleteParsedLine,
+      last_complete_parsed_line_at: this.lastCompleteParsedLineAt,
+      last_parsed_ack_line: this.lastParsedAckLine,
+      last_parsed_ack_line_at: this.lastParsedAckLineAt,
+      last_parsed_status_line: this.lastParsedStatusLine,
+      last_parsed_status_line_at: this.lastParsedStatusLineAt,
+      timing_ms: {
+        since_write_started: this.activeTransaction?.createdAt != null ? Math.max(0, Math.round((now - this.activeTransaction.createdAt) * 1000)) : null,
+        since_write_resolved: this.activeTransaction?.sentAt != null ? Math.max(0, Math.round((now - this.activeTransaction.sentAt) * 1000)) : null,
+        since_first_partial_rx_byte: this.readBuffer && this.partialLineBufferUpdatedAt != null ? Math.max(0, Math.round((now - this.partialLineBufferUpdatedAt) * 1000)) : null,
+        since_last_raw_rx_byte: this.lastRawSerialChunkAt != null ? Math.max(0, Math.round((now - this.lastRawSerialChunkAt) * 1000)) : null,
+        since_last_complete_line: this.lastCompleteParsedLineAt != null ? Math.max(0, Math.round((now - this.lastCompleteParsedLineAt) * 1000)) : null,
+      },
+      last_100_tx_entries: [...this.txTrace],
+      last_100_rx_chunks: [...this.rxChunkTrace],
+      last_100_parsed_rx_lines: [...this.rxLineTrace],
+      last_200_transaction_lifecycle_events: [...this.transactionLifecycleEvents],
+      last_100_received_grbl_lines: [...this.recentGrblLines],
+      last_100_sent_commands: [...this.recentSentCommands],
+      last_grbl_response: this.lastCompleteParsedLine,
+      last_raw_serial_chunk: this.lastRawSerialChunk || null,
+      last_ok_at: this.lastOkAt,
+      last_status_at: this.lastStatusAt,
+      stream_debug_events: [...this.streamDebugEvents],
       status_query_response: statusLine,
       port_state: this.buildPortDiagnostics(),
+      serial_read_loop_active: Boolean(this.readLoopPromise && !this.readLoopStopped),
+      read_loop_id: this.activeReadLoopId,
+      writer_active: Boolean(this.portWriter),
+      status_polling_state: {
+        disabled_for_strict_ack: this.strictAckStreaming,
+        waiters: this.statusWaiters.length,
+      },
+      streaming_mode: this.getStreamingState().mode,
+      failure_class: failureClass,
+      desync_details: desyncDetails,
+      post_timeout_observation: {
+        observe_ms: POST_TIMEOUT_OBSERVATION_MS,
+        rx_chunks: [],
+        rx_lines: [],
+      },
     }
     this.updateMachine({ last_timeout_debug: timeoutDebug })
+    this.postTimeoutObservationUntil = Date.now() + POST_TIMEOUT_OBSERVATION_MS
 
     const portDiagnostics = this.buildPortDiagnostics()
-    const lastResponse = this.recentGrblLines.at(-1) ?? 'none'
+    const lastCompleteLine = this.lastCompleteParsedLine ?? 'none'
+    const lastRawFragment = this.lastRawSerialChunk ? escapeSerialPayload(this.lastRawSerialChunk) : 'none'
+    const partialBuffer = this.readBuffer ? escapeSerialPayload(this.readBuffer) : 'none'
     const pendingQueueText = formatPendingQueue(pendingCommands).join(', ') || 'empty'
     const statusText = statusLine ?? 'none'
     return new Error(
+      `${timeoutDebug.failure_class}: ` +
       `GRBL communication timeout at line ${timedOutCommand?.lineNumber ?? currentLineNumber} after "${timedOutCommand?.command ?? 'unknown command'}". ` +
       `Last sent="${lastSentCommand?.command ?? 'none'}". Pending=${pendingCommands.length} [${pendingQueueText}]. ` +
-      `Last GRBL response="${lastResponse}". Status query="${statusText}". ` +
-      `Port open=${portDiagnostics.portOpen} reader=${portDiagnostics.readerActive} writer=${portDiagnostics.writerActive}.`,
+      `Last complete GRBL line="${lastCompleteLine}". Last raw fragment="${lastRawFragment}". Partial RX buffer="${partialBuffer}". Status query="${statusText}". ` +
+      `Port open=${portDiagnostics.portOpen} reader=${portDiagnostics.readerActive} writer=${portDiagnostics.writerActive}.` +
+      (desyncDetails ? ' Command state appears applied but the matching ok was not observed.' : ''),
     )
   }
 
-  private async sendLineAndWait(command: string, timeoutMs = 4000) {
-    await this.writeRaw(command.endsWith('\n') ? command : `${command}\n`)
-
-    while (true) {
-      const response = await this.waitForCommandResponse(timeoutMs)
-      if (response.kind === 'startup' || response.kind === 'message') {
-        continue
-      }
-      if (response.kind === 'error' || response.kind === 'alarm') {
-        throw new Error(response.line)
-      }
-      return {
-        command,
-        response: response.line,
-        lines: [response.line],
-      }
+  private async sendLineAndWait(command: string, timeoutMs = DEFAULT_COMMAND_RESPONSE_TIMEOUT_MS) {
+    const result = await this.sendLineAndWaitForAck(command, 0, timeoutMs)
+    return {
+      command: result.command,
+      response: result.response,
+      lines: [result.response],
     }
   }
 
+  private async sendLineAndWaitForAck(line: string, lineNumber: number, timeoutMs = DEFAULT_STREAM_RESPONSE_TIMEOUT_MS) {
+    if (this.activeTransaction) {
+      throw new Error(`Strict Ack violation: command already active (T${this.activeTransaction.id} L${this.activeTransaction.lineNumber} ${this.activeTransaction.command})`)
+    }
+    if (this.streamPendingCommands.length > 0) {
+      throw new Error('Strict Ack mode invariant violated: attempted to queue a command while another command is pending.')
+    }
+    this.ensureConnectedPort()
+    if (!this.portWriter) {
+      throw new Error('Selected serial port is not writable.')
+    }
+
+    const normalized = this.normalizeStrictCommandLine(line)
+    const resolvedTimeoutMs = this.resolveCommandTimeoutMs(normalized.command, timeoutMs)
+
+    return new Promise<StrictAckTransactionResult>((resolve, reject) => {
+      const transaction: StrictAckTransaction = {
+        id: this.nextTransactionId,
+        lineNumber,
+        command: normalized.command,
+        normalizedCommand: normalizeCommand(normalized.command),
+        txText: normalized.payload,
+        byteLength: normalized.byteLength,
+        sentAt: null,
+        createdAt: Date.now() / 1000,
+        resolved: false,
+        timeoutId: null,
+        resolve,
+        reject,
+      }
+      this.nextTransactionId += 1
+
+      const pending: PendingCommand = {
+        transactionId: transaction.id,
+        lineNumber,
+        command: normalized.command,
+        normalizedCommand: transaction.normalizedCommand,
+        bytes: normalized.byteLength,
+        sentAt: null,
+        acknowledgedAt: null,
+        response: null,
+        expectedStateChange: buildExpectedStateChange(normalized.command),
+        desyncStatusMatches: 0,
+        holdObserved: false,
+      }
+
+      this.activeTransaction = transaction
+      this.streamPendingCommands.push(pending)
+      this.recordSentCommand(lineNumber, normalized.command)
+      this.recordTransactionLifecycle('TX_CREATE', transaction)
+      this.updatePendingQueueState()
+
+      const armTimeout = () => {
+        transaction.timeoutId = globalThis.setTimeout(() => {
+          if (this.machine.paused && !this.stopRequested && this.activeTransaction?.id === transaction.id && !transaction.resolved) {
+            this.recordTransactionLifecycle('TX_TIMEOUT_DEFERRED', transaction, 'machine paused')
+            armTimeout()
+            return
+          }
+          if (this.activeTransaction?.id !== transaction.id || transaction.resolved) {
+            return
+          }
+          this.recordTransactionLifecycle('TX_TIMEOUT', transaction)
+          transaction.resolved = true
+          const error = this.buildTimeoutError(this.streamPendingCommands, Math.max(0, lineNumber - 1), resolvedTimeoutMs, null)
+          this.clearActiveTransaction(transaction, 'TX_CLEAR')
+          reject(error)
+        }, resolvedTimeoutMs)
+      }
+      armTimeout()
+
+      void (async () => {
+        try {
+          this.recordTransactionLifecycle('TX_WRITE_START', transaction, escapeSerialPayload(normalized.payload))
+          await this.portWriter!.write(normalized.encoded)
+          transaction.sentAt = Date.now() / 1000
+          const pendingCommand = this.streamPendingCommands.find((entry) => entry.transactionId === transaction.id)
+          if (pendingCommand) {
+            pendingCommand.sentAt = transaction.sentAt
+          }
+          this.recordTxTrace(normalized.payload, lineNumber, normalized.byteLength)
+          this.recordTransactionLifecycle('TX_WRITE_DONE', transaction, `${normalized.byteLength} bytes`)
+        } catch (error) {
+          const message = normalizeErrorMessage(error)
+          transaction.resolved = true
+          this.clearPendingForTransaction(transaction, `write failed: ${message}`)
+          this.clearActiveTransaction(transaction, 'TX_CLEAR')
+          this.recordTransactionLifecycle('TX_REJECT', transaction, message)
+          reject(new Error(message, { cause: error }))
+        }
+      })()
+    })
+  }
+
   private async queryStatus(timeoutMs = 1500) {
+    if (this.strictAckStreaming) {
+      throw new Error('Status polling is disabled during Strict Ack streaming.')
+    }
     await this.writeRaw('?')
     try {
       return await this.waitForStatusLine(timeoutMs)
@@ -669,6 +1407,105 @@ export class GrblWebSerialService {
       command: commands.join(' ; '),
       response: responses.join('\n') || 'ok',
       lines: responses,
+    }
+  }
+
+  async runStrictAckStressTest(
+    scenario: StrictAckStressScenario,
+    repetitions: number,
+    options: { responseTimeoutMs?: number } = {},
+  ): Promise<StrictAckStressResult> {
+    if (!Number.isInteger(repetitions) || repetitions <= 0) {
+      throw new Error('Stress test repetitions must be a positive integer.')
+    }
+
+    const responseTimeoutMs = options.responseTimeoutMs ?? DEFAULT_STREAM_RESPONSE_TIMEOUT_MS
+    const commandsForIteration = (iteration: number) => {
+      switch (scenario) {
+        case 'simple_ack':
+        case 'status_free':
+          return ['G4 P0.001']
+        case 'pen_toggle':
+          return [iteration % 2 === 0 ? 'M3 S700' : 'M3 S575']
+        case 'zero_motion':
+          return ['G91', 'G1 X0 F1000', 'G90']
+        default:
+          return ['G4 P0.001']
+      }
+    }
+
+    const startRxChunkCount = this.rxChunkTrace.length
+    let commandsSent = 0
+    let okCount = 0
+    let errorCount = 0
+    let timeouts = 0
+    const latencies: number[] = []
+
+    this.strictAckStreaming = true
+    this.updateMachine({
+      status: `Strict Ack stress test: ${scenario}`,
+      streaming: {
+        ...this.getStreamingState(),
+        mode: 'sync',
+        sent_count: 0,
+        acked_count: 0,
+        ok_count: 0,
+        error_count: 0,
+        streaming_active: true,
+      },
+    })
+
+    try {
+      for (let iteration = 0; iteration < repetitions; iteration += 1) {
+        for (const command of commandsForIteration(iteration)) {
+          const startedAt = nowSeconds()
+          try {
+            await this.sendLineAndWaitForAck(command, commandsSent + 1, responseTimeoutMs)
+            commandsSent += 1
+            okCount += 1
+            latencies.push(Math.max(0, Math.round((nowSeconds() - startedAt) * 1000)))
+          } catch (error) {
+            commandsSent += 1
+            if (String(error).includes('timeout')) {
+              timeouts += 1
+            } else {
+              errorCount += 1
+            }
+            throw error
+          }
+        }
+      }
+    } finally {
+      this.strictAckStreaming = false
+      this.updateMachine({
+        streaming: {
+          ...this.getStreamingState(),
+          sent_count: commandsSent,
+          acked_count: okCount,
+          ok_count: okCount,
+          error_count: errorCount,
+          streaming_active: false,
+        },
+      })
+    }
+
+    const stressChunks = this.rxChunkTrace.slice(startRxChunkCount)
+    const partialChunks = stressChunks.filter((chunk) => chunk.remainingPartial)
+    const partialOCount = stressChunks.filter((chunk) => chunk.remainingPartial === 'o' || chunk.raw === 'o').length
+    const totalLatency = latencies.reduce((total, latency) => total + latency, 0)
+
+    return {
+      scenario,
+      repetitions,
+      commandsSent,
+      okCount,
+      errorCount,
+      partialChunkCount: partialChunks.length,
+      partialOCount,
+      timeouts,
+      maxAckLatencyMs: latencies.length ? Math.max(...latencies) : 0,
+      averageAckLatencyMs: latencies.length ? Math.round(totalLatency / latencies.length) : 0,
+      statusPollingDisabled: true,
     }
   }
 
@@ -786,8 +1623,9 @@ export class GrblWebSerialService {
     }
 
     const responseTimeoutMs = callbacks.responseTimeoutMs ?? DEFAULT_STREAM_RESPONSE_TIMEOUT_MS
-    const streamingMode = callbacks.streamingMode ?? 'buffered'
-    const pendingCommands: PendingCommand[] = []
+    const streamingMode = callbacks.streamingMode ?? 'sync'
+    const pendingCommands = this.streamPendingCommands
+    pendingCommands.length = 0
     let sentCount = 0
     let ackedCount = 0
     let pendingBufferChars = 0
@@ -797,6 +1635,7 @@ export class GrblWebSerialService {
     this.updateMachine({
       running: true,
       paused: false,
+      job_state: 'running',
       status: 'Streaming G-code',
       progress_done: 0,
       progress_total: streamableLines.length,
@@ -826,6 +1665,75 @@ export class GrblWebSerialService {
 
     try {
       await this.sendLineAndWait('$X')
+      if (streamingMode === 'sync') {
+        this.strictAckStreaming = true
+        try {
+          for (let index = 0; index < streamableLines.length; index += 1) {
+            while (this.machine.paused && !this.stopRequested) {
+              await sleep(50)
+            }
+            if (this.stopRequested) {
+              throw new Error('Stop requested')
+            }
+
+            const command = streamableLines[index]
+            const result = await this.sendLineAndWaitForAck(command, index + 1, responseTimeoutMs)
+            sentCount = index + 1
+            ackedCount = index + 1
+            pendingBufferChars = 0
+            this.updateMachine({
+              progress_done: ackedCount,
+              current_gcode_line: index + 1,
+              streaming: {
+                ...this.getStreamingState(),
+                mode: streamingMode,
+                current_line: index + 1,
+                pending_buffer_chars: 0,
+                pending_commands: 0,
+                sent_count: sentCount,
+                acked_count: ackedCount,
+                ok_count: ackedCount,
+                total_lines: streamableLines.length,
+                streaming_active: true,
+                last_response_age_sec: 0,
+              },
+            })
+            callbacks.onProgress?.(ackedCount, streamableLines.length, result.command)
+            const ackDelayMs = callbacks.ackDelayMs ?? 0
+            if (ackDelayMs > 0) {
+              await sleep(ackDelayMs)
+            }
+          }
+        } finally {
+          this.strictAckStreaming = false
+        }
+
+        this.updateMachine({
+          running: false,
+          paused: false,
+          job_state: 'completed',
+          status: 'Job complete',
+          run_finished_at: Date.now() / 1000,
+          job_finished_at: Date.now() / 1000,
+          current_gcode_line: streamableLines.length,
+          progress_done: streamableLines.length,
+          streaming: {
+            ...this.getStreamingState(),
+            current_line: streamableLines.length,
+            pending_buffer_chars: 0,
+            pending_commands: 0,
+            streaming_active: false,
+          },
+        })
+        pendingCommands.length = 0
+        this.updatePendingQueueState()
+        return {
+          command: 'RUN GCODE',
+          response: `Streamed ${streamableLines.length} G-code lines.`,
+          lines: [],
+        }
+      }
+
       while (sentCount < streamableLines.length || pendingCommands.length > 0) {
         while (sentCount < streamableLines.length) {
           while (this.machine.paused && !this.stopRequested) {
@@ -838,9 +1746,6 @@ export class GrblWebSerialService {
           const command = streamableLines[sentCount]
           const serialized = isSerializedCommand(command)
           const bytes = textEncoder.encode(`${command}\n`).length
-          if (streamingMode === 'sync' && pendingCommands.length > 0) {
-            break
-          }
           if (pendingCommands.length > 0 && pendingBufferChars + bytes > GRBL_RX_BUFFER_SIZE) {
             break
           }
@@ -852,15 +1757,22 @@ export class GrblWebSerialService {
           }
 
           const pending: PendingCommand = {
+            transactionId: null,
             lineNumber: sentCount + 1,
             command,
+            normalizedCommand: normalizeCommand(command),
             bytes,
             sentAt: Date.now() / 1000,
             acknowledgedAt: null,
             response: null,
+            expectedStateChange: buildExpectedStateChange(command),
+            desyncStatusMatches: 0,
+            holdObserved: false,
           }
           await this.writeRaw(`${command}\n`)
           pendingCommands.push(pending)
+          this.recordSentCommand(pending.lineNumber, pending.command)
+          this.pushStreamDebugEvent('send', `L${pending.lineNumber} ${pending.normalizedCommand}`)
           pendingBufferChars += bytes
           sentCount += 1
           recentSerializedBarrier = serialized
@@ -879,8 +1791,9 @@ export class GrblWebSerialService {
               streaming_active: true,
             },
           })
+          this.updatePendingQueueState()
 
-          if (streamingMode === 'sync' || serialized) {
+          if (serialized) {
             break
           }
         }
@@ -890,54 +1803,55 @@ export class GrblWebSerialService {
         }
 
         let response: GrblCommandResponse | null = null
-        const responseDeadline = Date.now() + responseTimeoutMs
+        let responseDeadline = Date.now() + responseTimeoutMs
         while (!response) {
+          if (this.machine.paused && !this.stopRequested) {
+            responseDeadline = Date.now() + responseTimeoutMs
+            await sleep(100)
+            continue
+          }
           const remainingMs = responseDeadline - Date.now()
           if (remainingMs <= 0) {
             const statusLine = await this.queryStatus(STATUS_QUERY_TIMEOUT_MS)
-            throw this.buildTimeoutError(pendingCommands, ackedCount, responseTimeoutMs, statusLine)
+            const holdStatus = statusLine ? parseGrblStatus(statusLine) : null
+            if (statusLine && holdStatus?.state?.startsWith('Hold')) {
+              for (const pending of pendingCommands) {
+                pending.holdObserved = true
+              }
+              this.updateMachine({
+                paused: true,
+                job_state: this.machine.running ? 'paused' : this.machine.job_state,
+                pause_started_at: this.machine.pause_started_at ?? Date.now() / 1000,
+                status: holdStatus.state,
+              })
+              responseDeadline = Date.now() + responseTimeoutMs
+              continue
+            }
+            throw this.buildTimeoutError(
+              pendingCommands,
+              ackedCount,
+              responseTimeoutMs,
+              statusLine,
+            )
           }
 
           try {
             response = await this.waitForCommandResponse(Math.min(ACK_SILENCE_STATUS_PROBE_MS, remainingMs))
           } catch {
             const statusLine = await this.queryStatus(STATUS_QUERY_TIMEOUT_MS)
-            const parsedStatus = statusLine ? parseGrblStatus(statusLine) : null
-            const idleWithEmptyBuffers = Boolean(
-              parsedStatus?.state === 'Idle'
-                && parsedStatus.plannerBufferFree != null
-                && parsedStatus.serialRxFree != null
-                && parsedStatus.plannerBufferFree >= GRBL_PLANNER_BUFFER_SIZE
-                && parsedStatus.serialRxFree >= GRBL_RX_BUFFER_SIZE,
-            )
-            if (idleWithEmptyBuffers) {
+            const holdStatus = statusLine ? parseGrblStatus(statusLine) : null
+            if (statusLine && holdStatus?.state?.startsWith('Hold')) {
               for (const pending of pendingCommands) {
-                pending.acknowledgedAt = Date.now() / 1000
-                pending.response = 'ok (recovered from idle status)'
-                ackedCount += 1
-                callbacks.onProgress?.(ackedCount, streamableLines.length, pending.command)
+                pending.holdObserved = true
               }
-              pendingCommands.length = 0
-              pendingBufferChars = 0
-              recentSerializedBarrier = false
               this.updateMachine({
-                progress_done: ackedCount,
-                current_gcode_line: ackedCount,
-                streaming: {
-                  ...this.getStreamingState(),
-                  current_line: ackedCount,
-                  pending_buffer_chars: 0,
-                  pending_commands: 0,
-                  sent_count: sentCount,
-                  acked_count: ackedCount,
-                  ok_count: ackedCount,
-                  total_lines: streamableLines.length,
-                  streaming_active: true,
-                  last_grbl_status: statusLine,
-                  last_response_age_sec: 0,
-                },
+                paused: true,
+                job_state: this.machine.running ? 'paused' : this.machine.job_state,
+                pause_started_at: this.machine.pause_started_at ?? Date.now() / 1000,
+                status: holdStatus.state,
               })
-              break
+              responseDeadline = Date.now() + responseTimeoutMs
+              continue
             }
           }
         }
@@ -957,8 +1871,10 @@ export class GrblWebSerialService {
 
         oldestPending.acknowledgedAt = response.receivedAt
         oldestPending.response = response.line
+        this.pushStreamDebugEvent(response.kind, `L${oldestPending.lineNumber} ${oldestPending.command} -> ${response.line}`)
         pendingBufferChars = Math.max(0, pendingBufferChars - oldestPending.bytes)
         recentSerializedBarrier = pendingCommands.some((pending) => isSerializedCommand(pending.command))
+        this.updatePendingQueueState()
 
         if (response.kind === 'ok') {
           ackedCount += 1
@@ -999,6 +1915,7 @@ export class GrblWebSerialService {
       this.updateMachine({
         running: false,
         paused: false,
+        job_state: 'completed',
         status: 'Job complete',
         run_finished_at: Date.now() / 1000,
         job_finished_at: Date.now() / 1000,
@@ -1012,32 +1929,46 @@ export class GrblWebSerialService {
           streaming_active: false,
         },
       })
+      pendingCommands.length = 0
+      this.updatePendingQueueState()
       return {
         command: 'RUN GCODE',
         response: `Streamed ${streamableLines.length} G-code lines.`,
         lines: [],
       }
     } catch (error) {
+      const userStopRequested = this.stopRequested
       this.stopRequested = true
-      this.updateMachine({
-        running: false,
-        paused: false,
-        status: this.stopRequested ? normalizeErrorMessage(error) : normalizeErrorMessage(error),
-        run_finished_at: Date.now() / 1000,
-        job_finished_at: Date.now() / 1000,
-        streaming: {
-          ...this.getStreamingState(),
-          pending_buffer_chars: 0,
-          pending_commands: 0,
-          streaming_active: false,
-        },
-      })
+      const failedStatus = normalizeErrorMessage(error)
+      if (this.machine.last_timeout_debug) {
+        this.pushStreamDebugEvent('POST_TIMEOUT_LISTEN_START', `${POST_TIMEOUT_OBSERVATION_MS}ms`)
+        await sleep(POST_TIMEOUT_OBSERVATION_MS)
+        this.pushStreamDebugEvent('POST_TIMEOUT_LISTEN_DONE', `${POST_TIMEOUT_OBSERVATION_MS}ms`)
+      }
+      const timeoutDebug = this.machine.last_timeout_debug ?? null
       await this.closeSerialPort()
       this.updateMachine({
-        ...this.machine,
+        ...buildDisconnectedMachineState(),
         connected: false,
         running: false,
         paused: false,
+        job_state: userStopRequested ? 'stopped' : 'failed',
+        status: failedStatus,
+        run_finished_at: Date.now() / 1000,
+        job_finished_at: Date.now() / 1000,
+        progress_done: ackedCount,
+        progress_total: streamableLines.length,
+        current_gcode_line: ackedCount,
+        last_timeout_debug: timeoutDebug,
+        streaming: {
+          ...this.getStreamingState(),
+          pending_buffer_chars: pendingBufferChars,
+          pending_commands: pendingCommands.length,
+          sent_count: sentCount,
+          acked_count: ackedCount,
+          total_lines: streamableLines.length,
+          streaming_active: false,
+        },
       })
       throw error
     }
@@ -1050,6 +1981,7 @@ export class GrblWebSerialService {
     await this.writeRaw('!')
     this.updateMachine({
       paused: true,
+      job_state: 'paused',
       pause_started_at: Date.now() / 1000,
       status: 'Pause requested',
     })
@@ -1069,6 +2001,7 @@ export class GrblWebSerialService {
     await this.writeRaw('~')
     this.updateMachine({
       paused: false,
+      job_state: 'running',
       pause_started_at: null,
       paused_duration_seconds: (this.machine.paused_duration_seconds ?? 0) + pausedExtra,
       status: 'Resumed',

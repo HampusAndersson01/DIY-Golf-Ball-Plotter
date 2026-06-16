@@ -62,6 +62,83 @@ def test_generate_gcode_from_simple_toolpath():
     assert preview[0]["kind"] == "outline"
 
 
+def test_generate_gcode_uses_modal_motion_lines_without_breaking_parser():
+    service = GcodeService()
+    toolpaths = [
+        Toolpath(
+            points=[Point(0.0, 0.0), Point(1.0, 0.5), Point(2.0, 1.0)],
+            kind="outline",
+            closed=False,
+            coordinate_space="machine_deg",
+            metadata={"projection_count": 1},
+        )
+    ]
+
+    gcode, _preview = service.generate_from_toolpaths(
+        toolpaths=toolpaths,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=True,
+    )
+
+    motion_lines = [line for line in gcode if line.startswith("G1 ") or line.startswith("X")]
+    assert motion_lines
+    assert motion_lines[0].startswith("G1 ")
+    assert any(line.startswith("X") for line in motion_lines[1:])
+
+    parsed_paths = [
+        path for path in pipeline_core.parse_gcode_machine_motion_paths(gcode, pen_up_s=575, pen_down_s=700)
+        if path.kind != "travel"
+    ]
+    assert len(parsed_paths) == 1
+    assert parsed_paths[0].points[-1] == Point(2.0, 1.0)
+
+
+def test_generate_gcode_avoids_redundant_pen_up_reissue_at_job_end():
+    service = GcodeService()
+    toolpaths = [
+        Toolpath(
+            points=[Point(0.0, 0.0), Point(1.0, 0.0)],
+            kind="outline",
+            closed=False,
+            coordinate_space="machine_deg",
+            metadata={"projection_count": 1},
+        )
+    ]
+
+    gcode, _preview = service.generate_from_toolpaths(
+        toolpaths=toolpaths,
+        draw_feed=1200.0,
+        travel_feed=3000.0,
+        sample_step_deg=1.0,
+        placement_offset_x=0.0,
+        placement_offset_y=0.0,
+        pen_up_s=575,
+        pen_down_s=700,
+        servo_ramp_enabled=True,
+        servo_ramp_step=20,
+        servo_ramp_delay_ms=10.0,
+        pen_up_dwell_ms=30.0,
+        pen_down_dwell_ms=60.0,
+        gcode_mode="simple",
+        include_comments=False,
+    )
+
+    assert [line for line in gcode if line == "M3 S575"] == ["M3 S575", "M3 S575"]
+    assert gcode.count("G4 P0.030") == 2
+
+
 def test_merge_connected_toolpaths_collapses_touching_fragments():
     toolpaths = [
         Toolpath(points=[Point(0.0, 0.0), Point(1.0, 0.0)], kind="detail-trace", closed=False),
