@@ -22,7 +22,7 @@ export function ColorPickerPanel({ analysis, selectedColors, onToggle }: Props) 
       <div className="panel-heading">
         <div>
           <div className="panel-kicker">Mask</div>
-          <h2>Printable Colors</h2>
+          <h2>Detected Print Colors</h2>
         </div>
         <span className="badge muted">{selectedColors.length} selected</span>
       </div>

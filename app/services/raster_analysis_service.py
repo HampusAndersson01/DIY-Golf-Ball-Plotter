@@ -88,20 +88,26 @@ class _GroupedColorAnalysis:
 
 
 @dataclass
-class _WorkingColorGroup:
-    sum_rgb: np.ndarray
+class _PerceptualColorGroup:
+    sum_lab: np.ndarray
     pixel_count: int
-    centroid: np.ndarray
+    centroid_lab: np.ndarray
     representative_rgb: np.ndarray
     representative_count: int
 
-    def absorb(self, color: np.ndarray, count: int) -> None:
-        self.sum_rgb += color.astype(np.int64) * count
+    def absorb(self, color_lab: np.ndarray, color_rgb: np.ndarray, count: int) -> None:
+        self.sum_lab += color_lab.astype(np.float64) * count
         self.pixel_count += int(count)
-        self.centroid = self.sum_rgb.astype(np.float64) / float(self.pixel_count)
+        self.centroid_lab = self.sum_lab.astype(np.float64) / float(self.pixel_count)
         if int(count) > self.representative_count:
-            self.representative_rgb = color.astype(np.uint8)
+            self.representative_rgb = color_rgb.astype(np.uint8)
             self.representative_count = int(count)
+
+
+@dataclass
+class _ResolvedColorGroup:
+    representative_rgb: np.ndarray
+    pixel_count: int
 
 
 def _rgb_to_hex(rgb: np.ndarray | list[int] | tuple[int, int, int]) -> str:
@@ -130,7 +136,15 @@ def _image_to_data_url(image: np.ndarray) -> str:
 
 class RasterAnalysisService:
     ALPHA_THRESHOLD = 16
-    COLOR_MERGE_THRESHOLD = 36.0
+    PERCEPTUAL_GROUP_THRESHOLD = 18.0
+    BACKGROUND_DISTANCE_THRESHOLD = 30.0
+    BACKGROUND_MIN_BORDER_RATIO = 0.6
+    BACKGROUND_MIN_COVERAGE_RATIO = 0.05
+    BACKGROUND_NEUTRAL_CHROMA = 14.0
+    BACKGROUND_LIGHTNESS_LOW = 80.0
+    BACKGROUND_LIGHTNESS_HIGH = 175.0
+    MIN_PRINTABLE_GROUP_PIXELS = 6
+    MIN_PRINTABLE_GROUP_COVERAGE = 0.003
 
     def __init__(self, config, state) -> None:
         self._config = config
@@ -546,12 +560,14 @@ class RasterAnalysisService:
         height, width = image.height, image.width
         labels = np.full((height, width), -1, dtype=np.int32)
         total_pixels = height * width
-        opaque_pixels = image.rgba[:, :, :3][image.opaque_mask]
-        total_opaque_pixels = int(opaque_pixels.shape[0])
+        printable_mask = self._compute_printable_candidate_mask(image)
+        opaque_pixels = image.rgba[:, :, :3][printable_mask]
+        printable_pixel_count = int(opaque_pixels.shape[0])
+        total_opaque_pixels = int(np.count_nonzero(image.opaque_mask))
         ignored_transparent_pixels = int(total_pixels - total_opaque_pixels)
         quantized_rgb = image.rgb.copy()
 
-        if total_opaque_pixels == 0:
+        if printable_pixel_count == 0:
             return _GroupedColorAnalysis(
                 colors=[],
                 labels=labels,
@@ -560,7 +576,11 @@ class RasterAnalysisService:
                 total_opaque_pixels=0,
             )
 
-        group_assignments, groups = self._group_opaque_pixels(opaque_pixels, simplify_colors=simplify_colors)
+        group_assignments, groups = self._group_opaque_pixels(
+            opaque_pixels,
+            simplify_colors=simplify_colors,
+            max_colors=max_colors,
+        )
         ranking = sorted(
             range(len(groups)),
             key=lambda index: (
@@ -569,16 +589,11 @@ class RasterAnalysisService:
                 _rgb_to_hex(groups[index].representative_rgb),
             ),
         )
-        if max_colors is not None and max_colors > 0:
-            ranking = ranking[:max_colors]
-
         order_lookup = {group_index: order for order, group_index in enumerate(ranking)}
-        visible_mask = np.array([group_index in order_lookup for group_index in group_assignments], dtype=bool)
-        opaque_positions = np.argwhere(image.opaque_mask)
-        if np.any(visible_mask):
-            visible_positions = opaque_positions[visible_mask]
-            visible_assignments = np.array([order_lookup[group_index] for group_index in group_assignments[visible_mask]], dtype=np.int32)
-            labels[visible_positions[:, 0], visible_positions[:, 1]] = visible_assignments
+        printable_positions = np.argwhere(printable_mask)
+        if len(printable_positions):
+            visible_assignments = np.array([order_lookup[group_index] for group_index in group_assignments], dtype=np.int32)
+            labels[printable_positions[:, 0], printable_positions[:, 1]] = visible_assignments
 
         colors: list[RasterColorSwatch] = []
         representative_colors: dict[int, np.ndarray] = {}
@@ -586,7 +601,7 @@ class RasterAnalysisService:
             group = groups[group_index]
             representative_rgb = group.representative_rgb
             representative_colors[order] = representative_rgb
-            coverage = float(group.pixel_count) / float(max(1, total_opaque_pixels))
+            coverage = float(group.pixel_count) / float(max(1, printable_pixel_count))
             colors.append(
                 RasterColorSwatch(
                     id=f"color-group-{order}",
@@ -611,8 +626,69 @@ class RasterAnalysisService:
             total_opaque_pixels=total_opaque_pixels,
         )
 
-    def _group_opaque_pixels(self, opaque_pixels: np.ndarray, *, simplify_colors: bool) -> tuple[np.ndarray, list[_WorkingColorGroup]]:
+    def _compute_printable_candidate_mask(self, image: _LoadedImage) -> np.ndarray:
+        printable_mask = image.opaque_mask.copy()
+        background_mask = self._detect_border_background_mask(image)
+        if np.any(background_mask):
+            printable_mask &= ~background_mask
+        if not np.any(printable_mask):
+            return image.opaque_mask.copy()
+        return printable_mask
+
+    def _detect_border_background_mask(self, image: _LoadedImage) -> np.ndarray:
+        border_mask = np.zeros((image.height, image.width), dtype=bool)
+        border_mask[0, :] = True
+        border_mask[-1, :] = True
+        border_mask[:, 0] = True
+        border_mask[:, -1] = True
+        border_mask &= image.opaque_mask
+        border_pixels = image.rgb[border_mask]
+        if border_pixels.size == 0:
+            return np.zeros((image.height, image.width), dtype=bool)
+
+        unique_colors, counts = np.unique(border_pixels, axis=0, return_counts=True)
+        dominant_index = int(np.argmax(counts))
+        dominant_rgb = unique_colors[dominant_index].astype(np.uint8)
+        dominant_ratio = float(counts[dominant_index]) / float(max(1, border_pixels.shape[0]))
+        dominant_lab = self._rgb_to_lab(dominant_rgb.reshape(1, 3))[0]
+        chroma = self._lab_chroma(dominant_lab)
+        lightness = float(dominant_lab[0])
+        is_neutral_background = chroma <= self.BACKGROUND_NEUTRAL_CHROMA and (
+            lightness <= self.BACKGROUND_LIGHTNESS_LOW or lightness >= self.BACKGROUND_LIGHTNESS_HIGH
+        )
+        if dominant_ratio < self.BACKGROUND_MIN_BORDER_RATIO or not is_neutral_background:
+            return np.zeros((image.height, image.width), dtype=bool)
+
+        image_lab = self._rgb_to_lab(image.rgb.reshape(-1, 3)).reshape((image.height, image.width, 3))
+        distance = np.linalg.norm(image_lab - dominant_lab.reshape(1, 1, 3), axis=2)
+        similar_mask = image.opaque_mask & (distance <= self.BACKGROUND_DISTANCE_THRESHOLD)
+        if not np.any(similar_mask):
+            return np.zeros((image.height, image.width), dtype=bool)
+
+        component_count, labels = cv2.connectedComponents(similar_mask.astype(np.uint8), connectivity=8)
+        background_mask = np.zeros_like(similar_mask)
+        for component_index in range(1, int(component_count)):
+            component = labels == component_index
+            if np.any(component & border_mask):
+                background_mask |= component
+
+        if not np.any(background_mask):
+            return background_mask
+
+        background_ratio = float(np.count_nonzero(background_mask)) / float(max(1, np.count_nonzero(image.opaque_mask)))
+        if background_ratio < self.BACKGROUND_MIN_COVERAGE_RATIO:
+            return np.zeros((image.height, image.width), dtype=bool)
+        return background_mask
+
+    def _group_opaque_pixels(
+        self,
+        opaque_pixels: np.ndarray,
+        *,
+        simplify_colors: bool,
+        max_colors: int | None,
+    ) -> tuple[np.ndarray, list[_ResolvedColorGroup]]:
         unique_colors, inverse, counts = np.unique(opaque_pixels, axis=0, return_inverse=True, return_counts=True)
+        unique_labs = self._rgb_to_lab(unique_colors)
         ordering = sorted(
             range(len(unique_colors)),
             key=lambda index: (
@@ -623,17 +699,18 @@ class RasterAnalysisService:
         )
 
         unique_to_group = np.full(len(unique_colors), -1, dtype=np.int32)
-        groups: list[_WorkingColorGroup] = []
-        merge_threshold = self.COLOR_MERGE_THRESHOLD if simplify_colors else 0.0
+        groups: list[_PerceptualColorGroup] = []
+        merge_threshold = self.PERCEPTUAL_GROUP_THRESHOLD if simplify_colors else 0.0
 
         for color_index in ordering:
-            color = unique_colors[color_index].astype(np.float64)
+            color_rgb = unique_colors[color_index].astype(np.uint8)
+            color_lab = unique_labs[color_index]
             count = int(counts[color_index])
             best_group_index: int | None = None
             best_distance = float("inf")
 
             for group_index, group in enumerate(groups):
-                distance = float(np.max(np.abs(group.centroid - color)))
+                distance = float(np.linalg.norm(group.centroid_lab - color_lab))
                 if distance > merge_threshold or distance >= best_distance:
                     continue
                 best_group_index = group_index
@@ -641,21 +718,156 @@ class RasterAnalysisService:
 
             if best_group_index is None:
                 groups.append(
-                    _WorkingColorGroup(
-                        sum_rgb=unique_colors[color_index].astype(np.int64) * count,
+                    _PerceptualColorGroup(
+                        sum_lab=color_lab.astype(np.float64) * count,
                         pixel_count=count,
-                        centroid=color.copy(),
-                        representative_rgb=unique_colors[color_index].astype(np.uint8),
+                        centroid_lab=color_lab.astype(np.float64).copy(),
+                        representative_rgb=color_rgb,
                         representative_count=count,
                     )
                 )
                 unique_to_group[color_index] = len(groups) - 1
                 continue
 
-            groups[best_group_index].absorb(unique_colors[color_index], count)
+            groups[best_group_index].absorb(color_lab, color_rgb, count)
             unique_to_group[color_index] = best_group_index
 
-        return unique_to_group[inverse], groups
+        root_lookup = np.arange(len(groups), dtype=np.int32)
+        if simplify_colors:
+            self._merge_minor_groups(root_lookup, groups)
+        root_lookup = self._apply_root_lookup(root_lookup)
+        if max_colors is not None and max_colors > 0:
+            self._enforce_max_color_groups(root_lookup, groups, max_colors=max_colors)
+            root_lookup = self._apply_root_lookup(root_lookup)
+
+        unique_roots = root_lookup[unique_to_group]
+        final_groups = self._build_resolved_groups(unique_colors, counts, unique_roots)
+        root_to_order = {root: order for order, root in enumerate(sorted(final_groups.keys(), key=lambda idx: (-final_groups[idx].pixel_count, _luminance(final_groups[idx].representative_rgb), _rgb_to_hex(final_groups[idx].representative_rgb))))}
+        ordered_assignments = np.array([root_to_order[root] for root in unique_roots], dtype=np.int32)
+        ordered_groups = [final_groups[root] for root, _ in sorted(root_to_order.items(), key=lambda item: item[1])]
+        return ordered_assignments[inverse], ordered_groups
+
+    def _merge_minor_groups(self, root_lookup: np.ndarray, groups: list[_PerceptualColorGroup]) -> None:
+        total_pixels = sum(group.pixel_count for group in groups)
+        dominant_pixels = max((group.pixel_count for group in groups), default=0)
+        minimum_pixels = max(
+            self.MIN_PRINTABLE_GROUP_PIXELS,
+            int(np.ceil(total_pixels * self.MIN_PRINTABLE_GROUP_COVERAGE)),
+        )
+        for group_index in sorted(range(len(groups)), key=lambda index: groups[index].pixel_count):
+            pixel_count = groups[group_index].pixel_count
+            is_minor_group = pixel_count < minimum_pixels or pixel_count < max(1, int(dominant_pixels * 0.08))
+            if not is_minor_group:
+                continue
+            active_roots = [index for index in range(len(groups)) if index != group_index and root_lookup[index] == index]
+            major_candidates = [
+                index for index in active_roots
+                if groups[index].pixel_count >= minimum_pixels and groups[index].pixel_count >= max(1, int(dominant_pixels * 0.08))
+            ]
+            nearest_group = self._find_nearest_group(
+                source_index=group_index,
+                candidate_indices=major_candidates or active_roots,
+                groups=groups,
+                threshold=None,
+            )
+            if nearest_group is not None:
+                root_lookup[group_index] = nearest_group
+
+    def _enforce_max_color_groups(self, root_lookup: np.ndarray, groups: list[_PerceptualColorGroup], *, max_colors: int) -> None:
+        active_roots = [index for index in range(len(groups)) if root_lookup[index] == index]
+        if len(active_roots) <= max_colors:
+            return
+        retained = sorted(
+            active_roots,
+            key=lambda index: (
+                -groups[index].pixel_count,
+                _luminance(groups[index].representative_rgb),
+                _rgb_to_hex(groups[index].representative_rgb),
+            ),
+        )[:max_colors]
+        retained_set = set(retained)
+        for group_index in active_roots:
+            if group_index in retained_set:
+                continue
+            nearest_group = self._find_nearest_group(
+                source_index=group_index,
+                candidate_indices=retained,
+                groups=groups,
+                threshold=None,
+            )
+            if nearest_group is not None:
+                root_lookup[group_index] = nearest_group
+
+    def _find_nearest_group(
+        self,
+        *,
+        source_index: int,
+        candidate_indices: list[int],
+        groups: list[_PerceptualColorGroup],
+        threshold: float | None,
+    ) -> int | None:
+        best_index: int | None = None
+        best_distance = float("inf")
+        for candidate_index in candidate_indices:
+            distance = float(np.linalg.norm(groups[source_index].centroid_lab - groups[candidate_index].centroid_lab))
+            if threshold is not None and distance > threshold:
+                continue
+            if distance >= best_distance:
+                continue
+            best_index = candidate_index
+            best_distance = distance
+        return best_index
+
+    def _apply_root_lookup(self, root_lookup: np.ndarray) -> np.ndarray:
+        resolved = root_lookup.copy()
+        for index in range(len(resolved)):
+            root = int(resolved[index])
+            while root != int(resolved[root]):
+                root = int(resolved[root])
+            resolved[index] = root
+        return resolved
+
+    def _build_resolved_groups(
+        self,
+        unique_colors: np.ndarray,
+        counts: np.ndarray,
+        unique_roots: np.ndarray,
+    ) -> dict[int, _ResolvedColorGroup]:
+        groups: dict[int, dict[str, Any]] = {}
+        for color_index, root in enumerate(unique_roots.tolist()):
+            entry = groups.setdefault(
+                int(root),
+                {
+                    "pixel_count": 0,
+                    "representative_rgb": unique_colors[color_index].astype(np.uint8),
+                    "representative_count": 0,
+                },
+            )
+            count = int(counts[color_index])
+            entry["pixel_count"] += count
+            if count > int(entry["representative_count"]):
+                entry["representative_rgb"] = unique_colors[color_index].astype(np.uint8)
+                entry["representative_count"] = count
+        return {
+            root: _ResolvedColorGroup(
+                representative_rgb=np.asarray(entry["representative_rgb"], dtype=np.uint8),
+                pixel_count=int(entry["pixel_count"]),
+            )
+            for root, entry in groups.items()
+        }
+
+    @staticmethod
+    def _rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
+        if rgb.size == 0:
+            return np.zeros((0, 3), dtype=np.float64)
+        lab = cv2.cvtColor(rgb.reshape((-1, 1, 3)).astype(np.uint8), cv2.COLOR_RGB2LAB)
+        return lab.reshape((-1, 3)).astype(np.float64)
+
+    @staticmethod
+    def _lab_chroma(lab: np.ndarray) -> float:
+        a = float(lab[1]) - 128.0
+        b = float(lab[2]) - 128.0
+        return float(np.hypot(a, b))
 
     def _clean_mask(
         self,

@@ -337,7 +337,10 @@ export const useAppStore = create<AppStore>((set) => ({
     xAxisCalibrationPattern: null,
     xAxisCalibrationMeasurements: {},
   }),
-  setAnalysis: (analysis) => set({ analysis, selectedColors: [] }),
+  setAnalysis: (analysis) => set({
+    analysis,
+    selectedColors: analysis?.colors.length === 1 ? [analysis.colors[0].id] : [],
+  }),
   toggleColor: (colorId) => set((state) => ({
     selectedColors: state.selectedColors.includes(colorId)
       ? state.selectedColors.filter((entry) => entry !== colorId)
