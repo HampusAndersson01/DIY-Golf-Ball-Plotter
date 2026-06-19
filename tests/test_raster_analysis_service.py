@@ -80,6 +80,26 @@ def make_multi_color_bytes(colors: list[tuple[int, int, int]]) -> bytes:
     return make_rgba_bytes(canvas)
 
 
+def make_antialiased_single_color_on_white_bytes() -> bytes:
+    canvas = np.full((96, 96, 3), 255, dtype=np.uint8)
+    cv2.circle(canvas, (48, 48), 22, (0, 0, 0), -1, lineType=cv2.LINE_AA)
+    buffer = io.BytesIO()
+    Image.fromarray(canvas, mode="RGB").save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def make_antialiased_logo_palette_bytes() -> bytes:
+    canvas = np.full((160, 160, 3), 255, dtype=np.uint8)
+    cv2.circle(canvas, (80, 80), 58, (198, 32, 48), -1, lineType=cv2.LINE_AA)
+    cv2.circle(canvas, (80, 80), 47, (255, 255, 255), -1, lineType=cv2.LINE_AA)
+    cv2.circle(canvas, (80, 80), 37, (13, 33, 86), -1, lineType=cv2.LINE_AA)
+    cv2.ellipse(canvas, (80, 80), (22, 46), 0, 200, 340, (128, 16, 24), 9, lineType=cv2.LINE_AA)
+    cv2.ellipse(canvas, (80, 80), (50, 50), 0, 20, 160, (191, 152, 58), 8, lineType=cv2.LINE_AA)
+    buffer = io.BytesIO()
+    Image.fromarray(canvas, mode="RGB").save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def test_detects_black_and_white_logo_colors():
     result = make_service().analyze_image(make_logo_bytes(), max_colors=4)
     colors = {entry.hex for entry in result.colors}
@@ -178,6 +198,41 @@ def test_distinct_colors_are_not_over_merged():
     colors = [(255, 0, 0), (255, 128, 0)]
     result = make_service().analyze_image(make_multi_color_bytes(colors), max_colors=32)
     assert result.color_count == 2
+
+
+def test_white_background_is_not_offered_as_a_printable_color():
+    result = make_service().analyze_image(make_antialiased_single_color_on_white_bytes(), max_colors=32)
+    assert result.color_count == 1
+    assert [color.hex for color in result.colors] == ["#000000"]
+
+
+def test_antialiased_logo_palette_groups_into_printable_dominant_colors():
+    result = make_service().analyze_image(make_antialiased_logo_palette_bytes(), max_colors=32)
+    colors = {color.hex for color in result.colors}
+    assert 4 <= result.color_count <= 6
+    assert "#FFFFFF" in colors
+    assert "#0D2156" in colors
+    assert "#C62030" in colors
+    assert "#BF983A" in colors
+    assert "#801018" in colors
+
+
+def test_mask_generation_keeps_antialiased_pixels_after_background_ignore():
+    service = make_service()
+    image_bytes = make_antialiased_single_color_on_white_bytes()
+    analysis = service.analyze_image(image_bytes, max_colors=32)
+    mask = service.build_mask(
+        image_bytes,
+        [analysis.colors[0].id],
+        simplify_colors=True,
+        max_colors=32,
+        tolerance=0,
+        min_component_area_px=0,
+        open_radius_px=0,
+        close_radius_px=0,
+    )
+    assert mask.printable_pixel_count == analysis.colors[0].pixel_count
+    assert mask.printable_pixel_count > 1600
 
 
 def test_no_fake_placeholder_colors_are_returned():
