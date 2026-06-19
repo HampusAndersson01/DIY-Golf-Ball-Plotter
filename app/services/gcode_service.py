@@ -32,7 +32,7 @@ class GcodeService:
 
         gcode: list[str] = []
         preview: list[dict] = []
-        current_servo = pen_up_s
+        current_servo: int | None = None
         current_position = None
         current_pen_down = False
 
@@ -40,17 +40,26 @@ class GcodeService:
             if include_comments:
                 gcode.append(f"({text})")
 
+        def append_pen_state(target_s: int, dwell_ms: float, *, force: bool = False) -> bool:
+            nonlocal current_servo, current_pen_down
+            if not force and current_servo == target_s:
+                return False
+            gcode.extend(self.build_pen_position_commands(
+                current_servo if current_servo is not None else target_s,
+                target_s,
+                ramp_enabled=servo_ramp_enabled,
+                ramp_step=servo_ramp_step,
+                ramp_delay_ms=servo_ramp_delay_ms,
+                dwell_ms=dwell_ms,
+            ))
+            current_servo = target_s
+            current_pen_down = target_s == pen_down_s
+            return True
+
         comment("Generated for golf ball plotter")
         comment("Units are angular degrees. X=-180..180 ball rotation, Y=-45..45 arm tilt")
         gcode.extend(["$X", "G21", "G90"])
-        gcode.extend(self.build_pen_position_commands(
-            pen_up_s,
-            pen_up_s,
-            ramp_enabled=False,
-            ramp_step=servo_ramp_step,
-            ramp_delay_ms=servo_ramp_delay_ms,
-            dwell_ms=pen_up_dwell_ms,
-        ))
+        append_pen_state(pen_up_s, pen_up_dwell_ms, force=True)
 
         for index, toolpath in enumerate(toolpaths, start=1):
             pts = list(toolpath.points)
@@ -60,16 +69,7 @@ class GcodeService:
             is_pen_down_travel = toolpath.kind == "fill-infill-travel"
             if is_pen_down_travel:
                 if not current_pen_down:
-                    gcode.extend(self.build_pen_position_commands(
-                        current_servo,
-                        pen_down_s,
-                        ramp_enabled=servo_ramp_enabled,
-                        ramp_step=servo_ramp_step,
-                        ramp_delay_ms=servo_ramp_delay_ms,
-                        dwell_ms=pen_down_dwell_ms,
-                    ))
-                    current_servo = pen_down_s
-                    current_pen_down = True
+                    append_pen_state(pen_down_s, pen_down_dwell_ms)
                 rounded_points = [asdict(pipeline_core._rounded_gcode_point(point)) for point in pts]
                 preview.append({
                     "id": toolpath.path_id,
@@ -90,29 +90,11 @@ class GcodeService:
             if current_position is not None and not pipeline_core.nearly_same_point(current_position, start):
                 preview.append({"kind": "travel", "closed": False, "points": [asdict(current_position), asdict(start)]})
                 if current_pen_down:
-                    gcode.extend(self.build_pen_position_commands(
-                        current_servo,
-                        pen_up_s,
-                        ramp_enabled=servo_ramp_enabled,
-                        ramp_step=servo_ramp_step,
-                        ramp_delay_ms=servo_ramp_delay_ms,
-                        dwell_ms=pen_up_dwell_ms,
-                    ))
-                    current_servo = pen_up_s
-                    current_pen_down = False
+                    append_pen_state(pen_up_s, pen_up_dwell_ms)
                 comment(f"Travel to {toolpath.kind} path {index}")
                 gcode.append(f"G1 X{start.x:.4f} Y{start.y:.4f} F{travel_feed:.3f}")
             if not current_pen_down:
-                gcode.extend(self.build_pen_position_commands(
-                    current_servo,
-                    pen_down_s,
-                    ramp_enabled=servo_ramp_enabled,
-                    ramp_step=servo_ramp_step,
-                    ramp_delay_ms=servo_ramp_delay_ms,
-                    dwell_ms=pen_down_dwell_ms,
-                ))
-                current_servo = pen_down_s
-                current_pen_down = True
+                append_pen_state(pen_down_s, pen_down_dwell_ms)
             rounded_points = [asdict(pipeline_core._rounded_gcode_point(point)) for point in pts]
             preview.append({
                 "id": toolpath.path_id,
@@ -131,29 +113,13 @@ class GcodeService:
             if next_toolpath is not None and getattr(next_toolpath, "kind", None) == "fill-infill-travel":
                 comment(f"PATH_END id={index} (keeping pen down for connector)")
             else:
-                gcode.extend(self.build_pen_position_commands(
-                    current_servo,
-                    pen_up_s,
-                    ramp_enabled=servo_ramp_enabled,
-                    ramp_step=servo_ramp_step,
-                    ramp_delay_ms=servo_ramp_delay_ms,
-                    dwell_ms=pen_up_dwell_ms,
-                ))
-                current_servo = pen_up_s
-                current_pen_down = False
+                append_pen_state(pen_up_s, pen_up_dwell_ms)
 
         if current_position is not None and not pipeline_core.nearly_same_point(current_position, pipeline_core.Point(0.0, 0.0)):
             comment("Return to zero with pen up")
             preview.append({"kind": "travel", "closed": False, "points": [asdict(current_position), asdict(pipeline_core.Point(0.0, 0.0))]})
             gcode.append(f"G1 X0.0000 Y0.0000 F{travel_feed:.3f}")
-        gcode.extend(self.build_pen_position_commands(
-            current_servo,
-            pen_up_s,
-            ramp_enabled=False,
-            ramp_step=servo_ramp_step,
-            ramp_delay_ms=servo_ramp_delay_ms,
-            dwell_ms=pen_up_dwell_ms,
-        ))
+        append_pen_state(pen_up_s, pen_up_dwell_ms)
         return gcode, preview
 
     def generate_from_toolpaths(self, **kwargs):
@@ -285,6 +251,7 @@ class GcodeService:
             kwargs["include_comments"],
             kwargs.get("header_comment_settings"),
             kwargs.get("debug"),
+            bool(kwargs.get("force_explicit_motion", False)),
         )
         debug = kwargs.get("debug")
         if isinstance(debug, dict):

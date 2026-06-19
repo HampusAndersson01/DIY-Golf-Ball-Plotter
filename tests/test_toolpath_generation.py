@@ -3798,6 +3798,22 @@ def test_prepare_projection_handles_degenerate_closed_outline_without_fake_closi
     assert float(prepared[0].metadata["max_surface_segment_mm_after_resampling"]) <= 0.1 + 1e-6
 
 
+def test_projection_sampling_reaches_global_cap_for_thicker_pen_widths():
+    path = Toolpath(
+        points=[Point(0.0, 0.0), Point(1.0, 0.0)],
+        kind="fill-infill",
+        closed=False,
+        coordinate_space="surface_mm",
+        metadata={"pen_width_mm": 0.45},
+    )
+
+    prepared = pipeline_core.prepare_toolpaths_for_projection([path], default_pen_width_mm=0.45)
+
+    assert len(prepared) == 1
+    assert float(prepared[0].metadata["projection_sampling_mm"]) == pytest.approx(0.15, abs=1e-6)
+    assert float(prepared[0].metadata["max_surface_segment_mm_after_resampling"]) <= 0.15 + 1e-6
+
+
 def test_outer_ring_and_hole_remain_separate_paths_with_pen_up_travel():
     outer = _rect(12.0, 12.0)
     hole = Polygon([(x + 4.0, y + 4.0) for x, y in _rect(4.0, 4.0).exterior.coords[:-1]])

@@ -6,6 +6,16 @@ type Props = {
 }
 
 export function CurrentLineOverlay({ machine, currentPath }: Props) {
+  const pathStatus = machine?.job_state === 'failed'
+    ? 'Failed'
+    : machine?.job_state === 'stopped'
+      ? 'Stopped'
+      : machine?.paused
+        ? 'Paused'
+        : machine?.running
+          ? 'Drawing'
+          : 'Idle'
+
   return (
     <div className="current-line-overlay">
       <div>
@@ -14,7 +24,7 @@ export function CurrentLineOverlay({ machine, currentPath }: Props) {
       </div>
       <div>
         <span>Path status</span>
-        <strong>{machine?.paused ? 'Paused' : machine?.running ? 'Drawing' : 'Idle'}</strong>
+        <strong>{pathStatus}</strong>
       </div>
       <div>
         <span>Entity kind</span>

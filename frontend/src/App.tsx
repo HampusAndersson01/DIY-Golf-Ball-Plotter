@@ -1,7 +1,7 @@
 import { startTransition, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 
-import { analyzeImage, fetchBootstrap, fetchState, generateDiagnosticGcode, generateImageGcode } from './api/client'
+import { analyzeImage, fetchBootstrap, fetchState, generateDiagnosticGcode, generateImageGcode, reportBrowserSerialDiagnostics } from './api/client'
 import { CalibrationPatternPanel } from './components/calibration/CalibrationPatternPanel'
 import { XAxisCalibrationPanel } from './components/calibration/XAxisCalibrationPanel'
 import { StepNav } from './components/layout/StepNav'
@@ -17,7 +17,7 @@ import { RunControls } from './components/machine/RunControls'
 import { PreviewWorkspace } from './components/preview/PreviewWorkspace'
 import { getProgressPercent } from './components/preview/previewMath'
 import type { JobSummary, MachineState, PreviewPath } from './api/types'
-import { GrblWebSerialService } from './services/grblWebSerial'
+import { BAUD_RATE, GrblWebSerialService } from './services/grblWebSerial'
 import type { SettingsState } from './store/appStore'
 import { useAppStore } from './store/appStore'
 import type { ComponentType } from 'react'
@@ -34,6 +34,38 @@ const SIDEBAR_CATEGORIES: Array<{ id: SidebarCategory; label: string; icon: Side
 ]
 
 const grblSerial = new GrblWebSerialService()
+
+type BrowserSerialDebugBundle = {
+  captured_at: string
+  failure: {
+    event: string
+    error: string
+  }
+  architecture: {
+    frontend_runner: boolean
+    backend_runner_for_dashboard_run: boolean
+    both_possible_in_codebase: boolean
+    dashboard_run_path: string[]
+  }
+  gcode_context: {
+    failed_line: number | null
+    start_line: number
+    lines: Array<{ line: number; command: string }>
+  }
+  serial_settings: {
+    baud_rate: number
+    data_bits: number
+    stop_bits: number
+    parity: string
+    flow_control: string
+  }
+  browser: {
+    user_agent: string
+  }
+  job_settings: SettingsState
+  diagnostics: Record<string, unknown>
+  hardware_checklist: string[]
+}
 
 function App() {
   const busy = useAppStore((state) => state.busy)
@@ -123,6 +155,7 @@ function DashboardApp() {
   const [activeSidebarCategory, setActiveSidebarCategory] = useState<SidebarCategory>('output')
   const [inspectorCollapsed, setInspectorCollapsed] = useState(true)
   const [previewZoomLabel, setPreviewZoomLabel] = useState('100%')
+  const [lastDebugBundle, setLastDebugBundle] = useState<BrowserSerialDebugBundle | null>(null)
   const restoredPersistedPreviewRef = useRef(false)
   const lastSeenPlacementPreviewKeyRef = useRef<string | null>(null)
   const pendingPlacementPreviewKeyRef = useRef<string | null>(null)
@@ -252,6 +285,14 @@ function DashboardApp() {
       active = false
     }
   }, [appendLog])
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      void grblSerial.disconnect().catch(() => undefined)
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [])
 
   useEffect(() => {
     const timers = toasts.map((toast) => window.setTimeout(() => dismissToast(toast.id), 2800))
@@ -540,10 +581,77 @@ function DashboardApp() {
     }
   }
 
+  function buildBrowserSerialDebugBundle(error: unknown, diagnostics: ReturnType<typeof grblSerial.getStreamDiagnostics>): BrowserSerialDebugBundle {
+    const timeoutDebug = diagnostics.machine.last_timeout_debug ?? {}
+    const failedLine = typeof timeoutDebug.timed_out_line === 'number' ? timeoutDebug.timed_out_line : diagnostics.machine.current_gcode_line || null
+    const contextStart = failedLine == null ? 1 : Math.max(1, failedLine - 50)
+    const contextEnd = failedLine == null ? Math.min(gcode.length, 100) : Math.min(gcode.length, failedLine + 50)
+
+    return {
+      captured_at: new Date().toISOString(),
+      failure: {
+        event: 'run_failed',
+        error: String(error),
+      },
+      architecture: {
+        frontend_runner: true,
+        backend_runner_for_dashboard_run: false,
+        both_possible_in_codebase: true,
+        dashboard_run_path: [
+          'frontend/src/App.tsx handleRun',
+          'frontend/src/services/grblWebSerial.ts runGcode',
+          'frontend/src/services/grblWebSerial.ts sendLineAndWaitForAck',
+          'Browser Web Serial API',
+        ],
+      },
+      gcode_context: {
+        failed_line: failedLine,
+        start_line: contextStart,
+        lines: gcode.slice(contextStart - 1, contextEnd).map((command, offset) => ({
+          line: contextStart + offset,
+          command,
+        })),
+      },
+      serial_settings: {
+        baud_rate: BAUD_RATE,
+        data_bits: 8,
+        stop_bits: 1,
+        parity: 'none',
+        flow_control: 'none',
+      },
+      browser: {
+        user_agent: window.navigator.userAgent,
+      },
+      job_settings: settingsState,
+      diagnostics: diagnostics as unknown as Record<string, unknown>,
+      hardware_checklist: [
+        'Check whether M3 S700/M3 S575 servo movement coincides with byte loss or controller reset text.',
+        'Power the servo from a separate supply; keep grounds common with the controller.',
+        'Add bulk capacitance near the servo power rail.',
+        'Use a short shielded USB cable and avoid unpowered hubs.',
+        'Disable Windows USB selective suspend while testing.',
+        'Compare the same controller and G-code with UGS, Candle, bCNC, or the provided Python strict-ack script.',
+        'Try 57600 baud only as an isolation test if the firmware supports it.',
+      ],
+    }
+  }
+
+  function handleDownloadDebugBundle() {
+    if (!lastDebugBundle) return
+    const blob = new Blob([JSON.stringify(lastDebugBundle, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `browser-serial-debug-${lastDebugBundle.captured_at.replace(/[:.]/g, '-')}.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
   async function handleRun() {
     if (!window.confirm('Start the generated job on the connected plotter?')) return
     setBusy('running', true)
     lastRunUiSyncAtRef.current = 0
+    const effectiveStreamingMode = 'sync' as const
     const runPromise = grblSerial.runGcode(gcode, {
       onProgress: () => {
         const now = performance.now()
@@ -553,22 +661,63 @@ function DashboardApp() {
         lastRunUiSyncAtRef.current = now
         syncBrowserMachineState()
       },
-      streamingMode: settingsState.streamingMode,
+      streamingMode: effectiveStreamingMode,
     })
 
     syncBrowserMachineState()
-    appendLog(`Run started: streaming ${gcode.length} G-code lines over Web Serial.`)
+    appendLog(`Run started: streaming ${gcode.length} G-code lines over Web Serial in ${effectiveStreamingMode === 'sync' ? 'Strict Ack' : 'Buffered'} mode.`)
     pushToast('Job started.', 'success')
-    setBusy('running', false)
 
     void runPromise
       .then((result) => {
         recordMachineResult(result, 'Job complete.')
+        setBusy('running', false)
       })
       .catch((error) => {
         syncBrowserMachineState()
+        const diagnostics = grblSerial.getStreamDiagnostics()
+        setLastDebugBundle(buildBrowserSerialDebugBundle(error, diagnostics))
+        void reportBrowserSerialDiagnostics({
+          event: 'run_failed',
+          error: String(error),
+          status: diagnostics.machine.status,
+          job_state: diagnostics.machine.job_state ?? null,
+          current_gcode_line: diagnostics.machine.current_gcode_line,
+          current_path_id: diagnostics.machine.current_path_id,
+          current_path_kind: diagnostics.machine.current_path_kind ?? null,
+          last_timeout_debug: diagnostics.machine.last_timeout_debug ?? null,
+          streaming: diagnostics.machine.streaming ?? null,
+          recent_grbl_lines: diagnostics.recent_grbl_lines,
+          recent_sent_commands: diagnostics.recent_sent_commands,
+          tx_trace: diagnostics.tx_trace,
+          rx_chunks: diagnostics.rx_chunks,
+          rx_lines: diagnostics.rx_lines,
+          active_transaction: diagnostics.active_transaction,
+          transaction_lifecycle_events: diagnostics.transaction_lifecycle_events,
+          unexpected_ok_count: diagnostics.unexpected_ok_count,
+          unexpected_error_count: diagnostics.unexpected_error_count,
+          stream_debug_events: diagnostics.stream_debug_events,
+          last_raw_serial_chunk: diagnostics.last_raw_serial_chunk,
+          last_raw_serial_chunk_at: diagnostics.last_raw_serial_chunk_at,
+          current_partial_line_buffer: diagnostics.current_partial_line_buffer,
+          partial_line_buffer_updated_at: diagnostics.partial_line_buffer_updated_at,
+          last_complete_parsed_line: diagnostics.last_complete_parsed_line,
+          last_complete_parsed_line_at: diagnostics.last_complete_parsed_line_at,
+          last_parsed_ack_line: diagnostics.last_parsed_ack_line,
+          last_parsed_ack_line_at: diagnostics.last_parsed_ack_line_at,
+          last_parsed_status_line: diagnostics.last_parsed_status_line,
+          last_parsed_status_line_at: diagnostics.last_parsed_status_line_at,
+          last_ok_at: diagnostics.last_ok_at,
+          last_status_at: diagnostics.last_status_at,
+          port_state: diagnostics.port_state,
+          read_loop_id: diagnostics.read_loop_id,
+          status_polling_state: diagnostics.status_polling_state,
+        }).catch((reportError) => {
+          appendLog(`Browser serial diagnostics upload failed: ${String(reportError)}`)
+        })
         pushToast(String(error), 'error')
         appendLog(`Run failed: ${String(error)}`)
+        setBusy('running', false)
       })
   }
 
@@ -724,6 +873,11 @@ function DashboardApp() {
             <h2>Settings and diagnostics</h2>
           </div>
         </div>
+        {lastDebugBundle ? (
+          <button className="button" onClick={handleDownloadDebugBundle} type="button">
+            Download Debug Bundle
+          </button>
+        ) : null}
         <AdvancedDrawer activeTab={drawerTab} onTab={setDrawerTab} />
       </section>
       {advancedOpen && drawerTab === 'gcode' ? <GcodePanel gcode={gcode} /> : null}
@@ -1086,15 +1240,18 @@ function getRemainingSeconds(
 ) {
   if (!machine) return 0
   if (machine.job_estimated_remaining_seconds != null) {
+    if ((machine.running || machine.paused) && progressPercent > 0 && progressPercent < 100) {
+      return Math.max(1, machine.job_estimated_remaining_seconds)
+    }
     return Math.max(0, machine.job_estimated_remaining_seconds)
   }
   if (isTerminalJobState(machine)) return 0
   if (!summary?.estimated_runtime_seconds) return 0
   if (!machine.running && !machine.paused) return 0
   if (progressPercent >= 100) return 0
-  if (!progressPercent) return Math.max(0, summary.estimated_runtime_seconds - elapsedSeconds)
+  if (!progressPercent) return Math.max(1, summary.estimated_runtime_seconds - elapsedSeconds)
   const estimatedByProgress = elapsedSeconds * ((100 - progressPercent) / progressPercent)
-  return Math.max(0, estimatedByProgress)
+  return Math.max(1, estimatedByProgress)
 }
 
 function isTerminalJobState(machine: MachineState | null) {
