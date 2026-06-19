@@ -47,8 +47,10 @@ type PendingCommand = {
   acknowledgedAt: number | null
   response: string | null
   expectedStateChange: {
-    kind: 'spindle' | 'none'
+    kind: 'spindle' | 'motion' | 'none'
     spindleSpeed: number | null
+    targetX: number | null
+    targetY: number | null
   }
   desyncStatusMatches: number
   holdObserved: boolean
@@ -348,11 +350,28 @@ function buildExpectedStateChange(command: string): PendingCommand['expectedStat
     return {
       kind: 'spindle',
       spindleSpeed,
+      targetX: null,
+      targetY: null,
+    }
+  }
+  const normalized = normalizeCommand(command)
+  const xMatch = normalized.match(/(?:^|\s)X(-?\d+(?:\.\d+)?)/)
+  const yMatch = normalized.match(/(?:^|\s)Y(-?\d+(?:\.\d+)?)/)
+  const targetX = xMatch ? Number(xMatch[1]) : null
+  const targetY = yMatch ? Number(yMatch[1]) : null
+  if (targetX != null || targetY != null) {
+    return {
+      kind: 'motion',
+      spindleSpeed: null,
+      targetX: Number.isFinite(targetX) ? targetX : null,
+      targetY: Number.isFinite(targetY) ? targetY : null,
     }
   }
   return {
     kind: 'none',
     spindleSpeed: null,
+    targetX: null,
+    targetY: null,
   }
 }
 
@@ -1068,6 +1087,18 @@ export class GrblWebSerialService {
       return desyncDetails.failure_class
     }
     const port = this.buildPortDiagnostics()
+    const activeTransactionId = this.activeTransaction?.id ?? null
+    const activeTransactionObservedAt = this.activeTransaction?.sentAt ?? this.activeTransaction?.createdAt ?? null
+    const lastOkEntry = [...this.rxLineTrace].reverse().find((entry) => entry.produced === 'ok')
+    const completeLineBelongsToActiveTransaction = activeTransactionObservedAt == null || (
+      this.lastCompleteParsedLineAt != null && this.lastCompleteParsedLineAt >= activeTransactionObservedAt
+    )
+    const partialLineBelongsToActiveTransaction = activeTransactionObservedAt == null || (
+      this.partialLineBufferUpdatedAt != null && this.partialLineBufferUpdatedAt >= activeTransactionObservedAt
+    )
+    const rawChunkBelongsToActiveTransaction = activeTransactionObservedAt == null || (
+      this.lastRawSerialChunkAt != null && this.lastRawSerialChunkAt >= activeTransactionObservedAt
+    )
     if (!port.portOpen || !port.readerActive || !port.writerActive) {
       return 'TIMEOUT_PORT_CLOSED'
     }
@@ -1075,16 +1106,25 @@ export class GrblWebSerialService {
     if (/^Grbl\b/i.test(lastLine)) {
       return 'TIMEOUT_CONTROLLER_RESET'
     }
-    if (this.readBuffer) {
+    if (this.readBuffer && partialLineBelongsToActiveTransaction) {
       return 'TIMEOUT_PARTIAL_LINE'
     }
-    if (this.lastParsedAckLine === 'ok' && [...this.rxLineTrace].reverse().find((entry) => entry.line === 'ok')?.activeTransactionId != null) {
+    if (
+      completeLineBelongsToActiveTransaction
+      && this.lastCompleteParsedLine === 'ok'
+      && this.lastParsedAckLine === 'ok'
+      && activeTransactionId != null
+      && lastOkEntry?.activeTransactionId === activeTransactionId
+    ) {
       return 'TIMEOUT_AFTER_COMPLETE_OK_BUT_NOT_RESOLVED'
     }
-    if (this.lastCompleteParsedLine?.startsWith('<')) {
+    if (this.lastCompleteParsedLine?.startsWith('<') && completeLineBelongsToActiveTransaction) {
       return 'TIMEOUT_AFTER_COMPLETE_STATUS'
     }
-    if (!this.lastRawSerialChunk) {
+    if (this.lastCompleteParsedLine && completeLineBelongsToActiveTransaction) {
+      return 'TIMEOUT_INVALID_COMPLETE_LINE'
+    }
+    if (!this.lastRawSerialChunk || !rawChunkBelongsToActiveTransaction) {
       return 'TIMEOUT_NO_RX'
     }
     if (this.lastRawSerialChunk && !this.lastCompleteParsedLine) {
@@ -1260,19 +1300,38 @@ export class GrblWebSerialService {
 
       const armTimeout = () => {
         transaction.timeoutId = globalThis.setTimeout(() => {
-          if (this.machine.paused && !this.stopRequested && this.activeTransaction?.id === transaction.id && !transaction.resolved) {
-            this.recordTransactionLifecycle('TX_TIMEOUT_DEFERRED', transaction, 'machine paused')
-            armTimeout()
-            return
-          }
-          if (this.activeTransaction?.id !== transaction.id || transaction.resolved) {
-            return
-          }
-          this.recordTransactionLifecycle('TX_TIMEOUT', transaction)
-          transaction.resolved = true
-          const error = this.buildTimeoutError(this.streamPendingCommands, Math.max(0, lineNumber - 1), resolvedTimeoutMs, null)
-          this.clearActiveTransaction(transaction, 'TX_CLEAR')
-          reject(error)
+          void (async () => {
+            const pendingCommand = this.streamPendingCommands.find((entry) => entry.transactionId === transaction.id)
+            if (this.machine.paused && !this.stopRequested && this.activeTransaction?.id === transaction.id && !transaction.resolved) {
+              this.recordTransactionLifecycle('TX_TIMEOUT_DEFERRED', transaction, 'machine paused')
+              armTimeout()
+              return
+            }
+            if (this.activeTransaction?.id !== transaction.id || transaction.resolved) {
+              return
+            }
+            const recovery = await this.tryRecoverTimedOutTransaction(transaction, pendingCommand, resolvedTimeoutMs)
+            if (recovery?.recovered) {
+              return
+            }
+            if (this.activeTransaction?.id !== transaction.id || transaction.resolved) {
+              return
+            }
+            this.recordTransactionLifecycle('TX_TIMEOUT', transaction)
+            transaction.resolved = true
+            const error = recovery?.error ?? this.buildTimeoutError(this.streamPendingCommands, Math.max(0, lineNumber - 1), resolvedTimeoutMs, null)
+            this.clearActiveTransaction(transaction, 'TX_CLEAR')
+            reject(error)
+          })().catch((error) => {
+            if (this.activeTransaction?.id !== transaction.id || transaction.resolved) {
+              return
+            }
+            this.recordTransactionLifecycle('TX_TIMEOUT_RECOVERY_ERROR', transaction, normalizeErrorMessage(error))
+            transaction.resolved = true
+            const timeoutError = this.buildTimeoutError(this.streamPendingCommands, Math.max(0, lineNumber - 1), resolvedTimeoutMs, null)
+            this.clearActiveTransaction(transaction, 'TX_CLEAR')
+            reject(timeoutError)
+          })
         }, resolvedTimeoutMs)
       }
       armTimeout()
@@ -1304,12 +1363,86 @@ export class GrblWebSerialService {
     if (this.strictAckStreaming) {
       throw new Error('Status polling is disabled during Strict Ack streaming.')
     }
+    return this.queryStatusBypassStrictAck(timeoutMs)
+  }
+
+  private async queryStatusBypassStrictAck(timeoutMs = 1500) {
+    const waitForStatus = this.waitForStatusLine(timeoutMs)
     await this.writeRaw('?')
     try {
-      return await this.waitForStatusLine(timeoutMs)
+      return await waitForStatus
     } catch {
       return null
     }
+  }
+
+  private commandMatchesObservedStatus(pending: PendingCommand | undefined, parsedStatus: ParsedGrblStatus | null) {
+    if (!pending || !parsedStatus) {
+      return { matched: false, reason: 'missing_pending_or_status' }
+    }
+    if (pending.expectedStateChange.kind === 'spindle') {
+      return {
+        matched: parsedStatus.spindleSpeed === pending.expectedStateChange.spindleSpeed,
+        reason: 'spindle_speed_compare',
+      }
+    }
+    if (pending.expectedStateChange.kind === 'motion') {
+      const tolerance = 0.05
+      const xMatches = pending.expectedStateChange.targetX == null || (
+        parsedStatus.x != null && Math.abs(parsedStatus.x - pending.expectedStateChange.targetX) <= tolerance
+      )
+      const yMatches = pending.expectedStateChange.targetY == null || (
+        parsedStatus.y != null && Math.abs(parsedStatus.y - pending.expectedStateChange.targetY) <= tolerance
+      )
+      return {
+        matched: xMatches && yMatches,
+        reason: 'axis_target_compare',
+      }
+    }
+    return { matched: false, reason: 'no_expected_state_change' }
+  }
+
+  private async tryRecoverTimedOutTransaction(
+    transaction: StrictAckTransaction,
+    pending: PendingCommand | undefined,
+    responseTimeoutMs: number,
+  ) {
+    const failureClass = this.classifyTimeout()
+    if (failureClass !== 'TIMEOUT_INVALID_COMPLETE_LINE') {
+      return null
+    }
+    const statusLine = await this.queryStatusBypassStrictAck(STATUS_QUERY_TIMEOUT_MS)
+    const parsedStatus = statusLine ? parseGrblStatus(statusLine) : null
+    const statusMatch = this.commandMatchesObservedStatus(pending, parsedStatus)
+    const desyncDetails = {
+      failure_class: statusMatch.matched ? 'RECOVERED_FROM_STATUS_MATCH' : failureClass,
+      status_line: statusLine,
+      parsed_status: parsedStatus,
+      status_match_reason: statusMatch.reason,
+      expected_state_change: pending?.expectedStateChange ?? null,
+    }
+    if (!statusMatch.matched) {
+      return {
+        recovered: false,
+        statusLine,
+        error: this.buildTimeoutError(this.streamPendingCommands, Math.max(0, transaction.lineNumber - 1), responseTimeoutMs, statusLine, desyncDetails),
+      }
+    }
+
+    this.recordTransactionLifecycle('TX_RECOVER_STATUS_MATCH', transaction, statusLine ?? 'no status line')
+    transaction.resolved = true
+    this.clearPendingForTransaction(transaction, 'ok (recovered from status)')
+    this.clearActiveTransaction(transaction, 'TX_CLEAR')
+    this.recordTransactionLifecycle('TX_RESOLVE', transaction, 'ok (recovered from status)')
+    this.updateMachine({ last_timeout_debug: null })
+    transaction.resolve({
+      command: transaction.command,
+      response: 'ok',
+      bytes: transaction.byteLength,
+      receivedAt: Date.now() / 1000,
+      transactionId: transaction.id,
+    })
+    return { recovered: true, statusLine, error: null }
   }
 
   private async performHandshake() {
@@ -1946,14 +2079,31 @@ export class GrblWebSerialService {
         this.pushStreamDebugEvent('POST_TIMEOUT_LISTEN_DONE', `${POST_TIMEOUT_OBSERVATION_MS}ms`)
       }
       const timeoutDebug = this.machine.last_timeout_debug ?? null
-      await this.closeSerialPort()
+      const preserveConnection = Boolean(
+        timeoutDebug
+        && ['TIMEOUT_INVALID_COMPLETE_LINE', 'TIMEOUT_PARTIAL_LINE', 'TIMEOUT_AFTER_COMPLETE_STATUS', 'TIMEOUT_AFTER_COMPLETE_OK_BUT_NOT_RESOLVED'].includes(
+          String((timeoutDebug as Record<string, unknown>).failure_class ?? ''),
+        )
+        && this.activePort
+        && this.portReader
+        && this.portWriter
+        && !userStopRequested,
+      )
+      if (!preserveConnection) {
+        await this.closeSerialPort()
+      } else {
+        pendingCommands.length = 0
+        this.streamPendingCommands.length = 0
+        pendingBufferChars = 0
+        this.updatePendingQueueState()
+      }
       this.updateMachine({
-        ...buildDisconnectedMachineState(),
-        connected: false,
+        ...(preserveConnection ? this.getMachineState() : buildDisconnectedMachineState()),
+        connected: preserveConnection,
         running: false,
-        paused: false,
+        paused: preserveConnection,
         job_state: userStopRequested ? 'stopped' : 'failed',
-        status: failedStatus,
+        status: preserveConnection ? `${failedStatus} Connection kept open for recovery.` : failedStatus,
         run_finished_at: Date.now() / 1000,
         job_finished_at: Date.now() / 1000,
         progress_done: ackedCount,

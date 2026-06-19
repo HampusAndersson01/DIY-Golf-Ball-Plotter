@@ -432,6 +432,111 @@ describe('GrblWebSerialService', () => {
     expect(timeoutDebug?.last_complete_parsed_line).toBe('ok')
   })
 
+  it('classifies o followed by CRLF as an invalid complete line, not a missed ok race', async () => {
+    const mock = createMockPort()
+    mock.pushLine('Grbl 1.1h')
+    mock.setOnWrite((payload) => {
+      const command = payload.trim()
+      if (command === '$X') {
+        mock.pushLine('ok')
+      } else if (command === 'M3 S700') {
+        mock.pushLine('ok')
+      } else if (command === 'G4 P0.060') {
+        mock.pushChunk('o')
+        mock.pushChunk('\r\n')
+      }
+    })
+
+    Object.defineProperty(globalThis.navigator, 'serial', {
+      configurable: true,
+      value: { requestPort: vi.fn().mockResolvedValue(mock.port), getPorts: vi.fn().mockResolvedValue([]) },
+    })
+
+    const service = new GrblWebSerialService()
+    await service.connect()
+
+    await expect(service.runGcode(['M3 S700', 'G4 P0.060'], { responseTimeoutMs: 5, streamingMode: 'sync' })).rejects.toThrow(
+      'TIMEOUT_INVALID_COMPLETE_LINE',
+    )
+
+    const timeoutDebug = service.getMachineState().last_timeout_debug
+    expect(timeoutDebug?.failure_class).toBe('TIMEOUT_INVALID_COMPLETE_LINE')
+    expect(timeoutDebug?.timed_out_command).toBe('G4 P0.060')
+    expect(timeoutDebug?.last_complete_parsed_line).toBe('o')
+    expect(timeoutDebug?.last_parsed_ack_line).toBe('ok')
+    expect(timeoutDebug?.current_partial_line_buffer).toBeNull()
+  })
+
+  it('recovers a malformed strict motion acknowledgement when status proves the move completed', async () => {
+    const mock = createMockPort()
+    mock.pushLine('Grbl 1.1h')
+    mock.setOnWrite((payload) => {
+      const command = payload.trim()
+      if (command === '$X' || command === 'G90') {
+        mock.pushLine('ok')
+      } else if (command === 'X1.0000 Y2.0000') {
+        mock.pushChunk('o')
+        mock.pushChunk('\r\n')
+      } else if (command === '?') {
+        mock.pushLine('<Idle|WPos:1.000,2.000,0.000|Bf:15,128|FS:0,700>')
+      }
+    })
+
+    Object.defineProperty(globalThis.navigator, 'serial', {
+      configurable: true,
+      value: { requestPort: vi.fn().mockResolvedValue(mock.port), getPorts: vi.fn().mockResolvedValue([]) },
+    })
+
+    const service = new GrblWebSerialService()
+    await service.connect()
+
+    await service.runGcode(['G90', 'X1.0000 Y2.0000'], { responseTimeoutMs: 5, streamingMode: 'sync' })
+
+    expect(service.getMachineState().status).toBe('Job complete')
+    expect(service.getMachineState().progress_done).toBe(2)
+    expect(service.getMachineState().connected).toBe(true)
+    expect(service.getMachineState().last_timeout_debug).toBeNull()
+    expect(service.getStreamDiagnostics().transaction_lifecycle_events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ event: 'TX_RECOVER_STATUS_MATCH', command: 'X1.0000 Y2.0000' }),
+      ]),
+    )
+  })
+
+  it('keeps the port open after an invalid complete line timeout so the operator can recover', async () => {
+    const mock = createMockPort()
+    mock.pushLine('Grbl 1.1h')
+    mock.setOnWrite((payload) => {
+      const command = payload.trim()
+      if (command === '$X') {
+        mock.pushLine('ok')
+      } else if (command === 'X1.0000 Y2.0000') {
+        mock.pushChunk('o')
+        mock.pushChunk('\r\n')
+      } else if (command === '?') {
+        mock.pushLine('<Idle|WPos:0.900,2.000,0.000|Bf:15,128|FS:0,700>')
+      }
+    })
+
+    Object.defineProperty(globalThis.navigator, 'serial', {
+      configurable: true,
+      value: { requestPort: vi.fn().mockResolvedValue(mock.port), getPorts: vi.fn().mockResolvedValue([]) },
+    })
+
+    const service = new GrblWebSerialService()
+    await service.connect()
+
+    await expect(service.runGcode(['X1.0000 Y2.0000'], { responseTimeoutMs: 5, streamingMode: 'sync' })).rejects.toThrow(
+      'TIMEOUT_INVALID_COMPLETE_LINE',
+    )
+
+    expect(service.getMachineState().connected).toBe(true)
+    expect(service.getPort()).toBe(mock.port)
+    expect(service.getMachineState().paused).toBe(true)
+    expect(service.getMachineState().status).toContain('Connection kept open for recovery')
+    expect(mock.close).not.toHaveBeenCalled()
+  })
+
   it('updates status and resolves active transaction from a multi-line status plus ok chunk', async () => {
     const mock = createMockPort()
     mock.pushLine('Grbl 1.1h')
@@ -486,8 +591,9 @@ describe('GrblWebSerialService', () => {
       'GRBL communication timeout at line 1 after "M3 S700".',
     )
     expect(mock.writes.slice(runWritesStart)).not.toContain('?')
-    expect(service.getMachineState().connected).toBe(false)
+    expect(service.getMachineState().connected).toBe(true)
     expect(service.getMachineState().job_state).toBe('failed')
+    expect(service.getMachineState().status).toContain('Connection kept open for recovery')
   })
 
   it('does not synthesize an acknowledgement for motion commands when idle status does not match the target position', async () => {
@@ -694,7 +800,7 @@ describe('GrblWebSerialService', () => {
     await expect(service.zeroAndMarkCalibrated()).rejects.toThrow('GRBL communication timeout')
 
     expect(service.getMachineState().calibrated).toBe(false)
-    expect(mock.writes.filter((payload) => payload === '?')).toHaveLength(1)
+    expect(mock.writes.filter((payload) => payload === '?')).toHaveLength(2)
   }, 10_000)
 
   it('releases the serial port after a failed run so the next connect can reopen it', async () => {
@@ -771,7 +877,7 @@ describe('GrblWebSerialService', () => {
     }
   }, 120_000)
 
-  it('disconnects the machine after a stream timeout', async () => {
+  it('keeps the machine connected after a timeout when GRBL still returns status lines', async () => {
     const mock = createMockPort()
 
     mock.pushLine('Grbl 1.1h')
@@ -794,10 +900,10 @@ describe('GrblWebSerialService', () => {
       service.runGcode(['G1 X-15.2271 Y-14.8662'], { responseTimeoutMs: 5, streamingMode: 'sync' }),
     ).rejects.toThrow('GRBL communication timeout')
 
-    expect(service.getMachineState().connected).toBe(false)
-    expect(service.getPort()).toBeNull()
-    expect(mock.close).toHaveBeenCalled()
-    expect(service.getMachineState().status).toContain('GRBL communication timeout')
+    expect(service.getMachineState().connected).toBe(true)
+    expect(service.getPort()).toBe(mock.port)
+    expect(mock.close).not.toHaveBeenCalled()
+    expect(service.getMachineState().status).toContain('Connection kept open for recovery')
   })
 
   it('treats controller hold as a paused run and can recover after resume without failing the stream', async () => {
