@@ -3721,10 +3721,13 @@ def test_projection_preparation_resamples_long_diagonal_outline_segments_before_
         center_lat_deg=0.0,
     )
 
-    limit_mm = min(0.3 * 0.5, pipeline_core.DEFAULT_PROJECTION_SAMPLING_MAX_SEGMENT_MM)
     drawing_paths = [path for path in prepared if path.kind in {"outline", "fill-wall", "fill-infill", "detail-trace"}]
     assert drawing_paths
-    assert all(float(path.metadata["max_surface_segment_mm_after_resampling"]) <= limit_mm + 1e-6 for path in drawing_paths)
+    assert all(
+        float(path.metadata["max_surface_segment_mm_after_resampling"])
+        <= pipeline_core._resolve_projection_sampling_mm(path, default_pen_width_mm=0.3) + 1e-6
+        for path in drawing_paths
+    )
     assert all(int(path.metadata.get("projection_count", 0)) == 1 for path in projected)
 
 
@@ -3795,10 +3798,10 @@ def test_prepare_projection_handles_degenerate_closed_outline_without_fake_closi
     assert len(prepared) == 1
     assert prepared[0].closed is False
     assert prepared[0].metadata["closed_path_degenerated_before_projection"] is True
-    assert float(prepared[0].metadata["max_surface_segment_mm_after_resampling"]) <= 0.1 + 1e-6
+    assert float(prepared[0].metadata["max_surface_segment_mm_after_resampling"]) <= 0.16 + 1e-6
 
 
-def test_projection_sampling_reaches_global_cap_for_thicker_pen_widths():
+def test_projection_sampling_scales_up_with_pen_width_for_thicker_strokes():
     path = Toolpath(
         points=[Point(0.0, 0.0), Point(1.0, 0.0)],
         kind="fill-infill",
@@ -3810,8 +3813,8 @@ def test_projection_sampling_reaches_global_cap_for_thicker_pen_widths():
     prepared = pipeline_core.prepare_toolpaths_for_projection([path], default_pen_width_mm=0.45)
 
     assert len(prepared) == 1
-    assert float(prepared[0].metadata["projection_sampling_mm"]) == pytest.approx(0.15, abs=1e-6)
-    assert float(prepared[0].metadata["max_surface_segment_mm_after_resampling"]) <= 0.15 + 1e-6
+    assert float(prepared[0].metadata["projection_sampling_mm"]) == pytest.approx(0.36, abs=1e-6)
+    assert float(prepared[0].metadata["max_surface_segment_mm_after_resampling"]) <= 0.36 + 1e-6
 
 
 def test_outer_ring_and_hole_remain_separate_paths_with_pen_up_travel():
@@ -3998,7 +4001,7 @@ def test_vertical_horizontal_and_diagonal_outline_segments_project_with_bounded_
 
     outline_paths = [path for path in prepared if path.kind in {"outline", "fill-wall"}]
     assert outline_paths
-    assert all(float(path.metadata["max_surface_segment_mm_after_resampling"]) <= 0.15 + 1e-6 for path in outline_paths)
+    assert all(float(path.metadata["max_surface_segment_mm_after_resampling"]) <= 0.24 + 1e-6 for path in outline_paths)
     projected_outline_lengths = [
         max(pipeline_core._segment_lengths_mm(path.points, closed=path.closed))
         for path in projected
