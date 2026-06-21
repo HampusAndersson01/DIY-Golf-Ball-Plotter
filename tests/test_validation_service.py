@@ -26,7 +26,7 @@ def make_config():
         "DEFAULT_OUTLINE_AFTER_FILL": False,
         "DEFAULT_MIN_FILL_AREA_MM2": 1.0,
         "DEFAULT_MIN_FILL_WIDTH_MM": 0.75,
-        "DEFAULT_SIMPLIFY_TOLERANCE_MM": 0.05,
+        "DEFAULT_SIMPLIFY_TOLERANCE_MM": 0.075,
         "DEFAULT_REMOVE_DUPLICATE_PATHS": True,
         "DEFAULT_SMALL_SHAPE_MODE": "single-wall",
         "DEFAULT_THIN_DETAIL_MODE": True,
@@ -90,6 +90,18 @@ def test_generate_raster_form_derives_fill_defaults_from_pen_thickness():
     assert options["infill_overlap_percent"] == pytest.approx(20.0)
     assert options["min_fill_width_mm"] == pytest.approx(0.6)
     assert options["min_fill_area_mm2"] == pytest.approx(0.36)
+
+
+def test_generate_raster_form_uses_updated_default_simplify_tolerance():
+    service = ValidationService()
+    options = service.parse_generate_raster_form(
+        {
+            "selected_colors": "[\"#000000\"]",
+        },
+        make_config(),
+    )
+
+    assert options["simplify_tolerance_mm"] == pytest.approx(0.075)
 
 
 def test_generate_gcode_form_accepts_printable_x_span_override_toggle():
