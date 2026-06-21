@@ -877,6 +877,40 @@ describe('GrblWebSerialService', () => {
     }
   }, 120_000)
 
+  it('strips inline and whole-line comments before live streaming while preserving executable commands', async () => {
+    const mock = createMockPort()
+    mock.pushLine('Grbl 1.1h')
+    mock.setOnWrite((payload) => {
+      const command = payload.trim()
+      if (command === '$X' || command === 'G1 X1.0000 Y2.0000 F1200.000' || command === 'M3 S700') {
+        mock.pushLine('ok')
+      }
+    })
+
+    Object.defineProperty(globalThis.navigator, 'serial', {
+      configurable: true,
+      value: { requestPort: vi.fn().mockResolvedValue(mock.port), getPorts: vi.fn().mockResolvedValue([]) },
+    })
+
+    const service = new GrblWebSerialService()
+    await service.connect()
+
+    const runWritesStart = mock.writes.length
+    await service.runGcode(
+      [
+        '(debug header)',
+        'G1 X1.0000 Y2.0000 F1200.000 ; travel move comment',
+        'M3 S700 (pen down annotation)',
+        '; trailing footer comment',
+      ],
+      { responseTimeoutMs: 20, streamingMode: 'sync' },
+    )
+
+    expect(mock.writes.slice(runWritesStart)).toEqual(['$X\n', 'G1 X1.0000 Y2.0000 F1200.000\n', 'M3 S700\n'])
+    expect(service.getMachineState().progress_total).toBe(2)
+    expect(service.getMachineState().progress_done).toBe(2)
+  })
+
   it('keeps the machine connected after a timeout when GRBL still returns status lines', async () => {
     const mock = createMockPort()
 

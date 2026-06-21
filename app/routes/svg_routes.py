@@ -12,6 +12,7 @@ from app.extensions import (
     get_toolpath_service,
     get_validation_service,
 )
+from app.routes.gcode_metrics import count_motion_lines
 from app.services import pipeline_core
 from app.utils.response_utils import json_error, json_ok, log_exception
 
@@ -103,7 +104,7 @@ def project_surface_toolpaths(toolpaths, options: dict):
 def build_gcode_stats(gcode: list[str], cleanup_stats: dict[str, object], *, preview_path_count: int = 0, debug: dict | None = None) -> dict[str, object]:
     comment_lines = sum(1 for line in gcode if line.strip().startswith("(") and line.strip().endswith(")"))
     blank_lines = sum(1 for line in gcode if not line.strip())
-    motion_lines = sum(1 for line in gcode if line.strip().startswith("G1"))
+    motion_lines = count_motion_lines(gcode)
     dwell_count = sum(1 for line in gcode if line.strip().startswith("G4"))
     pen_up_count = sum(1 for line in gcode if line.strip().startswith("M3 S") and "S575" in line)
     pen_down_count = sum(1 for line in gcode if line.strip().startswith("M3 S") and "S700" in line)

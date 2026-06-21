@@ -161,3 +161,17 @@ def test_arsenal_frontend_generation_stays_under_budget_and_meets_quality_guard(
         f"Arsenal frontend generation regressed overflow: overflow_ratio={overflow_ratio:.5f} "
         f"summary={summary}"
     )
+
+
+def test_frontend_generation_summary_exposes_issue_20_metrics(client):
+    payload = _frontend_generate(client, disable_thin_source_pass=False, debug_pipeline=False)
+    summary = dict(payload.get("summary") or {})
+    metrics = dict(summary.get("generation_metrics") or {})
+
+    assert metrics
+    assert 0 < metrics["path_count"] <= sum(summary["toolpath_counts"].values())
+    assert metrics["motion_line_count"] == metrics["travel_segment_count"] + metrics["drawing_segment_count"]
+    assert metrics["average_segment_length_mm"] >= metrics["minimum_segment_length_mm"] >= 0.0
+    assert 0.0 <= metrics["segments_below_pen_width_percent"] <= 100.0
+    assert metrics["m3_command_count"] >= metrics["g4_command_count"] >= 1
+    assert metrics["estimated_draw_time_seconds"] == pytest.approx(summary["estimated_runtime_seconds"], abs=1e-9)

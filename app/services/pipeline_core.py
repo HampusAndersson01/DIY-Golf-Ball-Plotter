@@ -7460,7 +7460,7 @@ def optimize_post_generation_travel_order(
         optimized_outline, current, outline_reversed, outline_bad_choices, outline_reasons = _nearest_neighbor_order_group(
             outline_paths,
             start_point=current,
-            allow_open_path_reversal=False,
+            allow_open_path_reversal=True,
         )
         optimized_export_paths.extend(optimized_outline)
         open_paths_reversed_count += outline_reversed

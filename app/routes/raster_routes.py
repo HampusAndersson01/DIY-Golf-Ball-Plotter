@@ -15,6 +15,7 @@ from app.extensions import (
     get_toolpath_service,
     get_validation_service,
 )
+from app.routes.gcode_metrics import build_generation_metrics, count_motion_lines
 from app.services import pipeline_core
 from app.services.runtime_estimation_service import estimate_gcode_runtime
 from app.utils.response_utils import json_error, json_ok, log_exception
@@ -351,7 +352,7 @@ def project_surface_toolpaths(toolpaths, options: dict):
 def build_gcode_stats(gcode: list[str], cleanup_stats: dict[str, object], *, preview_path_count: int = 0, debug: dict | None = None) -> dict[str, object]:
     comment_lines = sum(1 for line in gcode if line.strip().startswith("(") and line.strip().endswith(")"))
     blank_lines = sum(1 for line in gcode if not line.strip())
-    motion_lines = sum(1 for line in gcode if line.strip().startswith("G1"))
+    motion_lines = count_motion_lines(gcode)
     dwell_count = sum(1 for line in gcode if line.strip().startswith("G4"))
     pen_up_count = sum(1 for line in gcode if line.strip().startswith("M3 S") and "S575" in line)
     pen_down_count = sum(1 for line in gcode if line.strip().startswith("M3 S") and "S700" in line)
@@ -722,6 +723,16 @@ def generate_image_gcode_route():
             "estimated_runtime_seconds": runtime_estimate["estimatedRuntimeSeconds"],
             "estimated_runtime_breakdown": runtime_estimate,
             "pen_lift_count": runtime_estimate["penLifts"],
+            "generation_metrics": build_generation_metrics(
+                gcode,
+                pen_up_s=options["pen_up_s"],
+                pen_down_s=options["pen_down_s"],
+                line_width_mm=options["line_thickness_mm"],
+                center_lon_deg=options["placement_offset_x"],
+                center_lat_deg=options["placement_offset_y"],
+                ball_diameter_mm=current_app.config["BALL_DIAMETER_MM"],
+                estimated_draw_time_seconds=float(runtime_estimate["estimatedRuntimeSeconds"]),
+            ),
             "coverage_ratio": float(coverage_summary.get("coverage_ratio", 0.0)),
             "overflow_ratio": float(coverage_summary.get("overflow_ratio", 0.0)),
         }
@@ -931,6 +942,16 @@ def generate_diagnostic_gcode_route():
                 "estimated_runtime_seconds": runtime_estimate["estimatedRuntimeSeconds"],
                 "estimated_runtime_breakdown": runtime_estimate,
                 "pen_lift_count": runtime_estimate["penLifts"],
+                "generation_metrics": build_generation_metrics(
+                    gcode,
+                    pen_up_s=config["DEFAULT_PEN_UP_S"],
+                    pen_down_s=config["DEFAULT_PEN_DOWN_S"],
+                    line_width_mm=float(config["DEFAULT_LINE_THICKNESS_MM"]),
+                    center_lon_deg=0.0,
+                    center_lat_deg=0.0,
+                    ball_diameter_mm=current_app.config["BALL_DIAMETER_MM"],
+                    estimated_draw_time_seconds=float(runtime_estimate["estimatedRuntimeSeconds"]),
+                ),
             }
             state.update(
                 last_svg_name=f"diagnostic:{pattern}",
@@ -1085,6 +1106,16 @@ def generate_diagnostic_gcode_route():
             "estimated_runtime_seconds": runtime_estimate["estimatedRuntimeSeconds"],
             "estimated_runtime_breakdown": runtime_estimate,
             "pen_lift_count": runtime_estimate["penLifts"],
+            "generation_metrics": build_generation_metrics(
+                gcode,
+                pen_up_s=config["DEFAULT_PEN_UP_S"],
+                pen_down_s=config["DEFAULT_PEN_DOWN_S"],
+                line_width_mm=float(config["DEFAULT_LINE_THICKNESS_MM"]),
+                center_lon_deg=0.0,
+                center_lat_deg=0.0,
+                ball_diameter_mm=current_app.config["BALL_DIAMETER_MM"],
+                estimated_draw_time_seconds=float(runtime_estimate["estimatedRuntimeSeconds"]),
+            ),
         }
         state.update(
             last_svg_name=f"diagnostic:{pattern}",

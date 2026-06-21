@@ -21,6 +21,8 @@ export function JobSummaryPanel({ summary, generationDurationMs, stageTimings }:
     )
   }
 
+  const generationMetrics = summary.generation_metrics
+
   return (
     <section className="inspector-summary-shell">
       <div className="inspector-card-grid">
@@ -57,6 +59,17 @@ export function JobSummaryPanel({ summary, generationDurationMs, stageTimings }:
           <div><span>Actual runtime</span><strong>{summary.actual_runtime_seconds != null ? formatDuration(summary.actual_runtime_seconds) : '--'}</strong></div>
           <div><span>Actual vs estimate</span><strong>{summary.actual_vs_estimated_ratio != null ? `${summary.actual_vs_estimated_ratio.toFixed(1)}x` : '--'}</strong></div>
           <div><span>Generate time</span><strong>{formatGeneration(generationDurationMs)}</strong></div>
+          <div><span>Total paths</span><strong>{generationMetrics?.path_count ?? '--'}</strong></div>
+          <div><span>Motion lines</span><strong>{generationMetrics?.motion_line_count ?? '--'}</strong></div>
+          <div><span>Travel segments</span><strong>{generationMetrics?.travel_segment_count ?? '--'}</strong></div>
+          <div><span>Drawing segments</span><strong>{generationMetrics?.drawing_segment_count ?? '--'}</strong></div>
+          <div><span>Pen lifts</span><strong>{summary.pen_lift_count}</strong></div>
+          <div><span>Pen lowers</span><strong>{summary.estimated_runtime_breakdown?.penLowers ?? '--'}</strong></div>
+          <div><span>Avg segment</span><strong>{formatMillimeters(generationMetrics?.average_segment_length_mm)}</strong></div>
+          <div><span>Min segment</span><strong>{formatMillimeters(generationMetrics?.minimum_segment_length_mm)}</strong></div>
+          <div><span>Below pen width</span><strong>{formatBelowPenWidth(generationMetrics)}</strong></div>
+          <div><span>M3 commands</span><strong>{generationMetrics?.m3_command_count ?? '--'}</strong></div>
+          <div><span>G4 commands</span><strong>{generationMetrics?.g4_command_count ?? '--'}</strong></div>
         </div>
         {stageTimings && Object.keys(stageTimings).length > 0 ? (
           <div className="summary-stage-timings">
@@ -99,4 +112,21 @@ function formatStageLabel(key: string) {
 
 function formatStageDuration(value: number) {
   return `${(value / 1000).toFixed(2)}s`
+}
+
+function formatMillimeters(value: number | undefined) {
+  if (value == null || !Number.isFinite(value)) return '--'
+  return `${value.toFixed(3)} mm`
+}
+
+function formatBelowPenWidth(
+  metrics:
+    | {
+        segments_below_pen_width_count: number
+        segments_below_pen_width_percent: number
+      }
+    | undefined,
+) {
+  if (!metrics) return '--'
+  return `${metrics.segments_below_pen_width_count} (${metrics.segments_below_pen_width_percent.toFixed(1)}%)`
 }

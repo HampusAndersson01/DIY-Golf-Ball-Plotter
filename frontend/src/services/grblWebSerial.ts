@@ -205,6 +205,35 @@ export function parseGrblSerialChunk(buffer: string, chunk: string) {
   }
 }
 
+function sanitizeGcodeLineForStreaming(line: string) {
+  const trimmed = line.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  let result = ''
+  let parenthesisDepth = 0
+  for (const char of trimmed) {
+    if (char === ';' && parenthesisDepth === 0) {
+      break
+    }
+    if (char === '(') {
+      parenthesisDepth += 1
+      continue
+    }
+    if (char === ')' && parenthesisDepth > 0) {
+      parenthesisDepth -= 1
+      continue
+    }
+    if (parenthesisDepth === 0) {
+      result += char
+    }
+  }
+
+  const sanitized = result.trim()
+  return sanitized || null
+}
+
 function buildDisconnectedMachineState(): BrowserMachineState {
   return {
     connected: false,
@@ -1750,7 +1779,9 @@ export class GrblWebSerialService {
   }
 
   async runGcode(lines: string[], callbacks: RunCallbacks = {}) {
-    const streamableLines = lines.map((line) => line.trim()).filter((line) => line && !line.startsWith(';') && !line.startsWith('('))
+    const streamableLines = lines
+      .map((line) => sanitizeGcodeLineForStreaming(line))
+      .filter((line): line is string => Boolean(line))
     if (!streamableLines.length) {
       throw new Error('Generate a job before starting the plotter.')
     }

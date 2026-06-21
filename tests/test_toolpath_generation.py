@@ -645,6 +645,34 @@ def test_post_generation_travel_optimizer_keeps_preview_and_gcode_path_order_ali
     assert preview_ids == gcode_ids
 
 
+def test_post_generation_travel_optimizer_can_reverse_open_outline_paths_to_reduce_travel():
+    raw_paths = [
+        Toolpath(
+            points=[Point(10.0, 10.0), Point(0.0, 10.0)],
+            kind="outline",
+            closed=False,
+        ),
+        Toolpath(
+            points=[Point(0.0, 0.0), Point(0.0, 2.0)],
+            kind="outline",
+            closed=False,
+        ),
+    ]
+
+    optimized, diagnostics = pipeline_core.optimize_post_generation_travel_order(raw_paths)
+
+    assert diagnostics["travel_optimization_mode"] == "final_export_event_stream_ordering"
+    assert diagnostics["open_paths_reversed_count"] >= 1
+    assert diagnostics["paths_reordered"] is True
+    assert diagnostics["optimized_pen_up_travel_length_mm"] < diagnostics["raw_pen_up_travel_length_mm"]
+    assert optimized[0].points == [Point(0.0, 0.0), Point(0.0, 2.0)]
+    assert optimized[1].points == [Point(0.0, 10.0), Point(10.0, 10.0)]
+
+    before = Counter(_canonical_geometry_signature(path) for path in raw_paths)
+    after = Counter(_canonical_geometry_signature(path) for path in optimized)
+    assert before == after
+
+
 def test_text_outline_generated_from_inset_outline_and_emits_gcode_outline_paths():
     _raster, _geometry, mapped, toolpaths, debug = _build_raster_fixture_toolpaths(CAROLIN_FIXTURE)
     actual_outline = _actual_outline_paths(toolpaths)

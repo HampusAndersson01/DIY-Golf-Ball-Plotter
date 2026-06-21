@@ -143,6 +143,19 @@ export type JobSummary = {
     shortSegmentCount?: number
   }
   pen_lift_count: number
+  generation_metrics?: {
+    path_count: number
+    motion_line_count: number
+    travel_segment_count: number
+    drawing_segment_count: number
+    average_segment_length_mm: number
+    minimum_segment_length_mm: number
+    segments_below_pen_width_count: number
+    segments_below_pen_width_percent: number
+    m3_command_count: number
+    g4_command_count: number
+    estimated_draw_time_seconds: number
+  }
   actual_runtime_seconds?: number
   actual_vs_estimated_ratio?: number
 }
