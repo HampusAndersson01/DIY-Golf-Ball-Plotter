@@ -14,10 +14,7 @@ NOISY_TEST_LOGGERS = (
     "app.services.serial_service",
 )
 
-KNOWN_BACKEND_BUG_XFAILS = {
-    "tests/test_diagnostic_calibration_routes.py::test_generate_diagnostic_route_returns_calibration_metadata_for_3x3_pattern": "Known backend bug: diagnostic route debug payload contains non-JSON-serializable ndarray.",
-    "tests/test_diagnostic_calibration_routes.py::test_calibration_metadata_square_centers_follow_top_middle_bottom_labels": "Known backend bug: diagnostic route debug payload contains non-JSON-serializable ndarray.",
-}
+KNOWN_BACKEND_BUG_XFAILS = {}
 
 SLOW_TEST_PREFIXES = (
     "tests/test_infill_connector_regressions.py::test_arsenal_",

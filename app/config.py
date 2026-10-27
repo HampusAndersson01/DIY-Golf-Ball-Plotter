@@ -27,6 +27,14 @@ def _env_float(name: str, default: float) -> float:
 class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev")
     MAX_CONTENT_LENGTH = _env_int("MAX_CONTENT_LENGTH", 2 * 1024 * 1024)
+    DASHBOARD_MCP_TOKEN_FILE = os.getenv("DASHBOARD_MCP_TOKEN_FILE", "instance/dashboard_mcp_token")
+    DASHBOARD_MCP_FRONTEND_ORIGINS = tuple(
+        origin.strip()
+        for origin in os.getenv(
+            "DASHBOARD_MCP_FRONTEND_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173"
+        ).split(",")
+        if origin.strip()
+    )
 
     FLASK_HOST = os.getenv("FLASK_HOST", "127.0.0.1")
     FLASK_PORT = _env_int("FLASK_PORT", 5000)

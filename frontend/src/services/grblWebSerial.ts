@@ -2,6 +2,7 @@ import type { AppConfig, MachineState } from '../api/types'
 import type { SettingsState } from '../store/appStore'
 
 export const BAUD_RATE = 115200
+const SERIAL_OWNERSHIP_LOCK = 'golfball-plotter-serial-connection'
 
 export const COMMON_SERIAL_FILTERS: SerialPortFilter[] = [
   { usbVendorId: 0x2341 },
@@ -410,7 +411,9 @@ function formatPendingQueue(pendingCommands: PendingCommand[]) {
 
 export class GrblWebSerialService {
   private activePort: SerialPort | null = null
+  private closeSerialPromise: Promise<void> | null = null
   private isConnecting = false
+  private releaseSerialOwnershipLock: (() => void) | null = null
   private readBuffer = ''
   private stopRequested = false
   private machine: BrowserMachineState = buildDisconnectedMachineState()
@@ -983,7 +986,21 @@ export class GrblWebSerialService {
     this.rejectWaiters(this.statusWaiters, new Error('Serial session reset.'))
   }
 
-  private async closeSerialPort() {
+  private closeSerialPort() {
+    if (this.closeSerialPromise) {
+      return this.closeSerialPromise
+    }
+
+    const closePromise = this.performCloseSerialPort()
+    this.closeSerialPromise = closePromise
+    return closePromise.finally(() => {
+      if (this.closeSerialPromise === closePromise) {
+        this.closeSerialPromise = null
+      }
+    })
+  }
+
+  private async performCloseSerialPort() {
     const port = this.activePort
     await this.stopReadLoop()
     try {
@@ -1003,20 +1020,81 @@ export class GrblWebSerialService {
     } catch {
       // Best-effort cleanup.
     }
+    if (port) {
+      try {
+        await port.close()
+      } catch (firstError) {
+        // Stream cancellation and lock release can settle one task later than
+        // the caller that initiated Stop. Retry after yielding once; if the
+        // browser still reports the port open, retain its handle so a later
+        // Connect must clean it up before calling open() again.
+        await sleep(0)
+        try {
+          await port.close()
+        } catch (retryError) {
+          this.resetSerialState()
+          const firstDetail = firstError instanceof Error ? firstError.message : String(firstError)
+          const detail = retryError instanceof Error ? retryError.message : String(retryError)
+          this.updateMachine({
+            connected: false,
+            running: false,
+            paused: false,
+            status: `Serial port close failed; cleanup is still required: ${detail}`,
+          })
+          throw new Error(`Could not close the serial port after retry (first attempt: ${firstDetail}; retry: ${detail})`, { cause: retryError })
+        }
+      }
+    }
+
     this.portReader = null
     this.portWriter = null
     this.readLoopPromise = null
     this.readLoopStopped = false
     this.activeReadLoopId = null
-    if (port) {
-      try {
-        await port.close()
-      } catch {
-        // Ignore close failures during cleanup.
-      }
-    }
     this.activePort = null
     this.resetSerialState()
+    this.releaseSerialOwnershipLock?.()
+    this.releaseSerialOwnershipLock = null
+  }
+
+  private async acquireSerialOwnership() {
+    const lockManager = navigator.locks
+    if (!lockManager || this.releaseSerialOwnershipLock) {
+      return
+    }
+
+    let resolveAcquired!: (acquired: boolean) => void
+    let rejectAcquired!: (reason: unknown) => void
+    const acquiredPromise = new Promise<boolean>((resolve, reject) => {
+      resolveAcquired = resolve
+      rejectAcquired = reject
+    })
+
+    const lockRequest = lockManager.request(
+      SERIAL_OWNERSHIP_LOCK,
+      { mode: 'exclusive', ifAvailable: true },
+      async (lock) => {
+        if (!lock) {
+          resolveAcquired(false)
+          return
+        }
+
+        await new Promise<void>((resolve) => {
+          this.releaseSerialOwnershipLock = resolve
+          resolveAcquired(true)
+        })
+      },
+    )
+    void lockRequest.catch(rejectAcquired)
+
+    if (!await acquiredPromise) {
+      await lockRequest
+      throw new Error('Another dashboard tab is using the plotter. Disconnect it there, then retry.')
+    }
+
+    // Keep a rejection handler attached while the lock is held. The lock
+    // callback runs until the serial port has been closed and releases it.
+    void lockRequest.catch(() => undefined)
   }
 
   private async writeRaw(payload: string, lineNumber: number | null = null) {
@@ -1503,22 +1581,68 @@ export class GrblWebSerialService {
     throw new Error('GRBL does not respond. Select the Arduino/GRBL controller and try again.')
   }
 
-  async connect() {
+  async connect(beforeOpen?: () => Promise<void>) {
+    return this.connectUsingPortSelector(
+      () => navigator.serial!.requestPort({ filters: COMMON_SERIAL_FILTERS }),
+      beforeOpen,
+    )
+  }
+
+  async connectApprovedPort(usbVendorId: number, usbProductId: number, beforeOpen?: () => Promise<void>) {
+    if (!Number.isInteger(usbVendorId) || !Number.isInteger(usbProductId)) {
+      throw new Error('The approved COM port has an invalid USB identity.')
+    }
+    return this.connectUsingPortSelector(async () => {
+      const ports = await navigator.serial!.getPorts()
+      const matches = ports.filter((port) => {
+        const info = port.getInfo()
+        return info.usbVendorId === usbVendorId && info.usbProductId === usbProductId
+          && COMMON_SERIAL_FILTERS.some((filter) => filter.usbVendorId === info.usbVendorId)
+      })
+      if (matches.length === 0) {
+        throw new Error('The approved COM port is not already authorized in this browser. Use Connect plotter once to grant access, then retry.')
+      }
+      if (matches.length > 1) {
+        throw new Error('More than one browser-authorized serial device matches the approved COM port. Disconnect the others and retry.')
+      }
+      return matches[0]
+    }, beforeOpen)
+  }
+
+  private async connectUsingPortSelector(selectPort: () => Promise<SerialPort>, beforeOpen?: () => Promise<void>) {
     if (this.isConnecting) {
       throw new Error('Connection already in progress')
     }
 
     this.ensureSerialSupport()
     this.isConnecting = true
+    let phase = 'preparing the serial connection'
     try {
       if (this.activePort || this.portReader || this.portWriter) {
+        phase = 'closing the previous serial connection'
         await this.closeSerialPort()
       }
 
-      const port = await navigator.serial!.requestPort({
-        filters: COMMON_SERIAL_FILTERS,
-      })
+      phase = 'selecting the approved serial port'
+      const port = await selectPort()
 
+      phase = 'acquiring serial port ownership'
+      await this.acquireSerialOwnership()
+
+      if (beforeOpen) {
+        phase = 'authorizing the approved dashboard connection'
+        await beforeOpen()
+      }
+
+      // A browser-authorized SerialPort can survive a page reload while still
+      // being open. In that case this service has no activePort reference to
+      // clean up, but calling open() directly fails with InvalidStateError.
+      if (port.readable || port.writable) {
+        phase = 'closing the previously open selected serial port'
+        await port.close()
+      }
+
+      phase = 'opening the selected OS serial port'
       await port.open({
         baudRate: BAUD_RATE,
         dataBits: 8,
@@ -1528,7 +1652,9 @@ export class GrblWebSerialService {
       })
 
       this.activePort = port
+      phase = 'starting the serial reader and writer'
       await this.openSerialSession(port)
+      phase = 'waiting for the GRBL controller handshake'
       await this.performHandshake()
 
       this.stopRequested = false
@@ -1540,9 +1666,22 @@ export class GrblWebSerialService {
 
       return port
     } catch (error) {
-      await this.closeSerialPort()
+      try {
+        await this.closeSerialPort()
+      } finally {
+        if (!this.activePort) {
+          this.releaseSerialOwnershipLock?.()
+          this.releaseSerialOwnershipLock = null
+        }
+      }
       this.updateMachine(buildDisconnectedMachineState())
-      throw new Error(normalizeErrorMessage(error), { cause: error })
+      const errorName = error instanceof Error ? error.name : 'UnknownError'
+      const detail = phase === 'opening the selected OS serial port'
+        && error instanceof Error
+        && error.name === 'NetworkError'
+        ? 'The operating system rejected opening the selected serial port. It may already be open in another dashboard tab or serial program; close that connection and retry.'
+        : normalizeErrorMessage(error)
+      throw new Error(`${phase} failed: ${detail} (${errorName})`, { cause: error })
     } finally {
       this.isConnecting = false
     }

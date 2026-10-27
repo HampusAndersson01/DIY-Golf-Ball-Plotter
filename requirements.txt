@@ -5,3 +5,4 @@ pillow
 pyserial
 svgpathtools
 shapely
+mcp>=2,<3

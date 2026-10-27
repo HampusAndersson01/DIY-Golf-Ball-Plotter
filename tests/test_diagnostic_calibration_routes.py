@@ -1,10 +1,13 @@
 from io import BytesIO
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from app import create_app
 from app.models.machine_state import MachineState
+from app.routes import raster_routes
+from app.routes.raster_routes import build_serializable_debug_payload
 from app.services.pipeline_core import Point, Toolpath
 from app.services.raster_analysis_service import RasterAnalysisService
 
@@ -86,6 +89,40 @@ def test_generate_diagnostic_route_returns_calibration_metadata_for_3x3_pattern(
     assert all(square["machineDegreeBbox"] is not None for square in calibration["squares"])
     assert all(square["gcodeBbox"] is not None for square in calibration["squares"])
     assert calibration["previewAndGcodeShareSameProjectedPaths"] is True
+    assert isinstance(payload["gcode"], list)
+    assert any(line.startswith("G1 ") for line in payload["gcode"])
+
+
+def test_diagnostic_debug_payload_converts_nested_numpy_values_to_json_values():
+    payload = build_serializable_debug_payload(
+        {
+            "metrics": {
+                "matrix": np.array([[1, 2], [3, 4]], dtype=np.int64),
+                "ratio": np.float32(1.25),
+                "count": np.int64(9),
+            }
+        }
+    )
+
+    assert payload == {"metrics": {"matrix": [[1, 2], [3, 4]], "ratio": 1.25, "count": 9}}
+
+
+def test_generate_diagnostic_route_serializes_numpy_debug_values(client, monkeypatch):
+    original_serializer = raster_routes.build_serializable_debug_payload
+
+    def serializer_with_numpy_debug(debug_data):
+        debug_data["numpy_regression"] = {
+            "array": np.array([[1, 2]], dtype=np.int64),
+            "score": np.float32(0.75),
+        }
+        return original_serializer(debug_data)
+
+    monkeypatch.setattr(raster_routes, "build_serializable_debug_payload", serializer_with_numpy_debug)
+    response = client.post("/generate-diagnostic-gcode", data={"pattern": "3x3_squares"})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["debug"]["numpy_regression"] == {"array": [[1, 2]], "score": 0.75}
 
 
 def test_calibration_metadata_square_centers_follow_top_middle_bottom_labels(client):

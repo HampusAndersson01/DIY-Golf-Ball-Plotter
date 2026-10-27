@@ -3,8 +3,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { BAUD_RATE, GrblWebSerialService, parseGrblSerialChunk } from './grblWebSerial'
 
 function createMockPort() {
-  const open = vi.fn().mockResolvedValue(undefined)
-  const close = vi.fn().mockResolvedValue(undefined)
+  let isOpen = false
+  let readableStream: ReadableStream<Uint8Array> | null = null
+  let writableStream: WritableStream<Uint8Array> | null = null
+  const open = vi.fn(async () => {
+    if (isOpen) {
+      throw new DOMException('The selected serial port is already open.', 'InvalidStateError')
+    }
+    isOpen = true
+    readableStream = readable
+    writableStream = writable
+  })
+  const close = vi.fn(async () => {
+    isOpen = false
+    readableStream = null
+    writableStream = null
+  })
   const chunks: Uint8Array[] = []
   const writes: string[] = []
   let onWrite: ((payload: string) => void) | null = null
@@ -24,8 +38,7 @@ function createMockPort() {
     chunks.push(encoded)
   }
 
-  const port: SerialPort = {
-    readable: {
+  const readable: ReadableStream<Uint8Array> = {
       getReader() {
         let cancelled = false
         return {
@@ -53,8 +66,8 @@ function createMockPort() {
           releaseLock() {},
         } as ReadableStreamDefaultReader<Uint8Array>
       },
-    } as ReadableStream<Uint8Array>,
-    writable: {
+    } as ReadableStream<Uint8Array>
+  const writable: WritableStream<Uint8Array> = {
       getWriter() {
         return {
           async write(value) {
@@ -66,11 +79,19 @@ function createMockPort() {
           releaseLock() {},
         } as WritableStreamDefaultWriter<Uint8Array>
       },
-    } as WritableStream<Uint8Array>,
+    } as WritableStream<Uint8Array>
+
+  const port: SerialPort = {
+    get readable() {
+      return readableStream
+    },
+    get writable() {
+      return writableStream
+    },
     open,
     close,
     getInfo() {
-      return { usbVendorId: 0x2341 }
+      return { usbVendorId: 0x2341, usbProductId: 0x0001 }
     },
   }
 
@@ -86,6 +107,9 @@ function createMockPort() {
     },
     setOnWrite(handler: (payload: string) => void) {
       onWrite = handler
+    },
+    isOpen() {
+      return isOpen
     },
     writes,
   }
@@ -104,6 +128,10 @@ describe('GrblWebSerialService', () => {
         value: {},
       })
     }
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: undefined,
+    })
   })
 
   it.each([
@@ -143,6 +171,117 @@ describe('GrblWebSerialService', () => {
 
     expect(requestPort).toHaveBeenCalledTimes(1)
     expect(mock.open).toHaveBeenCalledWith(expect.objectContaining({ baudRate: BAUD_RATE }))
+  })
+
+  it('connects an exactly matched previously authorized port without opening the picker', async () => {
+    const mock = createMockPort()
+    const requestPort = vi.fn()
+    const getPorts = vi.fn().mockResolvedValue([mock.port])
+    Object.defineProperty(navigator, 'serial', { configurable: true, value: { requestPort, getPorts } })
+    const service = new GrblWebSerialService()
+    mock.pushLine('Grbl 1.1h')
+    mock.pushLine('<Idle|MPos:0.000,0.000,0.000>')
+
+    await service.connectApprovedPort(0x2341, 0x0001)
+
+    expect(getPorts).toHaveBeenCalledOnce()
+    expect(requestPort).not.toHaveBeenCalled()
+    expect(mock.open).toHaveBeenCalledWith(expect.objectContaining({ baudRate: BAUD_RATE }))
+    await service.disconnect()
+  })
+
+  it('refuses missing or ambiguous approved browser ports without opening any port', async () => {
+    const first = createMockPort()
+    const second = createMockPort()
+    const requestPort = vi.fn()
+    const getPorts = vi.fn().mockResolvedValue([first.port, second.port])
+    Object.defineProperty(navigator, 'serial', { configurable: true, value: { requestPort, getPorts } })
+    const service = new GrblWebSerialService()
+
+    await expect(service.connectApprovedPort(0x2341, 0x0001)).rejects.toThrow(/more than one/i)
+    expect(first.open).not.toHaveBeenCalled()
+    expect(second.open).not.toHaveBeenCalled()
+    expect(requestPort).not.toHaveBeenCalled()
+  })
+
+  it('reports the serial-open phase and browser error name when opening the OS port fails', async () => {
+    const mock = createMockPort()
+    mock.open.mockRejectedValue(new DOMException('OS rejected the port', 'NetworkError'))
+    Object.defineProperty(globalThis.navigator, 'serial', {
+      configurable: true,
+      value: { requestPort: vi.fn().mockResolvedValue(mock.port), getPorts: vi.fn().mockResolvedValue([]) },
+    })
+
+    const service = new GrblWebSerialService()
+
+    await expect(service.connect()).rejects.toThrow(/opening the selected OS serial port failed: the operating system rejected opening the selected serial port\. It may already be open in another dashboard tab or serial program; close that connection and retry\. \(NetworkError\)/i)
+  })
+
+  it('refuses to open the plotter when another dashboard tab owns the serial lock', async () => {
+    const mock = createMockPort()
+    const request = vi.fn(async (_name: string, _options: unknown, callback: (lock: object | null) => Promise<void>) => {
+      await callback(null)
+    })
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: { request },
+    })
+    Object.defineProperty(globalThis.navigator, 'serial', {
+      configurable: true,
+      value: { requestPort: vi.fn().mockResolvedValue(mock.port), getPorts: vi.fn().mockResolvedValue([]) },
+    })
+
+    const service = new GrblWebSerialService()
+
+    await expect(service.connect()).rejects.toThrow(/another dashboard tab is using the plotter/i)
+    expect(request).toHaveBeenCalledOnce()
+    expect(mock.open).not.toHaveBeenCalled()
+  })
+
+  it('holds the serial lock until the connected dashboard closes its port', async () => {
+    const mock = createMockPort()
+    let lockRequestSettled = false
+    const request = vi.fn(async (_name: string, _options: unknown, callback: (lock: Lock | null) => Promise<void>) => {
+      await callback({ name: 'golfball-plotter-serial-connection', mode: 'exclusive' } as Lock)
+      lockRequestSettled = true
+    })
+    Object.defineProperty(globalThis.navigator, 'locks', {
+      configurable: true,
+      value: { request },
+    })
+    Object.defineProperty(globalThis.navigator, 'serial', {
+      configurable: true,
+      value: { requestPort: vi.fn().mockResolvedValue(mock.port), getPorts: vi.fn().mockResolvedValue([]) },
+    })
+    mock.pushLine('Grbl 1.1h')
+    mock.pushLine('<Idle|MPos:0.000,0.000,0.000>')
+
+    const service = new GrblWebSerialService()
+    await service.connect()
+
+    expect(lockRequestSettled).toBe(false)
+    await service.disconnect()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(lockRequestSettled).toBe(true)
+  })
+
+  it('closes a browser-authorized port that is already open before reconnecting', async () => {
+    const mock = createMockPort()
+    await mock.port.open({ baudRate: BAUD_RATE })
+    mock.pushLine('Grbl 1.1h')
+    mock.pushLine('<Idle|MPos:0.000,0.000,0.000>')
+    Object.defineProperty(globalThis.navigator, 'serial', {
+      configurable: true,
+      value: { requestPort: vi.fn().mockResolvedValue(mock.port), getPorts: vi.fn().mockResolvedValue([mock.port]) },
+    })
+
+    const service = new GrblWebSerialService()
+    await expect(service.connect()).resolves.toBe(mock.port)
+
+    expect(mock.close).toHaveBeenCalledTimes(1)
+    expect(mock.open).toHaveBeenCalledTimes(2)
+    expect(service.getMachineState().connected).toBe(true)
+    await service.disconnect()
   })
 
   it('blocks double connect attempts while a picker is already in progress', async () => {
@@ -197,6 +336,43 @@ describe('GrblWebSerialService', () => {
 
     expect(port).toBe(mock.port)
     expect(service.getPort()).toBe(mock.port)
+    expect(service.getMachineState().connected).toBe(true)
+  })
+
+  it('retries a transient close failure when Stop interrupts strict-ack streaming', async () => {
+    const mock = createMockPort()
+    mock.pushLine('Grbl 1.1h')
+    mock.pushLine('<Idle|MPos:0.000,0.000,0.000>')
+    let markMoveWritten: (() => void) | null = null
+    const moveWritten = new Promise<void>((resolve) => {
+      markMoveWritten = resolve
+    })
+    mock.setOnWrite((payload) => {
+      const command = payload.trim()
+      if (command === '$X') mock.pushLine('ok')
+      if (command.startsWith('G1 ')) markMoveWritten?.()
+      if (command === '?') mock.pushLine('<Idle|MPos:0.000,0.000,0.000>')
+    })
+    Object.defineProperty(globalThis.navigator, 'serial', {
+      configurable: true,
+      value: { requestPort: vi.fn().mockResolvedValue(mock.port), getPorts: vi.fn().mockResolvedValue([]) },
+    })
+
+    const service = new GrblWebSerialService()
+    await service.connect()
+    const runPromise = service.runGcode(['G1 X1.000'], { responseTimeoutMs: 10_000, streamingMode: 'sync' })
+    await moveWritten
+    mock.close.mockRejectedValueOnce(new DOMException('temporary stream close race', 'InvalidStateError'))
+
+    await service.stop()
+    await expect(runPromise).rejects.toThrow()
+
+    expect(mock.isOpen()).toBe(false)
+    expect(mock.writes).toContain('\x18')
+    mock.pushLine('Grbl 1.1h')
+    mock.pushLine('<Idle|MPos:0.000,0.000,0.000>')
+    await expect(service.connect()).resolves.toBe(mock.port)
+    expect(mock.open).toHaveBeenCalledTimes(2)
     expect(service.getMachineState().connected).toBe(true)
   })
 

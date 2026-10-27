@@ -1,0 +1,446 @@
+{
+  "started_at_utc": "2026-10-26T16:54:34.128308+00:00",
+  "port": "COM9",
+  "device_enumerated": true,
+  "matching_devices": [
+    {
+      "device": "COM9",
+      "description": "USB-SERIAL CH340 (COM9)",
+      "hwid": "USB VID:PID=1A86:7523 SER= LOCATION=1-8",
+      "vid": 6790,
+      "pid": 29987,
+      "serial_number": "",
+      "location": "1-8"
+    }
+  ],
+  "all_enumerated_ports": [
+    {
+      "device": "COM9",
+      "description": "USB-SERIAL CH340 (COM9)",
+      "hwid": "USB VID:PID=1A86:7523 SER= LOCATION=1-8",
+      "vid": 6790,
+      "pid": 29987,
+      "serial_number": "",
+      "location": "1-8"
+    }
+  ],
+  "serial_arguments": {
+    "baudrate": 115200,
+    "bytesize": 8,
+    "parity": "N",
+    "stopbits": 1,
+    "timeout": 1,
+    "write_timeout": 1,
+    "xonxoff": false,
+    "rtscts": false,
+    "dsrdtr": false
+  },
+  "bytes_written": 0,
+  "requested_cycles": 20,
+  "attempted_cycles": 20,
+  "successful_opens": 20,
+  "successful_closes": 20,
+  "attempts": [
+    {
+      "cycle": 1,
+      "started_at_utc": "2026-10-26T16:54:33.576244+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 23.08
+    },
+    {
+      "cycle": 2,
+      "started_at_utc": "2026-10-26T16:54:33.599376+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 31.96
+    },
+    {
+      "cycle": 3,
+      "started_at_utc": "2026-10-26T16:54:33.631379+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 24.93
+    },
+    {
+      "cycle": 4,
+      "started_at_utc": "2026-10-26T16:54:33.656342+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 32.01
+    },
+    {
+      "cycle": 5,
+      "started_at_utc": "2026-10-26T16:54:33.688389+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 22.94
+    },
+    {
+      "cycle": 6,
+      "started_at_utc": "2026-10-26T16:54:33.711353+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 31.96
+    },
+    {
+      "cycle": 7,
+      "started_at_utc": "2026-10-26T16:54:33.743344+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 23.08
+    },
+    {
+      "cycle": 8,
+      "started_at_utc": "2026-10-26T16:54:33.766454+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 31.85
+    },
+    {
+      "cycle": 9,
+      "started_at_utc": "2026-10-26T16:54:33.798328+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 22.97
+    },
+    {
+      "cycle": 10,
+      "started_at_utc": "2026-10-26T16:54:33.821325+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 31.98
+    },
+    {
+      "cycle": 11,
+      "started_at_utc": "2026-10-26T16:54:33.853328+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 22.98
+    },
+    {
+      "cycle": 12,
+      "started_at_utc": "2026-10-26T16:54:33.876337+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 31.96
+    },
+    {
+      "cycle": 13,
+      "started_at_utc": "2026-10-26T16:54:33.908327+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 22.98
+    },
+    {
+      "cycle": 14,
+      "started_at_utc": "2026-10-26T16:54:33.931338+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 31.98
+    },
+    {
+      "cycle": 15,
+      "started_at_utc": "2026-10-26T16:54:33.963345+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 22.98
+    },
+    {
+      "cycle": 16,
+      "started_at_utc": "2026-10-26T16:54:33.986365+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 31.94
+    },
+    {
+      "cycle": 17,
+      "started_at_utc": "2026-10-26T16:54:34.018333+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 22.96
+    },
+    {
+      "cycle": 18,
+      "started_at_utc": "2026-10-26T16:54:34.041321+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 31.97
+    },
+    {
+      "cycle": 19,
+      "started_at_utc": "2026-10-26T16:54:34.073321+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 22.97
+    },
+    {
+      "cycle": 20,
+      "started_at_utc": "2026-10-26T16:54:34.096318+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": true,
+      "closed": true,
+      "duration_ms": 31.97
+    }
+  ],
+  "stop_reason": null
+}

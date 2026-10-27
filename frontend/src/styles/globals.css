@@ -1806,6 +1806,41 @@ select:focus {
   box-shadow: none;
 }
 
+.mcp-approval {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0;
+  padding: 16px;
+}
+
+.mcp-approval h2:focus-visible {
+  outline: 2px solid var(--primary-bright);
+  outline-offset: 4px;
+}
+
+.mcp-approval p {
+  overflow-wrap: anywhere;
+}
+
+.mcp-approval__check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  line-height: 1.45;
+}
+
+.mcp-approval__check input {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+}
+
+.mcp-approval__actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
 .sidebar-panel {
   padding: 14px;
 }

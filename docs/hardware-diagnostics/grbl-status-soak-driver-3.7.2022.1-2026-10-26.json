@@ -1,0 +1,22 @@
+{
+  "started_at_utc": "2026-10-26T17:02:47.803320+00:00",
+  "ended_at_utc": "2026-10-26T17:32:47.808352+00:00",
+  "port": "COM9",
+  "baudrate": 115200,
+  "serial_format": "8-N-1, no flow control",
+  "duration_requested_seconds": 1800.0,
+  "duration_observed_seconds": 1800.005,
+  "query": "? (GRBL real-time status; no G-code or motion command)",
+  "query_interval_seconds": 5.0,
+  "response_timeout_seconds": 2.0,
+  "queries_sent": 360,
+  "bytes_written": 360,
+  "status_responses": 359,
+  "timeouts": 1,
+  "min_response_ms": 108.293,
+  "max_response_ms": 125.34,
+  "average_response_ms": 116.378,
+  "first_status": "<Idle|WPos:-210.263,-150.862,-2.000|Bf:15,128|FS:0,0|WCO:210.263,150.862,2.000>",
+  "last_status": "<Idle|WPos:-210.263,-150.862,-2.000|Bf:15,128|FS:0,0>",
+  "error": null
+}

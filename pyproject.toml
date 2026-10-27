@@ -17,6 +17,7 @@ dependencies = [
   "svgpathtools>=1.6",
   "shapely>=2.0",
   "python-dotenv>=1.0",
+  "mcp>=2,<3",
 ]
 
 [project.optional-dependencies]

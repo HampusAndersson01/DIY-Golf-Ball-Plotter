@@ -4,6 +4,7 @@ from flask import Flask, current_app
 
 from .models.machine_state import MachineState
 from .services.gcode_service import GcodeService
+from .services.dashboard_mcp_bridge import DashboardMcpBridge
 from .services.geometry_service import GeometryService
 from .services.job_runner import JobRunner
 from .services.machine_service import MachineService
@@ -47,6 +48,7 @@ def init_extensions(app: Flask) -> None:
     app.extensions["self_test_service"] = self_test_service
     app.extensions["job_runner"] = job_runner
     app.extensions["machine_service"] = machine_service
+    app.extensions["dashboard_mcp_bridge"] = DashboardMcpBridge()
 
 
 def get_state() -> MachineState:
@@ -91,3 +93,7 @@ def get_job_runner() -> JobRunner:
 
 def get_machine_service() -> MachineService:
     return current_app.extensions["machine_service"]
+
+
+def get_dashboard_mcp_bridge() -> DashboardMcpBridge:
+    return current_app.extensions["dashboard_mcp_bridge"]

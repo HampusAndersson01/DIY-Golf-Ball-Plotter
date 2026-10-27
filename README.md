@@ -448,6 +448,8 @@ For a more implementation-focused plan, see [ROADMAP.md](ROADMAP.md). That roadm
 
 ## Running Locally
 
+For the optional guarded Codex dashboard tools, see [Local Dashboard MCP](docs/dashboard-mcp.md).
+
 ### Backend
 
 ```bash

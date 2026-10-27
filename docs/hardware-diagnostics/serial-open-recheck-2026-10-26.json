@@ -1,0 +1,70 @@
+{
+  "started_at_utc": "2026-10-26T16:20:19.786656+00:00",
+  "port": "COM9",
+  "device_enumerated": true,
+  "matching_devices": [
+    {
+      "device": "COM9",
+      "description": "USB-SERIAL CH340 (COM9)",
+      "hwid": "USB VID:PID=1A86:7523 SER= LOCATION=1-8",
+      "vid": 6790,
+      "pid": 29987,
+      "serial_number": "",
+      "location": "1-8"
+    }
+  ],
+  "all_enumerated_ports": [
+    {
+      "device": "COM9",
+      "description": "USB-SERIAL CH340 (COM9)",
+      "hwid": "USB VID:PID=1A86:7523 SER= LOCATION=1-8",
+      "vid": 6790,
+      "pid": 29987,
+      "serial_number": "",
+      "location": "1-8"
+    }
+  ],
+  "serial_arguments": {
+    "baudrate": 115200,
+    "bytesize": 8,
+    "parity": "N",
+    "stopbits": 1,
+    "timeout": 1,
+    "write_timeout": 1,
+    "xonxoff": false,
+    "rtscts": false,
+    "dsrdtr": false
+  },
+  "bytes_written": 0,
+  "requested_cycles": 1,
+  "attempted_cycles": 1,
+  "successful_opens": 0,
+  "successful_closes": 0,
+  "attempts": [
+    {
+      "cycle": 1,
+      "started_at_utc": "2026-10-26T16:20:19.786396+00:00",
+      "port": "COM9",
+      "serial_arguments": {
+        "baudrate": 115200,
+        "bytesize": 8,
+        "parity": "N",
+        "stopbits": 1,
+        "timeout": 1,
+        "write_timeout": 1,
+        "xonxoff": false,
+        "rtscts": false,
+        "dsrdtr": false
+      },
+      "bytes_written": 0,
+      "opened": false,
+      "closed": false,
+      "exception_type": "SerialException",
+      "exception": "could not open port 'COM9': PermissionError(13, 'Åtkomst nekad.', None, 5)",
+      "windows_error_code": 5,
+      "classification": "access_denied_or_port_in_use",
+      "duration_ms": 0.25
+    }
+  ],
+  "stop_reason": "stopped after first failed open/close cycle"
+}

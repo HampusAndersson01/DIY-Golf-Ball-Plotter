@@ -6,6 +6,7 @@ import math
 import time
 
 from flask import Blueprint, current_app, jsonify, request
+import numpy as np
 
 from app.extensions import (
     get_gcode_service,
@@ -40,11 +41,10 @@ def _json_debug_default(value):
             "is_empty": bool(getattr(value, "is_empty", False)),
             "bounds": [float(item) for item in bounds] if bounds else None,
         }
-    if type(value).__name__ == "ndarray":
-        return {
-            "ndarray_shape": list(getattr(value, "shape", ()) or ()),
-            "dtype": str(getattr(value, "dtype", "")),
-        }
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
     if isinstance(value, set):
         return sorted(value)
     if isinstance(value, bytes):
@@ -1004,7 +1004,7 @@ def generate_diagnostic_gcode_route():
                 machine_motion_debug=machine_motion_debug,
                 outline_vs_infill_alignment={},
                 gcode_stats=build_gcode_stats(gcode, {"duplicate_points_removed": 0, "short_segments_removed": 0, "simplification_tolerance_mm": 0.0}, preview_path_count=len(preview), debug=debug_data),
-                debug=debug_data,
+                debug=build_serializable_debug_payload(debug_data),
             )
 
         bundle = pipeline_core.build_diagnostic_geometry_bundle(pattern)
@@ -1167,7 +1167,7 @@ def generate_diagnostic_gcode_route():
             machine_motion_debug=machine_motion_debug,
             outline_vs_infill_alignment=outline_vs_infill_alignment_debug,
             gcode_stats=build_gcode_stats(gcode, cleanup_stats, preview_path_count=len(preview), debug=debug_data),
-            debug=debug_data,
+            debug=build_serializable_debug_payload(debug_data),
         )
     except Exception as exc:
         log_exception("Generate diagnostic G-code failed", exc)

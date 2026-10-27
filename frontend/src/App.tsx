@@ -11,6 +11,7 @@ import { GcodePanel } from './components/job/GcodePanel'
 import { JobSummaryPanel } from './components/job/JobSummaryPanel'
 import { LogsPanel } from './components/job/LogsPanel'
 import { CalibrationCard } from './components/machine/CalibrationCard'
+import { McpActionApproval } from './components/machine/McpActionApproval'
 import { MachineCard } from './components/machine/MachineCard'
 import { ManualControlCard } from './components/machine/ManualControlCard'
 import { RunControls } from './components/machine/RunControls'
@@ -20,6 +21,9 @@ import type { JobSummary, MachineState, PreviewPath } from './api/types'
 import { BAUD_RATE, GrblWebSerialService } from './services/grblWebSerial'
 import type { SettingsState } from './store/appStore'
 import { useAppStore } from './store/appStore'
+import { completeDashboardRequest, fetchPendingDashboardRequest, initializeDashboardMcpSession, publishDashboardSnapshot, startDashboardRequest } from './services/dashboardMcpBridge'
+import type { ApprovalConfirmations, DashboardMcpRequest, DashboardMcpRequestStatus, DashboardMcpSnapshot } from './services/dashboardMcpBridge'
+import { canApproveMcpAction } from './services/dashboardMcpBridge'
 import type { ComponentType } from 'react'
 import { MdChevronLeft, MdChevronRight, MdPrint, MdSettingsApplications, MdUsb } from 'react-icons/md'
 
@@ -156,10 +160,17 @@ function DashboardApp() {
   const [inspectorCollapsed, setInspectorCollapsed] = useState(true)
   const [previewZoomLabel, setPreviewZoomLabel] = useState('100%')
   const [lastDebugBundle, setLastDebugBundle] = useState<BrowserSerialDebugBundle | null>(null)
+  const [mcpRequest, setMcpRequest] = useState<DashboardMcpRequest | null>(null)
+  const [mcpRequestBusy, setMcpRequestBusy] = useState(false)
+  const [mcpSessionReady, setMcpSessionReady] = useState(false)
   const restoredPersistedPreviewRef = useRef(false)
   const lastSeenPlacementPreviewKeyRef = useRef<string | null>(null)
   const pendingPlacementPreviewKeyRef = useRef<string | null>(null)
   const lastRunUiSyncAtRef = useRef(0)
+  const mcpRequestBusyRef = useRef(false)
+  const mcpRequestRef = useRef<DashboardMcpRequest | null>(null)
+  const mcpConnectHandlerRef = useRef<(() => void) | null>(null)
+  const jobIdentity = useMemo(() => gcode.length ? crypto.randomUUID() : null, [gcode])
 
   const readySettings = settings
   const progressPercent = getProgressPercent(machine)
@@ -358,6 +369,100 @@ function DashboardApp() {
     return () => window.clearTimeout(timer)
   }, [busy.generating, gcode.length, imageFile, placementPreviewKey, preview.length, readySettings, selectedColors.length])
 
+  const createDashboardMcpSnapshot = useCallback((): DashboardMcpSnapshot => {
+    const state = useAppStore.getState()
+    const liveMachine = grblSerial.getMachineState()
+    const diagnostics = grblSerial.getStreamDiagnostics()
+    const summary = state.summary
+    const safeLogs = state.logs
+      .filter((line) => !/^\s*>/.test(line) && !/\b(?:G\d+|M\d+|S\d+)\b/i.test(line))
+      .slice(-50)
+      .map((line) => line.slice(0, 500))
+    const recentGrblLines = diagnostics.recent_grbl_lines
+      .slice(-20)
+      .map((line) => typeof line === 'string' ? line.slice(0, 160) : '')
+      .filter(Boolean)
+
+    const snapshot: DashboardMcpSnapshot = {
+      machine: {
+        connected: Boolean(liveMachine.connected),
+        calibrated: Boolean(liveMachine.calibrated),
+        running: Boolean(liveMachine.running),
+        paused: Boolean(liveMachine.paused),
+        status: String(liveMachine.status ?? '').slice(0, 80),
+        current_gcode_line: Number(liveMachine.current_gcode_line) || 0,
+        y_loop_test: liveMachine.y_loop_test ? { enabled: Boolean(liveMachine.y_loop_test.enabled) } : null,
+      },
+      job: {
+        job_id: jobIdentity,
+        line_count: state.gcode.length,
+        summary: summary ? {
+          image_size: summary.image_size,
+          gcode_line_count: summary.gcode_line_count,
+          estimated_runtime_seconds: summary.estimated_runtime_seconds,
+          wall_path_count: summary.wall_path_count,
+          infill_path_count: summary.infill_path_count,
+          detail_trace_path_count: summary.detail_trace_path_count,
+        } : null,
+      },
+      logs: safeLogs,
+      serial_diagnostics: {
+        last_complete_parsed_line: diagnostics.last_complete_parsed_line?.slice(0, 160) ?? null,
+        last_parsed_ack_line: diagnostics.last_parsed_ack_line?.slice(0, 160) ?? null,
+        last_parsed_status_line: diagnostics.last_parsed_status_line?.slice(0, 160) ?? null,
+        last_ok_at: diagnostics.last_ok_at,
+        last_status_at: diagnostics.last_status_at,
+        port_state: diagnostics.port_state,
+        unexpected_ok_count: diagnostics.unexpected_ok_count,
+        unexpected_error_count: diagnostics.unexpected_error_count,
+        recent_grbl_lines: recentGrblLines,
+      },
+    }
+    const encoder = new TextEncoder()
+    while (snapshot.logs.length && encoder.encode(JSON.stringify(snapshot)).byteLength > 12 * 1024) {
+      snapshot.logs.shift()
+    }
+    return snapshot
+  }, [jobIdentity])
+
+  useEffect(() => {
+    let active = true
+    let inFlight = false
+    let sessionInitialized = false
+    const tick = async () => {
+      if (!active || inFlight) return
+      inFlight = true
+      try {
+        if (!sessionInitialized) {
+          await initializeDashboardMcpSession()
+          sessionInitialized = true
+          if (!active) return
+          setMcpSessionReady(true)
+        }
+        await publishDashboardSnapshot(createDashboardMcpSnapshot())
+        if (active && !mcpRequestBusyRef.current) {
+          const nextRequest = await fetchPendingDashboardRequest()
+          if (active) {
+            mcpRequestRef.current = nextRequest
+            setMcpRequest(nextRequest)
+            if (nextRequest?.action === 'connect') queueMicrotask(() => mcpConnectHandlerRef.current?.())
+          }
+        }
+      } catch {
+        if (active && sessionInitialized) setMcpSessionReady(false)
+        sessionInitialized = false
+      } finally {
+        inFlight = false
+      }
+    }
+    void tick()
+    const timer = window.setInterval(() => void tick(), 1000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [createDashboardMcpSnapshot])
+
   if (!readySettings) {
     return <BootMessage title="Loading dashboard" detail="Preparing local operator state." />
   }
@@ -378,17 +483,27 @@ function DashboardApp() {
     refreshMachine()
   }
 
-  async function handleConnect() {
+  async function handleConnect(
+    mcpRequestId?: string,
+    approvedPort?: { usb_vendor_id: number; usb_product_id: number; com_port: string },
+  ): Promise<boolean> {
     setBusy('connecting', true)
     try {
-      const port = await grblSerial.connect()
+      const beforeOpen = mcpRequestId ? () => startDashboardRequest(mcpRequestId) : undefined
+      const port = approvedPort
+        ? await grblSerial.connectApprovedPort(approvedPort.usb_vendor_id, approvedPort.usb_product_id, beforeOpen)
+        : await grblSerial.connect(beforeOpen)
       setSerialPort(port)
       syncBrowserMachineState()
       pushToast('Plotter connected.', 'success')
-      appendLog('Connect plotter opened the browser picker and connected at 115200 baud.')
+      appendLog(approvedPort
+        ? `MCP connected approved ${approvedPort.com_port} at 115200 baud using the existing browser permission.`
+        : 'Connect plotter opened the browser picker and connected at 115200 baud.')
+      return true
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`Connect failed: ${String(error)}`)
+      return false
     } finally {
       setBusy('connecting', false)
     }
@@ -464,7 +579,7 @@ function DashboardApp() {
     recordMachineResult(result, 'Pen down.')
   }
 
-  async function handleGenerateCalibrationPattern() {
+  async function handleGenerateCalibrationPattern(): Promise<boolean> {
     setBusy('generating', true)
     const formData = new FormData()
     formData.append('pattern', '3x3_squares')
@@ -489,15 +604,17 @@ function DashboardApp() {
       })
       appendLog(`Generated diagnostic pattern ${payload.calibrationPattern?.pattern ?? '3x3_squares'} with ${preview.length} preview paths.`)
       pushToast('Calibration test pattern generated.', 'success')
+      return true
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`Calibration pattern generation failed: ${String(error)}`)
+      return false
     } finally {
       setBusy('generating', false)
     }
   }
 
-  async function handleGenerateXAxisCalibrationPattern() {
+  async function handleGenerateXAxisCalibrationPattern(): Promise<boolean> {
     setBusy('generating', true)
     const formData = new FormData()
     formData.append('pattern', 'x_axis_rotation_ticks')
@@ -520,9 +637,11 @@ function DashboardApp() {
       })
       appendLog(`Generated X rotary calibration pattern with ${preview.length} preview paths.`)
       pushToast('X rotary calibration pattern generated.', 'success')
+      return true
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`X rotary calibration generation failed: ${String(error)}`)
+      return false
     } finally {
       setBusy('generating', false)
     }
@@ -538,14 +657,16 @@ function DashboardApp() {
     recordMachineResult(result)
   }
 
-  async function handleCalibrate() {
-    if (!window.confirm('Confirm the pen is physically positioned at the center of the ball.')) return
+  async function handleCalibrate(options: { skipConfirmation?: boolean } = {}): Promise<boolean> {
+    if (!options.skipConfirmation && !window.confirm('Confirm the pen is physically positioned at the center of the ball.')) return false
     setBusy('calibrating', true)
     try {
       const result = await grblSerial.zeroAndMarkCalibrated()
       recordMachineResult(result, 'Origin locked.')
+      return true
     } catch (error) {
       pushToast(String(error), 'error')
+      return false
     } finally {
       setBusy('calibrating', false)
     }
@@ -647,37 +768,34 @@ function DashboardApp() {
     URL.revokeObjectURL(url)
   }
 
-  async function handleRun() {
-    if (!window.confirm('Start the generated job on the connected plotter?')) return
+  async function handleRun(options: { skipConfirmation?: boolean } = {}): Promise<boolean> {
+    if (!options.skipConfirmation && !window.confirm('Start the generated job on the connected plotter?')) return false
+    if (!gcode.length || !machine?.connected || !machine.calibrated || machine.running || machine.paused || machine.y_loop_test?.enabled) return false
     setBusy('running', true)
     lastRunUiSyncAtRef.current = 0
     const effectiveStreamingMode = 'sync' as const
-    const runPromise = grblSerial.runGcode(gcode, {
-      onProgress: () => {
-        const now = performance.now()
-        if (now - lastRunUiSyncAtRef.current < 120) {
-          return
-        }
-        lastRunUiSyncAtRef.current = now
-        syncBrowserMachineState()
-      },
-      streamingMode: effectiveStreamingMode,
-    })
-
     syncBrowserMachineState()
     appendLog(`Run started: streaming ${gcode.length} G-code lines over Web Serial in ${effectiveStreamingMode === 'sync' ? 'Strict Ack' : 'Buffered'} mode.`)
     pushToast('Job started.', 'success')
-
-    void runPromise
-      .then((result) => {
-        recordMachineResult(result, 'Job complete.')
-        setBusy('running', false)
+    try {
+      const result = await grblSerial.runGcode(gcode, {
+        onProgress: () => {
+          const now = performance.now()
+          if (now - lastRunUiSyncAtRef.current < 120) {
+            return
+          }
+          lastRunUiSyncAtRef.current = now
+          syncBrowserMachineState()
+        },
+        streamingMode: effectiveStreamingMode,
       })
-      .catch((error) => {
-        syncBrowserMachineState()
-        const diagnostics = grblSerial.getStreamDiagnostics()
-        setLastDebugBundle(buildBrowserSerialDebugBundle(error, diagnostics))
-        void reportBrowserSerialDiagnostics({
+      recordMachineResult(result, 'Job complete.')
+      return true
+    } catch (error) {
+      syncBrowserMachineState()
+      const diagnostics = grblSerial.getStreamDiagnostics()
+      setLastDebugBundle(buildBrowserSerialDebugBundle(error, diagnostics))
+      void reportBrowserSerialDiagnostics({
           event: 'run_failed',
           error: String(error),
           status: diagnostics.machine.status,
@@ -712,13 +830,16 @@ function DashboardApp() {
           port_state: diagnostics.port_state,
           read_loop_id: diagnostics.read_loop_id,
           status_polling_state: diagnostics.status_polling_state,
-        }).catch((reportError) => {
-          appendLog(`Browser serial diagnostics upload failed: ${String(reportError)}`)
-        })
-        pushToast(String(error), 'error')
-        appendLog(`Run failed: ${String(error)}`)
-        setBusy('running', false)
+      }).catch((reportError) => {
+        appendLog(`Browser serial diagnostics upload failed: ${String(reportError)}`)
       })
+      pushToast(String(error), 'error')
+      appendLog(`Run failed: ${String(error)}`)
+      return false
+    } finally {
+      setBusy('running', false)
+      syncBrowserMachineState()
+    }
   }
 
   async function handlePause() {
@@ -732,8 +853,14 @@ function DashboardApp() {
   }
 
   async function handleStop() {
-    const result = await grblSerial.stop()
-    recordMachineResult(result, 'Stop requested.')
+    try {
+      const result = await grblSerial.stop()
+      recordMachineResult(result, 'Stop requested.')
+    } catch (error) {
+      syncBrowserMachineState()
+      pushToast(String(error), 'error')
+      appendLog(`Stop failed: ${String(error)}`)
+    }
   }
 
   async function handleToggleYLoop() {
@@ -749,6 +876,87 @@ function DashboardApp() {
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`Y loop test failed: ${String(error)}`)
+    }
+  }
+
+  async function handleMcpRequestApproval(confirmations: ApprovalConfirmations) {
+    const request = mcpRequestRef.current
+    if (!request || mcpRequestBusyRef.current) return
+    const liveMachine = grblSerial.getMachineState()
+    const liveState = useAppStore.getState()
+    const liveJobId = liveState.gcode.length ? jobIdentity : null
+    if (!canApproveMcpAction(request, confirmations, liveJobId)) return
+
+    if (request.action === 'calibrate' && (!liveMachine.connected || liveMachine.running || liveMachine.paused || liveMachine.y_loop_test?.enabled)) return
+    if (request.action === 'run' && (!liveMachine.connected || !liveMachine.calibrated || liveMachine.running || liveMachine.paused
+      || liveMachine.y_loop_test?.enabled || liveState.busy.running || !liveState.gcode.length || request.arguments.job_id !== liveJobId)) return
+
+    mcpRequestBusyRef.current = true
+    setMcpRequestBusy(true)
+    let success = false
+    let result: Record<string, unknown> | null = null
+    let terminalStatus: DashboardMcpRequestStatus = 'failed'
+    try {
+      if (request.action === 'connect') {
+        success = await handleConnect(request.request_id, request.arguments)
+      } else {
+        await startDashboardRequest(request.request_id)
+        const latestMachine = grblSerial.getMachineState()
+        const latestState = useAppStore.getState()
+        const stillSameJob = latestState.gcode === gcode && latestState.gcode.length > 0
+        if (request.action === 'calibrate' && (!latestMachine.connected || latestMachine.running || latestMachine.paused || latestMachine.y_loop_test?.enabled)) {
+          terminalStatus = 'rejected'
+          result = { message: 'Machine state changed before execution; no motion was started.' }
+        } else if (request.action === 'run' && (!latestMachine.connected || !latestMachine.calibrated || latestMachine.running || latestMachine.paused
+          || latestMachine.y_loop_test?.enabled || latestState.busy.running || !stillSameJob
+          || request.arguments.job_id !== jobIdentity)) {
+          terminalStatus = 'rejected'
+          result = { message: 'Machine state or job changed before execution; no motion was started.' }
+        } else if (request.action === 'generate_diagnostic_job') {
+          success = request.arguments.pattern === '3x3_squares'
+            ? await handleGenerateCalibrationPattern()
+            : await handleGenerateXAxisCalibrationPattern()
+        } else if (request.action === 'calibrate') {
+          success = await handleCalibrate({ skipConfirmation: true })
+        } else if (request.action === 'run') {
+          success = await handleRun({ skipConfirmation: true })
+        }
+      }
+      if (result === null) result = success ? { message: 'Dashboard action completed.' } : { message: 'Dashboard action failed or was cancelled.' }
+    } catch (error) {
+      result = { message: String(error).slice(0, 500) }
+    }
+    if (success) terminalStatus = 'completed'
+    try {
+      await completeDashboardRequest(request.request_id, terminalStatus, result ?? {})
+    } catch (error) {
+      appendLog(`Dashboard MCP request completion failed: ${String(error)}`)
+    } finally {
+      mcpRequestRef.current = null
+      setMcpRequest(null)
+      setMcpRequestBusy(false)
+      mcpRequestBusyRef.current = false
+    }
+  }
+
+  mcpConnectHandlerRef.current = () => {
+    void handleMcpRequestApproval({ centeredAtOrigin: false, exactJobAndAreaClear: false })
+  }
+
+  async function rejectMcpRequest() {
+    const request = mcpRequestRef.current
+    if (!request || mcpRequestBusyRef.current) return
+    mcpRequestBusyRef.current = true
+    setMcpRequestBusy(true)
+    try {
+      await completeDashboardRequest(request.request_id, 'rejected', { message: 'Declined in the dashboard.' })
+    } catch (error) {
+      appendLog(`Dashboard MCP request rejection failed: ${String(error)}`)
+    } finally {
+      mcpRequestRef.current = null
+      setMcpRequest(null)
+      setMcpRequestBusy(false)
+      mcpRequestBusyRef.current = false
     }
   }
 
@@ -817,7 +1025,7 @@ function DashboardApp() {
         </div>
       </section>
 
-      <MachineCard onApplyConfig={handleApplyConfig} onConnect={handleConnect} onDisconnect={handleDisconnect} />
+      <MachineCard onApplyConfig={handleApplyConfig} onConnect={() => { void handleConnect() }} onDisconnect={handleDisconnect} />
       <CalibrationCard machine={machine} onCalibrate={handleCalibrate} onClear={handleClearCalibrated} />
       <ManualControlCard
         machine={machine}
@@ -947,6 +1155,18 @@ function DashboardApp() {
           runLockReason={runLockReason}
           runReady={runReady}
         />
+
+        {mcpRequest ? (
+          <McpActionApproval
+            bridgeReady={mcpSessionReady}
+            busy={mcpRequestBusy}
+            currentJobId={jobIdentity}
+            key={mcpRequest.request_id}
+            onApprove={(confirmations) => void handleMcpRequestApproval(confirmations)}
+            onReject={() => void rejectMcpRequest()}
+            request={mcpRequest}
+          />
+        ) : null}
 
         <div className="dashboard-grid">
           <aside className="left-rail" aria-label="Control panel">
