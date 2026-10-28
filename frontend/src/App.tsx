@@ -1,7 +1,7 @@
 import { startTransition, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 
-import { analyzeImage, apiConfig, fetchBootstrap, fetchState, generateDiagnosticGcode, generateImageGcode, postJson } from './api/client'
+import { analyzeImage, fetchBootstrap, fetchState, generateDiagnosticGcode, generateImageGcode, reportBrowserSerialDiagnostics } from './api/client'
 import { CalibrationPatternPanel } from './components/calibration/CalibrationPatternPanel'
 import { XAxisCalibrationPanel } from './components/calibration/XAxisCalibrationPanel'
 import { StepNav } from './components/layout/StepNav'
@@ -17,6 +17,7 @@ import { RunControls } from './components/machine/RunControls'
 import { PreviewWorkspace } from './components/preview/PreviewWorkspace'
 import { getProgressPercent } from './components/preview/previewMath'
 import type { JobSummary, MachineState, PreviewPath } from './api/types'
+import { BAUD_RATE, GrblWebSerialService } from './services/grblWebSerial'
 import type { SettingsState } from './store/appStore'
 import { useAppStore } from './store/appStore'
 import type { ComponentType } from 'react'
@@ -31,6 +32,40 @@ const SIDEBAR_CATEGORIES: Array<{ id: SidebarCategory; label: string; icon: Side
   { id: 'output', label: 'Output', icon: () => <MdPrint aria-hidden="true" /> },
   { id: 'advanced', label: 'Advanced', icon: () => <MdSettingsApplications aria-hidden="true" /> },
 ]
+
+const grblSerial = new GrblWebSerialService()
+
+type BrowserSerialDebugBundle = {
+  captured_at: string
+  failure: {
+    event: string
+    error: string
+  }
+  architecture: {
+    frontend_runner: boolean
+    backend_runner_for_dashboard_run: boolean
+    both_possible_in_codebase: boolean
+    dashboard_run_path: string[]
+  }
+  gcode_context: {
+    failed_line: number | null
+    start_line: number
+    lines: Array<{ line: number; command: string }>
+  }
+  serial_settings: {
+    baud_rate: number
+    data_bits: number
+    stop_bits: number
+    parity: string
+    flow_control: string
+  }
+  browser: {
+    user_agent: string
+  }
+  job_settings: SettingsState
+  diagnostics: Record<string, unknown>
+  hardware_checklist: string[]
+}
 
 function App() {
   const busy = useAppStore((state) => state.busy)
@@ -100,6 +135,7 @@ function DashboardApp() {
   const viewPreset = useAppStore((state) => state.viewPreset)
   const busy = useAppStore((state) => state.busy)
   const setMachine = useAppStore((state) => state.setMachine)
+  const setSerialPort = useAppStore((state) => state.setSerialPort)
   const setImageFile = useAppStore((state) => state.setImageFile)
   const setAnalysis = useAppStore((state) => state.setAnalysis)
   const toggleColor = useAppStore((state) => state.toggleColor)
@@ -119,13 +155,15 @@ function DashboardApp() {
   const [activeSidebarCategory, setActiveSidebarCategory] = useState<SidebarCategory>('output')
   const [inspectorCollapsed, setInspectorCollapsed] = useState(true)
   const [previewZoomLabel, setPreviewZoomLabel] = useState('100%')
+  const [lastDebugBundle, setLastDebugBundle] = useState<BrowserSerialDebugBundle | null>(null)
   const restoredPersistedPreviewRef = useRef(false)
   const lastSeenPlacementPreviewKeyRef = useRef<string | null>(null)
   const pendingPlacementPreviewKeyRef = useRef<string | null>(null)
+  const lastRunUiSyncAtRef = useRef(0)
 
   const readySettings = settings
   const progressPercent = getProgressPercent(machine)
-  const runReady = Boolean(machine?.connected && machine?.calibrated && gcode.length && !machine?.y_loop_test?.enabled && !busy.running)
+  const runReady = Boolean(machine?.connected && machine?.calibrated && gcode.length && !machine?.y_loop_test?.enabled && !machine?.running && !busy.running)
   const runLockReason = !machine?.connected
     ? 'Connect machine first'
     : !machine?.calibrated
@@ -134,12 +172,20 @@ function DashboardApp() {
         ? 'Generate a job first'
         : machine?.y_loop_test?.enabled
           ? 'Stop Y-loop test before run'
-          : busy.running
+          : machine?.running
+            ? 'Job is currently running'
+            : busy.running
             ? 'Job startup in progress'
             : null
   const currentSettings = useMemo(() => readySettings, [readySettings])
   const elapsedSeconds = getElapsedSeconds(machine)
   const remainingSeconds = getRemainingSeconds(machine, summary, progressPercent, elapsedSeconds)
+
+  const previewPathByLine = useMemo(() => {
+    return preview
+      .filter((path) => path.gcode_start_line != null && path.gcode_end_line != null)
+      .sort((a, b) => (a.gcode_start_line ?? 0) - (b.gcode_start_line ?? 0))
+  }, [preview])
 
   const onKeyboardPause = useEffectEvent(async () => {
     if (!currentSettings) return
@@ -177,28 +223,76 @@ function DashboardApp() {
     })
   }, [setPreviewPayload])
 
+  const decorateMachineState = useCallback((machineState: MachineState) => {
+    const activePath = findPreviewPathForLine(previewPathByLine, machineState.current_gcode_line || 0)
+    if (!activePath) {
+      return {
+        ...machineState,
+        current_path_id: null,
+        current_path_kind: null,
+        current_preview_point_index: 0,
+      }
+    }
+    return {
+      ...machineState,
+      current_path_id: activePath.id ?? null,
+      current_path_kind: activePath.kind ?? null,
+      current_preview_point_index: getPreviewPointIndexForLine(activePath, machineState.current_gcode_line || 0),
+    }
+  }, [previewPathByLine])
+
+  const syncBrowserMachineState = useCallback(() => {
+    const nextMachine = decorateMachineState(grblSerial.getMachineState())
+    startTransition(() => {
+      setMachine(nextMachine)
+      setSerialPort(grblSerial.getPort())
+    })
+  }, [decorateMachineState, setMachine, setSerialPort])
+
   useEffect(() => {
     let active = true
     const load = async () => {
       try {
         const nextState = await fetchState()
         if (!active) return
-        startTransition(() => {
-          setMachine(nextState)
-          hydrateGeneratedPreviewFromMachineOnce(nextState)
-        })
+        hydrateGeneratedPreviewFromMachineOnce(nextState)
+        syncBrowserMachineState()
       } catch (error) {
         if (!active) return
-        appendLog(`State poll failed: ${String(error)}`)
+        appendLog(`State bootstrap failed: ${String(error)}`)
       }
     }
     void load()
-    const timer = window.setInterval(load, 750)
     return () => {
       active = false
-      window.clearInterval(timer)
     }
-  }, [appendLog, hydrateGeneratedPreviewFromMachineOnce, setMachine])
+  }, [appendLog, hydrateGeneratedPreviewFromMachineOnce, syncBrowserMachineState])
+
+  useEffect(() => {
+    let active = true
+    const inspectApprovedPorts = async () => {
+      try {
+        const ports = await grblSerial.getPreviouslyApprovedPorts()
+        if (!active || !ports.length) return
+        appendLog(`Browser already has permission for ${ports.length} serial port${ports.length === 1 ? '' : 's'}. Click Connect plotter to choose one.`)
+      } catch (error) {
+        if (!active) return
+        appendLog(`Approved-port check skipped: ${String(error)}`)
+      }
+    }
+    void inspectApprovedPorts()
+    return () => {
+      active = false
+    }
+  }, [appendLog])
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      void grblSerial.disconnect().catch(() => undefined)
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [])
 
   useEffect(() => {
     const timers = toasts.map((toast) => window.setTimeout(() => dismissToast(toast.id), 2800))
@@ -223,6 +317,14 @@ function DashboardApp() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [machine?.running])
+
+  useEffect(() => {
+    if (!machine?.running && !machine?.paused) return
+    const timer = window.setInterval(() => {
+      syncBrowserMachineState()
+    }, 250)
+    return () => window.clearInterval(timer)
+  }, [machine?.paused, machine?.running, syncBrowserMachineState])
 
   const placementPreviewKey = readySettings
     ? [
@@ -265,23 +367,25 @@ function DashboardApp() {
 
   const settingsState = readySettings
 
-  async function refreshMachine() {
-    const nextState = await fetchState()
-    setMachine(nextState)
+  function refreshMachine() {
+    syncBrowserMachineState()
   }
 
-  async function callEndpoint(endpoint: string, body: unknown, successMessage?: string) {
-    const response = await postJson<Record<string, never>>(endpoint, body)
-    if (response.command) appendLog(`> ${response.command}`)
-    if (response.response) appendLog(`< ${response.response}`)
+  function recordMachineResult(result: { command?: string; response?: string } | null, successMessage?: string) {
+    if (result?.command) appendLog(`> ${result.command}`)
+    if (result?.response) appendLog(`< ${result.response}`)
     if (successMessage) pushToast(successMessage, 'success')
-    await refreshMachine()
+    refreshMachine()
   }
 
-  async function handleConnect(port: string) {
+  async function handleConnect() {
     setBusy('connecting', true)
     try {
-      await callEndpoint(apiConfig.endpoints.connect, { port }, 'Controller connected.')
+      const port = await grblSerial.connect()
+      setSerialPort(port)
+      syncBrowserMachineState()
+      pushToast('Plotter connected.', 'success')
+      appendLog('Connect plotter opened the browser picker and connected at 115200 baud.')
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`Connect failed: ${String(error)}`)
@@ -290,18 +394,22 @@ function DashboardApp() {
     }
   }
 
+  async function handleDisconnect() {
+    try {
+      await grblSerial.disconnect()
+      syncBrowserMachineState()
+      pushToast('Plotter disconnected.', 'success')
+      appendLog('Serial port released.')
+    } catch (error) {
+      pushToast(String(error), 'error')
+      appendLog(`Disconnect failed: ${String(error)}`)
+    }
+  }
+
   async function handleApplyConfig() {
     try {
-      await callEndpoint(
-        apiConfig.endpoints.applyConfig,
-        {
-          x_max_feed: settingsState.xMaxFeed,
-          y_max_feed: settingsState.yMaxFeed,
-          x_acceleration: settingsState.xAcceleration,
-          y_acceleration: settingsState.yAcceleration,
-        },
-        'Machine settings applied.',
-      )
+      const result = await grblSerial.applyConfig(config!, settingsState)
+      recordMachineResult(result, 'Machine settings applied.')
     } catch (error) {
       pushToast(String(error), 'error')
     }
@@ -338,7 +446,6 @@ function DashboardApp() {
         `Effective slicer settings: pen ${effectiveSettings.line_thickness_mm.toFixed(2)} mm, infill spacing ${effectiveSettings.infill_spacing_mm.toFixed(2)} mm, custom spacing ${effectiveSettings.custom_infill_spacing ? 'on' : 'off'}.`,
       )
       pushToast('G-code generated.', 'success')
-      await refreshMachine()
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`Generate failed: ${String(error)}`)
@@ -348,11 +455,13 @@ function DashboardApp() {
   }
 
   async function handlePenUp() {
-    await callEndpoint(apiConfig.endpoints.penUp, servoPayload(settingsState, settingsState.penUpS), 'Pen up.')
+    const result = await grblSerial.penUp(settingsState)
+    recordMachineResult(result, 'Pen up.')
   }
 
   async function handlePenDown() {
-    await callEndpoint(apiConfig.endpoints.penDown, servoPayload(settingsState, settingsState.penDownS), 'Pen down.')
+    const result = await grblSerial.penDown(settingsState)
+    recordMachineResult(result, 'Pen down.')
   }
 
   async function handleGenerateCalibrationPattern() {
@@ -380,7 +489,6 @@ function DashboardApp() {
       })
       appendLog(`Generated diagnostic pattern ${payload.calibrationPattern?.pattern ?? '3x3_squares'} with ${preview.length} preview paths.`)
       pushToast('Calibration test pattern generated.', 'success')
-      await refreshMachine()
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`Calibration pattern generation failed: ${String(error)}`)
@@ -412,7 +520,6 @@ function DashboardApp() {
       })
       appendLog(`Generated X rotary calibration pattern with ${preview.length} preview paths.`)
       pushToast('X rotary calibration pattern generated.', 'success')
-      await refreshMachine()
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`X rotary calibration generation failed: ${String(error)}`)
@@ -422,25 +529,21 @@ function DashboardApp() {
   }
 
   async function handleGoHome() {
-    await callEndpoint(apiConfig.endpoints.goHome, {
-      pen_up_s: settingsState.penUpS,
-      travel_feed: settingsState.travelFeed,
-      pen_up_dwell_ms: settingsState.penUpDwellMs,
-      servo_ramp_enabled: settingsState.servoRampEnabled,
-      servo_ramp_step: settingsState.servoRampStep,
-      servo_ramp_delay_ms: settingsState.servoRampDelayMs,
-    })
+    const result = await grblSerial.goHome(settingsState)
+    recordMachineResult(result, 'Returned to origin.')
   }
 
   async function handleJog(axis: 'X' | 'Y', degrees: number) {
-    await callEndpoint(apiConfig.endpoints.jog, { axis, degrees, feed: settingsState.travelFeed })
+    const result = await grblSerial.jog(axis, degrees, settingsState.travelFeed)
+    recordMachineResult(result)
   }
 
   async function handleCalibrate() {
     if (!window.confirm('Confirm the pen is physically positioned at the center of the ball.')) return
     setBusy('calibrating', true)
     try {
-      await callEndpoint(apiConfig.endpoints.zeroAndMarkCalibrated, {}, 'Origin locked.')
+      const result = await grblSerial.zeroAndMarkCalibrated()
+      recordMachineResult(result, 'Origin locked.')
     } catch (error) {
       pushToast(String(error), 'error')
     } finally {
@@ -449,7 +552,8 @@ function DashboardApp() {
   }
 
   async function handleClearCalibrated() {
-    await callEndpoint(apiConfig.endpoints.clearCalibrated, {}, 'Calibration cleared.')
+    const result = await grblSerial.clearCalibrated()
+    recordMachineResult(result, 'Calibration cleared.')
   }
 
   async function handleTestStepperHoldPolicy() {
@@ -462,7 +566,8 @@ function DashboardApp() {
         if (!window.confirm('Calibration is currently locked. Clear calibration first so the release test can actually release the motors?')) return
         await handleClearCalibrated()
       }
-      await callEndpoint(apiConfig.endpoints.applyStepperHoldPolicy, {}, 'Release policy applied.')
+      const result = await grblSerial.applyStepperHoldPolicy()
+      recordMachineResult(result, 'Release policy applied.')
       window.alert('Verify X and Y can be moved by hand.')
       if (!window.confirm('Position the pen at origin and apply calibration now?')) return
       await handleCalibrate()
@@ -476,49 +581,171 @@ function DashboardApp() {
     }
   }
 
-  async function handleRun() {
-    if (!window.confirm('Start the generated job on the connected plotter?')) return
-    setBusy('running', true)
-    try {
-      await callEndpoint(apiConfig.endpoints.runGcode, {}, 'Job started.')
-    } catch (error) {
-      pushToast(String(error), 'error')
-      appendLog(`Run failed: ${String(error)}`)
-    } finally {
-      setBusy('running', false)
+  function buildBrowserSerialDebugBundle(error: unknown, diagnostics: ReturnType<typeof grblSerial.getStreamDiagnostics>): BrowserSerialDebugBundle {
+    const timeoutDebug = diagnostics.machine.last_timeout_debug ?? {}
+    const failedLine = typeof timeoutDebug.timed_out_line === 'number' ? timeoutDebug.timed_out_line : diagnostics.machine.current_gcode_line || null
+    const contextStart = failedLine == null ? 1 : Math.max(1, failedLine - 50)
+    const contextEnd = failedLine == null ? Math.min(gcode.length, 100) : Math.min(gcode.length, failedLine + 50)
+
+    return {
+      captured_at: new Date().toISOString(),
+      failure: {
+        event: 'run_failed',
+        error: String(error),
+      },
+      architecture: {
+        frontend_runner: true,
+        backend_runner_for_dashboard_run: false,
+        both_possible_in_codebase: true,
+        dashboard_run_path: [
+          'frontend/src/App.tsx handleRun',
+          'frontend/src/services/grblWebSerial.ts runGcode',
+          'frontend/src/services/grblWebSerial.ts sendLineAndWaitForAck',
+          'Browser Web Serial API',
+        ],
+      },
+      gcode_context: {
+        failed_line: failedLine,
+        start_line: contextStart,
+        lines: gcode.slice(contextStart - 1, contextEnd).map((command, offset) => ({
+          line: contextStart + offset,
+          command,
+        })),
+      },
+      serial_settings: {
+        baud_rate: BAUD_RATE,
+        data_bits: 8,
+        stop_bits: 1,
+        parity: 'none',
+        flow_control: 'none',
+      },
+      browser: {
+        user_agent: window.navigator.userAgent,
+      },
+      job_settings: settingsState,
+      diagnostics: diagnostics as unknown as Record<string, unknown>,
+      hardware_checklist: [
+        'Check whether M3 S700/M3 S575 servo movement coincides with byte loss or controller reset text.',
+        'Power the servo from a separate supply; keep grounds common with the controller.',
+        'Add bulk capacitance near the servo power rail.',
+        'Use a short shielded USB cable and avoid unpowered hubs.',
+        'Disable Windows USB selective suspend while testing.',
+        'Compare the same controller and G-code with UGS, Candle, bCNC, or the provided Python strict-ack script.',
+        'Try 57600 baud only as an isolation test if the firmware supports it.',
+      ],
     }
   }
 
+  function handleDownloadDebugBundle() {
+    if (!lastDebugBundle) return
+    const blob = new Blob([JSON.stringify(lastDebugBundle, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `browser-serial-debug-${lastDebugBundle.captured_at.replace(/[:.]/g, '-')}.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function handleRun() {
+    if (!window.confirm('Start the generated job on the connected plotter?')) return
+    setBusy('running', true)
+    lastRunUiSyncAtRef.current = 0
+    const effectiveStreamingMode = 'sync' as const
+    const runPromise = grblSerial.runGcode(gcode, {
+      onProgress: () => {
+        const now = performance.now()
+        if (now - lastRunUiSyncAtRef.current < 120) {
+          return
+        }
+        lastRunUiSyncAtRef.current = now
+        syncBrowserMachineState()
+      },
+      streamingMode: effectiveStreamingMode,
+    })
+
+    syncBrowserMachineState()
+    appendLog(`Run started: streaming ${gcode.length} G-code lines over Web Serial in ${effectiveStreamingMode === 'sync' ? 'Strict Ack' : 'Buffered'} mode.`)
+    pushToast('Job started.', 'success')
+
+    void runPromise
+      .then((result) => {
+        recordMachineResult(result, 'Job complete.')
+        setBusy('running', false)
+      })
+      .catch((error) => {
+        syncBrowserMachineState()
+        const diagnostics = grblSerial.getStreamDiagnostics()
+        setLastDebugBundle(buildBrowserSerialDebugBundle(error, diagnostics))
+        void reportBrowserSerialDiagnostics({
+          event: 'run_failed',
+          error: String(error),
+          status: diagnostics.machine.status,
+          job_state: diagnostics.machine.job_state ?? null,
+          current_gcode_line: diagnostics.machine.current_gcode_line,
+          current_path_id: diagnostics.machine.current_path_id,
+          current_path_kind: diagnostics.machine.current_path_kind ?? null,
+          last_timeout_debug: diagnostics.machine.last_timeout_debug ?? null,
+          streaming: diagnostics.machine.streaming ?? null,
+          recent_grbl_lines: diagnostics.recent_grbl_lines,
+          recent_sent_commands: diagnostics.recent_sent_commands,
+          tx_trace: diagnostics.tx_trace,
+          rx_chunks: diagnostics.rx_chunks,
+          rx_lines: diagnostics.rx_lines,
+          active_transaction: diagnostics.active_transaction,
+          transaction_lifecycle_events: diagnostics.transaction_lifecycle_events,
+          unexpected_ok_count: diagnostics.unexpected_ok_count,
+          unexpected_error_count: diagnostics.unexpected_error_count,
+          stream_debug_events: diagnostics.stream_debug_events,
+          last_raw_serial_chunk: diagnostics.last_raw_serial_chunk,
+          last_raw_serial_chunk_at: diagnostics.last_raw_serial_chunk_at,
+          current_partial_line_buffer: diagnostics.current_partial_line_buffer,
+          partial_line_buffer_updated_at: diagnostics.partial_line_buffer_updated_at,
+          last_complete_parsed_line: diagnostics.last_complete_parsed_line,
+          last_complete_parsed_line_at: diagnostics.last_complete_parsed_line_at,
+          last_parsed_ack_line: diagnostics.last_parsed_ack_line,
+          last_parsed_ack_line_at: diagnostics.last_parsed_ack_line_at,
+          last_parsed_status_line: diagnostics.last_parsed_status_line,
+          last_parsed_status_line_at: diagnostics.last_parsed_status_line_at,
+          last_ok_at: diagnostics.last_ok_at,
+          last_status_at: diagnostics.last_status_at,
+          port_state: diagnostics.port_state,
+          read_loop_id: diagnostics.read_loop_id,
+          status_polling_state: diagnostics.status_polling_state,
+        }).catch((reportError) => {
+          appendLog(`Browser serial diagnostics upload failed: ${String(reportError)}`)
+        })
+        pushToast(String(error), 'error')
+        appendLog(`Run failed: ${String(error)}`)
+        setBusy('running', false)
+      })
+  }
+
   async function handlePause() {
-    await callEndpoint(apiConfig.endpoints.pause, {}, 'Pause requested.')
+    const result = await grblSerial.pause()
+    recordMachineResult(result, 'Pause requested.')
   }
 
   async function handleResume() {
-    await callEndpoint(apiConfig.endpoints.resume, {}, 'Resume requested.')
+    const result = await grblSerial.resume()
+    recordMachineResult(result, 'Resume requested.')
   }
 
   async function handleStop() {
-    await callEndpoint(apiConfig.endpoints.stop, {}, 'Stop requested.')
+    const result = await grblSerial.stop()
+    recordMachineResult(result, 'Stop requested.')
   }
 
   async function handleToggleYLoop() {
     try {
       const enabled = Boolean(machine?.y_loop_test?.enabled)
       if (enabled) {
-        await callEndpoint(apiConfig.endpoints.yLoopStop, {}, 'Y loop test stopped.')
+        const result = await grblSerial.stopYLoop()
+        recordMachineResult(result, 'Y loop test stopped.')
         return
       }
-      await callEndpoint(
-        apiConfig.endpoints.yLoopStart,
-        {
-          distance: settingsState.yLoopDistance,
-          feedrate: settingsState.yLoopFeedrate,
-          dwell_sec: settingsState.yLoopDwellSec,
-          pen_up_s: settingsState.penUpS,
-          pen_up_dwell_ms: settingsState.penUpDwellMs,
-        },
-        'Y loop test started.',
-      )
+      const result = await grblSerial.startYLoop(settingsState)
+      recordMachineResult(result, 'Y loop test started.')
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`Y loop test failed: ${String(error)}`)
@@ -590,7 +817,7 @@ function DashboardApp() {
         </div>
       </section>
 
-      <MachineCard onApplyConfig={handleApplyConfig} onConnect={handleConnect} />
+      <MachineCard onApplyConfig={handleApplyConfig} onConnect={handleConnect} onDisconnect={handleDisconnect} />
       <CalibrationCard machine={machine} onCalibrate={handleCalibrate} onClear={handleClearCalibrated} />
       <ManualControlCard
         machine={machine}
@@ -646,6 +873,11 @@ function DashboardApp() {
             <h2>Settings and diagnostics</h2>
           </div>
         </div>
+        {lastDebugBundle ? (
+          <button className="button" onClick={handleDownloadDebugBundle} type="button">
+            Download Debug Bundle
+          </button>
+        ) : null}
         <AdvancedDrawer activeTab={drawerTab} onTab={setDrawerTab} />
       </section>
       {advancedOpen && drawerTab === 'gcode' ? <GcodePanel gcode={gcode} /> : null}
@@ -851,17 +1083,6 @@ function BootMessage({ title, detail }: { title: string; detail: string }) {
   )
 }
 
-function servoPayload(settings: SettingsState, sValue: number) {
-  return {
-    s: sValue,
-    servo_ramp_enabled: settings.servoRampEnabled,
-    servo_ramp_step: settings.servoRampStep,
-    servo_ramp_delay_ms: settings.servoRampDelayMs,
-    pen_up_dwell_ms: settings.penUpDwellMs,
-    pen_down_dwell_ms: settings.penDownDwellMs,
-  }
-}
-
 function buildGenerateFormData(file: File, settings: SettingsState, selectedColors: string[]) {
   const formData = new FormData()
   formData.append('image', file)
@@ -1019,15 +1240,18 @@ function getRemainingSeconds(
 ) {
   if (!machine) return 0
   if (machine.job_estimated_remaining_seconds != null) {
+    if ((machine.running || machine.paused) && progressPercent > 0 && progressPercent < 100) {
+      return Math.max(1, machine.job_estimated_remaining_seconds)
+    }
     return Math.max(0, machine.job_estimated_remaining_seconds)
   }
   if (isTerminalJobState(machine)) return 0
   if (!summary?.estimated_runtime_seconds) return 0
   if (!machine.running && !machine.paused) return 0
   if (progressPercent >= 100) return 0
-  if (!progressPercent) return Math.max(0, summary.estimated_runtime_seconds - elapsedSeconds)
+  if (!progressPercent) return Math.max(1, summary.estimated_runtime_seconds - elapsedSeconds)
   const estimatedByProgress = elapsedSeconds * ((100 - progressPercent) / progressPercent)
-  return Math.max(0, estimatedByProgress)
+  return Math.max(1, estimatedByProgress)
 }
 
 function isTerminalJobState(machine: MachineState | null) {
@@ -1041,6 +1265,24 @@ function formatClock(totalSeconds: number) {
   const minutes = Math.floor((seconds % 3600) / 60)
   const remainder = seconds % 60
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
+}
+
+function findPreviewPathForLine(paths: PreviewPath[], lineNumber: number) {
+  return paths.find((path) => {
+    const start = path.gcode_start_line
+    const end = path.gcode_end_line
+    return start != null && end != null && lineNumber >= start && lineNumber <= end
+  }) ?? null
+}
+
+function getPreviewPointIndexForLine(path: PreviewPath, lineNumber: number) {
+  const start = path.gcode_start_line
+  const end = path.gcode_end_line
+  if (start == null || end == null || end <= start || path.points.length <= 1) {
+    return 0
+  }
+  const progress = Math.min(1, Math.max(0, (lineNumber - start) / Math.max(1, end - start)))
+  return Math.min(path.points.length - 1, Math.max(0, Math.round(progress * (path.points.length - 1))))
 }
 
 export default App

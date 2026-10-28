@@ -25,14 +25,16 @@ The backend uses the package metadata in `pyproject.toml`, and the dev extra is 
 
 ## USB controller on Linux
 
-In the dashboard's Connection panel, choose **Serial / USB port**, then **Connect**.
-Use **Refresh ports** after plugging in the controller. Typical Linux device names
-are `/dev/ttyUSB0` (CH340 adapters) and `/dev/ttyACM0`; Windows uses `COM` names.
-A single detected USB serial device is selected automatically. With multiple
-devices, select the controller explicitly. Discovery does not open any devices.
-Use **Enter port manually** for a stable `/dev/serial/by-id/...` path or another
-port name. `SERIAL_PORT` can also set the backend's default port; there is no
-hard-coded Windows default.
+In the dashboard's Connection panel, choose **Connect plotter**, then select the
+Arduino/GRBL device in the browser's serial-port picker. The dashboard uses Web
+Serial for machine control. Typical Linux device names are `/dev/ttyUSB0` (CH340
+adapters) and `/dev/ttyACM0`; Windows uses `COM` names.
+
+For backend API clients, `/serial-ports` lists available devices without opening
+them, and `/connect` accepts a `port` device path. A single detected USB serial
+device can be selected automatically. `SERIAL_PORT` sets the backend's default
+port, including stable `/dev/serial/by-id/...` paths; there is no hard-coded
+Windows default.
 
 If opening the port reports permission denied, check its group with
 `ls -l /dev/ttyUSB0`. On systems using `dialout`, run:

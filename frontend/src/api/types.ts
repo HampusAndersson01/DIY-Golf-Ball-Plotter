@@ -228,6 +228,9 @@ export type MachineState = {
     ok_count: number
     error_count?: number
     sent_count: number
+    acked_count?: number
+    total_lines?: number
+    streaming_active?: boolean
   }
   defaults: {
     pen_up_s: number

@@ -4,7 +4,6 @@ from app.services.svg_parser import SvgParser
 
 CONFIG = {
     "DEFAULT_PEN_UP_S": 575,
-    "SERIAL_PORT": "COM12",
     "BAUD_RATE": 115200,
     "MOTOR_FULL_STEPS_PER_REV": 200,
     "X_MICROSTEPS": 16,

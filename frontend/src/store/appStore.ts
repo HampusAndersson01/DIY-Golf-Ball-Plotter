@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 
 import type { AppConfig, AppDefaults, CalibrationPattern, ImageAnalysis, JobSummary, MachineState, MaskProjectionQuad, PreviewPath, XAxisCalibrationPattern } from '../api/types'
+import { createBrowserMachineState } from '../services/grblWebSerial'
 
 export type DrawerTab = 'advanced' | 'gcode' | 'logs'
 export type PreviewMode = '2d' | '3d'
@@ -115,6 +116,7 @@ type AppStore = {
   config: AppConfig | null
   settings: SettingsState | null
   machine: MachineState | null
+  serialPort: SerialPort | null
   imageFile: File | null
   imagePreviewUrl: string | null
   analysis: ImageAnalysis | null
@@ -144,6 +146,7 @@ type AppStore = {
   busy: BusyState
   initialize: (config: AppConfig) => void
   setMachine: (machine: MachineState) => void
+  setSerialPort: (port: SerialPort | null) => void
   setImageFile: (file: File | null, previewUrl: string | null) => void
   setAnalysis: (analysis: ImageAnalysis | null) => void
   toggleColor: (colorId: string) => void
@@ -252,7 +255,7 @@ function buildSettings(defaults: AppDefaults): SettingsState {
     servoRampEnabled: defaults.servoRampEnabled,
     servoRampStep: defaults.servoRampStep,
     servoRampDelayMs: defaults.servoRampDelayMs,
-    streamingMode: defaults.streamingMode ?? 'buffered',
+    streamingMode: 'sync',
     yLoopDistance: defaults.yLoopDistance ?? 10,
     yLoopFeedrate: defaults.yLoopFeedrate ?? defaults.drawFeed,
     yLoopDwellSec: defaults.yLoopDwellSec ?? 0.25,
@@ -264,6 +267,7 @@ export const useAppStore = create<AppStore>((set) => ({
   config: null,
   settings: null,
   machine: null,
+  serialPort: null,
   imageFile: null,
   imagePreviewUrl: null,
   analysis: null,
@@ -301,6 +305,7 @@ export const useAppStore = create<AppStore>((set) => ({
   initialize: (config) => set({
     config,
     settings: buildSettings(config.defaults),
+    machine: createBrowserMachineState(),
     busy: {
       bootstrapping: false,
       connecting: false,
@@ -314,6 +319,7 @@ export const useAppStore = create<AppStore>((set) => ({
     machine,
     summary: machine.last_summary ?? state.summary,
   })),
+  setSerialPort: (serialPort) => set({ serialPort }),
   setImageFile: (file, previewUrl) => set({
     imageFile: file,
     imagePreviewUrl: previewUrl,
@@ -331,7 +337,10 @@ export const useAppStore = create<AppStore>((set) => ({
     xAxisCalibrationPattern: null,
     xAxisCalibrationMeasurements: {},
   }),
-  setAnalysis: (analysis) => set({ analysis, selectedColors: [] }),
+  setAnalysis: (analysis) => set({
+    analysis,
+    selectedColors: analysis?.colors.length === 1 ? [analysis.colors[0].id] : [],
+  }),
   toggleColor: (colorId) => set((state) => ({
     selectedColors: state.selectedColors.includes(colorId)
       ? state.selectedColors.filter((entry) => entry !== colorId)

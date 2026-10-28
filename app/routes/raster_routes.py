@@ -882,6 +882,7 @@ def generate_diagnostic_gcode_route():
                 gcode_mode=config["DEFAULT_GCODE_MODE"],
                 include_comments=True,
                 debug=debug_data,
+                force_explicit_motion=True,
             )
             machine_motion_debug = pipeline_core.build_machine_motion_debug(
                 [],
@@ -1033,6 +1034,7 @@ def generate_diagnostic_gcode_route():
             gcode_mode=config["DEFAULT_GCODE_MODE"],
             include_comments=True,
             debug=debug_data,
+            force_explicit_motion=True,
         )
         machine_motion_debug = pipeline_core.build_machine_motion_debug(
             cleaned_toolpaths,

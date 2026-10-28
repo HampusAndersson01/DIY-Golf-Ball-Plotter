@@ -64,7 +64,7 @@ def estimate_gcode_runtime(
     travel_feed: float,
     pen_up_s: int,
     pen_down_s: int,
-    serial_ack_overhead_seconds_per_line: float = 0.012,
+    serial_ack_overhead_seconds_per_line: float = 0.02,
     short_segment_threshold: float = 0.2,
     short_segment_overhead_seconds: float = 0.004,
     finalization_overhead_seconds: float = 2.0,
@@ -84,6 +84,7 @@ def estimate_gcode_runtime(
     pending_pen_servo = False
     cumulative_seconds_by_stream_line: list[float] = []
     cumulative_streamable_seconds = 0.0
+    current_motion_command: str | None = None
 
     def push_streamable_time(seconds: float) -> None:
         nonlocal cumulative_streamable_seconds
@@ -119,13 +120,21 @@ def estimate_gcode_runtime(
 
         pending_pen_servo = False
 
-        if line.startswith("G0") or line.startswith("G1"):
+        explicit_motion_command: str | None = None
+        if line.startswith("G0"):
+            explicit_motion_command = "G0"
+        elif line.startswith("G1"):
+            explicit_motion_command = "G1"
+        if explicit_motion_command is not None:
+            current_motion_command = explicit_motion_command
+
+        if current_motion_command in {"G0", "G1"} and (explicit_motion_command is not None or "X" in line or "Y" in line):
             x = float(words.get("X", current_x))
             y = float(words.get("Y", current_y))
             current_feed = max(float(words.get("F", current_feed)), 1e-6)
             distance = math.hypot(x - current_x, y - current_y)
             feed = current_feed
-            if line.startswith("G0") and "F" not in words:
+            if current_motion_command == "G0" and "F" not in words:
                 feed = max(float(travel_feed or 0.0), 1e-6)
             motion_seconds += (distance / max(feed, 1e-6)) * 60.0
             incremental_seconds = (distance / max(feed, 1e-6)) * 60.0 + serial_ack_overhead_seconds_per_line

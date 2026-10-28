@@ -95,12 +95,12 @@ export function PrintSetupPanel({
           <h3>Colors</h3>
           <div className="print-setup-meta-row">
             <span className="badge muted">{selectedColors.length} selected</span>
-            <span className="badge muted">{colors.length} detected</span>
+            <span className="badge muted">{colors.length} detected print colors</span>
           </div>
         </div>
 
         <div className="print-setup-color-row" role="status" aria-live="polite">
-          <span className="print-setup-color-row__label">Printable Colors</span>
+          <span className="print-setup-color-row__label">Detected Print Colors</span>
           {firstSelectedColor ? (
             <button
               className="print-setup-selected-chip"

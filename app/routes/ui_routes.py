@@ -2,10 +2,11 @@ import logging
 import threading
 import time
 
-from flask import Blueprint, Response, current_app, jsonify
+from flask import Blueprint, Response, current_app, jsonify, request
 
 from app.extensions import get_state
 from app.services.runtime_estimation_service import build_runtime_snapshot
+from app.utils.response_utils import json_error, json_ok
 
 ui_bp = Blueprint("ui", __name__)
 logger = logging.getLogger(__name__)
@@ -131,3 +132,22 @@ def get_machine_state():
 @ui_bp.get("/favicon.ico")
 def favicon():
     return Response(status=204)
+
+
+@ui_bp.post("/api/browser-serial-diagnostics")
+def browser_serial_diagnostics():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return json_error("Expected a JSON object payload.", status=400)
+
+    event = str(payload.get("event") or "unspecified")
+    command = payload.get("timed_out_command")
+    line_number = payload.get("timed_out_line")
+    current_app.logger.error(
+        "Browser serial diagnostics: event=%s timed_out_line=%s timed_out_command=%s payload=%s",
+        event,
+        line_number,
+        command,
+        payload,
+    )
+    return json_ok(command="BROWSER SERIAL DIAGNOSTICS", response="Captured")
