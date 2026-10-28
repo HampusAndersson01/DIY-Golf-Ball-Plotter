@@ -146,7 +146,7 @@ logger = logging.getLogger(__name__)
 # Machine / serial setup
 # ============================================================
 
-SERIAL_PORT = os.getenv("SERIAL_PORT")
+SERIAL_PORT = os.getenv("SERIAL_PORT", "")
 BAUD_RATE = 115200
 
 MOTOR_FULL_STEPS_PER_REV = 200

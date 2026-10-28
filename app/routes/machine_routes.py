@@ -1,16 +1,28 @@
 from flask import Blueprint, current_app, request
 
-from app.extensions import get_machine_service
+from app.extensions import get_machine_service, get_serial_service
 from app.utils.response_utils import json_error, json_ok, log_exception
 
 machine_bp = Blueprint("machine", __name__)
 
 
+@machine_bp.get("/serial-ports")
+def serial_ports():
+    try:
+        return json_ok(**get_serial_service().list_ports())
+    except Exception as exc:
+        log_exception("Serial port discovery failed", exc)
+        return json_error(str(exc), status=500)
+
+
 @machine_bp.post("/connect")
 def connect_route():
     try:
-        get_machine_service().connect()
+        data = request.get_json(silent=True) or {}
+        get_machine_service().connect(data.get("port"))
         return json_ok(command="CONNECT", response="Connected")
+    except ValueError as exc:
+        return json_error(str(exc), status=400)
     except Exception as exc:
         log_exception("Machine connect failed", exc)
         return json_error(str(exc), status=500)

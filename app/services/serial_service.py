@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from copy import copy
+import errno
 import logging
-import time
+import os
+import sys
 import threading
+import time
 from typing import Any
+
+import serial
+from serial.tools import list_ports
 
 from . import pipeline_core
 
@@ -22,10 +29,51 @@ class SerialService:
             config.get("DEFAULT_STREAMING_MODE"),
         )
 
-    def connect(self):
+    def list_ports(self) -> dict[str, Any]:
+        ports = sorted(list_ports.comports(), key=lambda port: port.device)
+        configured = self.config.get("SERIAL_PORT", "")
+        if configured and not any(port.device == configured for port in ports):
+            for port in list(ports):
+                if os.path.realpath(configured) == os.path.realpath(port.device):
+                    # Preserve stable /dev/serial/by-id aliases in the selector.
+                    alias = copy(port)
+                    alias.device = configured
+                    ports.insert(0, alias)
+                    break
+        devices = [port.device for port in ports]
+        usb_devices = {os.path.realpath(port.device): port.device for port in ports if port.vid is not None}
+        selected = configured if configured in devices else (next(iter(usb_devices.values())) if len(usb_devices) == 1 else "")
+        return {
+            "ports": [{"device": port.device, "description": port.description, "hwid": port.hwid} for port in ports],
+            "selected_port": selected,
+            "configured_port": configured,
+        }
+
+    def connect(self, port: str | None = None):
         with self.lock:
-            self.logger.info("Opening serial connection to GRBL on %s", self.config.get("SERIAL_PORT"))
-            ser = pipeline_core.connect_grbl()
+            if port is not None and not isinstance(port, str):
+                raise ValueError("Select a valid serial port.")
+            selected = (port if port is not None else self.config.get("SERIAL_PORT", "")).strip()
+            if self.has_live_serial():
+                if selected and selected != self.config.get("SERIAL_PORT"):
+                    raise ValueError("Already connected. Restart the backend before changing serial ports.")
+                return pipeline_core.grbl
+            if not selected:
+                selected = self.list_ports()["selected_port"]
+            if not selected:
+                raise ValueError("Select a serial port from the Connection panel. Refresh ports after plugging in the USB controller.")
+            self.config["SERIAL_PORT"] = selected
+            pipeline_core.configure_runtime(self.config, self.state.raw, self.lock)
+            self.logger.info("Opening serial connection to GRBL on %s", selected)
+            try:
+                ser = pipeline_core.connect_grbl()
+            except serial.SerialException as exc:
+                if sys.platform.startswith("linux") and exc.errno == errno.EACCES:
+                    raise serial.SerialException(
+                        f"Permission denied opening {selected}. Add your Linux user to the device's serial group "
+                        '(usually dialout): sudo usermod -aG dialout "$USER". Log out and back in, then restart the backend.'
+                    ) from exc
+                raise
             pipeline_core.grbl = ser
             self.logger.info("Serial connection ready: is_open=%s", getattr(ser, "is_open", True))
             return ser

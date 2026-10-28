@@ -309,8 +309,11 @@ class MachineService:
         self._y_loop_thread: threading.Thread | None = None
         self._y_loop_stop_requested = False
 
-    def connect(self) -> None:
-        self.serial_service.connect()
+    def connect(self, port: str | None = None) -> None:
+        if port is None:
+            self.serial_service.connect()
+        else:
+            self.serial_service.connect(port)
         self.state.update(connected=True, emergency_stopped=False)
         self.apply_stepper_hold_policy("connect", force=True)
 
