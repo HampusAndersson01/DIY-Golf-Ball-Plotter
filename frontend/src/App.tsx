@@ -278,10 +278,10 @@ function DashboardApp() {
     await refreshMachine()
   }
 
-  async function handleConnect() {
+  async function handleConnect(port: string) {
     setBusy('connecting', true)
     try {
-      await callEndpoint(apiConfig.endpoints.connect, {}, 'Controller connected.')
+      await callEndpoint(apiConfig.endpoints.connect, { port }, 'Controller connected.')
     } catch (error) {
       pushToast(String(error), 'error')
       appendLog(`Connect failed: ${String(error)}`)

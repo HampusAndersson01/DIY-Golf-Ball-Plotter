@@ -23,6 +23,27 @@ python -m pip install -e .[dev]
 
 The backend uses the package metadata in `pyproject.toml`, and the dev extra is what enables the local test workflow.
 
+## USB controller on Linux
+
+In the dashboard's Connection panel, choose **Serial / USB port**, then **Connect**.
+Use **Refresh ports** after plugging in the controller. Typical Linux device names
+are `/dev/ttyUSB0` (CH340 adapters) and `/dev/ttyACM0`; Windows uses `COM` names.
+A single detected USB serial device is selected automatically. With multiple
+devices, select the controller explicitly. Discovery does not open any devices.
+Use **Enter port manually** for a stable `/dev/serial/by-id/...` path or another
+port name. `SERIAL_PORT` can also set the backend's default port; there is no
+hard-coded Windows default.
+
+If opening the port reports permission denied, check its group with
+`ls -l /dev/ttyUSB0`. On systems using `dialout`, run:
+
+```bash
+sudo usermod -aG dialout "$USER"
+```
+
+Log out and back in so the new group takes effect, then restart the backend.
+If the device belongs to another serial group, use that group instead.
+
 ## Frontend setup
 
 Install the frontend dependencies from the `frontend/` directory:

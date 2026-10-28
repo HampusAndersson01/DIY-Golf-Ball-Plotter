@@ -4,6 +4,7 @@ const ENDPOINTS = {
   bootstrap: '/api/bootstrap',
   state: '/state',
   connect: '/connect',
+  serialPorts: '/serial-ports',
   applyConfig: '/apply-config',
   penUp: '/pen-up',
   penDown: '/pen-down',
@@ -58,6 +59,16 @@ export async function fetchBootstrap() {
 export async function fetchState() {
   const response = await fetch(ENDPOINTS.state)
   return parseJson<MachineState>(response)
+}
+
+export type SerialPorts = {
+  ports: { device: string; description: string; hwid: string }[]
+  selected_port: string
+  configured_port: string
+}
+
+export async function fetchSerialPorts() {
+  return parseJson<SerialPorts>(await fetch(ENDPOINTS.serialPorts))
 }
 
 export async function postJson<T>(endpoint: string, body: unknown = {}) {
